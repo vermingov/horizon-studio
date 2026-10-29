@@ -8,6 +8,8 @@ pub mod game {
     pub mod hstudio;
     #[path = "../../mixins/horizon_studio/examples.rs"]
     pub mod hstudio_examples;
+    #[path = "../../mixins/horizon_studio/look.rs"]
+    pub mod hstudio_look;
     #[path = "../../mixins/horizon_studio/lua.rs"]
     pub mod hstudio_lua;
     #[path = "../../mixins/horizon_studio/lualib.rs"]

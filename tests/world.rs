@@ -244,7 +244,6 @@ fn a_script_screen_with_widgets() {
         "Change things",
         "Press me",
         "Glow",
-        "Off",
         "Radius",
         "5",
         "Name",
@@ -292,9 +291,19 @@ fn a_script_screen_with_widgets() {
         .unwrap()
         .parse()
         .unwrap();
-    screen_input(&mut st, &mut game, Input::Mouse(200.0, y + 14.0));
+    let x: f32 = radius
+        .split('@')
+        .nth(1)
+        .unwrap()
+        .trim_start_matches('[')
+        .split(',')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    screen_input(&mut st, &mut game, Input::Mouse(x + 10.0, y + 14.0));
     screen_input(&mut st, &mut game, Input::Button { left: true, down: true });
-    screen_input(&mut st, &mut game, Input::Mouse(470.0, y + 14.0));
+    screen_input(&mut st, &mut game, Input::Mouse(x + 900.0, y + 14.0));
     screen_input(
         &mut st,
         &mut game,
@@ -360,7 +369,7 @@ fn a_custom_drawn_screen() {
     game.drawn.clear();
     draw_screen(&mut st, &mut game);
     assert!(
-        game.drawn.contains(&"text Custom 480 @[12.0, 15.0] ffffff".to_owned()),
+        game.drawn.contains(&"text Custom 960 @[12.0, 15.0] ffffff".to_owned()),
         "{:?}",
         game.drawn
     );

@@ -17,3 +17,8 @@ path = "src/lib.rs"
 serde_json = "1"
 # The game has it too (zip 2, deflate): dropped .zip mods.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+# The preview test (tests/preview.rs): Horizon's fonts, rasterized as the game does, into PNG files.
+ab_glyph = "0.2.32"
+png = "0.18"

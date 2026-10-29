@@ -16,6 +16,17 @@ native Horizon mod that adds:
 - **3D drawing, sounds, particles and screens.** Scripts draw lines, boxes, beams and labels in the world, play
   sounds, spawn particles, and open screens of their own with buttons, toggles, sliders and text fields.
 
+![The console](docs/screenshots/console.png)
+
+| | |
+|---|---|
+| ![The editor](docs/screenshots/editor.png) | ![The library](docs/screenshots/library.png) |
+| ![A mod's error](docs/screenshots/library-error.png) | ![A script's screen](docs/screenshots/screen.png) |
+
+The studio draws with Horizon's own design system: Geist and Geist Mono, rounded plates, the dark palette, and its
+motion (screens fade and rise in, the tab indicator slides, rows arrive one after another, hovers fade). The pictures
+are rendered by `cargo test --test preview -- --ignored` with the game's fonts.
+
 A mod that fails stops alone, with its error and line in the Library, and the rest of the game carries on.
 Each call into a script runs under a step budget, so an endless loop stops the script instead of freezing the game.
 

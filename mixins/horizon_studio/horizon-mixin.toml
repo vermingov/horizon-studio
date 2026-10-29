@@ -38,6 +38,12 @@ name = "hstudio_ui"
 source = "ui.rs"
 
 [[module]]
+id = "look"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_look"
+source = "look.rs"
+
+[[module]]
 id = "examples"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_examples"
@@ -48,6 +54,15 @@ id = "bridge"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_bridge"
 source = "bridge.rs"
+
+# In the game's library, inside its design-system toolkit (ui_theme), whose
+# font cache and shapes it reuses; public, for the studio in the game.
+[[module]]
+id = "paint"
+file = "crates/horizon-client/src/ui_theme.rs"
+name = "hstudio_paint"
+source = "paint.rs"
+visibility = "pub"
 
 # Hooks.
 [[injection]]

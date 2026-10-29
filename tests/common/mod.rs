@@ -2,7 +2,7 @@
 // answers its questions from plain fields.
 #![allow(dead_code)]
 
-use horizon_studio::game::hstudio::{Camera, Corner, GameApi, PlayerInfo, Reply, Studio};
+use horizon_studio::game::hstudio::{Camera, Corner, Font, GameApi, PlayerInfo, Reply, Studio};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -185,6 +185,22 @@ impl GameApi for FakeGame {
         }
         self.particles.push((id.to_owned(), at, velocity, color));
         Ok(())
+    }
+    fn dp(&mut self) -> (f32, f32, f32) {
+        (960.0, 540.0, 1.0)
+    }
+    fn dp_rect(&mut self, r: [f32; 4], radius: f32, argb: u32) {
+        self.drawn.push(format!("rect {r:?} r{radius} {argb:08x}"));
+    }
+    fn dp_border(&mut self, r: [f32; 4], radius: f32, argb: u32) {
+        self.drawn.push(format!("border {r:?} r{radius} {argb:08x}"));
+    }
+    fn dp_text(&mut self, text: &str, at: [f32; 2], _size: f32, _font: Font, argb: u32) -> f32 {
+        self.drawn.push(format!("text {text} @{at:?} {:06x}", argb & 0xFF_FFFF));
+        6.0 * text.chars().count() as f32
+    }
+    fn dp_measure(&mut self, text: &str, _size: f32, _font: Font) -> f32 {
+        6.0 * text.chars().count() as f32
     }
     fn open_folder(&mut self, path: &std::path::Path) {
         self.opened.push(path.to_path_buf());

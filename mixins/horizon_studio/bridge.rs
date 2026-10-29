@@ -4,7 +4,7 @@
 // horizon-mixin.toml. Hooks that find the studio busy (a script's agent
 // command can reach the game's own command path) do nothing.
 
-use super::hstudio::{Camera, Corner, GameApi, ID, NAME, OPEN_KEY, PlayerInfo, Reply, Studio, VERSION};
+use super::hstudio::{Camera, Corner, Font, GameApi, ID, NAME, OPEN_KEY, PlayerInfo, Reply, Studio, VERSION};
 use super::hstudio_ui::{Input, Key, Mods, UiResult, draw, draw_screen, handle, handle_screen};
 use super::{Game, Screen};
 use horizon_client::clipboard::Clipboard as _;
@@ -12,6 +12,7 @@ use horizon_client::extras::Corner as GameCorner;
 use horizon_client::extras_hud::Corners;
 use horizon_client::hud::HudBatch;
 use horizon_client::mesher::Vertex;
+use horizon_client::ui_theme::hstudio_paint as paint;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -79,6 +80,31 @@ impl<'h, 'a> Host<'h, 'a> {
             GameRef::Mut(g) => Some(g),
             GameRef::Shared(_) => None,
         }
+    }
+}
+
+/// `0xAARRGGBB` in the HUD's byte order (`0xAABBGGRR`).
+fn hud_color(argb: u32) -> u32 {
+    let [a, r, g, b] = argb.to_be_bytes();
+    u32::from_be_bytes([a, b, g, r])
+}
+
+fn paint_font(f: Font) -> paint::Font {
+    match f {
+        Font::Regular => paint::Font::Regular,
+        Font::Medium => paint::Font::Medium,
+        Font::Mono => paint::Font::Mono,
+    }
+}
+
+/// Hands this frame's new glyphs to the batch (after the studio drew).
+fn flush(host: &mut Host<'_, '_>) {
+    let game = match &host.game {
+        GameRef::Mut(g) => &**g,
+        GameRef::Shared(g) => *g,
+    };
+    if let Some(b) = host.batch.as_deref_mut() {
+        paint::flush(&game.gui.atlas, b);
     }
 }
 
@@ -227,6 +253,67 @@ impl GameApi for Host<'_, '_> {
     }
     fn open_folder(&mut self, path: &std::path::Path) {
         super::packs::open_folder(path);
+    }
+    fn dp(&mut self) -> (f32, f32, f32) {
+        let game = match &self.game {
+            GameRef::Mut(g) => &**g,
+            GameRef::Shared(g) => *g,
+        };
+        match self.batch.as_deref_mut() {
+            Some(b) => paint::size(&game.gui.atlas, b),
+            None => {
+                let (w, h, scale) = gui(game);
+                let density = (w * scale / 1040.0).min(h * scale / 700.0).clamp(1.0, 4.0);
+                (w * scale / density, h * scale / density, scale / density)
+            }
+        }
+    }
+    fn dp_rect(&mut self, r: [f32; 4], radius: f32, argb: u32) {
+        let game = match &self.game {
+            GameRef::Mut(g) => &**g,
+            GameRef::Shared(g) => *g,
+        };
+        if let Some(b) = self.batch.as_deref_mut() {
+            paint::rect(&game.gui.atlas, b, r, radius, hud_color(argb));
+        }
+    }
+    fn dp_border(&mut self, r: [f32; 4], radius: f32, argb: u32) {
+        let game = match &self.game {
+            GameRef::Mut(g) => &**g,
+            GameRef::Shared(g) => *g,
+        };
+        if let Some(b) = self.batch.as_deref_mut() {
+            paint::border(&game.gui.atlas, b, r, radius, hud_color(argb));
+        }
+    }
+    fn dp_text(&mut self, text: &str, at: [f32; 2], size: f32, font: Font, argb: u32) -> f32 {
+        let game = match &self.game {
+            GameRef::Mut(g) => &**g,
+            GameRef::Shared(g) => *g,
+        };
+        match self.batch.as_deref_mut() {
+            Some(b) => paint::text(
+                &game.gui.atlas,
+                b,
+                paint_font(font),
+                size,
+                at[0],
+                at[1],
+                hud_color(argb),
+                text,
+            ),
+            None => 0.0,
+        }
+    }
+    fn dp_measure(&mut self, text: &str, size: f32, font: Font) -> f32 {
+        let game = match &self.game {
+            GameRef::Mut(g) => &**g,
+            GameRef::Shared(g) => *g,
+        };
+        match self.batch.as_deref_mut() {
+            Some(b) => paint::measure(&game.gui.atlas, b, paint_font(font), size, text),
+            None => 7.0 * text.chars().count() as f32 * size / 13.0,
+        }
     }
     fn camera(&self) -> Option<Camera> {
         if let Some((_, cam)) = &self.world {
@@ -391,14 +478,28 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
                 host.chat(&format!("[{NAME}] {line}"));
             }
             for input in inputs {
-                if !st.overlay_open() {
+                // While it fades out, nothing more reaches it.
+                if !st.overlay_open() || st.s.ui.closing_at.is_some() {
                     break;
                 }
+                let r = if st.s.screen.is_some() {
+                    handle_screen(st, &mut host, input)
+                } else {
+                    handle(st, &mut host, input)
+                };
+                if r == UiResult::Close {
+                    st.s.ui.closing_at = Some(st.s.now);
+                }
+            }
+            if let Some(t) = st.s.ui.closing_at
+                && st.s.now - t >= super::hstudio_look::CLOSE_SECS
+            {
+                st.s.ui.closing_at = None;
                 if st.s.screen.is_some() {
-                    if handle_screen(st, &mut host, input) == UiResult::Close {
-                        st.close_screen(&mut host);
-                    }
-                } else if handle(st, &mut host, input) == UiResult::Close {
+                    st.close_screen(&mut host);
+                    // Back to the studio under it, which arrives again.
+                    st.s.ui.opened_at = st.s.now;
+                } else {
                     st.s.ui.open = false;
                 }
             }
@@ -414,6 +515,8 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
         let want = (toggle && !was_open && game.native_playing()) | std::mem::take(&mut st.s.ui.open_request);
         if want && !st.overlay_open() && make_way(game) {
             st.s.ui.open = true;
+            st.s.ui.opened_at = st.s.now;
+            st.s.ui.closing_at = None;
         }
         if was_open && !st.overlay_open() {
             give_back(game);
@@ -432,6 +535,7 @@ pub(super) fn hud(game: &mut Game<'_>, batch: &mut HudBatch, corners: &mut Corne
         host.batch = Some(batch);
         host.corners = Some(corners);
         st.hud(&mut host);
+        flush(&mut host);
     });
 }
 
@@ -480,6 +584,7 @@ pub(super) fn overlay(game: &Game<'_>, batch: &mut HudBatch) {
         } else {
             draw(st, &mut host);
         }
+        flush(&mut host);
     });
 }
 

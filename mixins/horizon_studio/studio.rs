@@ -268,6 +268,24 @@ pub trait GameApi {
     fn sound(&mut self, id: &str, at: Option<[f64; 3]>, volume: f32, pitch: f32) -> Result<(), String>;
     /// Spawns a particle (`minecraft:flame`); `color` for those that take one (dust).
     fn particle(&mut self, id: &str, at: [f64; 3], velocity: [f64; 3], color: Option<[f32; 4]>) -> Result<(), String>;
+    /// The studio's own screens draw with Horizon's design system, in dp
+    /// (the launcher's logical pixels): the screen in dp, and dp per GUI pixel.
+    fn dp(&mut self) -> (f32, f32, f32);
+    /// A rounded rectangle and a 1 dp rounded border, in dp (`0xAARRGGBB`).
+    fn dp_rect(&mut self, r: [f32; 4], radius: f32, argb: u32);
+    fn dp_border(&mut self, r: [f32; 4], radius: f32, argb: u32);
+    /// Text in Geist or Geist Mono whose line box (1.45 x size) has its top at
+    /// `at`; returns its width.
+    fn dp_text(&mut self, text: &str, at: [f32; 2], size: f32, font: Font, argb: u32) -> f32;
+    fn dp_measure(&mut self, text: &str, size: f32, font: Font) -> f32;
+}
+
+/// Horizon's fonts: Geist and Geist Mono.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Font {
+    Regular,
+    Medium,
+    Mono,
 }
 
 /// A frame's camera: where it is, where it looks, its vertical field of view.
@@ -553,6 +571,8 @@ pub enum LogKind {
 pub struct LogLine {
     pub kind: LogKind,
     pub text: String,
+    /// When it was written (the studio's clock), for its fade-in.
+    pub at: f64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -625,6 +645,7 @@ impl State {
             self.log.push_back(LogLine {
                 kind,
                 text: line.replace('\t', "    "),
+                at: self.now,
             });
         }
     }
@@ -1014,6 +1035,8 @@ impl Studio {
         match self.s.screen_request.take() {
             Some((owner, table)) => {
                 self.s.screen = Some(ScriptScreen::new(owner, table));
+                self.s.ui.opened_at = self.s.now;
+                self.s.ui.closing_at = None;
                 true
             }
             None => false,
@@ -1530,14 +1553,7 @@ impl Studio {
                 game.text(line, [x + 2.0, y + 2.0 + 10.0 * i as f32], 0xFF_FFFF, true);
             }
         }
-        if let Some((text, _)) = &self.s.toast
-            && !self.s.ui.open
-        {
-            let tw = game.text_width(text);
-            let x = ((w - tw) / 2.0).floor();
-            game.fill([x - 3.0, 3.0, tw + 6.0, 12.0], 0xA010_1828);
-            game.text(text, [x, 5.0], 0x9F_E8FF, true);
-        }
+        super::hstudio_look::draw_toast(self, game);
     }
 
     /// The zoom the scripts ask for: the strongest.

@@ -5,31 +5,11 @@
 // dark design tokens (docs/design-system.md): a veil over the world, plates
 // for the console and code, 1 px rules, one accent for the main action.
 
-use super::hstudio::{API, CONSOLE_API, GameApi, LogKind, ModState, Owner, Studio};
+use super::hstudio::{API, CONSOLE_API, Font, GameApi, LogKind, Owner, Studio};
 use super::hstudio_examples::EXAMPLES;
 use super::hstudio_lua::{TableRef, Value};
 use std::path::{Path, PathBuf};
 
-const VEIL: u32 = 0xE60D_0E13;
-const PLATE_SOFT: u32 = 0xFF18_1A22;
-const PLATE: u32 = 0xFF20_222C;
-const RULE: u32 = 0xFF24_262F;
-const INK: u32 = 0xEC_EDF3;
-const INK_SOFT: u32 = 0xC5_C7D1;
-const MUTED: u32 = 0x8B_8F9C;
-const ACCENT: u32 = 0x9A_86FF;
-const DANGER: u32 = 0xF0_7A68;
-const SUCCESS: u32 = 0x45_C27A;
-const SELECTION: u32 = 0xFF3A_3550;
-const ERROR_ROW: u32 = 0x60F0_7A68;
-// Code colours, kept quiet beside the ink.
-const KEYWORD: u32 = 0xB4_A7FF;
-const STRING: u32 = 0x8F_D6A8;
-const NUMBER: u32 = 0xF2_C48D;
-const COMMENT: u32 = 0x7A_7E8B;
-const GLOBAL: u32 = 0x9F_C2FF;
-
-const LINE_H: f32 = 10.0;
 const UNDO_LIMIT: usize = 300;
 const INDENT: &str = "  ";
 
@@ -107,7 +87,7 @@ pub enum UiResult {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Action {
+pub(crate) enum Action {
     Tab(Tab),
     Select(usize),
     Toggle(usize),
@@ -124,11 +104,11 @@ enum Action {
 
 /// Where the editor's text was drawn, for the pointer.
 #[derive(Clone, Copy, Debug, Default)]
-struct EditorView {
-    x: f32,
-    y: f32,
-    w: f32,
-    rows: usize,
+pub(crate) struct EditorView {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) w: f32,
+    pub(crate) rows: usize,
 }
 
 #[derive(Default)]
@@ -145,12 +125,34 @@ pub struct Ui {
     pub docs_scroll: usize,
     /// The New mod prompt, while it is open.
     pub naming: Option<LineEdit>,
+    /// The pointer, in dp.
     pub mouse: (f32, f32),
     dragging: bool,
-    hits: Vec<([f32; 4], Action)>,
-    view: Option<EditorView>,
+    pub(crate) hits: Vec<([f32; 4], Action)>,
+    pub(crate) view: Option<EditorView>,
     /// Lines the last frame could show, for Page Up/Down.
-    page: usize,
+    pub(crate) page: usize,
+    /// dp per GUI pixel, from the last frame drawn (the pointer arrives in GUI pixels).
+    pub dp: f32,
+    /// Motion: when the screen opened and began to close, when the tab
+    /// changed, the hover and switch fades by id, the smooth scrolls.
+    pub opened_at: f64,
+    pub closing_at: Option<f64>,
+    pub(crate) last_draw: f64,
+    pub(crate) tab_at: f64,
+    pub(crate) tab_drawn: Option<Tab>,
+    pub(crate) pill: [f32; 2],
+    pub(crate) pill_from: [f32; 2],
+    pub(crate) anim: std::collections::HashMap<u64, f32>,
+    pub(crate) smooth: [f32; 3],
+    pub(crate) naming_at: f64,
+}
+
+impl Ui {
+    /// dp per GUI pixel (1 before anything was drawn).
+    pub fn dp_factor(&self) -> f32 {
+        if self.dp > 0.0 { self.dp } else { 1.0 }
+    }
 }
 
 // ----------------------------------------------------------------- a line of text being typed
@@ -740,19 +742,6 @@ pub enum Tint {
     Global,
 }
 
-impl Tint {
-    fn rgb(self) -> u32 {
-        match self {
-            Tint::Plain => INK,
-            Tint::Keyword => KEYWORD,
-            Tint::Str => STRING,
-            Tint::Number => NUMBER,
-            Tint::Comment => COMMENT,
-            Tint::Global => GLOBAL,
-        }
-    }
-}
-
 /// What a line starts inside of: a long comment or string of some level.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Long {
@@ -985,569 +974,19 @@ pub fn complete(text: &str, cursor: usize) -> Option<String> {
     (common.len() > word.len()).then(|| common[word.len()..].to_owned())
 }
 
-// ----------------------------------------------------------------- drawing helpers
-
-fn text(game: &mut dyn GameApi, s: &str, x: f32, y: f32, rgb: u32) {
-    game.text(s, [x.floor(), y.floor()], rgb, false);
-}
-
-/// The longest start of `s` that fits in `max_w`.
-fn fit(game: &dyn GameApi, s: &str, max_w: f32) -> String {
-    if game.text_width(s) <= max_w {
-        return s.to_owned();
-    }
-    let mut out = String::new();
-    for c in s.chars() {
-        out.push(c);
-        if game.text_width(&out) > max_w - game.text_width("...") {
-            out.pop();
-            out.push_str("...");
-            return out;
-        }
-    }
-    out
-}
-
-/// `s` broken into lines no wider than `max_w`, at spaces where it can.
-pub fn wrap(game: &dyn GameApi, s: &str, max_w: f32) -> Vec<String> {
-    let mut lines = Vec::new();
-    for para in s.split('\n') {
-        let mut line = String::new();
-        for word in para.split_inclusive(' ') {
-            let candidate = format!("{line}{word}");
-            if game.text_width(candidate.trim_end()) <= max_w {
-                line = candidate;
-                continue;
-            }
-            if !line.is_empty() {
-                lines.push(line.trim_end().to_owned());
-            }
-            // A word longer than the line: cut it.
-            let mut piece = String::new();
-            for c in word.chars() {
-                piece.push(c);
-                if game.text_width(&piece) > max_w {
-                    piece.pop();
-                    lines.push(std::mem::take(&mut piece));
-                    piece.push(c);
-                }
-            }
-            line = piece;
-        }
-        lines.push(line.trim_end().to_owned());
-    }
-    lines
-}
-
 fn inside(r: [f32; 4], (x, y): (f32, f32)) -> bool {
     x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3]
 }
 
-impl Ui {
-    /// A clickable label; returns its width.
-    fn button(&mut self, game: &mut dyn GameApi, label: &str, x: f32, y: f32, rgb: u32, action: Action) -> f32 {
-        let w = game.text_width(label) + 8.0;
-        let r = [x, y - 2.0, w, 12.0];
-        if inside(r, self.mouse) {
-            game.fill(r, PLATE);
-        }
-        text(game, label, x + 4.0, y, rgb);
-        self.hits.push((r, action));
-        w
-    }
-}
-
-// ----------------------------------------------------------------- the screen
-
-pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
-    let (w, h) = game.gui_size();
-    st.s.ui.hits.clear();
-    st.s.ui.view = None;
-    game.fill([0.0, 0.0, w, h], VEIL);
-    text(game, "Horizon Studio", 10.0, 7.0, INK);
-    let mut x = 16.0 + game.text_width("Horizon Studio");
-    let current = st.s.ui.tab;
-    for (tab, label) in TABS {
-        let rgb = if tab == current { INK } else { MUTED };
-        let bw = st.s.ui.button(game, label, x, 7.0, rgb, Action::Tab(tab));
-        if tab == current {
-            game.fill([x + 4.0, 17.0, bw - 8.0, 1.0], 0xFF00_0000 | INK);
-        }
-        x += bw + 2.0;
-    }
-    let close = "Esc  close";
-    let cw = game.text_width(close) + 8.0;
-    st.s.ui.button(game, close, w - cw - 8.0, 7.0, MUTED, Action::Close);
-    game.fill([8.0, 20.0, w - 16.0, 1.0], RULE);
-    let body = [10.0, 26.0, w - 20.0, h - 40.0];
-    let hint = match current {
-        Tab::Console => "Enter run   Up/Down history   Tab complete   Ctrl+L clear   Ctrl+1-4 tabs",
-        Tab::Editor => {
-            "Ctrl+S save (reloads the mod)   Ctrl+Enter run   Ctrl+Z/Y undo   Ctrl+/ comment   Ctrl+D duplicate"
-        }
-        Tab::Library => {
-            "Up/Down choose   Enter edit   Space on/off   R reload   N new mod   Drop a .lua on the window to install"
-        }
-        Tab::Docs => "Up/Down, Page Up/Down or the wheel to scroll",
-    };
-    let hint = fit(game, hint, w - 20.0);
-    text(game, &hint, 10.0, h - 11.0, MUTED);
-    match current {
-        Tab::Console => draw_console(st, game, body),
-        Tab::Editor => draw_editor(st, game, body),
-        Tab::Library => draw_library(st, game, body),
-        Tab::Docs => draw_docs(st, game, body),
-    }
-    if let Some(name) = st.s.ui.naming.clone() {
-        let bw = 220f32.min(w - 20.0);
-        let r = [((w - bw) / 2.0).floor(), (h / 2.0 - 24.0).floor(), bw, 48.0];
-        game.fill(r, 0xFF16_181F);
-        text(game, "New mod: what is it called?", r[0] + 6.0, r[1] + 6.0, INK);
-        game.fill([r[0] + 6.0, r[1] + 18.0, bw - 12.0, 12.0], PLATE_SOFT);
-        draw_line_edit(st.s.now, game, &name, r[0] + 9.0, r[1] + 20.0, bw - 18.0, INK);
-        text(game, "Enter to create, Esc to cancel", r[0] + 6.0, r[1] + 35.0, MUTED);
-    }
-}
-
-fn draw_line_edit(now: f64, game: &mut dyn GameApi, e: &LineEdit, x: f32, y: f32, max_w: f32, rgb: u32) {
-    // Scroll so the cursor shows.
-    let mut start = 0;
-    while game.text_width(&e.text[start..e.cursor]) > max_w - 4.0 {
-        start = next_char(&e.text, start);
-    }
-    let shown = fit(game, &e.text[start..], max_w);
-    text(game, &shown, x, y, rgb);
-    if (now * 2.0) as i64 % 2 == 0 {
-        let cx = x + game.text_width(&e.text[start..e.cursor]);
-        game.fill([cx.floor(), y - 1.0, 1.0, 10.0], 0xFF00_0000 | INK);
-    }
-}
-
-fn log_rgb(kind: LogKind) -> u32 {
-    match kind {
-        LogKind::Input => ACCENT,
-        LogKind::Output => INK,
-        LogKind::Error => DANGER,
-        LogKind::Trace => MUTED,
-        LogKind::Info => INK_SOFT,
-    }
-}
-
-fn draw_console(st: &mut Studio, game: &mut dyn GameApi, [x, y, w, h]: [f32; 4]) {
-    game.fill([x, y, w, h], PLATE_SOFT);
-    let rows = ((h - 22.0) / LINE_H).max(1.0) as usize;
-    st.s.ui.page = rows;
-    // Wrapped lines from the newest up, enough to fill the view.
-    let need = rows + st.s.ui.log_scroll;
-    let mut shown: Vec<(String, u32)> = Vec::new();
-    for line in st.s.log.iter().rev() {
-        let pieces = wrap(game, &line.text, w - 10.0);
-        for p in pieces.into_iter().rev() {
-            shown.push((p, log_rgb(line.kind)));
-        }
-        if shown.len() > need {
-            break;
-        }
-    }
-    let max_scroll = shown.len().saturating_sub(rows);
-    st.s.ui.log_scroll =
-        st.s.ui
-            .log_scroll
-            .min(max_scroll.max(st.s.ui.log_scroll.min(max_scroll)));
-    let skip = st.s.ui.log_scroll;
-    for (i, (line, rgb)) in shown.iter().skip(skip).take(rows).enumerate() {
-        let ly = y + h - 22.0 - LINE_H * (i as f32 + 1.0) + 2.0;
-        text(game, line, x + 5.0, ly, *rgb);
-    }
-    if skip > 0 {
-        let more = format!("{skip} lines below");
-        let mw = game.text_width(&more);
-        text(game, &more, x + w - mw - 5.0, y + h - 32.0, MUTED);
-    }
-    game.fill([x, y + h - 16.0, w, 1.0], RULE);
-    text(game, ">", x + 5.0, y + h - 11.0, ACCENT);
-    let input = st.s.ui.input.clone();
-    draw_line_edit(st.s.now, game, &input, x + 14.0, y + h - 11.0, w - 20.0, INK);
-    if input.cursor == input.text.len()
-        && let Some(rest) = complete(&input.text, input.cursor)
-    {
-        let cx = x + 14.0 + game.text_width(&input.text);
-        if cx + game.text_width(&rest) < x + w - 6.0 {
-            text(game, &rest, cx + 1.0, y + h - 11.0, MUTED);
-        }
-    }
-}
-
-fn draw_editor(st: &mut Studio, game: &mut dyn GameApi, [x, y, w, h]: [f32; 4]) {
-    let title = format!("{}{}", st.s.editor.title, if st.s.editor.dirty { " *" } else { "" });
-    text(game, &title, x, y, INK);
-    let mut bx = x + w;
-    for (label, action, rgb) in [("Run", Action::Run, ACCENT), ("Save", Action::Save, INK_SOFT)] {
-        bx -= game.text_width(label) + 10.0;
-        st.s.ui.button(game, label, bx, y, rgb, action);
-    }
-    if let Some(p) = &st.s.editor.problem {
-        let msg = fit(
-            game,
-            &format!("Could not read the file: {p}"),
-            bx - x - game.text_width(&title) - 20.0,
-        );
-        let mx = x + game.text_width(&title) + 12.0;
-        text(game, &msg, mx, y, DANGER);
-    }
-    let top = y + 13.0;
-    let area_h = h - 13.0;
-    game.fill([x, top, w, area_h], PLATE_SOFT);
-    let ed = &mut st.s.editor;
-    let rows = ((area_h - 4.0) / LINE_H).max(1.0) as usize;
-    st.s.ui.page = rows;
-    if ed.row < ed.scroll {
-        ed.scroll = ed.row;
-    }
-    if ed.row >= ed.scroll + rows {
-        ed.scroll = ed.row + 1 - rows;
-    }
-    ed.scroll = ed.scroll.min(ed.lines.len().saturating_sub(1));
-    let gutter = game.text_width(&format!("{}", ed.lines.len().max(99))) + 8.0;
-    let text_x = x + gutter + 4.0;
-    let text_w = w - gutter - 8.0;
-    // Keep the cursor's column in view.
-    let cur_chars = ed.char_col();
-    if cur_chars < ed.hscroll {
-        ed.hscroll = cur_chars.saturating_sub(4);
-    }
-    loop {
-        let line = &ed.lines[ed.row];
-        let from = line.char_indices().nth(ed.hscroll).map_or(line.len(), |(i, _)| i);
-        if from > ed.col || game.text_width(&line[from..ed.col]) <= text_w - 6.0 {
-            break;
-        }
-        ed.hscroll += 4;
-    }
-    // Long comments and strings carried from line to line.
-    let mut state = Long::None;
-    let mut states = Vec::with_capacity(ed.lines.len());
-    for line in &ed.lines {
-        states.push(state);
-        state = highlight(line, state).1;
-    }
-    let sel = ed.selection();
-    for i in 0..rows {
-        let r = ed.scroll + i;
-        if r >= ed.lines.len() {
-            break;
-        }
-        let ly = top + 3.0 + LINE_H * i as f32;
-        let line = &ed.lines[r];
-        let from = line.char_indices().nth(ed.hscroll).map_or(line.len(), |(i, _)| i);
-        if ed.error_line == Some(r + 1) {
-            game.fill([x, ly - 1.0, w, LINE_H], ERROR_ROW);
-        }
-        if let Some(((r1, c1), (r2, c2))) = sel
-            && r >= r1
-            && r <= r2
-        {
-            let a = if r == r1 { c1 } else { 0 };
-            let b = if r == r2 { c2 } else { line.len() };
-            let a = a.max(from);
-            let b2 = b.max(a);
-            let sx = text_x + game.text_width(&line[from..a]);
-            let mut sw = game.text_width(&line[a..b2]);
-            if r != r2 {
-                sw += 3.0;
-            }
-            let sw = sw.min(text_x + text_w - sx).max(0.0);
-            game.fill([sx, ly - 1.0, sw, LINE_H], SELECTION);
-        }
-        let num = format!("{}", r + 1);
-        let nw = game.text_width(&num);
-        let nrgb = if r == ed.row { INK_SOFT } else { MUTED };
-        text(game, &num, x + gutter - nw, ly, nrgb);
-        let (pieces, _) = highlight(line, states[r]);
-        let mut px = text_x;
-        for (a, b, tint) in pieces {
-            if b <= from {
-                continue;
-            }
-            let piece = &line[a.max(from)..b];
-            let room = text_x + text_w - px;
-            if room <= 0.0 {
-                break;
-            }
-            let shown = if game.text_width(piece) > room {
-                fit(game, piece, room)
-            } else {
-                piece.to_owned()
-            };
-            text(game, &shown, px, ly, tint.rgb());
-            px += game.text_width(piece);
-        }
-        if r == ed.row && (st.s.now * 2.0) as i64 % 2 == 0 && ed.col >= from {
-            let cx = text_x + game.text_width(&line[from..ed.col]);
-            if cx <= text_x + text_w {
-                game.fill([cx.floor(), ly - 1.0, 1.0, LINE_H], 0xFF00_0000 | INK);
-            }
-        }
-    }
-    if ed.lines.len() > rows {
-        // A thin scroll bar.
-        let frac = rows as f32 / ed.lines.len() as f32;
-        let bar_h = (area_h * frac).max(6.0);
-        let bar_y = top + (area_h - bar_h) * (ed.scroll as f32 / (ed.lines.len() - rows).max(1) as f32);
-        game.fill([x + w - 2.0, bar_y, 2.0, bar_h], PLATE);
-    }
-    st.s.ui.view = Some(EditorView {
-        x: text_x,
-        y: top + 2.0,
-        w: text_w,
-        rows,
-    });
-}
-
-fn state_label(state: &ModState, enabled: bool) -> (&'static str, u32) {
-    match state {
-        ModState::Running => ("running", SUCCESS),
-        ModState::Failed(..) => ("failed", DANGER),
-        ModState::Off if !enabled => ("off", MUTED),
-        ModState::Off => ("not loaded", MUTED),
-    }
-}
-
-fn draw_library(st: &mut Studio, game: &mut dyn GameApi, [x, y, w, h]: [f32; 4]) {
-    let list_w = (w * 0.42).clamp(120.0, 200.0);
-    let n = st.s.mods.len();
-    if n > 0 {
-        st.s.ui.library_sel = st.s.ui.library_sel.min(n - 1);
-    }
-    text(game, "Your script mods", x, y, MUTED);
-    let mut ly = y + 13.0;
-    if n == 0 {
-        text(game, "None yet: make one, install an example,", x, ly, INK_SOFT);
-        ly += 11.0;
-        text(game, "or drop a .lua file on the game window.", x, ly, INK_SOFT);
-        ly += 12.0;
-    }
-    let max_rows = (((h - 90.0) / 13.0).max(3.0)) as usize;
-    let first = st.s.ui.library_sel.saturating_sub(max_rows.saturating_sub(1));
-    for i in first..n.min(first + max_rows) {
-        let m = &st.s.mods[i];
-        let r = [x, ly - 2.0, list_w, 13.0];
-        if i == st.s.ui.library_sel {
-            game.fill(r, PLATE);
-        } else if inside(r, st.s.ui.mouse) {
-            game.fill(r, PLATE_SOFT);
-        }
-        let (_, dot) = state_label(&m.state, m.enabled);
-        text(game, &format!("{:02}", i + 1), x + 3.0, ly, MUTED);
-        game.fill([x + 18.0, ly + 2.0, 4.0, 4.0], 0xFF00_0000 | dot);
-        let name = fit(game, &m.name, list_w - 60.0);
-        text(game, &name, x + 26.0, ly, if m.enabled { INK } else { MUTED });
-        let v = fit(game, &m.version, 30.0);
-        let vw = game.text_width(&v);
-        text(game, &v, x + list_w - vw - 3.0, ly, MUTED);
-        game.fill([x, ly + 10.0, list_w, 1.0], RULE);
-        st.s.ui.hits.push((r, Action::Select(i)));
-        ly += 13.0;
-    }
-    ly += 4.0;
-    let bw = st.s.ui.button(game, "New mod", x - 4.0, ly, ACCENT, Action::NewMod);
-    let bw2 =
-        st.s.ui
-            .button(game, "Reload all", x - 4.0 + bw, ly, INK_SOFT, Action::ReloadAll);
-    st.s.ui.button(
-        game,
-        "Open folder",
-        x - 4.0 + bw + bw2,
-        ly,
-        INK_SOFT,
-        Action::OpenFolder,
-    );
-    ly += 18.0;
-    text(game, "Examples", x, ly, MUTED);
-    ly += 13.0;
-    let mut hovered: Option<&str> = None;
-    for (i, ex) in EXAMPLES.iter().enumerate() {
-        if ly > y + h - 10.0 {
-            break;
-        }
-        let installed = st.s.mods.iter().any(|m| m.id == ex.id);
-        if inside([x, ly - 2.0, list_w, 12.0], st.s.ui.mouse) {
-            hovered = Some(ex.description);
-        }
-        let title = fit(game, ex.title, list_w - 60.0);
-        text(game, &title, x, ly, INK_SOFT);
-        if installed {
-            let t = "installed";
-            let tx = x + list_w - game.text_width(t) - 3.0;
-            text(game, t, tx, ly, MUTED);
-        } else {
-            let t = "Install";
-            let tx = x + list_w - game.text_width(t) - 11.0;
-            st.s.ui.button(game, t, tx, ly, INK, Action::Install(i));
-        }
-        ly += 12.0;
-    }
-    // The chosen mod, or the example under the pointer.
-    let dx = x + list_w + 14.0;
-    let dw = w - list_w - 14.0;
-    if let Some(desc) = hovered {
-        for (i, l) in wrap(game, desc, dw).iter().enumerate() {
-            text(game, l, dx, y + 11.0 * i as f32, INK_SOFT);
-        }
-        return;
-    }
-    let Some(m) = st.s.mods.get(st.s.ui.library_sel) else {
-        let lines = wrap(
-            game,
-            "Drop a .lua file, a mod folder or a .zip of one on the game window to install it: it runs at once. Script mods live in horizon-mods/.horizon-mod-data/horizon_studio/mods/ (Open folder): a name.lua file, or a folder with main.lua. Save a file, from here or any editor, and the mod reloads at once.",
-            dw,
-        );
-        for (i, l) in lines.iter().enumerate() {
-            text(game, l, dx, y + 13.0 + 11.0 * i as f32, INK_SOFT);
-        }
-        return;
-    };
-    let i = st.s.ui.library_sel;
-    let mut dy = y;
-    let name = fit(game, &m.name, dw);
-    text(game, &name, dx, dy, INK);
-    dy += 12.0;
-    let file = if m.folder.is_some() {
-        format!("{}/main.lua", m.id)
-    } else {
-        format!("{}.lua", m.id)
-    };
-    let meta = [m.version.as_str(), m.author.as_str(), file.as_str()]
-        .iter()
-        .filter(|s| !s.is_empty())
-        .copied()
-        .collect::<Vec<_>>()
-        .join("  ·  ");
-    let meta = fit(game, &meta, dw);
-    text(game, &meta, dx, dy, MUTED);
-    dy += 14.0;
-    for l in wrap(game, &m.description, dw).iter().take(4) {
-        text(game, l, dx, dy, INK_SOFT);
-        dy += 11.0;
-    }
-    let (label, rgb) = state_label(&m.state, m.enabled);
-    let mut status = label.to_owned();
-    if m.running() {
-        status.push_str(&format!(
-            "  ·  {:.2} ms a call  ·  {} handlers  ·  reloaded {}x",
-            m.cost_ms,
-            m.handlers.tick.len()
-                + m.handlers.frame.len()
-                + m.handlers.hud.len()
-                + m.handlers.key.len()
-                + m.handlers.chat.len(),
-            m.reloads
-        ));
-    }
-    let status = fit(game, &status, dw);
-    text(game, &status, dx, dy, rgb);
-    dy += 13.0;
-    let mut bx = dx - 4.0;
-    bx += st.s.ui.button(game, "Edit", bx, dy, ACCENT, Action::Edit(i));
-    bx += st.s.ui.button(
-        game,
-        if m.enabled { "Turn off" } else { "Turn on" },
-        bx,
-        dy,
-        INK_SOFT,
-        Action::Toggle(i),
-    );
-    st.s.ui.button(game, "Reload", bx, dy, INK_SOFT, Action::Reload(i));
-    dy += 17.0;
-    if !m.commands.is_empty() {
-        text(game, "Commands", dx, dy, MUTED);
-        dy += 11.0;
-        for c in m.commands.iter().take(6) {
-            let line = if c.help.is_empty() {
-                format!("/{}", c.name)
-            } else {
-                format!("/{}  {}", c.name, c.help)
-            };
-            let line = fit(game, &line, dw);
-            text(game, &line, dx, dy, INK_SOFT);
-            dy += 11.0;
-        }
-        dy += 3.0;
-    }
-    if let ModState::Failed(msg, trace) = &m.state {
-        for l in wrap(game, msg, dw) {
-            if dy > y + h - 10.0 {
-                break;
-            }
-            text(game, &l, dx, dy, DANGER);
-            dy += 11.0;
-        }
-        for l in wrap(game, trace, dw) {
-            if dy > y + h - 10.0 {
-                break;
-            }
-            text(game, &l, dx, dy, MUTED);
-            dy += 10.0;
-        }
-    }
-}
-
-/// The Docs tab's text.
-fn docs_text() -> Vec<(String, u32)> {
-    let mut out: Vec<(String, u32)> = vec![
-        ("Script mods".into(), INK),
-        ("A script mod is a Lua file in horizon-mods/.horizon-mod-data/horizon_studio/mods/: name.lua, or a folder with main.lua and other files to require. The file runs when the mod loads; what it registers with on(), command() and every() then runs in the game. Save it, in the Editor or any other editor, and it reloads at once. A mod that fails stops alone: the Library shows the error and its line.".into(), INK_SOFT),
-        ("Put -- name:, -- version:, -- author: and -- description: lines at the top to name it in the Library.".into(), INK_SOFT),
-        (String::new(), INK),
-        ("Console".into(), INK),
-        ("Type Lua and press Enter: it runs at once in the game, and an expression's value is shown. /lua <code> does the same from chat. Things the console registers (on, command...) last until clear().".into(), INK_SOFT),
-        (String::new(), INK),
-        ("The language".into(), INK),
-        ("Lua 5.3 without coroutines, goto and bitwise operators. Numbers are 64-bit floats. string (with Lua patterns, format, split, trim), math, table and os.clock/time/date are there; io and the rest of os are not. Each call into a script has a step budget, so an endless loop stops the script, not the game.".into(), INK_SOFT),
-        (String::new(), INK),
-        ("API".into(), INK),
-    ];
-    for (_, _, _, doc) in API {
-        out.push(((*doc).to_owned(), INK_SOFT));
-    }
-    out.push((String::new(), INK));
-    out.push(("Console only".into(), INK));
-    for (_, _, doc) in CONSOLE_API {
-        out.push(((*doc).to_owned(), INK_SOFT));
-    }
-    out.push((String::new(), INK));
-    out.push(("Commands in chat".into(), INK));
-    out.push((
-        "/studio opens this screen, /studio reload reloads every script mod, /lua <code> runs code.".into(),
-        INK_SOFT,
-    ));
-    out
-}
-
-fn draw_docs(st: &mut Studio, game: &mut dyn GameApi, [x, y, w, h]: [f32; 4]) {
-    let mut lines: Vec<(String, u32)> = Vec::new();
-    for (para, rgb) in docs_text() {
-        if para.is_empty() {
-            lines.push((String::new(), rgb));
-            continue;
-        }
-        for l in wrap(game, &para, w - 6.0) {
-            lines.push((l, rgb));
-        }
-    }
-    let rows = (h / 11.0).max(1.0) as usize;
-    st.s.ui.page = rows;
-    st.s.ui.docs_scroll = st.s.ui.docs_scroll.min(lines.len().saturating_sub(rows));
-    for (i, (l, rgb)) in lines.iter().skip(st.s.ui.docs_scroll).take(rows).enumerate() {
-        text(game, l, x, y + 11.0 * i as f32, *rgb);
-    }
-}
+pub use super::hstudio_look::{CODE_LINE, draw, draw_screen};
 
 // ----------------------------------------------------------------- input
 
 pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult {
     match input {
         Input::Mouse(x, y) => {
+            let k = st.s.ui.dp_factor();
+            let (x, y) = (x * k, y * k);
             st.s.ui.mouse = (x, y);
             if st.s.ui.dragging {
                 editor_point(st, game, x, y, true);
@@ -1659,15 +1098,15 @@ pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult
 
 /// A click or drag in the editor's text: moves the cursor there (a drag
 /// keeps the selection's other end).
-fn editor_point(st: &mut Studio, game: &dyn GameApi, x: f32, y: f32, drag: bool) -> bool {
+fn editor_point(st: &mut Studio, game: &mut dyn GameApi, x: f32, y: f32, drag: bool) -> bool {
     let Some(v) = st.s.ui.view else {
         return false;
     };
-    if !drag && (x < v.x - 30.0 || y < v.y || y > v.y + LINE_H * v.rows as f32 || x > v.x + v.w + 4.0) {
+    if !drag && (x < v.x - 30.0 || y < v.y || y > v.y + CODE_LINE * v.rows as f32 || x > v.x + v.w + 4.0) {
         return false;
     }
     let ed = &mut st.s.editor;
-    let row_in_view = ((y - v.y) / LINE_H).floor().max(0.0) as usize;
+    let row_in_view = ((y - v.y) / CODE_LINE).floor().max(0.0) as usize;
     let row = (ed.scroll + row_in_view.min(v.rows)).min(ed.lines.len() - 1);
     let col = ed.hscroll + column_at(game, &ed.lines[row], ed.hscroll, x - v.x);
     let anchor = if drag { ed.anchor } else { None };
@@ -1677,11 +1116,15 @@ fn editor_point(st: &mut Studio, game: &dyn GameApi, x: f32, y: f32, drag: bool)
 }
 
 /// The char column nearest `dx` GUI pixels into `line`, past `skip` chars.
-fn column_at(game: &dyn GameApi, line: &str, skip: usize, dx: f32) -> usize {
+fn column_at(game: &mut dyn GameApi, line: &str, skip: usize, dx: f32) -> usize {
     let from = line.char_indices().nth(skip).map_or(line.len(), |(i, _)| i);
     let mut prev = 0.0;
     for (n, (i, c)) in line[from..].char_indices().enumerate() {
-        let w = game.text_width(&line[from..from + i + c.len_utf8()]);
+        let w = game.dp_measure(
+            &line[from..from + i + c.len_utf8()],
+            super::hstudio_look::CODE_SIZE,
+            Font::Mono,
+        );
         if dx < (prev + w) / 2.0 {
             return n;
         }
@@ -1713,7 +1156,10 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
             st.s.mods[i].enabled = true;
             st.set_enabled(game, i, true);
         }
-        Action::NewMod => st.s.ui.naming = Some(LineEdit::default()),
+        Action::NewMod => {
+            st.s.ui.naming = Some(LineEdit::default());
+            st.s.ui.naming_at = st.s.now;
+        }
         Action::ReloadAll => st.reload_all(game),
         Action::Install(i) => {
             if let Err(e) = st.install_example(game, i) {
@@ -1934,8 +1380,8 @@ pub struct ScriptScreen {
     pub table: TableRef,
     pub focus: Option<usize>,
     pub edit: LineEdit,
-    drag: Option<usize>,
-    rows: Vec<([f32; 4], usize)>,
+    pub(crate) drag: Option<usize>,
+    pub(crate) rows: Vec<([f32; 4], usize)>,
 }
 
 impl ScriptScreen {
@@ -1951,25 +1397,22 @@ impl ScriptScreen {
     }
 }
 
-const SURFACE: u32 = 0xF016_181F;
-const PLATE_HOVER: u32 = 0xFF2C_2F3B;
-
-fn field(t: &TableRef, k: &str) -> Value {
+pub(crate) fn field(t: &TableRef, k: &str) -> Value {
     t.borrow().get_str(k)
 }
 
-fn field_text(t: &TableRef, k: &str) -> Option<String> {
+pub(crate) fn field_text(t: &TableRef, k: &str) -> Option<String> {
     match field(t, k) {
         Value::Nil => None,
         v => Some(v.plain_text()),
     }
 }
 
-fn field_num(t: &TableRef, k: &str, default: f64) -> f64 {
+pub(crate) fn field_num(t: &TableRef, k: &str, default: f64) -> f64 {
     field(t, k).to_num().unwrap_or(default)
 }
 
-fn widgets(t: &TableRef) -> Vec<TableRef> {
+pub(crate) fn widgets(t: &TableRef) -> Vec<TableRef> {
     match field(t, "widgets") {
         Value::Table(list) => {
             let items = list.borrow().list();
@@ -1986,155 +1429,16 @@ fn widgets(t: &TableRef) -> Vec<TableRef> {
     }
 }
 
-fn kind(w: &TableRef) -> String {
+pub(crate) fn kind(w: &TableRef) -> String {
     field_text(w, "type").unwrap_or_else(|| "label".into())
 }
 
 /// A slider's value as it shows.
-fn slider_text(v: f64, step: f64) -> String {
+pub(crate) fn slider_text(v: f64, step: f64) -> String {
     if step >= 1.0 && v.fract() == 0.0 {
         format!("{}", v as i64)
     } else {
         format!("{v:.2}")
-    }
-}
-
-fn row_height(game: &dyn GameApi, w: &TableRef, inner: f32) -> f32 {
-    match kind(w).as_str() {
-        "button" => 20.0,
-        "toggle" => 18.0,
-        "slider" => 26.0,
-        "input" => 28.0,
-        "space" => field_num(w, "height", 8.0).clamp(0.0, 200.0) as f32,
-        _ => 10.0 * wrap(game, &field_text(w, "text").unwrap_or_default(), inner).len() as f32 + 2.0,
-    }
-}
-
-/// Draws the script screen: a panel of its widgets (when it has a title or
-/// widgets), then its own `draw(w, h)`.
-pub fn draw_screen(st: &mut Studio, game: &mut dyn GameApi) {
-    let Some(sc) = &st.s.screen else {
-        return;
-    };
-    let table = sc.table.clone();
-    let (focus, edit) = (sc.focus, sc.edit.clone());
-    let (w, h) = game.gui_size();
-    let ws = widgets(&table);
-    let title = field_text(&table, "title");
-    game.fill([0.0, 0.0, w, h], 0x9900_0000);
-    let mut rows = Vec::new();
-    if title.is_some() || !ws.is_empty() {
-        let pw = (field_num(&table, "width", 220.0) as f32).clamp(120.0, (w - 20.0).max(120.0));
-        let inner = pw - 16.0;
-        let heights: Vec<f32> = ws.iter().map(|wt| row_height(game, wt, inner)).collect();
-        let ph = 10.0 + if title.is_some() { 18.0 } else { 0.0 } + heights.iter().sum::<f32>();
-        let (px, py) = (((w - pw) / 2.0).floor(), ((h - ph) / 2.0).floor().max(4.0));
-        game.fill([px, py, pw, ph], SURFACE);
-        let mut y = py + 6.0;
-        if let Some(t) = &title {
-            let t = fit(game, t, inner);
-            let tw = game.text_width(&t);
-            text(game, &t, (px + (pw - tw) / 2.0).floor(), y, INK);
-            game.fill([px + 8.0, y + 12.0, inner, 1.0], RULE);
-            y += 18.0;
-        }
-        let mouse = st.s.ui.mouse;
-        for (i, wt) in ws.iter().enumerate() {
-            let r = [px + 8.0, y, inner, heights[i] - 2.0];
-            let hover = inside(r, mouse);
-            let label = field_text(wt, "text").unwrap_or_default();
-            match kind(wt).as_str() {
-                "button" => {
-                    game.fill(r, if hover { PLATE_HOVER } else { PLATE });
-                    let l = fit(game, &label, r[2] - 8.0);
-                    let lw = game.text_width(&l);
-                    text(game, &l, (r[0] + (r[2] - lw) / 2.0).floor(), r[1] + 5.0, INK);
-                }
-                "toggle" => {
-                    if hover {
-                        game.fill(r, PLATE_SOFT);
-                    }
-                    let on = field(wt, "value").truthy();
-                    let state = if on { "On" } else { "Off" };
-                    let sw = game.text_width(state);
-                    let l = fit(game, &label, r[2] - sw - 12.0);
-                    text(game, &l, r[0] + 3.0, r[1] + 4.0, INK);
-                    text(
-                        game,
-                        state,
-                        r[0] + r[2] - sw - 3.0,
-                        r[1] + 4.0,
-                        if on { SUCCESS } else { MUTED },
-                    );
-                }
-                "slider" => {
-                    let (min, max) = (field_num(wt, "min", 0.0), field_num(wt, "max", 1.0));
-                    let step = field_num(wt, "step", 0.0);
-                    let v = field_num(wt, "value", min).clamp(min.min(max), max.max(min));
-                    let vs = slider_text(v, step);
-                    let vw = game.text_width(&vs);
-                    let l = fit(game, &label, r[2] - vw - 8.0);
-                    text(game, &l, r[0], r[1] + 1.0, INK);
-                    text(game, &vs, r[0] + r[2] - vw, r[1] + 1.0, INK_SOFT);
-                    let ty = r[1] + 15.0;
-                    let frac = if max > min {
-                        ((v - min) / (max - min)) as f32
-                    } else {
-                        0.0
-                    };
-                    game.fill([r[0], ty, r[2], 2.0], RULE);
-                    game.fill([r[0], ty, r[2] * frac, 2.0], 0xFF00_0000 | ACCENT);
-                    let kx = (r[0] + r[2] * frac - 2.0).floor();
-                    game.fill(
-                        [kx, ty - 3.0, 4.0, 8.0],
-                        0xFF00_0000 | if hover { INK } else { INK_SOFT },
-                    );
-                }
-                "input" => {
-                    let l = fit(game, &label, r[2]);
-                    text(game, &l, r[0], r[1], MUTED);
-                    let f = [r[0], r[1] + 10.0, r[2], 14.0];
-                    game.fill(f, PLATE_SOFT);
-                    if focus == Some(i) {
-                        game.fill([f[0], f[1] + 13.0, f[2], 1.0], 0xFF00_0000 | ACCENT);
-                        draw_line_edit(st.s.now, game, &edit, f[0] + 3.0, f[1] + 3.0, f[2] - 6.0, INK);
-                    } else {
-                        let value = field_text(wt, "value").unwrap_or_default();
-                        let (shown, rgb) = if value.is_empty() {
-                            (field_text(wt, "placeholder").unwrap_or_default(), MUTED)
-                        } else {
-                            (value, INK)
-                        };
-                        let shown = fit(game, &shown, f[2] - 6.0);
-                        text(game, &shown, f[0] + 3.0, f[1] + 3.0, rgb);
-                    }
-                }
-                "space" => {}
-                _ => {
-                    let rgb = match field(wt, "color") {
-                        Value::Nil => INK_SOFT,
-                        _ => {
-                            let lua = super::hstudio_lua::Lua::new();
-                            super::hstudio::color_arg(&lua, &[field(wt, "color")], 0, 0xFF00_0000 | INK_SOFT)
-                                .unwrap_or(INK_SOFT)
-                                & 0xFF_FFFF
-                        }
-                    };
-                    for (j, l) in wrap(game, &label, r[2]).iter().enumerate() {
-                        text(game, l, r[0], r[1] + 1.0 + 10.0 * j as f32, rgb);
-                    }
-                }
-            }
-            rows.push((r, i));
-            y += heights[i];
-        }
-    }
-    if let Some(sc) = &mut st.s.screen {
-        sc.rows = rows;
-    }
-    let f = field(&table, "draw");
-    if f.is_callable() {
-        st.screen_call(game, &f, vec![Value::Num(f64::from(w)), Value::Num(f64::from(h))], true);
     }
 }
 
@@ -2196,6 +1500,8 @@ pub fn handle_screen(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> U
     let ws = widgets(&table);
     match input {
         Input::Mouse(x, y) => {
+            let k = st.s.ui.dp_factor();
+            let (x, y) = (x * k, y * k);
             st.s.ui.mouse = (x, y);
             if let Some(i) = st.s.screen.as_ref().and_then(|sc| sc.drag) {
                 slide(st, game, i, x);
@@ -2246,12 +1552,14 @@ pub fn handle_screen(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> U
                     }
                     let f = field(&table, "click");
                     let button = if left { "left" } else { "right" };
+                    // Scripts draw and click in GUI pixels, as hud.* does.
+                    let k = st.s.ui.dp_factor();
                     st.screen_call(
                         game,
                         &f,
                         vec![
-                            Value::Num(f64::from(at.0)),
-                            Value::Num(f64::from(at.1)),
+                            Value::Num(f64::from(at.0 / k)),
+                            Value::Num(f64::from(at.1 / k)),
                             Value::str(button),
                         ],
                         false,
