@@ -5,7 +5,7 @@ Install), and the launcher builds it into their game by itself. After that, scri
 
 ## What you need
 
-- This repository on GitHub, **public**: the registry's `source` link must show the code the file was built from.
+- This repository, [vermingov/horizon-studio](https://github.com/vermingov/horizon-studio), **public**: the registry's `source` link must show the code the file was built from.
 - `target/horizon_studio-0.1.0.hnmod`: `python3 tools/studio.py package` makes it (its SHA-256 is in
   `registry/horizon_studio.toml`; a rebuilt file of the same sources has the same contents).
 - `registry/horizon_studio.png`: the icon (64x64).

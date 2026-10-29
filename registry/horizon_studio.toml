@@ -17,10 +17,10 @@ chat and commands. A script that fails stops alone.
 A native mod: the launcher builds it into the game once (Settings → Game → Native mods (experimental), then Build);
 after that, script mods need no build at all. It is pinned to Horizon Nightly baa379d.
 """
-authors = ["felixzutter256"]
-owners = ["YOUR-GITHUB-LOGIN"]
+authors = ["vermingov"]
+owners = ["vermingov"]
 license = "MIT"
-source = "https://github.com/YOUR-GITHUB-LOGIN/horizon-studio"
+source = "https://github.com/vermingov/horizon-studio"
 icon = "icons/horizon_studio.png"
 
 [[versions]]
