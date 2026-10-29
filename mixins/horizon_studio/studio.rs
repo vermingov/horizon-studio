@@ -10,10 +10,10 @@
 use super::hstudio_examples::{EXAMPLES, WELCOME};
 use super::hstudio_lua::{
     Host, Lua, Native, NoHost, Res, Table, TableRef, Throw, Value, arg, bad_arg, check_func, check_num, check_str,
-    check_text, opt_num, opt_str,
+    check_table, check_text, opt_num, opt_str,
 };
 use super::hstudio_lualib::{inspect, new_env, quote, text_of};
-use super::hstudio_ui::{Editor, Ui};
+use super::hstudio_ui::{Editor, ScriptScreen, Ui};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -257,7 +257,111 @@ pub trait GameApi {
     fn place(&mut self, corner: Corner, w: f32, h: f32) -> (f32, f32);
     /// Shows a folder in the system's file manager.
     fn open_folder(&mut self, path: &Path);
+    /// The camera of the frame being drawn (while the world draws), else of the last one.
+    fn camera(&self) -> Option<Camera>;
+    /// A solid quad in world space (`0xAARRGGBB`), seen from both sides and
+    /// hidden behind blocks: only while the world draws.
+    fn world_quad(&mut self, corners: [[f64; 3]; 4], argb: u32);
+    /// A filled four-cornered shape on the GUI, while drawing.
+    fn quad(&mut self, corners: [[f32; 2]; 4], argb: u32);
+    /// Plays a sound event (`minecraft:block.note_block.bell`), at a place or not.
+    fn sound(&mut self, id: &str, at: Option<[f64; 3]>, volume: f32, pitch: f32) -> Result<(), String>;
+    /// Spawns a particle (`minecraft:flame`); `color` for those that take one (dust).
+    fn particle(&mut self, id: &str, at: [f64; 3], velocity: [f64; 3], color: Option<[f32; 4]>) -> Result<(), String>;
 }
+
+/// A frame's camera: where it is, where it looks, its vertical field of view.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Camera {
+    pub pos: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub fov: f32,
+}
+
+impl Camera {
+    /// Forward, up and right, as vanilla's camera turns (yaw 0 looks south, +Z).
+    pub fn basis(&self) -> [[f64; 3]; 3] {
+        let (sy, cy) = (
+            f64::from(self.yaw).to_radians().sin(),
+            f64::from(self.yaw).to_radians().cos(),
+        );
+        let (sp, cp) = (
+            f64::from(self.pitch).to_radians().sin(),
+            f64::from(self.pitch).to_radians().cos(),
+        );
+        let f = [-sy * cp, -sp, cy * cp];
+        let u = [-sy * sp, cp, cy * sp];
+        [f, u, cross(f, u)]
+    }
+    /// How far in front of the camera a point is.
+    pub fn depth(&self, p: [f64; 3]) -> f64 {
+        dot(self.basis()[0], sub(p, self.pos))
+    }
+    /// A world point on a `w` x `h` GUI: its x, y and depth; None behind the camera.
+    pub fn project(&self, p: [f64; 3], w: f32, h: f32) -> Option<(f32, f32, f64)> {
+        let [f, u, r] = self.basis();
+        let o = sub(p, self.pos);
+        let depth = dot(f, o);
+        if depth < NEAR {
+            return None;
+        }
+        let focal = 1.0 / (f64::from(self.fov) / 2.0).to_radians().tan();
+        let aspect = f64::from(w / h.max(1.0));
+        let sx = dot(r, o) * focal / depth / aspect;
+        let sy = dot(u, o) * focal / depth;
+        Some((
+            ((1.0 + sx) * f64::from(w) / 2.0) as f32,
+            ((1.0 - sy) * f64::from(h) / 2.0) as f32,
+            depth,
+        ))
+    }
+}
+
+const NEAR: f64 = 0.05;
+
+pub fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+pub fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+fn scale(a: [f64; 3], k: f64) -> [f64; 3] {
+    [a[0] * k, a[1] * k, a[2] * k]
+}
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// What `world` handlers drew through walls: drawn on the HUD.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Overlay {
+    Line {
+        a: [f64; 3],
+        b: [f64; 3],
+        argb: u32,
+        width: f32,
+    },
+    Text {
+        at: [f64; 3],
+        text: String,
+        argb: u32,
+        distance: bool,
+    },
+}
+
+/// The most 3D quads, through-wall shapes, particles and sounds per frame.
+pub const MAX_WORLD_QUADS: usize = 16384;
+pub const MAX_OVERLAY: usize = 4096;
+pub const MAX_PARTICLES: usize = 512;
+pub const MAX_SOUNDS: usize = 32;
 
 // ----------------------------------------------------------------- script mods
 
@@ -274,6 +378,7 @@ pub struct Handlers {
     pub tick: Vec<Value>,
     pub frame: Vec<Value>,
     pub hud: Vec<Value>,
+    pub world: Vec<Value>,
     pub key: Vec<Value>,
     pub chat: Vec<Value>,
     pub unload: Vec<Value>,
@@ -285,6 +390,7 @@ impl Handlers {
             "tick" => &mut self.tick,
             "frame" => &mut self.frame,
             "hud" => &mut self.hud,
+            "world" => &mut self.world,
             "key" => &mut self.key,
             "chat" => &mut self.chat,
             "unload" => &mut self.unload,
@@ -292,7 +398,13 @@ impl Handlers {
         })
     }
     fn count(&self) -> usize {
-        self.tick.len() + self.frame.len() + self.hud.len() + self.key.len() + self.chat.len() + self.unload.len()
+        self.tick.len()
+            + self.frame.len()
+            + self.hud.len()
+            + self.world.len()
+            + self.key.len()
+            + self.chat.len()
+            + self.unload.len()
     }
 }
 
@@ -454,6 +566,10 @@ enum Phase {
     Normal,
     /// Inside a `hud` handler: drawing works, the agent doesn't.
     Hud,
+    /// Inside a `world` handler: `draw.*` works, as the world is drawn.
+    World,
+    /// Drawing a script's screen: like `Hud`.
+    Screen,
 }
 
 /// Everything but the interpreter, so a running script's host calls can
@@ -481,6 +597,15 @@ pub struct State {
     queued_chat: Vec<String>,
     /// What console functions asked for, done after their call.
     requests: Vec<Request>,
+    /// The script screen showing, and one a script asked to open.
+    pub screen: Option<ScriptScreen>,
+    pub screen_request: Option<(Owner, TableRef)>,
+    /// What `world` handlers drew through walls, for the HUD.
+    pub overlay: Vec<Overlay>,
+    /// 3D quads, particles and sounds this frame (they are capped).
+    world_quads: usize,
+    particles: usize,
+    sounds: usize,
     started: bool,
 }
 
@@ -576,6 +701,12 @@ impl Studio {
                 queued_commands: Vec::new(),
                 queued_chat: Vec::new(),
                 requests: Vec::new(),
+                screen: None,
+                screen_request: None,
+                overlay: Vec::new(),
+                world_quads: 0,
+                particles: 0,
+                sounds: 0,
                 started: false,
             },
         }
@@ -713,6 +844,19 @@ impl Studio {
             if !found.iter().any(|f| f.0 == self.s.mods[i].id) {
                 self.unload(game, i);
                 let m = self.s.mods.remove(i);
+                let shift = |o: &mut Owner| {
+                    if let Owner::Mod(j) = o
+                        && *j > i
+                    {
+                        *j -= 1;
+                    }
+                };
+                if let Some(sc) = &mut self.s.screen {
+                    shift(&mut sc.owner);
+                }
+                if let Some(r) = &mut self.s.screen_request {
+                    shift(&mut r.0);
+                }
                 self.s.log(LogKind::Info, format!("Removed {}", m.id));
                 self.s.ui.library_sel = self.s.ui.library_sel.min(self.s.mods.len().saturating_sub(1));
             }
@@ -788,6 +932,17 @@ impl Studio {
         }
         self.s.mods[i].clear();
         self.s.mods[i].state = ModState::Off;
+        self.drop_screens(Owner::Mod(i));
+    }
+
+    /// A mod that stops takes its screen with it.
+    fn drop_screens(&mut self, owner: Owner) {
+        if self.s.screen.as_ref().is_some_and(|sc| sc.owner == owner) {
+            self.s.screen = None;
+        }
+        if self.s.screen_request.as_ref().is_some_and(|r| r.0 == owner) {
+            self.s.screen_request = None;
+        }
     }
 
     /// (Re)loads mod `i` from its files.
@@ -843,6 +998,66 @@ impl Studio {
                 }
                 self.s.toast(format!("{id} failed"));
                 self.s.mods[i].state = ModState::Failed(msg, trace);
+                self.drop_screens(owner);
+            }
+        }
+    }
+
+    /// The studio's screen or a script's is up (the game's input is ours).
+    pub fn overlay_open(&self) -> bool {
+        self.s.ui.open || self.s.screen.is_some()
+    }
+
+    /// Shows the screen a script asked for (`ui.open`), once the game has
+    /// made way for it.
+    pub fn accept_screen(&mut self) -> bool {
+        match self.s.screen_request.take() {
+            Some((owner, table)) => {
+                self.s.screen = Some(ScriptScreen::new(owner, table));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Closes the script screen, calling its `close` handler.
+    pub fn close_screen(&mut self, game: &mut dyn GameApi) {
+        let Some(sc) = self.s.screen.take() else {
+            return;
+        };
+        let f = sc.table.borrow().get_str("close");
+        if f.is_callable() {
+            self.s.screen = Some(sc);
+            self.screen_call(game, &f, Vec::new(), false);
+            self.s.screen = None;
+        }
+    }
+
+    /// Calls a function of the script screen's table for its owner; a
+    /// failure stops the mod (and closes the screen). `drawing` lets it draw.
+    pub fn screen_call(
+        &mut self,
+        game: &mut dyn GameApi,
+        f: &Value,
+        args: Vec<Value>,
+        drawing: bool,
+    ) -> Option<Vec<Value>> {
+        let owner = self.s.screen.as_ref()?.owner;
+        if !f.is_callable() {
+            return None;
+        }
+        let phase = if drawing { Phase::Screen } else { Phase::Normal };
+        match self.call_in(game, owner, f, args, EVENT_STEPS, phase) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                self.fail(
+                    game,
+                    owner,
+                    format!("screen: {}", e.message()),
+                    e.traceback().to_owned(),
+                );
+                self.s.screen = None;
+                None
             }
         }
     }
@@ -1095,6 +1310,8 @@ impl Studio {
         let dt = if dt.is_finite() { dt.clamp(0.0, 1.0) } else { 0.0 };
         self.s.now += dt;
         self.s.send_tokens = (self.s.send_tokens + dt * SEND_RATE).min(SEND_BURST);
+        self.s.particles = 0;
+        self.s.sounds = 0;
         if self.s.now >= self.s.next_scan {
             self.scan(game);
         }
@@ -1204,11 +1421,91 @@ impl Studio {
         }
     }
 
-    /// The HUD, under F1's rule: `hud` handlers, the mods' panels, the toast.
+    /// As the world is drawn: `world` handlers, whose `draw.*` shapes go
+    /// into the frame (and through walls, onto the HUD).
+    pub fn world(&mut self, game: &mut dyn GameApi) {
+        if !self.s.started {
+            return;
+        }
+        self.s.overlay.clear();
+        self.s.world_quads = 0;
+        self.dispatch(game, "world", &[], Phase::World);
+    }
+
+    /// The `world` handlers' through-wall lines and labels, on the GUI.
+    fn draw_overlay(&mut self, game: &mut dyn GameApi) {
+        let Some(cam) = game.camera() else {
+            return;
+        };
+        let (w, h) = game.gui_size();
+        for item in &self.s.overlay {
+            match item {
+                Overlay::Line { a, b, argb, width } => {
+                    let (mut a, mut b) = (*a, *b);
+                    let (da, db) = (cam.depth(a), cam.depth(b));
+                    if da < NEAR && db < NEAR {
+                        continue;
+                    }
+                    // The part behind the camera is cut off at the near plane.
+                    if da < NEAR {
+                        a = add(a, scale(sub(b, a), (NEAR - da) / (db - da) + 1e-6));
+                    } else if db < NEAR {
+                        b = add(b, scale(sub(a, b), (NEAR - db) / (da - db) + 1e-6));
+                    }
+                    let (Some((x1, y1, _)), Some((x2, y2, _))) = (cam.project(a, w, h), cam.project(b, w, h)) else {
+                        continue;
+                    };
+                    let (dx, dy) = (x2 - x1, y2 - y1);
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if !(0.01..=1e5).contains(&len) {
+                        continue;
+                    }
+                    let (nx, ny) = (-dy / len * width / 2.0, dx / len * width / 2.0);
+                    game.quad(
+                        [
+                            [x1 - nx, y1 - ny],
+                            [x1 + nx, y1 + ny],
+                            [x2 + nx, y2 + ny],
+                            [x2 - nx, y2 - ny],
+                        ],
+                        *argb,
+                    );
+                }
+                Overlay::Text {
+                    at,
+                    text,
+                    argb,
+                    distance,
+                } => {
+                    let Some((x, y, depth)) = cam.project(*at, w, h) else {
+                        continue;
+                    };
+                    if x < -200.0 || y < -20.0 || x > w + 200.0 || y > h + 20.0 {
+                        continue;
+                    }
+                    let label = if *distance {
+                        let d = sub(*at, cam.pos);
+                        format!("{text} ({:.0} m)", dot(d, d).sqrt())
+                    } else {
+                        text.clone()
+                    };
+                    let _ = depth;
+                    let tw = game.text_width(&label);
+                    let (lx, ly) = ((x - tw / 2.0).floor(), (y - 4.0).floor());
+                    game.fill([lx - 2.0, ly - 1.0, tw + 4.0, 10.0], 0x8000_0000);
+                    game.text(&label, [lx, ly], argb & 0xFF_FFFF, true);
+                }
+            }
+        }
+    }
+
+    /// The HUD, under F1's rule: the world's through-wall shapes, `hud`
+    /// handlers, the mods' panels, the toast.
     pub fn hud(&mut self, game: &mut dyn GameApi) {
         if !self.s.started {
             return;
         }
+        self.draw_overlay(game);
         let (w, h) = game.gui_size();
         self.dispatch(
             game,
@@ -1705,7 +2002,7 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "",
         "on",
         1,
-        "on(event, fn): run fn on \"tick\" (20 a second), \"frame\"(dt), \"hud\"(w, h), \"key\"(key, down), \"chat\"(text) or \"unload\"",
+        "on(event, fn): run fn on \"tick\" (20 a second), \"frame\"(dt), \"hud\"(w, h), \"world\" (as the world draws: draw.*), \"key\"(key, down), \"chat\"(text) or \"unload\"",
     ),
     (
         "",
@@ -1892,6 +2189,68 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         100,
         "mod.info(): this mod's id, name, version and folder name",
     ),
+    (
+        "world",
+        "particle",
+        44,
+        "world.particle(id, x, y, z[, dx, dy, dz[, count[, color]]]): particles (\"flame\", \"heart\", \"dust\" with a color...), dx dy dz their speed",
+    ),
+    (
+        "draw",
+        "line",
+        110,
+        "draw.line(x1, y1, z1, x2, y2, z2[, color[, width[, through]]]): a line in the world (inside on(\"world\")); width in blocks; through = true shows it through walls",
+    ),
+    (
+        "draw",
+        "box",
+        111,
+        "draw.box(x1, y1, z1, x2, y2, z2[, color[, width[, through]]]): a box's outline",
+    ),
+    (
+        "draw",
+        "block",
+        112,
+        "draw.block(x, y, z[, color[, width[, through]]]): the outline of a block",
+    ),
+    (
+        "draw",
+        "fill",
+        113,
+        "draw.fill(x1, y1, z1, x2, y2, z2[, color]): a solid box",
+    ),
+    (
+        "draw",
+        "beam",
+        114,
+        "draw.beam(x, z[, color[, width[, y1[, y2]]]]): a vertical beam, like a waypoint's",
+    ),
+    (
+        "draw",
+        "text",
+        115,
+        "draw.text(x, y, z, text[, color[, distance]]): a label at a place, seen through walls; distance = true adds how far it is",
+    ),
+    (
+        "sound",
+        "play",
+        120,
+        "sound.play(id[, volume[, pitch]]): a sound for you (\"minecraft:entity.experience_orb.pickup\")",
+    ),
+    (
+        "sound",
+        "at",
+        121,
+        "sound.at(id, x, y, z[, volume[, pitch]]): a sound from a place in the world",
+    ),
+    (
+        "ui",
+        "open",
+        130,
+        "ui.open(screen): show a screen: {title, width, widgets = {...}, draw(w, h), click(x, y, button), key(key, down), text(t), close()}",
+    ),
+    ("ui", "close", 131, "ui.close(): close this mod's screen"),
+    ("ui", "is_open", 132, "ui.is_open(): whether this mod's screen shows"),
 ];
 
 /// Only in the console.
@@ -1921,11 +2280,11 @@ impl Ctx<'_> {
         self.s.owner_mod(self.owner)
     }
     fn drawing(&self, lua: &Lua, what: &str) -> Result<(), Throw> {
-        if self.phase == Phase::Hud {
+        if matches!(self.phase, Phase::Hud | Phase::Screen) {
             Ok(())
         } else {
             Err(lua.rt_error(format!(
-                "hud.{what} draws only inside on(\"hud\", function(w, h) ... end)"
+                "hud.{what} draws only inside on(\"hud\", function(w, h) ... end) or a screen's draw"
             )))
         }
     }
@@ -1991,6 +2350,165 @@ impl Ctx<'_> {
             }
         }
     }
+}
+
+impl Ctx<'_> {
+    fn not_drawing(&self, lua: &Lua, what: &str) -> Result<(), Throw> {
+        if matches!(self.phase, Phase::Hud | Phase::Screen | Phase::World) {
+            return Err(lua.rt_error(format!(
+                "{what} doesn't work while drawing: call it from tick, frame, a command or another event"
+            )));
+        }
+        Ok(())
+    }
+    /// `draw.*`: shapes in the world, inside `on("world")`.
+    fn draw(&mut self, lua: &Lua, id: u32, args: &[Value]) -> Res {
+        let name = ["line", "box", "block", "fill", "beam", "text"][(id - 110) as usize];
+        if self.phase != Phase::World {
+            return Err(lua.rt_error(format!(
+                "draw.{name} draws only inside on(\"world\", function() ... end)"
+            )));
+        }
+        let n = |i: usize| check_num(lua, args, i, name);
+        let through = |i: usize| args.get(i).is_some_and(Value::truthy);
+        let width = |i: usize, d: f64| opt_num(lua, args, i, name, d).map(|w| w.clamp(0.002, 4.0));
+        match id {
+            110 => {
+                let (a, b) = ([n(0)?, n(1)?, n(2)?], [n(3)?, n(4)?, n(5)?]);
+                let c = color_arg(lua, args, 6, 0xFFFF_FFFF)?;
+                let w = width(7, 0.04)?;
+                self.line(lua, a, b, c, w, through(8))?;
+            }
+            111 | 112 => {
+                let (lo, hi, ci) = if id == 111 {
+                    let (a, b) = ([n(0)?, n(1)?, n(2)?], [n(3)?, n(4)?, n(5)?]);
+                    (
+                        [a[0].min(b[0]), a[1].min(b[1]), a[2].min(b[2])],
+                        [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])],
+                        6,
+                    )
+                } else {
+                    let p = [n(0)?.floor(), n(1)?.floor(), n(2)?.floor()];
+                    let e = 0.002;
+                    (
+                        [p[0] - e, p[1] - e, p[2] - e],
+                        [p[0] + 1.0 + e, p[1] + 1.0 + e, p[2] + 1.0 + e],
+                        3,
+                    )
+                };
+                let c = color_arg(lua, args, ci, 0xFFFF_FFFF)?;
+                let w = width(ci + 1, 0.03)?;
+                let t = through(ci + 2);
+                for (a, b) in box_edges(lo, hi) {
+                    self.line(lua, a, b, c, w, t)?;
+                }
+            }
+            113 => {
+                let (a, b) = ([n(0)?, n(1)?, n(2)?], [n(3)?, n(4)?, n(5)?]);
+                let c = color_arg(lua, args, 6, 0xFFFF_FFFF)?;
+                let lo = [a[0].min(b[0]), a[1].min(b[1]), a[2].min(b[2])];
+                let hi = [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])];
+                for face in box_faces(lo, hi) {
+                    self.quad3(lua, face, c)?;
+                }
+            }
+            114 => {
+                let (x, z) = (n(0)?, n(1)?);
+                let c = color_arg(lua, args, 2, 0xFFFF_FFFF)?;
+                let half = width(3, 0.25)? / 2.0;
+                let y1 = opt_num(lua, args, 4, name, -64.0)?;
+                let y2 = opt_num(lua, args, 5, name, 320.0)?;
+                let (lo, hi) = ([x - half, y1.min(y2), z - half], [x + half, y1.max(y2), z + half]);
+                // Its four sides: the ends stay open, as a beacon's beam.
+                for face in &box_faces(lo, hi)[2..] {
+                    self.quad3(lua, *face, c)?;
+                }
+            }
+            _ => {
+                let at = [n(0)?, n(1)?, n(2)?];
+                let text = check_text(lua, args, 3, name)?;
+                let c = color_arg(lua, args, 4, 0xFFFF_FFFF)?;
+                let distance = through(5);
+                self.overlay(
+                    lua,
+                    Overlay::Text {
+                        at,
+                        text: text.chars().take(128).collect(),
+                        argb: c,
+                        distance,
+                    },
+                )?;
+            }
+        }
+        Ok(Vec::new())
+    }
+    /// A line: a ribbon facing the camera, or through walls on the HUD.
+    fn line(&mut self, lua: &Lua, a: [f64; 3], b: [f64; 3], argb: u32, width: f64, through: bool) -> Result<(), Throw> {
+        if through {
+            let px = (width * 40.0).clamp(1.0, 8.0) as f32;
+            return self.overlay(lua, Overlay::Line { a, b, argb, width: px });
+        }
+        let Some(cam) = self.game.camera() else {
+            return Ok(());
+        };
+        let mid = scale(add(a, b), 0.5);
+        let n = cross(sub(b, a), sub(mid, cam.pos));
+        let len = dot(n, n).sqrt();
+        if len < 1e-9 {
+            return Ok(());
+        }
+        let n = scale(n, width / 2.0 / len);
+        self.quad3(lua, [sub(a, n), add(a, n), add(b, n), sub(b, n)], argb)
+    }
+    fn quad3(&mut self, lua: &Lua, corners: [[f64; 3]; 4], argb: u32) -> Result<(), Throw> {
+        if self.s.world_quads >= MAX_WORLD_QUADS {
+            return Err(lua.rt_error("too much drawn in the world this frame"));
+        }
+        self.s.world_quads += 1;
+        self.game.world_quad(corners, argb);
+        Ok(())
+    }
+    fn overlay(&mut self, lua: &Lua, item: Overlay) -> Result<(), Throw> {
+        if self.s.overlay.len() >= MAX_OVERLAY {
+            return Err(lua.rt_error("too much drawn through walls this frame"));
+        }
+        self.s.overlay.push(item);
+        Ok(())
+    }
+}
+
+/// A box's 12 edges.
+pub fn box_edges(lo: [f64; 3], hi: [f64; 3]) -> Vec<([f64; 3], [f64; 3])> {
+    let c = |i: usize| {
+        [
+            if i & 1 == 0 { lo[0] } else { hi[0] },
+            if i & 2 == 0 { lo[1] } else { hi[1] },
+            if i & 4 == 0 { lo[2] } else { hi[2] },
+        ]
+    };
+    let mut out = Vec::with_capacity(12);
+    for i in 0..8usize {
+        for bit in [1, 2, 4] {
+            if i & bit == 0 {
+                out.push((c(i), c(i | bit)));
+            }
+        }
+    }
+    out
+}
+
+/// A box's 6 faces: bottom, top, then the four sides.
+pub fn box_faces(lo: [f64; 3], hi: [f64; 3]) -> [[[f64; 3]; 4]; 6] {
+    let [x0, y0, z0] = lo;
+    let [x1, y1, z1] = hi;
+    [
+        [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]],
+        [[x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0]],
+        [[x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]],
+        [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]],
+        [[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]],
+        [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]],
+    ]
 }
 
 /// `Direction.fromYRot`: yaw 0 faces south, 90 west.
@@ -2361,6 +2879,93 @@ impl Host for Ctx<'_> {
                 t.set_str("author", Value::str(&m.author));
                 t.set_str("reloads", Value::Num(f64::from(m.reloads)));
                 Ok(vec![Value::table(t)])
+            }
+            44 => {
+                self.not_drawing(lua, "world.particle")?;
+                let id = check_text(lua, &args, 0, "particle")?;
+                let p = [
+                    check_num(lua, &args, 1, "particle")?,
+                    check_num(lua, &args, 2, "particle")?,
+                    check_num(lua, &args, 3, "particle")?,
+                ];
+                let v = [
+                    opt_num(lua, &args, 4, "particle", 0.0)?,
+                    opt_num(lua, &args, 5, "particle", 0.0)?,
+                    opt_num(lua, &args, 6, "particle", 0.0)?,
+                ];
+                let count = opt_num(lua, &args, 7, "particle", 1.0)?.clamp(1.0, 64.0) as usize;
+                let color = match args.get(8) {
+                    None | Some(Value::Nil) => None,
+                    Some(_) => {
+                        let c = color_arg(lua, &args, 8, 0xFFFF_FFFF)?;
+                        let f = |shift: u32| ((c >> shift) & 0xFF) as f32 / 255.0;
+                        Some([f(16), f(8), f(0), f(24)])
+                    }
+                };
+                for _ in 0..count {
+                    if self.s.particles >= MAX_PARTICLES {
+                        return Err(lua.rt_error("too many particles this frame (512)"));
+                    }
+                    self.s.particles += 1;
+                    let mut at = p;
+                    if count > 1 {
+                        for a in &mut at {
+                            *a += (super::hstudio_lualib::random01(lua) - 0.5) * 0.5;
+                        }
+                    }
+                    self.game.particle(&id, at, v, color).map_err(|e| lua.rt_error(e))?;
+                }
+                none()
+            }
+            110..=115 => self.draw(lua, id, &args),
+            120 | 121 => {
+                let name = if id == 120 { "play" } else { "at" };
+                self.not_drawing(lua, &format!("sound.{name}"))?;
+                if self.s.sounds >= MAX_SOUNDS {
+                    return Err(lua.rt_error("too many sounds this frame (32)"));
+                }
+                let sid = check_text(lua, &args, 0, name)?;
+                let sid = if sid.contains(':') {
+                    sid
+                } else {
+                    format!("minecraft:{sid}")
+                };
+                let (at, vi) = if id == 121 {
+                    let p = [
+                        check_num(lua, &args, 1, name)?,
+                        check_num(lua, &args, 2, name)?,
+                        check_num(lua, &args, 3, name)?,
+                    ];
+                    (Some(p), 4)
+                } else {
+                    (None, 1)
+                };
+                let volume = opt_num(lua, &args, vi, name, 1.0)?.clamp(0.0, 4.0) as f32;
+                let pitch = opt_num(lua, &args, vi + 1, name, 1.0)?.clamp(0.5, 2.0) as f32;
+                self.s.sounds += 1;
+                self.game.sound(&sid, at, volume, pitch).map_err(|e| lua.rt_error(e))?;
+                none()
+            }
+            130 => {
+                let t = check_table(lua, &args, 0, "open")?;
+                self.s.screen_request = Some((self.owner, t));
+                none()
+            }
+            131 => {
+                let me = self.owner;
+                if self.s.screen.as_ref().is_some_and(|sc| sc.owner == me) {
+                    self.s.screen = None;
+                }
+                if self.s.screen_request.as_ref().is_some_and(|r| r.0 == me) {
+                    self.s.screen_request = None;
+                }
+                none()
+            }
+            132 => {
+                let me = self.owner;
+                Ok(vec![Value::Bool(
+                    self.s.screen.as_ref().is_some_and(|sc| sc.owner == me),
+                )])
             }
             200..=205 if self.owner != Owner::Console => Err(lua.rt_error("this works only in the console")),
             200 => {

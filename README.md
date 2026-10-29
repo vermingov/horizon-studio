@@ -13,6 +13,8 @@ native Horizon mod that adds:
   reload them, open them in the editor, start a new one from a template, or install one of the bundled examples.
 - **Drag and drop install.** Drop a `.lua` file, a mod folder or a `.zip` on the game window and it runs.
 - **Docs.** The whole script API, in the game.
+- **3D drawing, sounds, particles and screens.** Scripts draw lines, boxes, beams and labels in the world, play
+  sounds, spawn particles, and open screens of their own with buttons, toggles, sliders and text fields.
 
 A mod that fails stops alone, with its error and line in the Library, and the rest of the game carries on.
 Each call into a script runs under a step budget, so an endless loop stops the script instead of freezing the game.
@@ -107,7 +109,8 @@ The Library's **New mod** writes a file like this to start from.
 |---|---|---|
 | `tick` | each game tick in a world (20 a second) | |
 | `frame` | each frame | seconds since the last frame |
-| `hud` | each frame the HUD draws (not under F1): the only place `hud.text` and `hud.rect` draw | GUI width, height |
+| `hud` | each frame the HUD draws (not under F1): where `hud.text` and `hud.rect` draw | GUI width, height |
+| `world` | each frame the world draws: the only place `draw.*` draws | |
 | `key` | a key or mouse button goes down or up | `"key.keyboard.r"`, `"key.mouse.left"`; `true` when down |
 | `chat` | a chat line arrives from the server | its text |
 | `unload` | before the mod reloads or turns off | |
@@ -142,6 +145,14 @@ The Library's **New mod** writes a file like this to start from.
 | `keys.down(key)` | Whether a key is held (`"key.keyboard.r"`). |
 | `keys.mapping(name)` | A vanilla mapping (`"key.jump"`): held, and its key's label. |
 | `view.zoom(factor)` | Zooms the view, 1 (off) to 10. |
+| `draw.line(x1, y1, z1, x2, y2, z2[, color[, width[, through]]])` | A line in the world, inside `on("world")`. `width` is in blocks (0.04). Shapes are solid and hidden behind blocks; with `through` = `true` they show through walls. |
+| `draw.box(x1, y1, z1, x2, y2, z2[, color[, width[, through]]])`, `draw.block(x, y, z[, color[, width[, through]]])` | A box's outline; a block's outline. |
+| `draw.fill(x1, y1, z1, x2, y2, z2[, color])` | A solid box. |
+| `draw.beam(x, z[, color[, width[, y1[, y2]]]])` | A vertical beam (from y -64 to 320 unless given), like a waypoint's. |
+| `draw.text(x, y, z, text[, color[, distance]])` | A label at a place, seen through walls; `distance` = `true` adds how far it is. |
+| `sound.play(id[, volume[, pitch]])`, `sound.at(id, x, y, z[, volume[, pitch]])` | A sound event (`"entity.experience_orb.pickup"`, `"minecraft:block.bell.use"`): for you, or from a place. |
+| `world.particle(id, x, y, z[, dx, dy, dz[, count[, color]]])` | Particles (`"flame"`, `"heart"`, `"note"`, `"dust"` with a color...): `dx dy dz` is their speed, `count` up to 64 scattered around the point. Particles that need a block or an item aren't offered. |
+| `ui.open(screen)`, `ui.close()`, `ui.is_open()` | A screen of the mod's own: see [Screens](#screens). |
 | `agent.query(cmd)` | An instant read from Horizon's agent control: `"state"`, `"inventory"`, `"looking-at"`, `"block X Y Z"`, `"blocks ..."`, `"screen"`, `"messages"`, as a table. |
 | `agent.run(cmd[, fn])` | An agent action, `fn(result, err)` when it is done: `"goto X Y Z --near 2"`, `"break X Y Z"`, `"place X Y Z --item stone"`, `"look-at X Y Z"`, `"select 3"`, `"use-item"`, `"attack"`, `"move forward 2"`... One action runs at a time. |
 | `agent.stop()` | Cancels the running action and lets go of the keys. |
@@ -152,6 +163,42 @@ The agent commands are those of Horizon's `horizon-ctl` ([agent control](https:/
 limited to reading the world and acting as the player: nothing that saves, quits or changes options.
 
 In the console only: `help([name])`, `clear()`, `reload([id])`, `mods()`, `edit(id)`, `new(name)`.
+
+### Screens
+
+`ui.open(screen)` shows a screen of the mod's own over the game, as the studio's own shows: the pointer is free, the
+world keeps running, Escape closes it. `screen` is a table the studio reads again every frame, so changing it
+changes the screen:
+
+| Field | What it is |
+|---|---|
+| `title`, `width` | A panel with this title (220 GUI pixels wide unless given). |
+| `widgets` | The panel's rows, top to bottom (below). |
+| `draw(w, h)` | Called each frame after the panel: draw anything with `hud.text`, `hud.rect`... A screen with neither `title` nor `widgets` is yours alone to draw. |
+| `click(x, y, button)`, `key(key, down)`, `text(t)`, `wheel(steps)` | Input outside the widgets (`button` is `"left"` or `"right"`; `key` is `"enter"`, `"left"`, `"a"`...). |
+| `close()` | Called when the screen closes. |
+
+| Widget | Fields | Calls |
+|---|---|---|
+| `{type = "label", text}` | `color` | |
+| `{type = "button", text}` | | `click(widget)` |
+| `{type = "toggle", text, value}` | | `change(value, widget)` |
+| `{type = "slider", text, min, max, step, value}` | | `change(value, widget)` |
+| `{type = "input", text, value, placeholder}` | | `change(value, widget)` as you type, `submit(value, widget)` on Enter |
+| `{type = "space", height}` | | |
+
+```lua
+command("settings", function()
+  ui.open({
+    title = "My mod",
+    widgets = {
+      { type = "toggle", text = "Enabled", value = enabled, change = function(v) enabled = v end },
+      { type = "slider", text = "Radius", min = 1, max = 64, step = 1, value = radius, change = function(v) radius = v end },
+      { type = "button", text = "Done", click = function() ui.close() end },
+    },
+  })
+end)
+```
 
 ### The language
 
@@ -181,6 +228,9 @@ The Library installs these; their source is in [`examples/`](examples).
 | Night watch | `every`, player state |
 | Ore finder | `world.find` |
 | Miner | `agent.run`: walking to blocks and mining them, `/mine oak_log 3` |
+| Waypoints | `draw.beam`, `draw.text` and `draw.block` through walls, and a menu screen (`/wp`) |
+| Selection box | `draw.box` and a size label between two corners (`/pos1`, `/pos2`), `sound.play` |
+| Playground | a screen with a toggle, a slider, a button and a text field; `world.particle`, `sound.at` |
 
 ## Safety
 
@@ -214,11 +264,12 @@ The hooks, all HEAD hooks:
 |---|---|---|
 | frame | `game::control::poll_control` | each frame with the event loop: scripts, input, agent commands |
 | window-input | `game::follow_keymap` | each window event: dropped files to install; while the studio is open, keys, clicks and the wheel (the game gets an event it ignores) |
-| overlay | `game::remote::remote_hud` | the studio's screen, drawn last |
+| overlay | `game::remote::remote_hud` | the studio's screen and the scripts' screens, drawn last |
+| world | `game::end::end_geometry` | each frame in a world, with its camera: `draw.*` shapes go into the entity geometry, depth tested |
 | chat | `game::remote::chat_line` | `on("chat")` |
 | hud, key, command, zoom, list, settings, click | Horizon's [native hook points](https://github.com/horizon-rust/horizon/blob/main/crates/horizon-client/src/game/native_hooks.rs) | the HUD, keys, commands, `view.zoom`, the Options → Mods row and page |
 
-The first four go beyond the stable hook points, so the bundle pins one Horizon commit (a Nightly's,
+The first five go beyond the stable hook points, so the bundle pins one Horizon commit (a Nightly's,
 `compatibility.json`): the launcher builds it on that commit. Their bodies are free of macros, which the launcher's
 horizon-mixins (`0d6b103`) requires of a hooked function. The studio opens over the game's chat screen, which frees
 the pointer and keeps the world running while it takes the keyboard.

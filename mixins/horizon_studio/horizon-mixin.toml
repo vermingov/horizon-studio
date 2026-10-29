@@ -6,7 +6,8 @@ priority = 100
 # Pinned: besides Horizon's native hook points, the studio hooks the window's
 # events (follow_keymap, to take the keyboard while it is open), the
 # per-frame control poll (for the event loop the agent commands need), the
-# server's chat lines and the last HUD layer (remote_hud). Every target's body
+# server's chat lines, the world's entity geometry (end_geometry) and the last
+# HUD layer (remote_hud). Every target's body
 # is free of macros, as horizon-mixins 0d6b103 (the launcher's) requires.
 [compatibility]
 horizon_revision = "baa379d71777f06a95b4e7650b2209a3d4209033"
@@ -90,6 +91,19 @@ helper = "overlay.rs"
 bindings = [
   { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
   { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
+]
+
+# end_geometry (every frame in a world) gets the frame's camera and the
+# entity geometry: on("world") handlers draw solid, depth-tested shapes into it.
+[[injection]]
+id = "world"
+kind = "HEAD"
+target = "horizon_client::game::end::Game<'_>::end_geometry"
+helper = "world.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "camera", ty = "glam::DVec3", value = "camera" },
+  { name = "out", ty = "&mut Vec<horizon_client::mesher::Vertex>", value = "&mut *out" },
 ]
 
 [[injection]]

@@ -9,7 +9,10 @@ import pathlib
 import re
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-ORDER = ["hello", "coords", "clock", "compass", "frame_graph", "zoom", "notes", "night_watch", "ore_finder", "miner"]
+ORDER = [
+    "hello", "coords", "clock", "compass", "frame_graph", "zoom", "notes", "night_watch", "ore_finder", "miner",
+    "waypoints", "selection", "playground",
+]
 
 
 def header(src, key):

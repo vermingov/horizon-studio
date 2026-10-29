@@ -4,13 +4,14 @@
 // horizon-mixin.toml. Hooks that find the studio busy (a script's agent
 // command can reach the game's own command path) do nothing.
 
-use super::hstudio::{Corner, GameApi, ID, NAME, OPEN_KEY, PlayerInfo, Reply, Studio, VERSION};
-use super::hstudio_ui::{Input, Key, Mods, UiResult, draw, handle};
+use super::hstudio::{Camera, Corner, GameApi, ID, NAME, OPEN_KEY, PlayerInfo, Reply, Studio, VERSION};
+use super::hstudio_ui::{Input, Key, Mods, UiResult, draw, draw_screen, handle, handle_screen};
 use super::{Game, Screen};
 use horizon_client::clipboard::Clipboard as _;
 use horizon_client::extras::Corner as GameCorner;
 use horizon_client::extras_hud::Corners;
 use horizon_client::hud::HudBatch;
+use horizon_client::mesher::Vertex;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -53,6 +54,8 @@ struct Host<'h, 'a> {
     event_loop: Option<&'h ActiveEventLoop>,
     batch: Option<&'h mut HudBatch>,
     corners: Option<&'h mut Corners>,
+    /// While the world draws: its geometry, and the frame's own camera.
+    world: Option<(&'h mut Vec<Vertex>, Camera)>,
 }
 
 impl<'h, 'a> Host<'h, 'a> {
@@ -62,6 +65,7 @@ impl<'h, 'a> Host<'h, 'a> {
             event_loop: None,
             batch: None,
             corners: None,
+            world: None,
         }
     }
     fn g(&self) -> &Game<'a> {
@@ -224,6 +228,95 @@ impl GameApi for Host<'_, '_> {
     fn open_folder(&mut self, path: &std::path::Path) {
         super::packs::open_folder(path);
     }
+    fn camera(&self) -> Option<Camera> {
+        if let Some((_, cam)) = &self.world {
+            return Some(*cam);
+        }
+        let (pos, yaw, pitch, fov) = self.g().locator_camera?;
+        Some(Camera { pos, yaw, pitch, fov })
+    }
+    fn world_quad(&mut self, corners: [[f64; 3]; 4], argb: u32) {
+        let white = match &self.game {
+            GameRef::Mut(g) => g.gui.atlas.font.white(),
+            GameRef::Shared(g) => g.gui.atlas.font.white(),
+        };
+        let Some((out, cam)) = self.world.as_mut() else {
+            return;
+        };
+        let uv = [
+            [white.u0, white.v1],
+            [white.u1, white.v1],
+            [white.u1, white.v0],
+            [white.u0, white.v0],
+        ];
+        // RGBA8 in memory: red in the low byte.
+        let [a, r, g, b] = argb.to_be_bytes();
+        let color = u32::from_le_bytes([r, g, b, a]);
+        let at = |p: [f64; 3]| {
+            [
+                (p[0] - cam.pos[0]) as f32,
+                (p[1] - cam.pos[1]) as f32,
+                (p[2] - cam.pos[2]) as f32,
+            ]
+        };
+        // Full brightness, unlit, both faces (the entity pipelines cull nothing here).
+        let light = 240 | (240 << 8);
+        for order in [[0, 1, 2, 3], [3, 2, 1, 0]] {
+            for (k, &i) in order.iter().enumerate() {
+                out.push(Vertex {
+                    pos: at(corners[i]),
+                    uv: uv[k],
+                    layer: 0,
+                    color,
+                    light,
+                    normal: [0; 4],
+                    glint_uv: [0.0, 0.0],
+                });
+            }
+        }
+    }
+    fn quad(&mut self, corners: [[f32; 2]; 4], argb: u32) {
+        let game = match &self.game {
+            GameRef::Mut(g) => &**g,
+            GameRef::Shared(g) => *g,
+        };
+        if let Some(b) = self.batch.as_deref_mut() {
+            let [a, r, g, bl] = argb.to_be_bytes();
+            b.fill_quad(&game.gui.atlas, corners, horizon_client::hud::rgba(r, g, bl, a));
+        }
+    }
+    fn sound(&mut self, id: &str, at: Option<[f64; 3]>, volume: f32, pitch: f32) -> Result<(), String> {
+        let g = self.g_mut().ok_or("sounds can't play here")?;
+        g.audio.play(id, at, volume, pitch);
+        Ok(())
+    }
+    fn particle(&mut self, id: &str, at: [f64; 3], velocity: [f64; 3], color: Option<[f32; 4]>) -> Result<(), String> {
+        let ty =
+            horizon_client::particles::ParticleType::from_name(id).ok_or_else(|| format!("unknown particle {id}"))?;
+        let name = ty.name();
+        if matches!(
+            name,
+            "block"
+                | "block_crumble"
+                | "falling_dust"
+                | "dust_pillar"
+                | "block_marker"
+                | "item"
+                | "vibration"
+                | "trail"
+        ) {
+            return Err(format!(
+                "{name} needs a block or an item, which world.particle doesn't take"
+            ));
+        }
+        let mut options = horizon_client::particles::ParticleOptions::simple(ty);
+        if let Some(c) = color {
+            options.color = c;
+        }
+        let g = self.g_mut().ok_or("particles can't spawn here")?;
+        g.particles.add(&options, at, velocity);
+        Ok(())
+    }
     fn place(&mut self, corner: Corner, w: f32, h: f32) -> (f32, f32) {
         match self.corners.as_deref_mut() {
             Some(c) => c.place(game_corner(corner), w, h),
@@ -232,21 +325,21 @@ impl GameApi for Host<'_, '_> {
     }
 }
 
-/// Opens the studio over the game: the chat screen frees the pointer and
-/// keeps the world running; the studio takes its input.
-fn open(st: &mut Studio, game: &mut Game<'_>) {
+/// Makes way for the studio's screen or a script's: the chat screen frees
+/// the pointer and keeps the world running, and the studio takes its input.
+fn make_way(game: &mut Game<'_>) -> bool {
+    if game.screen == Screen::Chat {
+        return true;
+    }
     if game.screen != Screen::Playing || game.player.is_none() {
-        return;
+        return false;
     }
     game.open_chat("");
-    if game.screen == Screen::Chat {
-        st.s.ui.open = true;
-    }
+    game.screen == Screen::Chat
 }
 
-fn close(st: &mut Studio, game: &mut Game<'_>) {
-    st.s.ui.open = false;
-    st.s.ui.naming = None;
+/// Hands the game back its screen.
+fn give_back(game: &mut Game<'_>) {
     if game.screen == Screen::Chat {
         game.close_chat();
     }
@@ -269,8 +362,10 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
     let dropped = DROPPED.with(|d| std::mem::take(&mut *d.borrow_mut()));
     with(|st| {
         if !game.native_on(ID) {
-            if st.s.ui.open {
-                close(st, game);
+            if st.overlay_open() {
+                st.s.ui.open = false;
+                st.s.screen = None;
+                give_back(game);
             }
             OPEN.with(|o| o.set(false));
             return;
@@ -278,10 +373,12 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
         SCALE.with(|s| s.set(gui(game).2));
         let key = game.native_mod_key(ID, "open", OPEN_KEY);
         OPEN_KEY_NAME.with(|k| *k.borrow_mut() = key);
-        if st.s.ui.open && game.screen != Screen::Chat {
+        // The game closed the chat screen itself (death, a disconnect).
+        if st.overlay_open() && game.screen != Screen::Chat {
             st.s.ui.open = false;
+            st.s.screen = None;
         }
-        let mut closing = false;
+        let was_open = st.overlay_open();
         {
             let mut host = Host::new(game);
             host.event_loop = Some(event_loop);
@@ -293,21 +390,35 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
                 };
                 host.chat(&format!("[{NAME}] {line}"));
             }
-            if st.s.ui.open {
-                for input in inputs {
-                    if handle(st, &mut host, input) == UiResult::Close {
-                        closing = true;
-                        break;
+            for input in inputs {
+                if !st.overlay_open() {
+                    break;
+                }
+                if st.s.screen.is_some() {
+                    if handle_screen(st, &mut host, input) == UiResult::Close {
+                        st.close_screen(&mut host);
                     }
+                } else if handle(st, &mut host, input) == UiResult::Close {
+                    st.s.ui.open = false;
                 }
             }
         }
-        if closing {
-            close(st, game);
-        } else if (toggle && game.native_playing()) | std::mem::take(&mut st.s.ui.open_request) {
-            open(st, game);
+        // A script's ui.open: over the studio, or in its own place.
+        if st.s.screen_request.is_some() {
+            if st.overlay_open() || make_way(game) {
+                st.accept_screen();
+            } else {
+                st.s.screen_request = None;
+            }
         }
-        OPEN.with(|o| o.set(st.s.ui.open));
+        let want = (toggle && !was_open && game.native_playing()) | std::mem::take(&mut st.s.ui.open_request);
+        if want && !st.overlay_open() && make_way(game) {
+            st.s.ui.open = true;
+        }
+        if was_open && !st.overlay_open() {
+            give_back(game);
+        }
+        OPEN.with(|o| o.set(st.overlay_open()));
     });
 }
 
@@ -324,10 +435,37 @@ pub(super) fn hud(game: &mut Game<'_>, batch: &mut HudBatch, corners: &mut Corne
     });
 }
 
+/// As the world's entity geometry is made (end_geometry, every frame in a
+/// world): the scripts' `world` handlers draw into it, at this frame's camera.
+pub(super) fn world(game: &Game<'_>, camera: glam::DVec3, out: &mut Vec<Vertex>) {
+    if !game.native_window() || !game.native_on(ID) {
+        return;
+    }
+    let Some((_, yaw, pitch, fov)) = game.locator_camera else {
+        return;
+    };
+    with(|st| {
+        let cam = Camera {
+            pos: camera.to_array(),
+            yaw,
+            pitch,
+            fov,
+        };
+        let mut host = Host {
+            game: GameRef::Shared(game),
+            event_loop: None,
+            batch: None,
+            corners: None,
+            world: Some((out, cam)),
+        };
+        st.world(&mut host);
+    });
+}
+
 /// Over everything else the game draws in a world: the studio's screen.
 pub(super) fn overlay(game: &Game<'_>, batch: &mut HudBatch) {
     with(|st| {
-        if !st.s.ui.open {
+        if !st.overlay_open() {
             return;
         }
         let mut host = Host {
@@ -335,8 +473,13 @@ pub(super) fn overlay(game: &Game<'_>, batch: &mut HudBatch) {
             event_loop: None,
             batch: Some(batch),
             corners: None,
+            world: None,
         };
-        draw(st, &mut host);
+        if st.s.screen.is_some() {
+            draw_screen(st, &mut host);
+        } else {
+            draw(st, &mut host);
+        }
     });
 }
 

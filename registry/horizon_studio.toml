@@ -9,7 +9,7 @@ Make mods for Horizon in Lua, inside the game. F8 opens the studio in a world.
 - **Script mods with hot reloading**: a script mod is a `.lua` file. Save it and it reloads at once.
 - **Drag and drop**: drop a `.lua` file, a mod folder or a `.zip` on the game window to install it.
 - **Editor**: Lua highlighting, undo, the clipboard; errors mark their line.
-- **Library**: your script mods, their state and errors, and ten examples to install.
+- **Library**: your script mods, their state and errors, and thirteen examples to install.
 
 Scripts run in the studio's own sandboxed Lua: no files, network or processes, a step budget per call, rate-limited
 chat and commands. A script that fails stops alone.
@@ -28,5 +28,5 @@ version = "0.1.0"
 published = "2026-10-29"
 game = "26.3"
 file = "horizon_studio-0.1.0.hnmod"
-sha256 = "ce379896c87027174b5687aa9e9b7f35ee7200d2724df04fbc0b4131a11a9809"
-changelog = "First release: the console, the editor, hot reloading, drag and drop install, the library and ten examples."
+sha256 = "474dde58c37b216187b3636c98167ccd396024fc37f434958379725fe80194b2"
+changelog = "First release: the console, the editor, hot reloading, drag and drop install, the library and thirteen examples."

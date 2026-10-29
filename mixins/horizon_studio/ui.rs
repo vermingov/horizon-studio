@@ -5,8 +5,9 @@
 // dark design tokens (docs/design-system.md): a veil over the world, plates
 // for the console and code, 1 px rules, one accent for the main action.
 
-use super::hstudio::{API, CONSOLE_API, GameApi, LogKind, ModState, Studio};
+use super::hstudio::{API, CONSOLE_API, GameApi, LogKind, ModState, Owner, Studio};
 use super::hstudio_examples::EXAMPLES;
+use super::hstudio_lua::{TableRef, Value};
 use std::path::{Path, PathBuf};
 
 const VEIL: u32 = 0xE60D_0E13;
@@ -1921,4 +1922,443 @@ fn library_key(st: &mut Studio, game: &mut dyn GameApi, key: Key) {
         }
         _ => {}
     }
+}
+
+// ----------------------------------------------------------------- script screens
+
+/// A screen a script opened with `ui.open`: its table (read again each
+/// frame, so the script can change it), the text field being typed in, the
+/// slider being dragged, and where the last frame put each widget.
+pub struct ScriptScreen {
+    pub owner: Owner,
+    pub table: TableRef,
+    pub focus: Option<usize>,
+    pub edit: LineEdit,
+    drag: Option<usize>,
+    rows: Vec<([f32; 4], usize)>,
+}
+
+impl ScriptScreen {
+    pub fn new(owner: Owner, table: TableRef) -> ScriptScreen {
+        ScriptScreen {
+            owner,
+            table,
+            focus: None,
+            edit: LineEdit::default(),
+            drag: None,
+            rows: Vec::new(),
+        }
+    }
+}
+
+const SURFACE: u32 = 0xF016_181F;
+const PLATE_HOVER: u32 = 0xFF2C_2F3B;
+
+fn field(t: &TableRef, k: &str) -> Value {
+    t.borrow().get_str(k)
+}
+
+fn field_text(t: &TableRef, k: &str) -> Option<String> {
+    match field(t, k) {
+        Value::Nil => None,
+        v => Some(v.plain_text()),
+    }
+}
+
+fn field_num(t: &TableRef, k: &str, default: f64) -> f64 {
+    field(t, k).to_num().unwrap_or(default)
+}
+
+fn widgets(t: &TableRef) -> Vec<TableRef> {
+    match field(t, "widgets") {
+        Value::Table(list) => {
+            let items = list.borrow().list();
+            items
+                .into_iter()
+                .filter_map(|v| match v {
+                    Value::Table(w) => Some(w),
+                    _ => None,
+                })
+                .take(64)
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn kind(w: &TableRef) -> String {
+    field_text(w, "type").unwrap_or_else(|| "label".into())
+}
+
+/// A slider's value as it shows.
+fn slider_text(v: f64, step: f64) -> String {
+    if step >= 1.0 && v.fract() == 0.0 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v:.2}")
+    }
+}
+
+fn row_height(game: &dyn GameApi, w: &TableRef, inner: f32) -> f32 {
+    match kind(w).as_str() {
+        "button" => 20.0,
+        "toggle" => 18.0,
+        "slider" => 26.0,
+        "input" => 28.0,
+        "space" => field_num(w, "height", 8.0).clamp(0.0, 200.0) as f32,
+        _ => 10.0 * wrap(game, &field_text(w, "text").unwrap_or_default(), inner).len() as f32 + 2.0,
+    }
+}
+
+/// Draws the script screen: a panel of its widgets (when it has a title or
+/// widgets), then its own `draw(w, h)`.
+pub fn draw_screen(st: &mut Studio, game: &mut dyn GameApi) {
+    let Some(sc) = &st.s.screen else {
+        return;
+    };
+    let table = sc.table.clone();
+    let (focus, edit) = (sc.focus, sc.edit.clone());
+    let (w, h) = game.gui_size();
+    let ws = widgets(&table);
+    let title = field_text(&table, "title");
+    game.fill([0.0, 0.0, w, h], 0x9900_0000);
+    let mut rows = Vec::new();
+    if title.is_some() || !ws.is_empty() {
+        let pw = (field_num(&table, "width", 220.0) as f32).clamp(120.0, (w - 20.0).max(120.0));
+        let inner = pw - 16.0;
+        let heights: Vec<f32> = ws.iter().map(|wt| row_height(game, wt, inner)).collect();
+        let ph = 10.0 + if title.is_some() { 18.0 } else { 0.0 } + heights.iter().sum::<f32>();
+        let (px, py) = (((w - pw) / 2.0).floor(), ((h - ph) / 2.0).floor().max(4.0));
+        game.fill([px, py, pw, ph], SURFACE);
+        let mut y = py + 6.0;
+        if let Some(t) = &title {
+            let t = fit(game, t, inner);
+            let tw = game.text_width(&t);
+            text(game, &t, (px + (pw - tw) / 2.0).floor(), y, INK);
+            game.fill([px + 8.0, y + 12.0, inner, 1.0], RULE);
+            y += 18.0;
+        }
+        let mouse = st.s.ui.mouse;
+        for (i, wt) in ws.iter().enumerate() {
+            let r = [px + 8.0, y, inner, heights[i] - 2.0];
+            let hover = inside(r, mouse);
+            let label = field_text(wt, "text").unwrap_or_default();
+            match kind(wt).as_str() {
+                "button" => {
+                    game.fill(r, if hover { PLATE_HOVER } else { PLATE });
+                    let l = fit(game, &label, r[2] - 8.0);
+                    let lw = game.text_width(&l);
+                    text(game, &l, (r[0] + (r[2] - lw) / 2.0).floor(), r[1] + 5.0, INK);
+                }
+                "toggle" => {
+                    if hover {
+                        game.fill(r, PLATE_SOFT);
+                    }
+                    let on = field(wt, "value").truthy();
+                    let state = if on { "On" } else { "Off" };
+                    let sw = game.text_width(state);
+                    let l = fit(game, &label, r[2] - sw - 12.0);
+                    text(game, &l, r[0] + 3.0, r[1] + 4.0, INK);
+                    text(
+                        game,
+                        state,
+                        r[0] + r[2] - sw - 3.0,
+                        r[1] + 4.0,
+                        if on { SUCCESS } else { MUTED },
+                    );
+                }
+                "slider" => {
+                    let (min, max) = (field_num(wt, "min", 0.0), field_num(wt, "max", 1.0));
+                    let step = field_num(wt, "step", 0.0);
+                    let v = field_num(wt, "value", min).clamp(min.min(max), max.max(min));
+                    let vs = slider_text(v, step);
+                    let vw = game.text_width(&vs);
+                    let l = fit(game, &label, r[2] - vw - 8.0);
+                    text(game, &l, r[0], r[1] + 1.0, INK);
+                    text(game, &vs, r[0] + r[2] - vw, r[1] + 1.0, INK_SOFT);
+                    let ty = r[1] + 15.0;
+                    let frac = if max > min {
+                        ((v - min) / (max - min)) as f32
+                    } else {
+                        0.0
+                    };
+                    game.fill([r[0], ty, r[2], 2.0], RULE);
+                    game.fill([r[0], ty, r[2] * frac, 2.0], 0xFF00_0000 | ACCENT);
+                    let kx = (r[0] + r[2] * frac - 2.0).floor();
+                    game.fill(
+                        [kx, ty - 3.0, 4.0, 8.0],
+                        0xFF00_0000 | if hover { INK } else { INK_SOFT },
+                    );
+                }
+                "input" => {
+                    let l = fit(game, &label, r[2]);
+                    text(game, &l, r[0], r[1], MUTED);
+                    let f = [r[0], r[1] + 10.0, r[2], 14.0];
+                    game.fill(f, PLATE_SOFT);
+                    if focus == Some(i) {
+                        game.fill([f[0], f[1] + 13.0, f[2], 1.0], 0xFF00_0000 | ACCENT);
+                        draw_line_edit(st.s.now, game, &edit, f[0] + 3.0, f[1] + 3.0, f[2] - 6.0, INK);
+                    } else {
+                        let value = field_text(wt, "value").unwrap_or_default();
+                        let (shown, rgb) = if value.is_empty() {
+                            (field_text(wt, "placeholder").unwrap_or_default(), MUTED)
+                        } else {
+                            (value, INK)
+                        };
+                        let shown = fit(game, &shown, f[2] - 6.0);
+                        text(game, &shown, f[0] + 3.0, f[1] + 3.0, rgb);
+                    }
+                }
+                "space" => {}
+                _ => {
+                    let rgb = match field(wt, "color") {
+                        Value::Nil => INK_SOFT,
+                        _ => {
+                            let lua = super::hstudio_lua::Lua::new();
+                            super::hstudio::color_arg(&lua, &[field(wt, "color")], 0, 0xFF00_0000 | INK_SOFT)
+                                .unwrap_or(INK_SOFT)
+                                & 0xFF_FFFF
+                        }
+                    };
+                    for (j, l) in wrap(game, &label, r[2]).iter().enumerate() {
+                        text(game, l, r[0], r[1] + 1.0 + 10.0 * j as f32, rgb);
+                    }
+                }
+            }
+            rows.push((r, i));
+            y += heights[i];
+        }
+    }
+    if let Some(sc) = &mut st.s.screen {
+        sc.rows = rows;
+    }
+    let f = field(&table, "draw");
+    if f.is_callable() {
+        st.screen_call(game, &f, vec![Value::Num(f64::from(w)), Value::Num(f64::from(h))], true);
+    }
+}
+
+fn key_name(key: Key) -> String {
+    match key {
+        Key::Escape => "escape".into(),
+        Key::Toggle => "toggle".into(),
+        Key::Enter => "enter".into(),
+        Key::Backspace => "backspace".into(),
+        Key::Delete => "delete".into(),
+        Key::Tab => "tab".into(),
+        Key::Left => "left".into(),
+        Key::Right => "right".into(),
+        Key::Up => "up".into(),
+        Key::Down => "down".into(),
+        Key::Home => "home".into(),
+        Key::End => "end".into(),
+        Key::PageUp => "pageup".into(),
+        Key::PageDown => "pagedown".into(),
+        Key::Char(c) => c.to_string(),
+        Key::Other => "other".into(),
+    }
+}
+
+/// Sets a widget's `value` and calls its `change(value, widget)`.
+fn set_value(st: &mut Studio, game: &mut dyn GameApi, wt: &TableRef, v: Value) {
+    wt.borrow_mut().set_str("value", v.clone());
+    let f = field(wt, "change");
+    st.screen_call(game, &f, vec![v, Value::Table(wt.clone())], false);
+}
+
+fn slide(st: &mut Studio, game: &mut dyn GameApi, i: usize, x: f32) {
+    let Some(sc) = &st.s.screen else { return };
+    let Some(&(r, _)) = sc.rows.iter().find(|(_, j)| *j == i) else {
+        return;
+    };
+    let Some(wt) = widgets(&sc.table).get(i).cloned() else {
+        return;
+    };
+    let (min, max) = (field_num(&wt, "min", 0.0), field_num(&wt, "max", 1.0));
+    let step = field_num(&wt, "step", 0.0);
+    let frac = f64::from(((x - r[0]) / r[2].max(1.0)).clamp(0.0, 1.0));
+    let mut v = min + frac * (max - min);
+    if step > 0.0 {
+        v = min + ((v - min) / step).round() * step;
+    }
+    let v = v.clamp(min.min(max), max.max(min));
+    if field(&wt, "value").to_num() != Some(v) {
+        set_value(st, game, &wt, Value::Num(v));
+    }
+}
+
+/// Input for the script screen.
+pub fn handle_screen(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult {
+    let Some(sc) = &st.s.screen else {
+        return UiResult::Close;
+    };
+    let table = sc.table.clone();
+    let ws = widgets(&table);
+    match input {
+        Input::Mouse(x, y) => {
+            st.s.ui.mouse = (x, y);
+            if let Some(i) = st.s.screen.as_ref().and_then(|sc| sc.drag) {
+                slide(st, game, i, x);
+            }
+        }
+        Input::Button { left, down } => {
+            if !down {
+                if let Some(sc) = &mut st.s.screen {
+                    sc.drag = None;
+                }
+                return UiResult::Used;
+            }
+            let at = st.s.ui.mouse;
+            let hit = sc.rows.iter().find(|(r, _)| inside(*r, at)).map(|(_, i)| *i);
+            match hit.and_then(|i| ws.get(i).cloned().map(|w| (i, w))) {
+                Some((i, wt)) if left => {
+                    if let Some(sc) = &mut st.s.screen {
+                        sc.focus = None;
+                    }
+                    match kind(&wt).as_str() {
+                        "button" => {
+                            let f = field(&wt, "click");
+                            st.screen_call(game, &f, vec![Value::Table(wt.clone())], false);
+                        }
+                        "toggle" => {
+                            let on = !field(&wt, "value").truthy();
+                            set_value(st, game, &wt, Value::Bool(on));
+                        }
+                        "slider" => {
+                            if let Some(sc) = &mut st.s.screen {
+                                sc.drag = Some(i);
+                            }
+                            slide(st, game, i, at.0);
+                        }
+                        "input" => {
+                            let value = field_text(&wt, "value").unwrap_or_default();
+                            if let Some(sc) = &mut st.s.screen {
+                                sc.focus = Some(i);
+                                sc.edit.set(&value);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {
+                    if let Some(sc) = &mut st.s.screen {
+                        sc.focus = None;
+                    }
+                    let f = field(&table, "click");
+                    let button = if left { "left" } else { "right" };
+                    st.screen_call(
+                        game,
+                        &f,
+                        vec![
+                            Value::Num(f64::from(at.0)),
+                            Value::Num(f64::from(at.1)),
+                            Value::str(button),
+                        ],
+                        false,
+                    );
+                }
+            }
+        }
+        Input::Wheel(steps) => {
+            let at = st.s.ui.mouse;
+            let hit = sc.rows.iter().find(|(r, _)| inside(*r, at)).map(|(_, i)| *i);
+            if let Some(wt) = hit.and_then(|i| ws.get(i).cloned())
+                && kind(&wt) == "slider"
+            {
+                let (min, max) = (field_num(&wt, "min", 0.0), field_num(&wt, "max", 1.0));
+                let step = field_num(&wt, "step", 0.0);
+                let step = if step > 0.0 { step } else { (max - min) / 20.0 };
+                let v =
+                    (field_num(&wt, "value", min) + step * f64::from(steps.signum())).clamp(min.min(max), max.max(min));
+                set_value(st, game, &wt, Value::Num(v));
+            } else {
+                let f = field(&table, "wheel");
+                st.screen_call(game, &f, vec![Value::Num(f64::from(steps))], false);
+            }
+        }
+        Input::Text(t) => {
+            let focus = sc.focus;
+            match focus.and_then(|i| ws.get(i).cloned()) {
+                Some(wt) => {
+                    let value = match &mut st.s.screen {
+                        Some(sc) => {
+                            sc.edit.insert(&t);
+                            sc.edit.text.clone()
+                        }
+                        None => return UiResult::Close,
+                    };
+                    set_value(st, game, &wt, Value::str(&value));
+                }
+                None => {
+                    let f = field(&table, "text");
+                    st.screen_call(game, &f, vec![Value::str(&t)], false);
+                }
+            }
+        }
+        Input::Key { key, down, mods, .. } => {
+            let focus = sc.focus;
+            if down && matches!(key, Key::Escape | Key::Toggle) {
+                if focus.is_some() && key == Key::Escape {
+                    if let Some(sc) = &mut st.s.screen {
+                        sc.focus = None;
+                    }
+                    return UiResult::Used;
+                }
+                return UiResult::Close;
+            }
+            match focus.and_then(|i| ws.get(i).cloned().map(|w| (i, w))) {
+                Some((i, wt)) if down => match key {
+                    Key::Enter => {
+                        let f = field(&wt, "submit");
+                        let v = field(&wt, "value");
+                        if let Some(sc) = &mut st.s.screen {
+                            sc.focus = None;
+                        }
+                        st.screen_call(game, &f, vec![v, Value::Table(wt.clone())], false);
+                    }
+                    Key::Tab => {
+                        let next = (i + 1..ws.len()).chain(0..i).find(|&j| kind(&ws[j]) == "input");
+                        if let (Some(j), Some(sc)) = (next, &mut st.s.screen) {
+                            sc.focus = Some(j);
+                            sc.edit.set(&field_text(&ws[j], "value").unwrap_or_default());
+                        }
+                    }
+                    Key::Char('v') if mods.ctrl => {
+                        let clip = game.clipboard();
+                        let value = match &mut st.s.screen {
+                            Some(sc) => {
+                                sc.edit.insert(&clip);
+                                sc.edit.text.clone()
+                            }
+                            None => return UiResult::Close,
+                        };
+                        set_value(st, game, &wt, Value::str(&value));
+                    }
+                    k => {
+                        let changed = match &mut st.s.screen {
+                            Some(sc) => {
+                                let before = sc.edit.text.clone();
+                                sc.edit.key(k, mods);
+                                (sc.edit.text != before).then(|| sc.edit.text.clone())
+                            }
+                            None => return UiResult::Close,
+                        };
+                        if let Some(value) = changed {
+                            set_value(st, game, &wt, Value::str(&value));
+                        }
+                    }
+                },
+                Some(_) => {}
+                None => {
+                    let f = field(&table, "key");
+                    st.screen_call(game, &f, vec![Value::str(&key_name(key)), Value::Bool(down)], false);
+                }
+            }
+        }
+    }
+    if st.s.screen.is_none() {
+        // A callback closed it (ui.close) or failed.
+        return UiResult::Close;
+    }
+    UiResult::Used
 }

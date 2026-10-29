@@ -2,7 +2,7 @@
 // answers its questions from plain fields.
 #![allow(dead_code)]
 
-use horizon_studio::game::hstudio::{Corner, GameApi, PlayerInfo, Reply, Studio};
+use horizon_studio::game::hstudio::{Camera, Corner, GameApi, PlayerInfo, Reply, Studio};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,7 +24,16 @@ pub struct FakeGame {
     pub clipboard: String,
     pub held_mappings: HashMap<String, bool>,
     pub opened: Vec<PathBuf>,
+    pub camera: Option<Camera>,
+    /// 3D quads drawn (corners, colour), GUI quads, sounds and particles.
+    pub world_quads: Vec<([[f64; 3]; 4], u32)>,
+    pub quads: Vec<([[f32; 2]; 4], u32)>,
+    pub sounds: Vec<(String, Option<[f64; 3]>, f32, f32)>,
+    pub particles: Vec<Particle>,
 }
+
+/// A particle spawned: its id, place, speed and colour.
+pub type Particle = (String, [f64; 3], [f64; 3], Option<[f32; 4]>);
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -64,6 +73,17 @@ impl FakeGame {
             clipboard: String::new(),
             held_mappings: HashMap::new(),
             opened: Vec::new(),
+            // At the player's eyes, looking north (yaw 180), with vanilla's 70 degrees.
+            camera: Some(Camera {
+                pos: [10.5, 65.62, -3.25],
+                yaw: 180.0,
+                pitch: 0.0,
+                fov: 70.0,
+            }),
+            world_quads: Vec::new(),
+            quads: Vec::new(),
+            sounds: Vec::new(),
+            particles: Vec::new(),
         }
     }
     pub fn mods_dir(&self) -> PathBuf {
@@ -145,6 +165,26 @@ impl GameApi for FakeGame {
     }
     fn text(&mut self, text: &str, at: [f32; 2], rgb: u32, _shadow: bool) {
         self.drawn.push(format!("text {text} @{at:?} {rgb:06x}"));
+    }
+    fn camera(&self) -> Option<Camera> {
+        self.camera
+    }
+    fn world_quad(&mut self, corners: [[f64; 3]; 4], argb: u32) {
+        self.world_quads.push((corners, argb));
+    }
+    fn quad(&mut self, corners: [[f32; 2]; 4], argb: u32) {
+        self.quads.push((corners, argb));
+    }
+    fn sound(&mut self, id: &str, at: Option<[f64; 3]>, volume: f32, pitch: f32) -> Result<(), String> {
+        self.sounds.push((id.to_owned(), at, volume, pitch));
+        Ok(())
+    }
+    fn particle(&mut self, id: &str, at: [f64; 3], velocity: [f64; 3], color: Option<[f32; 4]>) -> Result<(), String> {
+        if id.contains("nope") {
+            return Err(format!("unknown particle {id}"));
+        }
+        self.particles.push((id.to_owned(), at, velocity, color));
+        Ok(())
     }
     fn open_folder(&mut self, path: &std::path::Path) {
         self.opened.push(path.to_path_buf());

@@ -337,4 +337,182 @@ end, "Mines blocks for you: /mine <block> [count], /mine stop")
 on("unload", function() if job then agent.stop() end end)
 "#,
     },
+    Example {
+        id: r#"waypoints"#,
+        title: r#"Waypoints"#,
+        description: r#"Beams and labels you can see through walls. /wp add <name>, /wp remove <name>, /wp clear, and /wp for a menu."#,
+        source: r##"-- name: Waypoints
+-- version: 1.0
+-- author: Horizon Studio
+-- description: Beams and labels you can see through walls. /wp add <name>, /wp remove <name>, /wp clear, and /wp for a menu.
+
+local colors = { "#9a86ff", "#45c27a", "#f2c48d", "#9fc2ff", "#f07a68" }
+local points = storage.get("points") or {}
+
+local function save() storage.set("points", points) end
+
+local function here()
+  local x, y, z = player.block()
+  return x and { x = x + 0.5, y = y, z = z + 0.5, dim = player.dimension() }
+end
+
+local function names()
+  local list = {}
+  for name in pairs(points) do list[#list + 1] = name end
+  table.sort(list)
+  return list
+end
+
+on("world", function()
+  local dim = player.dimension()
+  local i = 0
+  for _, name in ipairs(names()) do
+    local p = points[name]
+    i = i + 1
+    if p.dim == dim then
+      local c = colors[(i - 1) % #colors + 1]
+      draw.beam(p.x, p.z, c, 0.2)
+      draw.block(p.x, p.y, p.z, c, 0.03, true)
+      draw.text(p.x, p.y + 2.5, p.z, name, c, true)
+    end
+  end
+end)
+
+local function menu()
+  local widgets = { { type = "label", text = #names() == 0 and "No waypoints yet: /wp add <name>" or "Click one to remove it." } }
+  for _, name in ipairs(names()) do
+    local p = points[name]
+    widgets[#widgets + 1] = {
+      type = "button",
+      text = string.format("%s  (%d, %d, %d)", name, math.floor(p.x), p.y, math.floor(p.z)),
+      click = function()
+        points[name] = nil
+        save()
+        sound.play("ui.button.click")
+        menu()
+      end,
+    }
+  end
+  widgets[#widgets + 1] = { type = "space" }
+  widgets[#widgets + 1] = {
+    type = "input", text = "Add one here", placeholder = "a name, then Enter",
+    submit = function(name)
+      if name ~= "" then points[name] = here(); save(); menu() end
+    end,
+  }
+  ui.open({ title = "Waypoints", width = 240, widgets = widgets })
+end
+
+command("wp", function(args, words)
+  local what, name = words[1], table.concat(words, " ", 2)
+  if not what then menu() return end
+  if what == "add" and name ~= "" then
+    points[name] = here()
+    save()
+    return "Waypoint " .. name .. " added"
+  elseif what == "remove" and points[name] then
+    points[name] = nil
+    save()
+    return "Waypoint " .. name .. " removed"
+  elseif what == "clear" then
+    points = {}
+    save()
+    return "Waypoints cleared"
+  end
+  return "Usage: /wp, /wp add <name>, /wp remove <name>, /wp clear"
+end, "Waypoints: /wp add <name>, /wp remove <name>, /wp clear, /wp for a menu")
+"##,
+    },
+    Example {
+        id: r#"selection"#,
+        title: r#"Selection box"#,
+        description: r#"A building helper. /pos1 and /pos2 mark two corners where you stand; a box shows between them with its size. /sel clear removes it."#,
+        source: r##"-- name: Selection box
+-- version: 1.0
+-- author: Horizon Studio
+-- description: A building helper. /pos1 and /pos2 mark two corners where you stand; a box shows between them with its size. /sel clear removes it.
+
+local a, b = nil, nil
+
+local function corner()
+  local x, y, z = player.block()
+  return x and { x, y, z }
+end
+
+on("world", function()
+  for _, p in ipairs({ a, b }) do
+    if p then draw.block(p[1], p[2], p[3], "#f2c48d", 0.04) end
+  end
+  if a and b then
+    local lo = { math.min(a[1], b[1]), math.min(a[2], b[2]), math.min(a[3], b[3]) }
+    local hi = { math.max(a[1], b[1]) + 1, math.max(a[2], b[2]) + 1, math.max(a[3], b[3]) + 1 }
+    draw.box(lo[1], lo[2], lo[3], hi[1], hi[2], hi[3], "#9a86ff", 0.05)
+    local size = string.format("%d x %d x %d", hi[1] - lo[1], hi[2] - lo[2], hi[3] - lo[3])
+    draw.text((lo[1] + hi[1]) / 2, hi[2] + 0.5, (lo[3] + hi[3]) / 2, size, "#ffffff")
+  end
+end)
+
+local function mark(which)
+  local p = corner()
+  if not p then return "Not in a world" end
+  if which == 1 then a = p else b = p end
+  sound.play("block.note_block.hat", 0.6, which == 1 and 1.2 or 1.5)
+  return string.format("Corner %d at %d, %d, %d", which, p[1], p[2], p[3])
+end
+
+command("pos1", function() return mark(1) end, "Marks the first corner where you stand")
+command("pos2", function() return mark(2) end, "Marks the second corner where you stand")
+command("sel", function(args)
+  if args == "clear" then a, b = nil, nil return "Selection cleared" end
+  return "Usage: /pos1, /pos2, /sel clear"
+end, "/sel clear removes the selection")
+"##,
+    },
+    Example {
+        id: r#"playground"#,
+        title: r#"Playground"#,
+        description: r#"A screen of widgets for particles and sounds. /playground opens it: a flame trail, a slider, a sound button and a text field."#,
+        source: r##"-- name: Playground
+-- version: 1.0
+-- author: Horizon Studio
+-- description: A screen of widgets for particles and sounds. /playground opens it: a flame trail, a slider, a sound button and a text field.
+
+local trail, density, color = false, 3, "#9a86ff"
+
+on("tick", function()
+  if not trail then return end
+  local x, y, z = player.pos()
+  if x then
+    world.particle("dust", x, y + 0.1, z, 0, 0.02, 0, density, color)
+  end
+end)
+
+local function open()
+  ui.open({
+    title = "Playground",
+    width = 220,
+    widgets = {
+      { type = "label", text = "Things scripts can do now." },
+      { type = "toggle", text = "Particle trail", value = trail, change = function(v) trail = v end },
+      { type = "slider", text = "Trail density", min = 1, max = 10, step = 1, value = density, change = function(v) density = v end },
+      { type = "button", text = "Ring the bell", click = function()
+          local x, y, z = player.pos()
+          sound.at("block.bell.use", x, y, z)
+          for i = 1, 16 do
+            local a = i / 16 * math.pi * 2
+            world.particle("note", x + math.cos(a) * 2, y + 1, z + math.sin(a) * 2)
+          end
+        end },
+      { type = "input", text = "Trail colour", value = color, placeholder = "#rrggbb",
+        submit = function(v) if v:match("^#%x%x%x%x%x%x$") then color = v end end },
+      { type = "space" },
+      { type = "button", text = "Close", click = function() ui.close() end },
+    },
+    close = function() sound.play("ui.button.click", 0.5) end,
+  })
+end
+
+command("playground", open, "Opens the playground screen")
+"##,
+    },
 ];
