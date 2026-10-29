@@ -1,0 +1,32 @@
+id = "horizon_studio"
+kind = "native-mod"
+name = "Horizon Studio"
+summary = "Make mods in Lua inside the game: a console that runs code at once, an editor, hot reloading and a library of your script mods."
+description = """
+Make mods for Horizon in Lua, inside the game. F8 opens the studio in a world.
+
+- **Console**: type Lua and it runs at once, like a Lua executor. `/lua <code>` does the same from chat.
+- **Script mods with hot reloading**: a script mod is a `.lua` file. Save it and it reloads at once.
+- **Drag and drop**: drop a `.lua` file, a mod folder or a `.zip` on the game window to install it.
+- **Editor**: Lua highlighting, undo, the clipboard; errors mark their line.
+- **Library**: your script mods, their state and errors, and ten examples to install.
+
+Scripts run in the studio's own sandboxed Lua: no files, network or processes, a step budget per call, rate-limited
+chat and commands. A script that fails stops alone.
+
+A native mod: the launcher builds it into the game once (Settings → Game → Native mods (experimental), then Build);
+after that, script mods need no build at all. It is pinned to Horizon Nightly baa379d.
+"""
+authors = ["felixzutter256"]
+owners = ["YOUR-GITHUB-LOGIN"]
+license = "MIT"
+source = "https://github.com/YOUR-GITHUB-LOGIN/horizon-studio"
+icon = "icons/horizon_studio.png"
+
+[[versions]]
+version = "0.1.0"
+published = "2026-10-29"
+game = "26.3"
+file = "horizon_studio-0.1.0.hnmod"
+sha256 = "94425ec5c6d995b60bbd89b18cadf775f716f5f1f8231f1db5f798a4c07e6093"
+changelog = "First release: the console, the editor, hot reloading, drag and drop install, the library and ten examples."
