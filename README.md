@@ -31,6 +31,15 @@ retired), so a mod with code is a [native mod](https://github.com/horizon-rust/h
 that the launcher compiles into the game, once. You don't install Rust or type commands: the launcher brings its own
 and does it.
 
+On Linux or macOS, one line downloads it and has the launcher build it (close the launcher first; on macOS use
+`"/Applications/Horizon.app/Contents/MacOS/horizon-launcher"` for `horizon-launcher`):
+
+```sh
+mkdir -p ~/.cache/horizon-studio && curl -fsSL https://github.com/vermingov/horizon-studio/archive/refs/heads/main.tar.gz | tar -xz -C ~/.cache/horizon-studio && horizon-launcher native-build ~/.cache/horizon-studio/horizon-studio-main/mixins/horizon_studio --trust-native-code
+```
+
+Then play the **Native mods** instance. Or, by hand:
+
 1. `python3 tools/studio.py package` writes `target/horizon_studio-0.1.0.hnmod`.
 2. Install it as a native mod in an instance, then **Build** ("I trust these mods: build"). The first build takes 10
    to 30 minutes; later ones are faster. From the command line:
