@@ -150,12 +150,19 @@ def cmd_package(_):
     }
     TARGET.mkdir(exist_ok=True)
     path = TARGET / f"{mod_id}-{version}.hnmod"
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("horizon-native.json", json.dumps(manifest, indent=2) + "\n")
+    # Fixed dates and modes: the same sources always make the same file (and SHA-256).
+    def entry(name):
+        info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = 0o644 << 16
+        return info
+
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(entry("horizon-native.json"), json.dumps(manifest, indent=2) + "\n")
         for f in sorted(BUNDLE.iterdir()):
             if f.suffix not in (".rs", ".toml"):
                 sys.exit(f"{f.name}: a native bundle holds only .rs and .toml files")
-            z.write(f, f"mixins/{mod_id}/{f.name}")
+            z.writestr(entry(f"mixins/{mod_id}/{f.name}"), f.read_bytes())
     print(path)
 
 
