@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --locked
+      - name: examples.rs is up to date
+        run: python3 tools/gen_examples.py && git diff --exit-code mixins/horizon_studio/examples.rs
+
+  # Applies the bundle to the pinned Horizon and type-checks the modded game.
+  game:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target/horizon-mixins
+            target/game
+          key: game-${{ hashFiles('compatibility.json') }}
+      - run: python3 tools/studio.py check
+      - run: python3 tools/studio.py package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hnmod
+          path: target/*.hnmod

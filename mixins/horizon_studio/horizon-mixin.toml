@@ -1,0 +1,164 @@
+[mod]
+id = "horizon_studio"
+version = "0.1.0"
+priority = 100
+
+# Pinned: besides Horizon's native hook points, the studio hooks the window's
+# events (follow_keymap, to take the keyboard while it is open), the
+# per-frame control poll (for the event loop the agent commands need), the
+# server's chat lines and the last HUD layer (remote_hud). Every target's body
+# is free of macros, as horizon-mixins 0d6b103 (the launcher's) requires.
+[compatibility]
+horizon_revision = "baa379d71777f06a95b4e7650b2209a3d4209033"
+
+# The modules, in the game's crate as crate::game::<name>.
+[[module]]
+id = "lua"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_lua"
+source = "lua.rs"
+
+[[module]]
+id = "lualib"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_lualib"
+source = "lualib.rs"
+
+[[module]]
+id = "studio"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio"
+source = "studio.rs"
+
+[[module]]
+id = "ui"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_ui"
+source = "ui.rs"
+
+[[module]]
+id = "examples"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_examples"
+source = "examples.rs"
+
+[[module]]
+id = "bridge"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_bridge"
+source = "bridge.rs"
+
+# Hooks.
+[[injection]]
+id = "frame"
+kind = "HEAD"
+target = "horizon_client::game::control::Game<'_>::poll_control"
+helper = "frame.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "event_loop", ty = "&winit::event_loop::ActiveEventLoop", value = "event_loop" },
+]
+
+# window_event hands each event to follow_keymap first: while the studio is
+# open, it queues keys, clicks and the wheel for itself and puts an event the
+# game ignores in their place.
+[[injection]]
+id = "window-input"
+kind = "HEAD"
+target = "horizon_client::game::follow_keymap"
+helper = "keymap.rs"
+bindings = [
+  { name = "event", ty = "&mut winit::event::WindowEvent", value = "&mut *event" },
+]
+
+[[injection]]
+id = "hud"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_hud"
+helper = "hud.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
+  { name = "corners", ty = "&mut horizon_client::extras_hud::Corners", value = "&mut *corners" },
+]
+
+[[injection]]
+id = "overlay"
+kind = "HEAD"
+target = "horizon_client::game::remote::Game<'_>::remote_hud"
+helper = "overlay.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
+]
+
+[[injection]]
+id = "key"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_key"
+helper = "key.rs"
+bindings = [
+  { name = "key", ty = "&str", value = "key" },
+  { name = "pressed", ty = "bool", value = "pressed" },
+]
+
+[[injection]]
+id = "command"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_command"
+helper = "command.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "command", ty = "&str", value = "command" },
+  { name = "ran", ty = "&mut bool", value = "&mut *ran" },
+]
+
+[[injection]]
+id = "chat"
+kind = "HEAD"
+target = "horizon_client::game::remote::Game<'_>::chat_line"
+helper = "chat.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "content", ty = "&horizon_client::text::Text", value = "&content" },
+  { name = "source", ty = "&horizon_client::chat::ChatSource", value = "&source" },
+]
+
+[[injection]]
+id = "zoom"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_zoom"
+helper = "zoom.rs"
+bindings = [
+  { name = "zoom", ty = "&mut Option<crate::game::native_hooks::NativeZoom>", value = "&mut *zoom" },
+]
+
+[[injection]]
+id = "list"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_mods"
+helper = "list.rs"
+bindings = [
+  { name = "mods", ty = "&mut Vec<crate::game::native_hooks::NativeMod>", value = "&mut *mods" },
+]
+
+[[injection]]
+id = "settings"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_settings"
+helper = "settings.rs"
+bindings = [
+  { name = "mod_id", ty = "&str", value = "mod_id" },
+  { name = "buttons", ty = "&mut Vec<String>", value = "&mut *buttons" },
+]
+
+[[injection]]
+id = "click"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_settings_click"
+helper = "click.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "mod_id", ty = "&str", value = "mod_id" },
+  { name = "button", ty = "usize", value = "button" },
+]
