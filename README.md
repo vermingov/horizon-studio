@@ -11,6 +11,7 @@ native Horizon mod that adds:
   auto-indent. A syntax or runtime error marks its line.
 - **A mod library.** Every script mod with its state, error, commands and cost per call. Turn mods on and off,
   reload them, open them in the editor, start a new one from a template, or install one of the bundled examples.
+- **Drag and drop install.** Drop a `.lua` file, a mod folder or a `.zip` on the game window and it runs.
 - **Docs.** The whole script API, in the game.
 
 A mod that fails stops alone, with its error and line in the Library, and the rest of the game carries on.
@@ -21,14 +22,19 @@ Each call into a script runs under a step budget, so an endless loop stops the s
 
 ## Install
 
-Horizon Studio is a [native mod](https://github.com/horizon-rust/horizon/blob/main/docs/native-mods.md): a
-[horizon-mixins](https://github.com/horizon-rust/horizon-mixins) bundle that the Horizon launcher builds into the game.
+**Script mods are drag and drop.** Once Horizon Studio is in your game, drop a `.lua` file, a mod folder (with
+`main.lua`) or a `.zip` of one onto the game window: it installs and runs at once, and the chat says so. Dropping a
+newer version updates it. Copying files into the mods folder (Library → Open folder) works too. Nothing is built.
 
-1. Build the package: `python3 tools/studio.py package` writes `target/horizon_studio-0.1.0.hnmod`.
-2. In the launcher, install it as a native mod in an instance. The first native mod turns on Settings → Game →
-   **Native mods (experimental)**. Then **Build** ("I trust these mods: build"). The first build downloads the
-   launcher's own Rust and takes 10 to 30 minutes; later builds are faster.
-   From the command line: `horizon-launcher native-build mixins/horizon_studio --trust-native-code`.
+**Horizon Studio itself needs one build.** Horizon no longer runs drop-in code mods (its WebAssembly mods were
+retired), so a mod with code is a [native mod](https://github.com/horizon-rust/horizon/blob/main/docs/native-mods.md)
+that the launcher compiles into the game, once. You don't install Rust or type commands: the launcher brings its own
+and does it.
+
+1. `python3 tools/studio.py package` writes `target/horizon_studio-0.1.0.hnmod`.
+2. Install it as a native mod in an instance, then **Build** ("I trust these mods: build"). The first build takes 10
+   to 30 minutes; later ones are faster. From the command line:
+   `horizon-launcher native-build mixins/horizon_studio --trust-native-code`.
 3. Play the instance. Options → Mods lists **Horizon Studio**, with its key (F8) to rebind.
 
 Horizon Studio is pinned to one Horizon Nightly (see [How it hooks into Horizon](#how-it-hooks-into-horizon)). All
@@ -42,7 +48,7 @@ In a world, press **F8** (or type `/studio`). Escape or F8 closes it. The world 
 |---|---|---|
 | **Console** | Runs Lua at once. An expression's value is printed, tables expanded. What you register here (`on`, `command`, `every`) runs until `clear()`. | Enter run · Up/Down history · Tab complete · Page Up/Down scroll · Ctrl+L clear |
 | **Editor** | Edits a mod's file (or `scratch.lua`). Saving reloads the mod. | Ctrl+S save · Ctrl+Enter run in the console · Ctrl+Z/Y undo/redo · Ctrl+C/X/V · Ctrl+A · Ctrl+D duplicate line · Ctrl+/ comment · Tab/Shift+Tab indent · mouse click and drag |
-| **Library** | Your script mods and the examples. | Up/Down choose · Enter edit · Space on/off · R reload · N new mod |
+| **Library** | Your script mods and the examples; Open folder shows the mods folder. | Up/Down choose · Enter edit · Space on/off · R reload · N new mod |
 | **Docs** | The API. | Up/Down, Page Up/Down, wheel |
 
 Ctrl+1 to Ctrl+4 switch tabs. In chat: `/studio` opens it, `/studio reload` reloads every script mod, and
@@ -198,7 +204,7 @@ The hooks, all HEAD hooks:
 | Hook | Target | For |
 |---|---|---|
 | frame | `game::control::poll_control` | each frame with the event loop: scripts, input, agent commands |
-| window-input | `game::follow_keymap` | each window event: while the studio is open, it takes keys, clicks and the wheel (the game gets an event it ignores) |
+| window-input | `game::follow_keymap` | each window event: dropped files to install; while the studio is open, keys, clicks and the wheel (the game gets an event it ignores) |
 | overlay | `game::remote::remote_hud` | the studio's screen, drawn last |
 | chat | `game::remote::chat_line` | `on("chat")` |
 | hud, key, command, zoom, list, settings, click | Horizon's [native hook points](https://github.com/horizon-rust/horizon/blob/main/crates/horizon-client/src/game/native_hooks.rs) | the HUD, keys, commands, `view.zoom`, the Options → Mods row and page |

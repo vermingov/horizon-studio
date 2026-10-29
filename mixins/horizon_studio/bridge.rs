@@ -30,6 +30,8 @@ thread_local! {
     static MODS: Cell<Mods> = const { Cell::new(Mods { ctrl: false, shift: false, alt: false }) };
     static TOGGLE: Cell<bool> = const { Cell::new(false) };
     static INPUTS: RefCell<Vec<Input>> = const { RefCell::new(Vec::new()) };
+    /// Files dropped on the window, to install as script mods.
+    static DROPPED: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Runs `f` with the studio, unless it is busy (a hook reached from a script).
@@ -219,6 +221,9 @@ impl GameApi for Host<'_, '_> {
             game.native_text(b, text, at, rgb, shadow);
         }
     }
+    fn open_folder(&mut self, path: &std::path::Path) {
+        super::packs::open_folder(path);
+    }
     fn place(&mut self, corner: Corner, w: f32, h: f32) -> (f32, f32) {
         match self.corners.as_deref_mut() {
             Some(c) => c.place(game_corner(corner), w, h),
@@ -261,6 +266,7 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
         .map_or(0.0, |t| now.duration_since(t).as_secs_f64());
     let inputs = INPUTS.with(|q| std::mem::take(&mut *q.borrow_mut()));
     let toggle = TOGGLE.with(|t| t.replace(false));
+    let dropped = DROPPED.with(|d| std::mem::take(&mut *d.borrow_mut()));
     with(|st| {
         if !game.native_on(ID) {
             if st.s.ui.open {
@@ -280,6 +286,13 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
             let mut host = Host::new(game);
             host.event_loop = Some(event_loop);
             st.frame(&mut host, dt);
+            for path in dropped {
+                let line = match st.install_path(&mut host, &path) {
+                    Ok(line) => line,
+                    Err(e) => format!("Could not install it: {e}"),
+                };
+                host.chat(&format!("[{NAME}] {line}"));
+            }
             if st.s.ui.open {
                 for input in inputs {
                     if handle(st, &mut host, input) == UiResult::Close {
@@ -378,6 +391,16 @@ fn map_key(code: KeyCode) -> Key {
 /// from the game (the frame hook hands them over); while it is closed, its
 /// key asks it to open.
 pub(super) fn window_input(event: &mut WindowEvent) {
+    // The game has no use for dropped files: script mods to install.
+    if let WindowEvent::DroppedFile(path) = event {
+        DROPPED.with(|d| {
+            let mut d = d.borrow_mut();
+            if d.len() < 64 {
+                d.push(path.clone());
+            }
+        });
+        return;
+    }
     if let WindowEvent::ModifiersChanged(m) = event {
         let m = m.state();
         // AltGr arrives as Control and Alt together: it types, it is no shortcut.

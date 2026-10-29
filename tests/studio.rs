@@ -600,3 +600,129 @@ fn the_readme_documents_every_function() {
         );
     }
 }
+
+fn zip_of(path: &std::path::Path, files: &[(&str, &str)]) {
+    use std::io::Write;
+    let mut z = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    for (name, body) in files {
+        z.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(body.as_bytes()).unwrap();
+    }
+    z.finish().unwrap();
+}
+
+#[test]
+fn dropped_files_install_and_run() {
+    let mut game = FakeGame::new("drop");
+    let mut st = studio(&mut game);
+    let downloads = game.dir.join("downloads");
+    std::fs::create_dir_all(&downloads).unwrap();
+    // A .lua file.
+    let file = downloads.join("Sky Light.lua");
+    std::fs::write(&file, "-- name: Sky light\nprint('sky v1')\n").unwrap();
+    assert_eq!(
+        st.install_path(&mut game, &file).unwrap(),
+        "Installed sky_light: running"
+    );
+    assert!(log(&st).contains(&"[sky_light] sky v1".to_owned()));
+    std::fs::write(&file, "-- name: Sky light\nprint('sky v2, longer')\n").unwrap();
+    assert_eq!(st.install_path(&mut game, &file).unwrap(), "Updated sky_light: running");
+    assert!(log(&st).contains(&"[sky_light] sky v2, longer".to_owned()));
+    // A folder with main.lua, links and hidden files left out.
+    let folder = downloads.join("Tools");
+    std::fs::create_dir_all(folder.join("lib")).unwrap();
+    std::fs::write(folder.join("main.lua"), "print(require('lib.x'))\n").unwrap();
+    std::fs::write(folder.join("lib/x.lua"), "return 'from lib'\n").unwrap();
+    std::fs::write(folder.join(".secret"), "no").unwrap();
+    assert_eq!(st.install_path(&mut game, &folder).unwrap(), "Installed tools: running");
+    assert!(log(&st).contains(&"[tools] from lib".to_owned()), "{:?}", log(&st));
+    assert!(!game.mods_dir().join("tools/.secret").exists());
+    // Zips: main.lua at the root, in one top folder, or a single .lua.
+    let z1 = downloads.join("rootmod.zip");
+    zip_of(&z1, &[("main.lua", "print('root zip')"), ("util.lua", "return 1")]);
+    assert_eq!(st.install_path(&mut game, &z1).unwrap(), "Installed rootmod: running");
+    let z2 = downloads.join("download (3).zip");
+    zip_of(
+        &z2,
+        &[
+            ("Nested Mod/main.lua", "print('nested zip')"),
+            ("__MACOSX/._main.lua", "junk"),
+        ],
+    );
+    assert_eq!(
+        st.install_path(&mut game, &z2).unwrap(),
+        "Installed nested_mod: running"
+    );
+    let z3 = downloads.join("whatever.zip");
+    zip_of(&z3, &[("readme.txt", "hi"), ("solo.lua", "print('solo')")]);
+    assert_eq!(st.install_path(&mut game, &z3).unwrap(), "Installed solo: running");
+    for line in ["[rootmod] root zip", "[nested_mod] nested zip", "[solo] solo"] {
+        assert!(log(&st).contains(&line.to_owned()), "{line}: {:?}", log(&st));
+    }
+    // A broken mod installs, and says why it doesn't run.
+    let bad = downloads.join("bad.lua");
+    std::fs::write(&bad, "error('nope')").unwrap();
+    assert_eq!(
+        st.install_path(&mut game, &bad).unwrap(),
+        "Installed bad, but it failed: bad.lua:1: nope"
+    );
+    // What is not a script mod is refused.
+    let other = downloads.join("pack.txt");
+    std::fs::write(&other, "x").unwrap();
+    assert!(
+        st.install_path(&mut game, &other)
+            .unwrap_err()
+            .contains("installs .lua files")
+    );
+    let empty = downloads.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    assert!(st.install_path(&mut game, &empty).unwrap_err().contains("no main.lua"));
+    let z4 = downloads.join("two.zip");
+    zip_of(&z4, &[("a.lua", ""), ("b.lua", "")]);
+    assert!(
+        st.install_path(&mut game, &z4)
+            .unwrap_err()
+            .contains("not a script mod")
+    );
+    let z5 = downloads.join("evil.zip");
+    zip_of(&z5, &[("../../escape.lua", "print(1)")]);
+    assert!(st.install_path(&mut game, &z5).is_err());
+    assert!(!game.dir.join("escape.lua").exists());
+    // A one-file and a folder mod of the same name don't mix.
+    let clash = downloads.join("tools.lua");
+    std::fs::write(&clash, "print(1)").unwrap();
+    assert!(
+        st.install_path(&mut game, &clash)
+            .unwrap_err()
+            .contains("folder mod named tools")
+    );
+}
+
+#[test]
+fn the_library_opens_the_mods_folder() {
+    use horizon_studio::game::hstudio_ui::{Input, Tab, draw, handle};
+    let mut game = FakeGame::new("open-folder");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Library;
+    draw(&mut st, &mut game);
+    let label = game
+        .drawn
+        .iter()
+        .find(|d| d.starts_with("text Open folder @"))
+        .cloned()
+        .expect("button drawn");
+    let at = label
+        .split('@')
+        .nth(1)
+        .unwrap()
+        .trim_start_matches('[')
+        .split(']')
+        .next()
+        .unwrap()
+        .to_owned();
+    let xy: Vec<f32> = at.split(", ").map(|v| v.parse().unwrap()).collect();
+    handle(&mut st, &mut game, Input::Mouse(xy[0] + 2.0, xy[1] + 2.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    assert_eq!(game.opened, vec![game.mods_dir()]);
+}

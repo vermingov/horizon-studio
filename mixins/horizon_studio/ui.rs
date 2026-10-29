@@ -118,6 +118,7 @@ enum Action {
     Close,
     Save,
     Run,
+    OpenFolder,
 }
 
 /// Where the editor's text was drawn, for the pointer.
@@ -1083,7 +1084,9 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         Tab::Editor => {
             "Ctrl+S save (reloads the mod)   Ctrl+Enter run   Ctrl+Z/Y undo   Ctrl+/ comment   Ctrl+D duplicate"
         }
-        Tab::Library => "Up/Down choose   Enter edit   Space on/off   R reload   N new mod",
+        Tab::Library => {
+            "Up/Down choose   Enter edit   Space on/off   R reload   N new mod   Drop a .lua on the window to install"
+        }
         Tab::Docs => "Up/Down, Page Up/Down or the wheel to scroll",
     };
     let hint = fit(game, hint, w - 20.0);
@@ -1318,7 +1321,9 @@ fn draw_library(st: &mut Studio, game: &mut dyn GameApi, [x, y, w, h]: [f32; 4])
     text(game, "Your script mods", x, y, MUTED);
     let mut ly = y + 13.0;
     if n == 0 {
-        text(game, "None yet: make one, or install an example.", x, ly, INK_SOFT);
+        text(game, "None yet: make one, install an example,", x, ly, INK_SOFT);
+        ly += 11.0;
+        text(game, "or drop a .lua file on the game window.", x, ly, INK_SOFT);
         ly += 12.0;
     }
     let max_rows = (((h - 90.0) / 13.0).max(3.0)) as usize;
@@ -1345,8 +1350,17 @@ fn draw_library(st: &mut Studio, game: &mut dyn GameApi, [x, y, w, h]: [f32; 4])
     }
     ly += 4.0;
     let bw = st.s.ui.button(game, "New mod", x - 4.0, ly, ACCENT, Action::NewMod);
-    st.s.ui
-        .button(game, "Reload all", x + bw, ly, INK_SOFT, Action::ReloadAll);
+    let bw2 =
+        st.s.ui
+            .button(game, "Reload all", x - 4.0 + bw, ly, INK_SOFT, Action::ReloadAll);
+    st.s.ui.button(
+        game,
+        "Open folder",
+        x - 4.0 + bw + bw2,
+        ly,
+        INK_SOFT,
+        Action::OpenFolder,
+    );
     ly += 18.0;
     text(game, "Examples", x, ly, MUTED);
     ly += 13.0;
@@ -1384,7 +1398,7 @@ fn draw_library(st: &mut Studio, game: &mut dyn GameApi, [x, y, w, h]: [f32; 4])
     let Some(m) = st.s.mods.get(st.s.ui.library_sel) else {
         let lines = wrap(
             game,
-            "Script mods are Lua files in your Horizon folder: horizon-mods/.horizon-mod-data/horizon_studio/mods/. Each one is a name.lua file, or a folder with main.lua. Save a file, from here or any editor, and the mod reloads at once.",
+            "Drop a .lua file, a mod folder or a .zip of one on the game window to install it: it runs at once. Script mods live in horizon-mods/.horizon-mod-data/horizon_studio/mods/ (Open folder): a name.lua file, or a folder with main.lua. Save a file, from here or any editor, and the mod reloads at once.",
             dw,
         );
         for (i, l) in lines.iter().enumerate() {
@@ -1706,6 +1720,11 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
             } else if let Some(j) = st.s.mods.iter().position(|m| m.id == EXAMPLES[i].id) {
                 st.s.ui.library_sel = j;
             }
+        }
+        Action::OpenFolder => {
+            let dir = st.s.mods_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            game.open_folder(&dir);
         }
         Action::Save => st.save_editor(game),
         Action::Run => st.run_editor(game),

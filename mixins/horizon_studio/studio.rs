@@ -255,6 +255,8 @@ pub trait GameApi {
     fn text(&mut self, text: &str, at: [f32; 2], rgb: u32, shadow: bool);
     /// A box for a HUD panel in `corner`: where it goes, stacked with the game's own.
     fn place(&mut self, corner: Corner, w: f32, h: f32) -> (f32, f32);
+    /// Shows a folder in the system's file manager.
+    fn open_folder(&mut self, path: &Path);
 }
 
 // ----------------------------------------------------------------- script mods
@@ -898,6 +900,98 @@ impl Studio {
         Ok(path)
     }
 
+    /// Installs what was dropped on the game window: a `.lua` file, a mod
+    /// folder (with `main.lua`), or a `.zip` of either. A mod of the same id
+    /// and kind is replaced (an update). Returns a line saying what happened.
+    pub fn install_path(&mut self, game: &mut dyn GameApi, path: &Path) -> Result<String, String> {
+        self.start(game);
+        let mods = self.s.mods_dir();
+        std::fs::create_dir_all(&mods).map_err(|e| e.to_string())?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("that file has no name")?
+            .to_owned();
+        let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+        let (id, files) = if path.is_dir() {
+            if !path.join("main.lua").is_file() {
+                return Err(format!("{name} has no main.lua: a mod folder starts there"));
+            }
+            (mod_id(&name), Some(read_folder(path)?))
+        } else {
+            match ext.as_deref() {
+                Some("lua") => {
+                    let stem = name.trim_end_matches(".lua").trim_end_matches(".LUA");
+                    let bytes = read_capped(path)?;
+                    let id = mod_id(stem);
+                    if mods.join(&id).is_dir() {
+                        return Err(format!("a folder mod named {id} is installed: remove it first"));
+                    }
+                    let existed = mods.join(format!("{id}.lua")).exists();
+                    std::fs::write(mods.join(format!("{id}.lua")), bytes).map_err(|e| e.to_string())?;
+                    return Ok(self.after_install(game, &id, existed));
+                }
+                Some("zip") => {
+                    let (id, layout) = read_zip(path, name.trim_end_matches(".zip").trim_end_matches(".ZIP"))?;
+                    match layout {
+                        ZipMod::File(bytes) => {
+                            if mods.join(&id).is_dir() {
+                                return Err(format!("a folder mod named {id} is installed: remove it first"));
+                            }
+                            let existed = mods.join(format!("{id}.lua")).exists();
+                            std::fs::write(mods.join(format!("{id}.lua")), bytes).map_err(|e| e.to_string())?;
+                            return Ok(self.after_install(game, &id, existed));
+                        }
+                        ZipMod::Folder(files) => (id, Some(files)),
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "{name}: Horizon Studio installs .lua files, mod folders (with main.lua) and .zip files of them"
+                    ));
+                }
+            }
+        };
+        let files = files.unwrap_or_default();
+        if mods.join(format!("{id}.lua")).is_file() {
+            return Err(format!("a one-file mod named {id} is installed: remove it first"));
+        }
+        // Written beside, then swapped in, so a reload never sees half a mod.
+        let dest = mods.join(&id);
+        let fresh = mods.join(format!(".{id}.installing"));
+        let _ = std::fs::remove_dir_all(&fresh);
+        for (rel, bytes) in &files {
+            let target = fresh.join(rel);
+            if let Some(dir) = target.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(&target, bytes).map_err(|e| e.to_string())?;
+        }
+        let existed = dest.exists();
+        if existed {
+            std::fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
+        }
+        std::fs::rename(&fresh, &dest).map_err(|e| e.to_string())?;
+        Ok(self.after_install(game, &id, existed))
+    }
+
+    fn after_install(&mut self, game: &mut dyn GameApi, id: &str, existed: bool) -> String {
+        self.scan(game);
+        let verb = if existed { "Updated" } else { "Installed" };
+        let line = match self.s.mods.iter().find(|m| m.id == id).map(|m| &m.state) {
+            Some(ModState::Running) => format!("{verb} {id}: running"),
+            Some(ModState::Failed(msg, _)) => format!("{verb} {id}, but it failed: {msg}"),
+            Some(ModState::Off) => format!("{verb} {id} (turned off in the Library)"),
+            None => format!("{verb} {id}"),
+        };
+        self.s.log(LogKind::Info, &line);
+        self.s.toast(line.clone());
+        if let Some(i) = self.s.mods.iter().position(|m| m.id == id) {
+            self.s.ui.library_sel = i;
+        }
+        line
+    }
+
     // ------------------------------------------------------------- environments
 
     /// Globals for a mod or the console: the standard library and the API.
@@ -1379,6 +1473,124 @@ const SCRATCH: &str = "-- scratch.lua: a place to try code. Ctrl+Enter runs this
 
 /// A new mod from the Library's New button.
 const TEMPLATE: &str = "-- name: {name}\n-- version: 0.1.0\n-- description: What this mod does.\n\n-- This file runs when the mod loads, and again each time you save it.\nprint(\"{id} loaded\")\n\ncommand(\"{id}\", function(args)\n  return \"Hello from {name}!\"\nend, \"Says hello\")\n\non(\"tick\", function()\n  -- 20 times a second\nend)\n";
+
+/// The most a dropped mod may hold.
+const MAX_INSTALL_FILES: usize = 256;
+const MAX_INSTALL_BYTES: u64 = 8 << 20;
+
+fn read_capped(path: &Path) -> Result<Vec<u8>, String> {
+    let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+    if len > MAX_INSTALL_BYTES {
+        return Err("that file is too large for a script mod (8 MiB at most)".into());
+    }
+    std::fs::read(path).map_err(|e| e.to_string())
+}
+
+/// A dropped mod folder's files, by their paths inside it (links and hidden
+/// files left out).
+fn read_folder(dir: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
+    let mut out = Vec::new();
+    let mut total = 0u64;
+    let mut stack = vec![(dir.to_path_buf(), 0)];
+    while let Some((d, depth)) = stack.pop() {
+        for e in std::fs::read_dir(&d).map_err(|e| e.to_string())?.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Ok(kind) = e.file_type() else { continue };
+            if name.starts_with('.') || kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                if depth < 4 {
+                    stack.push((e.path(), depth + 1));
+                }
+                continue;
+            }
+            let bytes = read_capped(&e.path())?;
+            total += bytes.len() as u64;
+            if out.len() >= MAX_INSTALL_FILES || total > MAX_INSTALL_BYTES {
+                return Err("that folder is too large for a script mod (256 files, 8 MiB at most)".into());
+            }
+            let rel = e.path().strip_prefix(dir).map_err(|e| e.to_string())?.to_path_buf();
+            out.push((rel, bytes));
+        }
+    }
+    Ok(out)
+}
+
+enum ZipMod {
+    File(Vec<u8>),
+    Folder(Vec<(PathBuf, Vec<u8>)>),
+}
+
+/// A dropped zip: a folder mod (`main.lua` at its root, or in its one top
+/// folder), or a single `.lua` file. The id comes from the folder or file.
+fn read_zip(path: &Path, stem: &str) -> Result<(String, ZipMod), String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|_| "that zip cannot be read".to_owned())?;
+    if zip.len() > MAX_INSTALL_FILES * 2 {
+        return Err("that zip holds too many files for a script mod".into());
+    }
+    let mut files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let mut total = 0u64;
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+        if entry.is_dir() {
+            continue;
+        }
+        let Some(rel) = entry.enclosed_name() else {
+            return Err("that zip has a file outside its folder".into());
+        };
+        if rel
+            .components()
+            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+            || rel.starts_with("__MACOSX")
+        {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        (&mut entry)
+            .take(MAX_INSTALL_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        total += bytes.len() as u64;
+        if files.len() >= MAX_INSTALL_FILES || total > MAX_INSTALL_BYTES {
+            return Err("that zip is too large for a script mod (256 files, 8 MiB at most)".into());
+        }
+        files.push((rel, bytes));
+    }
+    if files.iter().any(|(p, _)| p == Path::new("main.lua")) {
+        return Ok((mod_id(stem), ZipMod::Folder(files)));
+    }
+    let tops: HashSet<_> = files
+        .iter()
+        .filter_map(|(p, _)| p.components().next())
+        .map(|c| c.as_os_str().to_owned())
+        .collect();
+    if tops.len() == 1 {
+        let top = PathBuf::from(tops.into_iter().next().unwrap_or_default());
+        if files.iter().any(|(p, _)| *p == top.join("main.lua")) {
+            let inner = files
+                .into_iter()
+                .filter_map(|(p, b)| p.strip_prefix(&top).ok().map(|r| (r.to_path_buf(), b)))
+                .collect();
+            return Ok((mod_id(&top.to_string_lossy()), ZipMod::Folder(inner)));
+        }
+    }
+    let mut lua: Vec<(PathBuf, Vec<u8>)> = files
+        .into_iter()
+        .filter(|(p, _)| p.extension().is_some_and(|e| e == "lua"))
+        .collect();
+    if lua.len() == 1 {
+        let (p, bytes) = lua.remove(0);
+        let id = mod_id(
+            &p.file_stem()
+                .map_or_else(|| stem.to_owned(), |s| s.to_string_lossy().into_owned()),
+        );
+        return Ok((id, ZipMod::File(bytes)));
+    }
+    Err("that zip is not a script mod: it needs a main.lua, or a single .lua file".into())
+}
 
 /// The line number in `chunk:12: message`.
 pub fn error_line(msg: &str) -> Option<usize> {

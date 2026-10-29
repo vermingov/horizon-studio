@@ -23,6 +23,7 @@ pub struct FakeGame {
     pub drawn: Vec<String>,
     pub clipboard: String,
     pub held_mappings: HashMap<String, bool>,
+    pub opened: Vec<PathBuf>,
 }
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -62,6 +63,7 @@ impl FakeGame {
             drawn: Vec::new(),
             clipboard: String::new(),
             held_mappings: HashMap::new(),
+            opened: Vec::new(),
         }
     }
     pub fn mods_dir(&self) -> PathBuf {
@@ -143,6 +145,9 @@ impl GameApi for FakeGame {
     }
     fn text(&mut self, text: &str, at: [f32; 2], rgb: u32, _shadow: bool) {
         self.drawn.push(format!("text {text} @{at:?} {rgb:06x}"));
+    }
+    fn open_folder(&mut self, path: &std::path::Path) {
+        self.opened.push(path.to_path_buf());
     }
     fn place(&mut self, corner: Corner, _w: f32, _h: f32) -> (f32, f32) {
         match corner {
