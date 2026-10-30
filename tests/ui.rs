@@ -455,3 +455,208 @@ fn the_ai_setup_prompt_copies_from_the_header() {
     draw(&mut st, &mut game);
     assert!(game.drawn.iter().any(|d| d.starts_with("text Copied @")), "it says so");
 }
+
+/// Where a drawn text starts, from the fake game's record of it.
+fn text_at(game: &FakeGame, text: &str) -> (f32, f32) {
+    let line = game
+        .drawn
+        .iter()
+        .find(|d| d.starts_with(&format!("text {text} @")))
+        .unwrap_or_else(|| panic!("{text:?} not drawn"));
+    let at: Vec<f32> = line
+        .split(" @[")
+        .nth(1)
+        .unwrap()
+        .split(']')
+        .next()
+        .unwrap()
+        .split(", ")
+        .map(|v| v.parse().unwrap())
+        .collect();
+    (at[0], at[1])
+}
+
+fn click(st: &mut horizon_studio::game::hstudio::Studio, game: &mut FakeGame, (x, y): (f32, f32)) {
+    handle(st, game, Input::Mouse(x, y));
+    handle(st, game, Input::Button { left: true, down: true });
+    handle(
+        st,
+        game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+}
+
+fn redraw(st: &mut horizon_studio::game::hstudio::Studio, game: &mut FakeGame) {
+    game.drawn.clear();
+    draw(st, game);
+}
+
+#[test]
+fn themes_and_the_window() {
+    use horizon_studio::game::hstudio_theme::{Look, THEMES};
+    let mut game = FakeGame::new("ui-themes");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    handle(&mut st, &mut game, key(Key::Char('5'), CTRL));
+    assert_eq!(st.s.ui.tab, Tab::Settings);
+    redraw(&mut st, &mut game);
+    // The Synapse X style, from its card.
+    let (sx, sy) = text_at(&game, "Synapse X style");
+    click(&mut st, &mut game, (sx + 2.0, sy + 2.0));
+    let synapse = THEMES.iter().position(|t| t.id == "synapse").unwrap();
+    assert_eq!(st.s.ui.look.theme, synapse);
+    assert_eq!(st.s.ui.tab, Tab::Settings, "Settings stays open");
+    let kept = std::fs::read_to_string(st.s.dir.join("look.txt")).unwrap();
+    assert!(kept.contains("theme=synapse"), "{kept}");
+    // Its editor: Execute runs it, Clear empties it.
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    st.s.editor.set_text("print('hi from execute')");
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "Execute");
+    click(&mut st, &mut game, at);
+    assert!(log(&st).iter().any(|l| l.contains("hi from execute")), "{:?}", log(&st));
+    let at = text_at(&game, "Clear");
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.editor.text(), "");
+    // Options shows Settings in the window, its tabs above.
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "Options");
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.ui.tab, Tab::Settings);
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "Console");
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.ui.tab, Tab::Console);
+    // The title bar drags it; the look keeps where.
+    redraw(&mut st, &mut game);
+    let before = st.s.ui.look.window_rect(960.0, 540.0);
+    let (tx, ty) = text_at(&game, "Horizon Studio");
+    handle(&mut st, &mut game, Input::Mouse(tx + 100.0, ty + 4.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    handle(&mut st, &mut game, Input::Mouse(tx + 60.0, ty + 34.0));
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    let after = st.s.ui.look.window_rect(960.0, 540.0);
+    assert_eq!((after[0] - before[0], after[1] - before[1]), (-40.0, 30.0));
+    assert!(
+        std::fs::read_to_string(st.s.dir.join("look.txt"))
+            .unwrap()
+            .contains("rect=")
+    );
+    // Its corner sizes it.
+    redraw(&mut st, &mut game);
+    let (cx, cy) = (after[0] + after[2] - 6.0, after[1] + after[3] - 6.0);
+    handle(&mut st, &mut game, Input::Mouse(cx, cy));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    handle(&mut st, &mut game, Input::Mouse(cx + 50.0, cy + 20.0));
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    let sized = st.s.ui.look.window_rect(960.0, 540.0);
+    assert_eq!((sized[2] - after[2], sized[3] - after[3]), (50.0, 20.0));
+    // Maximise, then minimise rolls it up to its title bar.
+    redraw(&mut st, &mut game);
+    click(&mut st, &mut game, (sized[0] + sized[2] - 46.0 - 23.0, sized[1] + 15.0));
+    assert!(st.s.ui.look.maximized);
+    redraw(&mut st, &mut game);
+    click(&mut st, &mut game, (960.0 - 3.0 * 46.0 + 23.0, 15.0));
+    assert!(st.s.ui.collapsed);
+    redraw(&mut st, &mut game);
+    assert!(!game.drawn.iter().any(|d| d.starts_with("text Execute @")), "rolled up");
+    click(&mut st, &mut game, (960.0 - 3.0 * 46.0 + 23.0, 15.0));
+    assert!(!st.s.ui.collapsed);
+    // Every theme and page draws, with the window small too.
+    for (i, _) in THEMES.iter().enumerate() {
+        for tab in [Tab::Console, Tab::Editor, Tab::Library, Tab::Docs, Tab::Settings] {
+            st.s.ui.look = Look {
+                theme: i,
+                rect: Some([10.0, 10.0, 330.0, 230.0]),
+                ..Look::default()
+            };
+            st.s.ui.tab = tab;
+            redraw(&mut st, &mut game);
+            assert!(game.drawn.len() > 10, "theme {i} {tab:?}");
+        }
+    }
+    // The look comes back as it was kept.
+    let look = Look {
+        theme: 3,
+        window: true,
+        accent: 2,
+        scale: 1.25,
+        opacity: 0.6,
+        code: 15.0,
+        motion: false,
+        rect: Some([12.0, 34.0, 700.0, 400.0]),
+        maximized: false,
+    };
+    look.save(&st.s.dir);
+    assert_eq!(Look::load(&st.s.dir), look);
+}
+
+#[test]
+fn clicks_land_at_any_size() {
+    use horizon_studio::game::hstudio_theme::Look;
+    let mut game = FakeGame::new("ui-scale");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look = Look {
+        scale: 1.25,
+        motion: false,
+        ..Look::default()
+    };
+    redraw(&mut st, &mut game);
+    let (x, y) = text_at(&game, "Docs");
+    click(&mut st, &mut game, (x + 3.0, y + 3.0));
+    assert_eq!(st.s.ui.tab, Tab::Docs);
+    // Settings' size steps go 5% at a time, and stop at 150%.
+    st.s.ui.tab = Tab::Settings;
+    for _ in 0..12 {
+        // Scrolled down to the Size row, as the page grows with the size.
+        handle(&mut st, &mut game, key(Key::Home, NONE));
+        redraw(&mut st, &mut game);
+        for _ in 0..30 {
+            if game.drawn.iter().any(|d| d.starts_with("text Size @")) {
+                break;
+            }
+            handle(&mut st, &mut game, key(Key::Down, NONE));
+            redraw(&mut st, &mut game);
+        }
+        let (_, ly) = text_at(&game, "Size");
+        let plus = game
+            .drawn
+            .iter()
+            .filter(|d| d.starts_with("text + @"))
+            .map(|d| {
+                let v: Vec<f32> = d
+                    .split(" @[")
+                    .nth(1)
+                    .unwrap()
+                    .split(']')
+                    .next()
+                    .unwrap()
+                    .split(", ")
+                    .map(|v| v.parse().unwrap())
+                    .collect();
+                (v[0], v[1])
+            })
+            .find(|(_, y)| (y - ly).abs() < 20.0)
+            .expect("the size's +");
+        click(&mut st, &mut game, (plus.0 + 1.0, plus.1 + 2.0));
+    }
+    assert_eq!(st.s.ui.look.scale, 1.5);
+}

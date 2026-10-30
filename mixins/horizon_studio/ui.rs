@@ -20,13 +20,15 @@ pub enum Tab {
     Editor,
     Library,
     Docs,
+    Settings,
 }
 
-const TABS: [(Tab, &str); 4] = [
+const TABS: [(Tab, &str); 5] = [
     (Tab::Console, "Console"),
     (Tab::Editor, "Editor"),
     (Tab::Library, "Library"),
     (Tab::Docs, "Docs"),
+    (Tab::Settings, "Settings"),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -102,6 +104,33 @@ pub(crate) enum Action {
     OpenFolder,
     /// Copies the prompt that sets an AI agent up (`hstudio_link::SETUP_PROMPT`).
     CopyPrompt,
+    /// The window: its title bar (drag), its corner (resize), its buttons.
+    WinMove,
+    WinResize,
+    WinMin,
+    WinMax,
+    /// Settings: a theme by index, full screen or a window, an accent,
+    /// a setting a step up or down (0 size, 1 backdrop, 2 code), motion,
+    /// the window back where it started.
+    Theme(u8),
+    NextTheme,
+    Windowed(bool),
+    Accent(u8),
+    Step(u8, bool),
+    Motion,
+    ResetWindow,
+    /// Settings shown, or back to the editor (the executor styles).
+    Settings,
+    ClearEditor,
+}
+
+/// A window being moved or sized: how, from where the pointer was, and the
+/// window then.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WinDrag {
+    resize: bool,
+    from: (f32, f32),
+    rect: [f32; 4],
 }
 
 /// Where the editor's text was drawn, for the pointer.
@@ -129,6 +158,14 @@ pub struct Ui {
     pub naming: Option<LineEdit>,
     /// When the AI setup prompt was copied (its button says so a moment).
     pub copied_at: Option<f64>,
+    /// The looks chosen in Settings (`look.txt`).
+    pub look: super::hstudio_theme::Look,
+    /// The window rolled up to its title bar.
+    pub collapsed: bool,
+    pub(crate) drag: Option<WinDrag>,
+    /// The screen in the studio's units, from the last frame.
+    pub(crate) screen: (f32, f32),
+    pub(crate) settings_scroll: f32,
     /// The pointer, in dp.
     pub mouse: (f32, f32),
     /// Whether the left and right buttons are held (over a script screen).
@@ -150,7 +187,7 @@ pub struct Ui {
     pub(crate) pill: [f32; 2],
     pub(crate) pill_from: [f32; 2],
     pub(crate) anim: std::collections::HashMap<u64, f32>,
-    pub(crate) smooth: [f32; 3],
+    pub(crate) smooth: [f32; 4],
     pub(crate) naming_at: f64,
 }
 
@@ -993,16 +1030,29 @@ fn inside(r: [f32; 4], (x, y): (f32, f32)) -> bool {
     x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3]
 }
 
-pub use super::hstudio_look::{CODE_LINE, draw, draw_screen};
+pub use super::hstudio_look::{code_line, draw, draw_screen};
 
 // ----------------------------------------------------------------- input
 
 pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult {
     match input {
         Input::Mouse(x, y) => {
-            let k = st.s.ui.dp_factor();
+            // GUI pixels to dp, then to the studio's units (its size setting).
+            let k = st.s.ui.dp_factor() / st.s.ui.look.scale;
             let (x, y) = (x * k, y * k);
             st.s.ui.mouse = (x, y);
+            if let Some(d) = st.s.ui.drag {
+                let (dx, dy) = (x - d.from.0, y - d.from.1);
+                let [rx, ry, rw, rh] = d.rect;
+                let look = &mut st.s.ui.look;
+                look.maximized = false;
+                look.rect = Some(if d.resize {
+                    [rx, ry, (rw + dx).max(320.0), (rh + dy).max(220.0)]
+                } else {
+                    [rx + dx, ry + dy, rw, rh]
+                });
+                return UiResult::Used;
+            }
             if st.s.ui.dragging {
                 editor_point(st, game, x, y, true);
             }
@@ -1011,6 +1061,9 @@ pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult
         Input::Button { left, down } => {
             if !down {
                 st.s.ui.dragging = false;
+                if st.s.ui.drag.take().is_some() {
+                    st.s.ui.look.save(&st.s.dir);
+                }
                 return UiResult::Used;
             }
             if !left || st.s.ui.naming.is_some() {
@@ -1018,6 +1071,24 @@ pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult
             }
             let at = st.s.ui.mouse;
             let hit = st.s.ui.hits.iter().rev().find(|(r, _)| inside(*r, at)).map(|(_, a)| *a);
+            if let Some(action @ (Action::WinMove | Action::WinResize)) = hit {
+                let (w, h) = st.s.ui.screen;
+                let look = &mut st.s.ui.look;
+                let mut rect = look.window_rect(w, h);
+                if look.maximized {
+                    // Dragged out of full size: its own size again, under the pointer.
+                    look.maximized = false;
+                    let own = look.window_rect(w, h);
+                    rect = [at.0 - own[2] / 2.0, at.1 - 15.0, own[2], own[3]];
+                    look.rect = Some(rect);
+                }
+                st.s.ui.drag = Some(WinDrag {
+                    resize: action == Action::WinResize,
+                    from: at,
+                    rect,
+                });
+                return UiResult::Used;
+            }
             if let Some(action) = hit {
                 return act(st, game, action);
             }
@@ -1067,6 +1138,11 @@ pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult
                         st.s.ui.docs_scroll + n
                     };
                 }
+                Tab::Settings => {
+                    let by = 40.0 * n as f32 / 3.0;
+                    let s = &mut st.s.ui.settings_scroll;
+                    *s = if up { (*s - by).max(0.0) } else { *s + by };
+                }
             }
             UiResult::Used
         }
@@ -1099,6 +1175,7 @@ pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult
                     _ => {}
                 },
                 Tab::Docs => {}
+                Tab::Settings => {}
             }
             UiResult::Used
         }
@@ -1117,11 +1194,11 @@ fn editor_point(st: &mut Studio, game: &mut dyn GameApi, x: f32, y: f32, drag: b
     let Some(v) = st.s.ui.view else {
         return false;
     };
-    if !drag && (x < v.x - 30.0 || y < v.y || y > v.y + CODE_LINE * v.rows as f32 || x > v.x + v.w + 4.0) {
+    if !drag && (x < v.x - 30.0 || y < v.y || y > v.y + code_line() * v.rows as f32 || x > v.x + v.w + 4.0) {
         return false;
     }
     let ed = &mut st.s.editor;
-    let row_in_view = ((y - v.y) / CODE_LINE).floor().max(0.0) as usize;
+    let row_in_view = ((y - v.y) / code_line()).floor().max(0.0) as usize;
     let row = (ed.scroll + row_in_view.min(v.rows)).min(ed.lines.len() - 1);
     let col = ed.hscroll + column_at(game, &ed.lines[row], ed.hscroll, x - v.x);
     let anchor = if drag { ed.anchor } else { None };
@@ -1137,7 +1214,7 @@ fn column_at(game: &mut dyn GameApi, line: &str, skip: usize, dx: f32) -> usize 
     for (n, (i, c)) in line[from..].char_indices().enumerate() {
         let w = game.dp_measure(
             &line[from..from + i + c.len_utf8()],
-            super::hstudio_look::CODE_SIZE,
+            super::hstudio_look::code_size(),
             Font::Mono,
         );
         if dx < (prev + w) / 2.0 {
@@ -1190,6 +1267,69 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
         }
         Action::Save => st.save_editor(game),
         Action::Run => st.run_editor(game),
+        Action::WinMove | Action::WinResize => {}
+        Action::WinMin => st.s.ui.collapsed = !st.s.ui.collapsed,
+        Action::WinMax => {
+            st.s.ui.look.maximized = !st.s.ui.look.maximized;
+            st.s.ui.look.save(&st.s.dir);
+        }
+        Action::Theme(i) => {
+            st.s.ui.look.theme = usize::from(i).min(super::hstudio_theme::THEMES.len() - 1);
+            // The executor styles open on their editor.
+            if st.s.ui.look.theme().layout != super::hstudio_theme::Layout::Studio && st.s.ui.tab != Tab::Settings {
+                st.s.ui.tab = Tab::Editor;
+            }
+            st.s.ui.collapsed = false;
+            st.s.ui.look.rect = None;
+            st.s.ui.look.maximized = false;
+            st.s.ui.look.save(&st.s.dir);
+        }
+        Action::NextTheme => {
+            let n = super::hstudio_theme::THEMES.len();
+            return act(st, game, Action::Theme(((st.s.ui.look.theme + 1) % n) as u8));
+        }
+        Action::Windowed(on) => {
+            st.s.ui.look.window = on;
+            st.s.ui.look.save(&st.s.dir);
+        }
+        Action::Accent(i) => {
+            st.s.ui.look.accent = usize::from(i).min(super::hstudio_theme::ACCENTS.len() - 1);
+            st.s.ui.look.save(&st.s.dir);
+        }
+        Action::Step(which, up) => {
+            let look = &mut st.s.ui.look;
+            let sign = if up { 1.0 } else { -1.0 };
+            match which {
+                0 => look.scale = ((look.scale + 0.05 * sign) * 20.0).round() / 20.0,
+                1 => look.opacity = ((look.opacity + 0.05 * sign) * 20.0).round() / 20.0,
+                _ => look.code += sign,
+            }
+            look.scale = look.scale.clamp(0.75, 1.5);
+            look.opacity = look.opacity.clamp(0.3, 1.0);
+            look.code = look.code.clamp(11.0, 20.0);
+            look.save(&st.s.dir);
+        }
+        Action::Motion => {
+            st.s.ui.look.motion = !st.s.ui.look.motion;
+            st.s.ui.look.save(&st.s.dir);
+        }
+        Action::ResetWindow => {
+            st.s.ui.look.rect = None;
+            st.s.ui.look.maximized = false;
+            st.s.ui.collapsed = false;
+            st.s.ui.look.save(&st.s.dir);
+        }
+        Action::Settings => {
+            st.s.ui.tab = if st.s.ui.tab == Tab::Settings {
+                Tab::Editor
+            } else {
+                Tab::Settings
+            };
+        }
+        Action::ClearEditor => {
+            st.s.editor.set_text("");
+            st.s.editor.dirty = true;
+        }
         Action::CopyPrompt => {
             game.set_clipboard(super::hstudio_link::SETUP_PROMPT);
             st.s.ui.copied_at = Some(st.s.now);
@@ -1230,7 +1370,7 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
     }
     match key {
         Key::Escape | Key::Toggle => return UiResult::Close,
-        Key::Char(c @ '1'..='4') if mods.ctrl => {
+        Key::Char(c @ '1'..='5') if mods.ctrl => {
             st.s.ui.tab = TABS[(c as u8 - b'1') as usize].0;
             return UiResult::Used;
         }
@@ -1257,6 +1397,18 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
                 Key::Home => *s = 0,
                 _ => {}
             }
+        }
+        Tab::Settings => {
+            let s = &mut st.s.ui.settings_scroll;
+            match key {
+                Key::Up => *s -= 40.0,
+                Key::Down => *s += 40.0,
+                Key::PageUp => *s -= 320.0,
+                Key::PageDown => *s += 320.0,
+                Key::Home => *s = 0.0,
+                _ => {}
+            }
+            *s = s.max(0.0);
         }
     }
     UiResult::Used

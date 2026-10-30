@@ -7,34 +7,72 @@
 
 use super::hstudio::{API, CONSOLE_API, Font, GameApi, LogKind, ModState, Studio};
 use super::hstudio_examples::EXAMPLES;
+use super::hstudio_theme::{ACCENTS, Layout, Look, Palette, THEMES};
 use super::hstudio_ui::{
     Action, EditorView, LineEdit, Long, Tab, Tint, Ui, complete, field, field_num, field_text, highlight, kind,
     slider_text, widgets,
 };
 
-// The dark palette, 0xAARRGGBB.
-const PAGE: u32 = 0xFF0D_0E13;
-const SURFACE: u32 = 0xFF16_181F;
-const PLATE_SOFT: u32 = 0xFF18_1A22;
-const PLATE: u32 = 0xFF20_222C;
-const RULE: u32 = 0xFF24_262F;
-const INK: u32 = 0xFFEC_EDF3;
-const INK_SOFT: u32 = 0xFFC5_C7D1;
-const MUTED: u32 = 0xFF8B_8F9C;
-const ACCENT: u32 = 0xFF9A_86FF;
-const ACCENT_HOVER: u32 = 0xFFB0_A0FF;
-const DANGER: u32 = 0xFFF0_7A68;
-const SUCCESS: u32 = 0xFF45_C27A;
-// Code, quiet beside the ink.
-const KEYWORD: u32 = 0xFFB4_A7FF;
-const STRING: u32 = 0xFF8F_D6A8;
-const NUMBER: u32 = 0xFFF2_C48D;
-const COMMENT: u32 = 0xFF6E_7280;
-const GLOBAL: u32 = 0xFF9F_C2FF;
+// The colours come from the theme (`hstudio_theme`), set as each frame draws.
+thread_local! {
+    static PAL: std::cell::Cell<Palette> = const { std::cell::Cell::new(super::hstudio_theme::THEMES[0].palette) };
+    static CODE: std::cell::Cell<f32> = const { std::cell::Cell::new(13.0) };
+    static MOTION: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
 
-/// The editor's and console's code: Geist Mono at this size, one line per row.
-pub const CODE_SIZE: f32 = 13.0;
-pub const CODE_LINE: f32 = 20.0;
+/// This frame's palette.
+pub(super) fn pal() -> Palette {
+    PAL.with(std::cell::Cell::get)
+}
+
+pub(super) fn set_pal(p: Palette) {
+    PAL.with(|c| c.set(p));
+}
+
+/// Takes up the chosen look: its palette, or with `plain` the studio's own
+/// for what the executor styles have no look of (script screens, dialogs,
+/// the toast), the code's size and whether things move.
+pub(super) fn use_look(look: &Look, plain: bool) {
+    let palette = if plain && look.theme().layout != Layout::Studio {
+        Look {
+            theme: 0,
+            ..look.clone()
+        }
+        .palette()
+    } else {
+        look.palette()
+    };
+    set_pal(palette);
+    CODE.with(|c| c.set(look.code));
+    MOTION.with(|c| c.set(look.motion));
+}
+
+fn motion() -> bool {
+    MOTION.with(std::cell::Cell::get)
+}
+
+/// Text that reads on `c`: near black on a light colour, white on a dark one.
+pub(super) fn on(c: u32) -> u32 {
+    let ch = |s: u32| ((c >> s) & 0xFF) as f32;
+    if 0.299 * ch(16) + 0.587 * ch(8) + 0.114 * ch(0) > 140.0 {
+        0xFF0D_0E13
+    } else {
+        0xFFFF_FFFF
+    }
+}
+
+/// Text on the accent.
+pub(super) fn on_accent() -> u32 {
+    on(pal().accent)
+}
+
+/// The editor's and console's code: Geist Mono at the chosen size, one line per row.
+pub fn code_size() -> f32 {
+    CODE.with(std::cell::Cell::get)
+}
+pub fn code_line() -> f32 {
+    (code_size() * 1.54).round()
+}
 
 #[derive(Clone, Copy)]
 struct Motion {
@@ -76,15 +114,18 @@ fn bezier(c: [f32; 4], t: f32) -> f32 {
 }
 
 fn progress(now: f64, since: f64, m: Motion) -> f32 {
+    if !motion() {
+        return 1.0;
+    }
     bezier(m.curve, ((now - since) / m.secs).clamp(0.0, 1.0) as f32)
 }
 
-fn fade(c: u32, a: f32) -> u32 {
+pub(super) fn fade(c: u32, a: f32) -> u32 {
     let alpha = ((c >> 24) as f32 * a.clamp(0.0, 1.0)).round() as u32;
     (c & 0x00FF_FFFF) | alpha << 24
 }
 
-fn mix(a: u32, b: u32, t: f32) -> u32 {
+pub(super) fn mix(a: u32, b: u32, t: f32) -> u32 {
     let t = t.clamp(0.0, 1.0);
     let ch = |s: u32| {
         let (x, y) = (((a >> s) & 0xFF) as f32, ((b >> s) & 0xFF) as f32);
@@ -93,7 +134,7 @@ fn mix(a: u32, b: u32, t: f32) -> u32 {
     ch(24) | ch(16) | ch(8) | ch(0)
 }
 
-fn id(s: &str, n: usize) -> u64 {
+pub(super) fn id(s: &str, n: usize) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in s.bytes().chain(n.to_le_bytes()) {
         h ^= u64::from(b);
@@ -103,61 +144,73 @@ fn id(s: &str, n: usize) -> u64 {
 }
 
 /// A hover (or other) fade toward `on`, eased.
-fn hover(ui: &mut Ui, key: u64, on: bool, dt: f32) -> f32 {
+pub(super) fn hover(ui: &mut Ui, key: u64, on: bool, dt: f32) -> f32 {
     let v = ui.anim.entry(key).or_insert(0.0);
-    let step = dt / QUICK.secs as f32;
+    let step = if motion() { dt / QUICK.secs as f32 } else { 1.0 };
     *v = if on { (*v + step).min(1.0) } else { (*v - step).max(0.0) };
     bezier(QUICK.curve, *v)
 }
 
 /// A switch's or selection's move toward `on`, eased.
-fn glide(ui: &mut Ui, key: u64, on: bool, dt: f32) -> f32 {
+pub(super) fn glide(ui: &mut Ui, key: u64, on: bool, dt: f32) -> f32 {
     let v = ui.anim.entry(key).or_insert(if on { 1.0 } else { 0.0 });
-    let step = dt / MOVE.secs as f32;
+    let step = if motion() { dt / MOVE.secs as f32 } else { 1.0 };
     *v = if on { (*v + step).min(1.0) } else { (*v - step).max(0.0) };
     bezier(MOVE.curve, *v)
 }
 
-fn inside(r: [f32; 4], (x, y): (f32, f32)) -> bool {
+pub(super) fn inside(r: [f32; 4], (x, y): (f32, f32)) -> bool {
     x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3]
 }
 
 /// The top of a `size` line box centred on `y`.
-fn top(y: f32, size: f32) -> f32 {
+pub(super) fn top(y: f32, size: f32) -> f32 {
     (y - (size * 1.45).round() / 2.0).floor()
 }
 
-/// Drawing with a fade and a rise applied, for whatever is arriving.
-struct P<'g> {
-    g: &'g mut dyn GameApi,
-    alpha: f32,
-    dy: f32,
+/// Drawing with a fade and a rise applied, for whatever is arriving, in
+/// the studio's units: dp times the size setting, with the theme's corners.
+pub(super) struct P<'g> {
+    pub(super) g: &'g mut dyn GameApi,
+    pub(super) alpha: f32,
+    pub(super) dy: f32,
+    /// dp per unit.
+    pub(super) s: f32,
 }
 
 impl P<'_> {
-    fn rect(&mut self, r: [f32; 4], radius: f32, c: u32) {
+    fn at(&self, r: [f32; 4]) -> [f32; 4] {
+        let s = self.s;
+        [r[0] * s, (r[1] + self.dy) * s, r[2] * s, r[3] * s]
+    }
+    pub(super) fn rect(&mut self, r: [f32; 4], radius: f32, c: u32) {
         let c = fade(c, self.alpha);
         if c >> 24 != 0 && r[2] > 0.0 && r[3] > 0.0 {
-            self.g.dp_rect([r[0], r[1] + self.dy, r[2], r[3]], radius, c);
+            let r = self.at(r);
+            self.g.dp_rect(r, radius * self.s * pal().round, c);
         }
     }
-    fn border(&mut self, r: [f32; 4], radius: f32, c: u32) {
+    pub(super) fn border(&mut self, r: [f32; 4], radius: f32, c: u32) {
         let c = fade(c, self.alpha);
         if c >> 24 != 0 {
-            self.g.dp_border([r[0], r[1] + self.dy, r[2], r[3]], radius, c);
+            let r = self.at(r);
+            self.g.dp_border(r, radius * self.s * pal().round, c);
         }
     }
-    fn text(&mut self, s: &str, x: f32, y: f32, size: f32, font: Font, c: u32) -> f32 {
-        if s.is_empty() {
+    pub(super) fn text(&mut self, t: &str, x: f32, y: f32, size: f32, font: Font, c: u32) -> f32 {
+        if t.is_empty() {
             return 0.0;
         }
-        self.g.dp_text(s, [x, y + self.dy], size, font, fade(c, self.alpha))
+        let s = self.s;
+        self.g
+            .dp_text(t, [x * s, (y + self.dy) * s], size * s, font, fade(c, self.alpha))
+            / s
     }
-    fn measure(&mut self, s: &str, size: f32, font: Font) -> f32 {
-        self.g.dp_measure(s, size, font)
+    pub(super) fn measure(&mut self, t: &str, size: f32, font: Font) -> f32 {
+        self.g.dp_measure(t, size * self.s, font) / self.s
     }
     /// The longest start of `s` that fits in `max`, with an ellipsis when cut.
-    fn fit(&mut self, s: &str, max: f32, size: f32, font: Font) -> String {
+    pub(super) fn fit(&mut self, s: &str, max: f32, size: f32, font: Font) -> String {
         if self.measure(s, size, font) <= max {
             return s.to_owned();
         }
@@ -172,7 +225,7 @@ impl P<'_> {
         }
         out
     }
-    fn wrap(&mut self, s: &str, max: f32, size: f32, font: Font) -> Vec<String> {
+    pub(super) fn wrap(&mut self, s: &str, max: f32, size: f32, font: Font) -> Vec<String> {
         let mut lines = Vec::new();
         for para in s.split('\n') {
             let mut line = String::new();
@@ -228,9 +281,9 @@ fn pill(
     let r = [x, y, w, h];
     let t = hover(ui, id(key, 0), inside(r, ui.mouse), dt);
     let (bg, fg) = match style {
-        Style::Primary => (mix(ACCENT, ACCENT_HOVER, t), PAGE),
-        Style::Secondary => (mix(fade(INK, 0.08), fade(INK, 0.15), t), INK),
-        Style::Quiet => (fade(INK, 0.10 * t), mix(INK_SOFT, INK, t)),
+        Style::Primary => (mix(pal().accent, pal().accent_hover, t), on_accent()),
+        Style::Secondary => (mix(fade(pal().ink, 0.08), fade(pal().ink, 0.15), t), pal().ink),
+        Style::Quiet => (fade(pal().ink, 0.10 * t), mix(pal().ink_soft, pal().ink, t)),
     };
     p.rect(r, h / 2.0, bg);
     p.text(label, x + 14.0, top(y + h / 2.0, size), size, Font::Medium, fg);
@@ -241,10 +294,10 @@ fn pill(
 /// A key's name on a small key cap, then what it does; returns the width.
 fn keycap(p: &mut P, keys: &str, what: &str, x: f32, cy: f32) -> f32 {
     let kw = p.measure(keys, 11.0, Font::Mono) + 12.0;
-    p.rect([x, cy - 10.0, kw, 20.0], 5.0, fade(INK, 0.06));
-    p.border([x, cy - 10.0, kw, 20.0], 5.0, RULE);
-    p.text(keys, x + 6.0, top(cy, 11.0), 11.0, Font::Mono, INK_SOFT);
-    let ww = p.text(what, x + kw + 6.0, top(cy, 12.0), 12.0, Font::Regular, MUTED);
+    p.rect([x, cy - 10.0, kw, 20.0], 5.0, fade(pal().ink, 0.06));
+    p.border([x, cy - 10.0, kw, 20.0], 5.0, pal().rule);
+    p.text(keys, x + 6.0, top(cy, 11.0), 11.0, Font::Mono, pal().ink_soft);
+    let ww = p.text(what, x + kw + 6.0, top(cy, 12.0), 12.0, Font::Regular, pal().muted);
     kw + 6.0 + ww
 }
 
@@ -262,6 +315,10 @@ fn tick(ui: &mut Ui, now: f64) -> f32 {
 }
 
 fn smooth(v: &mut f32, target: f32, dt: f32) {
+    if !motion() {
+        *v = target;
+        return;
+    }
     *v += (target - *v) * (1.0 - (-dt * 18.0).exp());
     if (target - *v).abs() < 0.01 {
         *v = target;
@@ -270,19 +327,29 @@ fn smooth(v: &mut f32, target: f32, dt: f32) {
 
 // ----------------------------------------------------------------- the studio
 
-const TABS: [(Tab, &str); 4] = [
+const TABS: [(Tab, &str); 5] = [
     (Tab::Console, "Console"),
     (Tab::Editor, "Editor"),
     (Tab::Library, "Library"),
     (Tab::Docs, "Docs"),
+    (Tab::Settings, "Settings"),
 ];
+
+/// A Windows 10 title bar's height, and its buttons' width.
+pub(super) const TITLE: f32 = 30.0;
+const CAPTION_W: f32 = 46.0;
 
 pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
     let now = st.s.now;
-    let (w, h, k) = game.dp();
+    let look = st.s.ui.look.clone();
+    use_look(&look, false);
+    let (dw, dh, k) = game.dp();
+    let s = look.scale;
+    let (w, h) = (dw / s, dh / s);
     let dt = {
         let ui = &mut st.s.ui;
         ui.dp = k;
+        ui.screen = (w, h);
         ui.hits.clear();
         ui.view = None;
         tick(ui, now)
@@ -292,36 +359,185 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         g: game,
         alpha,
         dy: 0.0,
+        s,
     };
-    p.rect([0.0, 0.0, w, h], 0.0, fade(PAGE, 0.92));
-    p.dy = rise;
-    let gutter = if w >= 900.0 { 48.0 } else { 20.0 };
-    let cw = (w - 2.0 * gutter).clamp(200.0, 1280.0);
-    let x0 = ((w - cw) / 2.0).floor();
-    header(st, &mut p, x0, 24.0, cw, dt);
-    let tab = st.s.ui.tab;
-    let shown = progress(now, st.s.ui.tab_at, MOVE);
-    let body = [x0, 80.0, cw, (h - 80.0 - 52.0).max(40.0)];
-    p.alpha = alpha * shown;
-    p.dy = rise + (1.0 - shown) * RISE;
-    match tab {
-        Tab::Console => draw_console(st, &mut p, body),
-        Tab::Editor => draw_editor(st, &mut p, body, dt),
-        Tab::Library => draw_library(st, &mut p, body, dt),
-        Tab::Docs => draw_docs(st, &mut p, body, dt),
+    if look.windowed() {
+        p.rect([0.0, 0.0, w, h], 0.0, fade(0xFF00_0000, 0.4 * look.opacity));
+        p.dy = rise;
+        let layout = look.theme().layout;
+        let r = look.window_rect(w, h);
+        let c = chrome(layout);
+        if let Some(b) = window(st, &mut p, r, c, dt) {
+            match layout {
+                Layout::Studio => studio_page(
+                    st,
+                    &mut p,
+                    [b[0] + 16.0, b[1] + 12.0, b[2] - 32.0, b[3] - 26.0],
+                    dt,
+                    true,
+                ),
+                _ => super::hstudio_skins::draw(st, &mut p, layout, b, dt),
+            }
+            grip(st, &mut p, r, c);
+        }
+    } else {
+        p.rect([0.0, 0.0, w, h], 0.0, fade(pal().page, look.opacity));
+        p.dy = rise;
+        let gutter = if w >= 900.0 { 48.0 } else { 20.0 };
+        let cw = (w - 2.0 * gutter).clamp(200.0, 1280.0);
+        let x0 = ((w - cw) / 2.0).floor();
+        studio_page(st, &mut p, [x0, 24.0, cw, h - 48.0], dt, false);
     }
-    p.alpha = alpha;
-    p.dy = rise;
-    footer(st, &mut p, x0, h - 28.0, cw);
     if let Some(name) = st.s.ui.naming.clone() {
+        use_look(&look, true);
+        p.dy = 0.0;
         naming(st, &mut p, &name, w, h);
     }
 }
 
-fn header(st: &mut Studio, p: &mut P, x: f32, y: f32, w: f32, dt: f32) {
+/// The studio's own layout in `[x, y, w, h]`: the tabs, the page, the keys.
+fn studio_page(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32, windowed: bool) {
     let now = st.s.now;
-    let ww = p.text("Horizon Studio", x, top(y + 16.0, 16.0), 16.0, Font::Medium, INK);
-    let mut sx = x + ww + 28.0;
+    let (alpha, rise) = (p.alpha, p.dy);
+    header(st, p, x, y, w, dt, windowed);
+    let tab = st.s.ui.tab;
+    let shown = progress(now, st.s.ui.tab_at, MOVE);
+    let body = [x, y + 56.0, w, (h - 84.0).max(40.0)];
+    p.alpha = alpha * shown;
+    p.dy = rise + (1.0 - shown) * RISE;
+    page(st, p, tab, body, dt);
+    p.alpha = alpha;
+    p.dy = rise;
+    footer(st, p, x, y + h - 4.0, w);
+}
+
+/// A tab's page in `body`.
+pub(super) fn page(st: &mut Studio, p: &mut P, tab: Tab, body: [f32; 4], dt: f32) {
+    match tab {
+        Tab::Console => draw_console(st, p, body),
+        Tab::Editor => draw_editor(st, p, body, dt),
+        Tab::Library => draw_library(st, p, body, dt),
+        Tab::Docs => draw_docs(st, p, body, dt),
+        Tab::Settings => draw_settings(st, p, body, dt),
+    }
+}
+
+/// A window's colours: its title bar and the text on it, its body, its edge.
+#[derive(Clone, Copy)]
+pub(super) struct Chrome {
+    pub(super) bar: u32,
+    pub(super) text: u32,
+    pub(super) body: u32,
+    pub(super) edge: u32,
+}
+
+fn chrome(layout: Layout) -> Chrome {
+    let c = pal();
+    let text = match layout {
+        Layout::Studio => c.ink,
+        _ => on(c.surface),
+    };
+    let edge = match layout {
+        Layout::Studio | Layout::Synapse => c.rule,
+        _ => 0xFF6E_6E6E,
+    };
+    Chrome {
+        bar: c.surface,
+        text,
+        body: c.page,
+        edge,
+    }
+}
+
+/// A Windows 10 window: its shadow, its title bar (the studio's mark, its
+/// name, then minimise, maximise and close) and its edge. Returns its body,
+/// or None while it is rolled up to the title bar.
+fn window(st: &mut Studio, p: &mut P, r: [f32; 4], c: Chrome, dt: f32) -> Option<[f32; 4]> {
+    let ui = &mut st.s.ui;
+    let (rolled, maxed) = (ui.collapsed, ui.look.maximized);
+    let [x, y, w, full_h] = r;
+    let h = if rolled { TITLE } else { full_h };
+    let round = pal().round;
+    set_pal(Palette { round: 0.0, ..pal() });
+    if !maxed {
+        for i in 1..=10 {
+            let f = i as f32;
+            p.rect(
+                [x - f, y - f + 4.0, w + 2.0 * f, h + 2.0 * f],
+                0.0,
+                fade(0xFF00_0000, 0.028),
+            );
+        }
+    }
+    p.rect([x, y, w, h], 0.0, c.body);
+    p.rect([x, y, w, TITLE], 0.0, c.bar);
+    ui.hits.push(([x, y, w, TITLE], Action::WinMove));
+    let cy = y + TITLE / 2.0;
+    p.rect([x + 9.0, cy - 7.0, 14.0, 14.0], 3.0, pal().accent);
+    let hw = p.measure("H", 10.0, Font::Medium);
+    p.text("H", x + 16.0 - hw / 2.0, top(cy, 10.0), 10.0, Font::Medium, on_accent());
+    let name = p.fit("Horizon Studio", w - 3.0 * CAPTION_W - 44.0, 12.0, Font::Regular);
+    p.text(&name, x + 32.0, top(cy, 12.0), 12.0, Font::Regular, c.text);
+    for (i, action) in [Action::WinMin, Action::WinMax, Action::Close].into_iter().enumerate() {
+        let b = [x + w - CAPTION_W * (3 - i) as f32, y, CAPTION_W, TITLE];
+        let t = hover(ui, id("caption", i), inside(b, ui.mouse), dt);
+        let close = action == Action::Close;
+        let over = if close {
+            fade(0xFFE8_1123, t)
+        } else {
+            fade(c.text, 0.12 * t)
+        };
+        p.rect(b, 0.0, over);
+        let g = if close { mix(c.text, 0xFFFF_FFFF, t) } else { c.text };
+        let gx = b[0] + CAPTION_W / 2.0;
+        match action {
+            Action::WinMin => p.rect([gx - 5.0, cy, 10.0, 1.0], 0.0, g),
+            Action::WinMax if maxed => {
+                p.border([gx - 3.0, cy - 5.0, 8.0, 8.0], 0.0, g);
+                p.rect([gx - 5.0, cy - 3.0, 8.0, 8.0], 0.0, c.bar);
+                p.rect([gx - 5.0, cy - 3.0, 8.0, 8.0], 0.0, over);
+                p.border([gx - 5.0, cy - 3.0, 8.0, 8.0], 0.0, g);
+            }
+            Action::WinMax => p.border([gx - 5.0, cy - 5.0, 10.0, 10.0], 0.0, g),
+            _ => {
+                let xw = p.measure("×", 18.0, Font::Regular);
+                p.text("×", gx - xw / 2.0, top(cy - 1.0, 18.0), 18.0, Font::Regular, g);
+            }
+        }
+        ui.hits.push((b, action));
+    }
+    p.border([x, y, w, h], 0.0, c.edge);
+    set_pal(Palette { round, ..pal() });
+    (!rolled).then_some([x + 1.0, y + TITLE, w - 2.0, full_h - TITLE - 1.0])
+}
+
+/// The grip that sizes the window, at its bottom right, over its body.
+fn grip(st: &mut Studio, p: &mut P, r: [f32; 4], c: Chrome) {
+    if st.s.ui.look.maximized {
+        return;
+    }
+    let (gx, gy) = (r[0] + r[2] - 4.0, r[1] + r[3] - 4.0);
+    let dot = fade(on(c.body), 0.4);
+    for (a, b) in [(1.0, 1.0), (2.0, 1.0), (1.0, 2.0), (3.0, 1.0), (2.0, 2.0), (1.0, 3.0)] {
+        p.g.dp_rect(
+            [(gx - 3.0 * a) * p.s, (gy - 3.0 * b + p.dy) * p.s, 2.0 * p.s, 2.0 * p.s],
+            0.0,
+            fade(dot, p.alpha),
+        );
+    }
+    st.s.ui
+        .hits
+        .push(([r[0] + r[2] - 16.0, r[1] + r[3] - 16.0, 16.0, 16.0], Action::WinResize));
+}
+
+fn header(st: &mut Studio, p: &mut P, x: f32, y: f32, w: f32, dt: f32, windowed: bool) {
+    let now = st.s.now;
+    // In a window its title bar has the name and the close button.
+    let mut sx = if windowed {
+        x
+    } else {
+        x + p.text("Horizon Studio", x, top(y + 16.0, 16.0), 16.0, Font::Medium, pal().ink) + 28.0
+    };
     let tx = sx;
     let mut segs = Vec::new();
     for (tab, label) in TABS {
@@ -329,7 +545,7 @@ fn header(st: &mut Studio, p: &mut P, x: f32, y: f32, w: f32, dt: f32) {
         segs.push((tab, label, [sx + 2.0, y + 2.0, sw, 28.0]));
         sx += sw;
     }
-    p.rect([tx, y, sx - tx + 4.0, 32.0], 16.0, PLATE_SOFT);
+    p.rect([tx, y, sx - tx + 4.0, 32.0], 16.0, pal().plate_soft);
     let ui = &mut st.s.ui;
     let target = segs
         .iter()
@@ -350,42 +566,49 @@ fn header(st: &mut Studio, p: &mut P, x: f32, y: f32, w: f32, dt: f32) {
         ui.pill_from[0] + (target[0] - ui.pill_from[0]) * t,
         ui.pill_from[1] + (target[1] - ui.pill_from[1]) * t,
     ];
-    p.rect([ui.pill[0], y + 2.0, ui.pill[1], 28.0], 14.0, INK);
+    p.rect([ui.pill[0], y + 2.0, ui.pill[1], 28.0], 14.0, pal().ink);
     for (tab, label, r) in segs {
         let on = tab == ui.tab;
         let hv = hover(ui, id("tab", tab as usize), inside(r, ui.mouse), dt);
-        let c = if on { PAGE } else { mix(MUTED, INK, hv) };
+        let c = if on {
+            pal().page
+        } else {
+            mix(pal().muted, pal().ink, hv)
+        };
         p.text(label, r[0] + 14.0, top(y + 16.0, 13.0), 13.0, Font::Medium, c);
         ui.hits.push((r, Action::Tab(tab)));
     }
     // Close, at the right.
-    let r = [x + w - 32.0, y, 32.0, 32.0];
-    let hv = hover(ui, id("close", 0), inside(r, ui.mouse), dt);
-    p.rect(r, 16.0, fade(INK, 0.10 * hv));
-    let cw = p.measure("×", 20.0, Font::Regular);
-    p.text(
-        "×",
-        r[0] + (32.0 - cw) / 2.0,
-        top(y + 15.0, 20.0),
-        20.0,
-        Font::Regular,
-        mix(MUTED, INK, hv),
-    );
-    ui.hits.push((r, Action::Close));
-    let esc_w = p.measure("Esc", 11.0, Font::Mono) + 12.0;
-    let esc_x = r[0] - esc_w - 10.0;
-    keycap(p, "Esc", "", esc_x, y + 16.0);
+    let mut right = x + w;
+    if !windowed {
+        let r = [x + w - 32.0, y, 32.0, 32.0];
+        let hv = hover(ui, id("close", 0), inside(r, ui.mouse), dt);
+        p.rect(r, 16.0, fade(pal().ink, 0.10 * hv));
+        let cw = p.measure("×", 20.0, Font::Regular);
+        p.text(
+            "×",
+            r[0] + (32.0 - cw) / 2.0,
+            top(y + 15.0, 20.0),
+            20.0,
+            Font::Regular,
+            mix(pal().muted, pal().ink, hv),
+        );
+        ui.hits.push((r, Action::Close));
+        let esc_w = p.measure("Esc", 11.0, Font::Mono) + 12.0;
+        let esc_x = r[0] - esc_w - 10.0;
+        keycap(p, "Esc", "", esc_x, y + 16.0);
+        right = esc_x - 16.0;
+    }
     // The AI link: the agent connected, else the prompt that sets one up.
-    let right = esc_x - 16.0;
     match super::hstudio_link::agents_line() {
         Some(line) => {
             let cw = p.measure(&line, 12.0, Font::Medium) + 36.0;
             let cx = right - cw;
             if cx > sx + 16.0 {
                 let pulse = 0.75 + 0.25 * (now as f32 * 2.4).sin();
-                p.rect([cx, y + 2.0, cw, 28.0], 14.0, fade(SUCCESS, 0.14));
-                p.rect([cx + 13.0, y + 12.0, 8.0, 8.0], 4.0, fade(SUCCESS, pulse));
-                p.text(&line, cx + 27.0, top(y + 16.0, 12.0), 12.0, Font::Medium, INK);
+                p.rect([cx, y + 2.0, cw, 28.0], 14.0, fade(pal().success, 0.14));
+                p.rect([cx + 13.0, y + 12.0, 8.0, 8.0], 4.0, fade(pal().success, pulse));
+                p.text(&line, cx + 27.0, top(y + 16.0, 12.0), 12.0, Font::Medium, pal().ink);
             }
         }
         None => {
@@ -427,6 +650,7 @@ fn footer(st: &mut Studio, p: &mut P, x: f32, cy: f32, w: f32) {
         ],
         Tab::Library => &[("⏎", "edit"), ("Space", "on or off"), ("R", "reload"), ("N", "new mod")],
         Tab::Docs => &[("↑ ↓", "scroll"), ("PgUp PgDn", "page")],
+        Tab::Settings => &[("↑ ↓", "scroll"), ("Esc", "close")],
     };
     let mut hx = x;
     for (keys, what) in hints {
@@ -435,7 +659,7 @@ fn footer(st: &mut Studio, p: &mut P, x: f32, cy: f32, w: f32) {
         }
         hx += keycap(p, keys, what, hx, cy) + 18.0;
     }
-    let tabs = "Ctrl 1-4";
+    let tabs = "Ctrl 1-5";
     let tw = p.measure(tabs, 11.0, Font::Mono) + 12.0 + 6.0 + p.measure("tabs", 12.0, Font::Regular);
     if hx + tw < x + w {
         keycap(p, tabs, "tabs", x + w - tw, cy);
@@ -453,59 +677,27 @@ fn line_edit(p: &mut P, now: f64, e: &LineEdit, x: f32, y: f32, max: f32, size: 
     let blink = 0.55 + 0.45 * (now as f32 * std::f32::consts::PI * 1.6).cos();
     let cx = x + p.measure(&e.text[start..e.cursor], size, font);
     let line = (size * 1.45).round();
-    p.rect([cx.floor(), y + 1.0, 2.0, line - 2.0], 1.0, fade(ACCENT, blink));
+    p.rect([cx.floor(), y + 1.0, 2.0, line - 2.0], 1.0, fade(pal().accent, blink));
 }
 
 fn log_color(kind: LogKind) -> u32 {
     match kind {
-        LogKind::Input => INK,
-        LogKind::Output => INK_SOFT,
-        LogKind::Error => DANGER,
-        LogKind::Trace => MUTED,
-        LogKind::Info => mix(INK_SOFT, ACCENT, 0.35),
+        LogKind::Input => pal().ink,
+        LogKind::Output => pal().ink_soft,
+        LogKind::Error => pal().danger,
+        LogKind::Trace => pal().muted,
+        LogKind::Info => mix(pal().ink_soft, pal().accent, 0.35),
     }
 }
 
 fn draw_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4]) {
     let now = st.s.now;
-    p.rect([x, y, w, h], 14.0, PLATE_SOFT);
+    p.rect([x, y, w, h], 14.0, pal().plate_soft);
     let pad = 18.0;
     let field_h = 44.0;
     let log_top = y + pad;
     let log_bottom = y + h - pad - field_h - 10.0;
-    let rows = ((log_bottom - log_top) / CODE_LINE).max(1.0) as usize;
-    st.s.ui.page = rows;
-    let need = rows + st.s.ui.log_scroll + 1;
-    let text_w = w - 2.0 * pad - 20.0;
-    let mut shown: Vec<(String, u32, f64, bool)> = Vec::new();
-    for line in st.s.log.iter().rev() {
-        let (body, prompt) = match line.text.strip_prefix("> ") {
-            Some(rest) if line.kind == LogKind::Input => (rest, true),
-            _ => (line.text.as_str(), false),
-        };
-        let pieces = p.wrap(body, text_w, CODE_SIZE, Font::Mono);
-        let n = pieces.len();
-        for (i, piece) in pieces.into_iter().enumerate().rev() {
-            shown.push((piece, log_color(line.kind), line.at, prompt && i == 0 && n > 0));
-        }
-        if shown.len() >= need {
-            break;
-        }
-    }
-    let max_scroll = shown.len().saturating_sub(rows);
-    st.s.ui.log_scroll = st.s.ui.log_scroll.min(max_scroll);
-    let skip = st.s.ui.log_scroll;
-    let base = p.alpha;
-    for (i, (line, c, at, prompt)) in shown.iter().skip(skip).take(rows).enumerate() {
-        let ly = log_bottom - CODE_LINE * (i as f32 + 1.0);
-        p.alpha = base * progress(now, *at, QUICK);
-        let ty = ly + (CODE_LINE - (CODE_SIZE * 1.45).round()) / 2.0;
-        if *prompt {
-            p.text("›", x + pad, ty, CODE_SIZE, Font::Mono, ACCENT);
-        }
-        p.text(line, x + pad + 20.0, ty, CODE_SIZE, Font::Mono, *c);
-    }
-    p.alpha = base;
+    draw_log(st, p, [x + pad, log_top, w - 2.0 * pad, log_bottom - log_top], true);
     if st.s.log.is_empty() {
         p.text(
             "Nothing yet. Try player.pos() or help().",
@@ -513,28 +705,15 @@ fn draw_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4]) {
             top(log_bottom - 12.0, 13.0),
             13.0,
             Font::Regular,
-            MUTED,
-        );
-    }
-    if skip > 0 {
-        let more = format!("{skip} below");
-        let mw = p.measure(&more, 11.0, Font::Mono) + 16.0;
-        p.rect([x + w - pad - mw, log_bottom - 22.0, mw, 20.0], 10.0, fade(INK, 0.10));
-        p.text(
-            &more,
-            x + w - pad - mw + 8.0,
-            top(log_bottom - 12.0, 11.0),
-            11.0,
-            Font::Mono,
-            INK_SOFT,
+            pal().muted,
         );
     }
     // The input.
     let f = [x + 10.0, y + h - 10.0 - field_h, w - 20.0, field_h];
-    p.rect(f, 12.0, PAGE);
-    p.border(f, 12.0, fade(ACCENT, 0.45));
+    p.rect(f, 12.0, pal().page);
+    p.border(f, 12.0, fade(pal().accent, 0.45));
     let cy = f[1] + field_h / 2.0;
-    p.text("›", f[0] + 16.0, top(cy, 16.0), 16.0, Font::Mono, ACCENT);
+    p.text("›", f[0] + 16.0, top(cy, 16.0), 16.0, Font::Mono, pal().accent);
     let input = st.s.ui.input.clone();
     let tx = f[0] + 36.0;
     let ty = top(cy, 14.0);
@@ -545,37 +724,92 @@ fn draw_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4]) {
             ty,
             14.0,
             Font::Regular,
-            MUTED,
+            pal().muted,
         );
     }
-    line_edit(p, now, &input, tx, ty, f[2] - 52.0, 14.0, Font::Mono, INK);
+    line_edit(p, now, &input, tx, ty, f[2] - 52.0, 14.0, Font::Mono, pal().ink);
     if input.cursor == input.text.len()
         && let Some(rest) = complete(&input.text, input.cursor)
     {
         let cx = tx + p.measure(&input.text, 14.0, Font::Mono) + 2.0;
         if cx + p.measure(&rest, 14.0, Font::Mono) < f[0] + f[2] - 16.0 {
-            p.text(&rest, cx, ty, 14.0, Font::Mono, fade(MUTED, 0.8));
+            p.text(&rest, cx, ty, 14.0, Font::Mono, fade(pal().muted, 0.8));
         }
     }
 }
 
-fn tint(t: Tint) -> u32 {
+/// The log's last lines in `[x, y, w, h]`, the newest at the bottom; with
+/// `scrolled` as far back as the console is scrolled (the executors'
+/// output shows the newest).
+pub(super) fn draw_log(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], scrolled: bool) {
+    let now = st.s.now;
+    let log_bottom = y + h;
+    let rows = (h / code_line()).max(1.0) as usize;
+    let scroll = if scrolled { st.s.ui.log_scroll } else { 0 };
+    let need = rows + scroll + 1;
+    let text_w = w - 20.0;
+    let mut shown: Vec<(String, u32, f64, bool)> = Vec::new();
+    for line in st.s.log.iter().rev() {
+        let (body, prompt) = match line.text.strip_prefix("> ") {
+            Some(rest) if line.kind == LogKind::Input => (rest, true),
+            _ => (line.text.as_str(), false),
+        };
+        let pieces = p.wrap(body, text_w, code_size(), Font::Mono);
+        let n = pieces.len();
+        for (i, piece) in pieces.into_iter().enumerate().rev() {
+            shown.push((piece, log_color(line.kind), line.at, prompt && i == 0 && n > 0));
+        }
+        if shown.len() >= need {
+            break;
+        }
+    }
+    let skip = scroll.min(shown.len().saturating_sub(rows));
+    if scrolled {
+        st.s.ui.page = rows;
+        st.s.ui.log_scroll = skip;
+    }
+    let base = p.alpha;
+    for (i, (line, c, at, prompt)) in shown.iter().skip(skip).take(rows).enumerate() {
+        let ly = log_bottom - code_line() * (i as f32 + 1.0);
+        p.alpha = base * progress(now, *at, QUICK);
+        let ty = ly + (code_line() - (code_size() * 1.45).round()) / 2.0;
+        if *prompt {
+            p.text("›", x, ty, code_size(), Font::Mono, pal().accent);
+        }
+        p.text(line, x + 20.0, ty, code_size(), Font::Mono, *c);
+    }
+    p.alpha = base;
+    if skip > 0 {
+        let more = format!("{skip} below");
+        let mw = p.measure(&more, 11.0, Font::Mono) + 16.0;
+        p.rect([x + w - mw, log_bottom - 22.0, mw, 20.0], 10.0, fade(pal().ink, 0.10));
+        p.text(
+            &more,
+            x + w - mw + 8.0,
+            top(log_bottom - 12.0, 11.0),
+            11.0,
+            Font::Mono,
+            pal().ink_soft,
+        );
+    }
+}
+
+pub(super) fn tint(t: Tint) -> u32 {
     match t {
-        Tint::Plain => INK,
-        Tint::Keyword => KEYWORD,
-        Tint::Str => STRING,
-        Tint::Number => NUMBER,
-        Tint::Comment => COMMENT,
-        Tint::Global => GLOBAL,
+        Tint::Plain => pal().ink,
+        Tint::Keyword => pal().keyword,
+        Tint::Str => pal().string,
+        Tint::Number => pal().number,
+        Tint::Comment => pal().comment,
+        Tint::Global => pal().global,
     }
 }
 
 fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
-    let now = st.s.now;
     let title = st.s.editor.title.clone();
-    let tw = p.text(&title, x, top(y + 16.0, 15.0), 15.0, Font::Medium, INK);
+    let tw = p.text(&title, x, top(y + 16.0, 15.0), 15.0, Font::Medium, pal().ink);
     if st.s.editor.dirty {
-        p.rect([x + tw + 10.0, y + 13.0, 7.0, 7.0], 3.5, ACCENT);
+        p.rect([x + tw + 10.0, y + 13.0, 7.0, 7.0], 3.5, pal().accent);
     }
     let mut bx = x + w;
     {
@@ -616,12 +850,18 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             13.0,
             Font::Regular,
         );
-        p.text(&msg, px, top(y + 16.0, 13.0), 13.0, Font::Regular, DANGER);
+        p.text(&msg, px, top(y + 16.0, 13.0), 13.0, Font::Regular, pal().danger);
     }
-    let panel = [x, y + 46.0, w, h - 46.0];
-    p.rect(panel, 14.0, PLATE_SOFT);
+    draw_code(st, p, [x, y + 46.0, w, h - 46.0], dt);
+}
+
+/// The editor's text on a panel: line numbers, highlighting, the selection,
+/// the cursor, the line that failed, a scrollbar.
+pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
+    let now = st.s.now;
+    p.rect(panel, 14.0, pal().plate_soft);
     let top_y = panel[1] + 12.0;
-    let rows = ((panel[3] - 24.0) / CODE_LINE).max(1.0) as usize;
+    let rows = ((panel[3] - 24.0) / code_line()).max(1.0) as usize;
     st.s.ui.page = rows;
     let gutter = p.measure("0000", 12.0, Font::Mono) + 30.0;
     let text_x = panel[0] + gutter;
@@ -641,7 +881,7 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     loop {
         let line = &ed.lines[ed.row];
         let from = line.char_indices().nth(ed.hscroll).map_or(line.len(), |(i, _)| i);
-        if from > ed.col || p.measure(&line[from..ed.col], CODE_SIZE, Font::Mono) <= text_w - 8.0 {
+        if from > ed.col || p.measure(&line[from..ed.col], code_size(), Font::Mono) <= text_w - 8.0 {
             break;
         }
         ed.hscroll += 4;
@@ -666,22 +906,26 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         if r >= ed.lines.len() {
             break;
         }
-        let ly = top_y + (i as f32 - frac) * CODE_LINE;
-        if ly < top_y - 0.5 || ly + CODE_LINE > bottom + 0.5 {
+        let ly = top_y + (i as f32 - frac) * code_line();
+        if ly < top_y - 0.5 || ly + code_line() > bottom + 0.5 {
             continue;
         }
         let line = &ed.lines[r];
         let from = line.char_indices().nth(ed.hscroll).map_or(line.len(), |(i, _)| i);
         if r == ed.row {
-            p.rect([panel[0] + 6.0, ly, panel[2] - 12.0, CODE_LINE], 6.0, fade(INK, 0.045));
+            p.rect(
+                [panel[0] + 6.0, ly, panel[2] - 12.0, code_line()],
+                6.0,
+                fade(pal().ink, 0.045),
+            );
         }
         if ed.error_line == Some(r + 1) {
             p.rect(
-                [panel[0] + 6.0, ly, panel[2] - 12.0, CODE_LINE],
+                [panel[0] + 6.0, ly, panel[2] - 12.0, code_line()],
                 6.0,
-                fade(DANGER, 0.14),
+                fade(pal().danger, 0.14),
             );
-            p.rect([panel[0] + 12.0, ly + 7.0, 6.0, 6.0], 3.0, DANGER);
+            p.rect([panel[0] + 12.0, ly + 7.0, 6.0, 6.0], 3.0, pal().danger);
         }
         if let Some(((r1, c1), (r2, c2))) = sel
             && r >= r1
@@ -689,18 +933,22 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         {
             let a = if r == r1 { c1 } else { 0 }.max(from);
             let b = if r == r2 { c2 } else { line.len() }.max(a);
-            let sx = text_x + p.measure(&line[from..a], CODE_SIZE, Font::Mono);
-            let mut sw = p.measure(&line[a..b], CODE_SIZE, Font::Mono);
+            let sx = text_x + p.measure(&line[from..a], code_size(), Font::Mono);
+            let mut sw = p.measure(&line[a..b], code_size(), Font::Mono);
             if r != r2 {
                 sw += 6.0;
             }
             let sw = sw.min(text_x + text_w - sx).max(0.0);
-            p.rect([sx, ly + 1.0, sw, CODE_LINE - 2.0], 3.0, fade(ACCENT, 0.30));
+            p.rect([sx, ly + 1.0, sw, code_line() - 2.0], 3.0, fade(pal().accent, 0.30));
         }
-        let ty = ly + (CODE_LINE - (CODE_SIZE * 1.45).round()) / 2.0;
+        let ty = ly + (code_line() - (code_size() * 1.45).round()) / 2.0;
         let num = format!("{}", r + 1);
         let nw = p.measure(&num, 12.0, Font::Mono);
-        let nc = if r == ed.row { INK_SOFT } else { fade(MUTED, 0.7) };
+        let nc = if r == ed.row {
+            pal().ink_soft
+        } else {
+            fade(pal().muted, 0.7)
+        };
         p.text(&num, text_x - 14.0 - nw, ty + 1.0, 12.0, Font::Mono, nc);
         let (pieces, _) = highlight(line, states[r]);
         let mut px = text_x;
@@ -713,19 +961,23 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             if room <= 0.0 {
                 break;
             }
-            let pw = p.measure(piece, CODE_SIZE, Font::Mono);
+            let pw = p.measure(piece, code_size(), Font::Mono);
             let shown = if pw > room {
-                p.fit(piece, room, CODE_SIZE, Font::Mono)
+                p.fit(piece, room, code_size(), Font::Mono)
             } else {
                 piece.to_owned()
             };
-            p.text(&shown, px, ty, CODE_SIZE, Font::Mono, tint(t));
+            p.text(&shown, px, ty, code_size(), Font::Mono, tint(t));
             px += pw;
         }
         if r == ed.row && ed.col >= from {
-            let cx = text_x + p.measure(&line[from..ed.col], CODE_SIZE, Font::Mono);
+            let cx = text_x + p.measure(&line[from..ed.col], code_size(), Font::Mono);
             if cx <= text_x + text_w {
-                p.rect([cx.floor(), ly + 2.0, 2.0, CODE_LINE - 4.0], 1.0, fade(ACCENT, blink));
+                p.rect(
+                    [cx.floor(), ly + 2.0, 2.0, code_line() - 4.0],
+                    1.0,
+                    fade(pal().accent, blink),
+                );
             }
         }
     }
@@ -734,7 +986,7 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         let bar = (track * rows as f32 / ed.lines.len() as f32).max(24.0);
         let span = (ed.lines.len() - rows).max(1) as f32;
         let by = top_y + (track - bar) * (s / span).clamp(0.0, 1.0);
-        p.rect([panel[0] + panel[2] - 9.0, by, 4.0, bar], 2.0, fade(INK, 0.18));
+        p.rect([panel[0] + panel[2] - 9.0, by, 4.0, bar], 2.0, fade(pal().ink, 0.18));
     }
     st.s.ui.view = Some(EditorView {
         x: text_x,
@@ -746,25 +998,49 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
 
 fn status(state: &ModState, enabled: bool) -> (&'static str, u32) {
     match state {
-        ModState::Running => ("Running", SUCCESS),
-        ModState::Failed(..) => ("Failed", DANGER),
-        ModState::Off if !enabled => ("Off", MUTED),
-        ModState::Off => ("Not loaded", MUTED),
+        ModState::Running => ("Running", pal().success),
+        ModState::Failed(..) => ("Failed", pal().danger),
+        ModState::Off if !enabled => ("Off", pal().muted),
+        ModState::Off => ("Not loaded", pal().muted),
     }
 }
 
 fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let now = st.s.now;
-    let list_w = (w * 0.42).clamp(240.0, 460.0).min(w * 0.55);
+    // Narrow (a small window): the list alone, the chosen mod's buttons on its row.
+    let narrow = w < 640.0;
+    let pills_w = ["New mod", "Reload all", "Open folder"]
+        .iter()
+        .map(|l| p.measure(l, 13.0, Font::Medium) + 36.0)
+        .sum::<f32>();
+    let list_w = if narrow {
+        w
+    } else {
+        (w * 0.42).clamp(240.0, 460.0).min(w * 0.55).max(pills_w)
+    };
     let n = st.s.mods.len();
     if n > 0 {
         st.s.ui.library_sel = st.s.ui.library_sel.min(n - 1);
     }
-    let lw = p.text("Script mods", x, top(y + 10.0, 13.0), 13.0, Font::Medium, INK_SOFT);
+    let lw = p.text(
+        "Script mods",
+        x,
+        top(y + 10.0, 13.0),
+        13.0,
+        Font::Medium,
+        pal().ink_soft,
+    );
     let count = format!("{n}");
     let cw = p.measure(&count, 11.0, Font::Mono) + 12.0;
-    p.rect([x + lw + 8.0, y + 1.0, cw, 18.0], 9.0, fade(INK, 0.08));
-    p.text(&count, x + lw + 14.0, top(y + 10.0, 11.0), 11.0, Font::Mono, MUTED);
+    p.rect([x + lw + 8.0, y + 1.0, cw, 18.0], 9.0, fade(pal().ink, 0.08));
+    p.text(
+        &count,
+        x + lw + 14.0,
+        top(y + 10.0, 11.0),
+        11.0,
+        Font::Mono,
+        pal().muted,
+    );
     let examples_h = (EXAMPLES.len() as f32 * 34.0 + 34.0).min(h * 0.42);
     let list_top = y + 30.0;
     let list_h = (h - 30.0 - 52.0 - examples_h).max(52.0);
@@ -780,7 +1056,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             top(ly + 14.0, 14.0),
             14.0,
             Font::Regular,
-            INK_SOFT,
+            pal().ink_soft,
         );
         p.text(
             "or drop a .lua file on the game window.",
@@ -788,7 +1064,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             top(ly + 34.0, 14.0),
             14.0,
             Font::Regular,
-            MUTED,
+            pal().muted,
         );
         ly += 52.0;
     }
@@ -801,28 +1077,38 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         let over = inside(r, st.s.ui.mouse);
         let hv = hover(&mut st.s.ui, id("row", i), over, dt);
         let sel = glide(&mut st.s.ui, id("sel", i), selected, dt);
-        p.rect(r, 12.0, fade(INK, 0.06 * hv + 0.07 * sel));
+        p.rect(r, 12.0, fade(pal().ink, 0.06 * hv + 0.07 * sel));
         let m = &st.s.mods[i];
         let (_, dot) = status(&m.state, m.enabled);
         let cy = ly + (row_h - 4.0) / 2.0;
         p.rect([x + 16.0, cy - 4.0, 8.0, 8.0], 4.0, dot);
-        let ver = m.version.clone();
+        // A narrow row's buttons take its right side.
+        let buttons = narrow && selected;
+        let ver = if buttons { String::new() } else { m.version.clone() };
         let vw = if ver.is_empty() {
             0.0
         } else {
             p.measure(&ver, 11.0, Font::Mono)
         };
-        let name_w = list_w - 52.0 - vw;
+        let room = if buttons { list_w - 52.0 - 230.0 } else { list_w - 52.0 };
+        let name_w = room.max(40.0) - vw;
         let name = p.fit(&m.name, name_w, 14.0, Font::Medium);
-        let desc = if m.description.is_empty() {
+        let failed = match &m.state {
+            ModState::Failed(msg, _) if narrow => Some(msg.clone()),
+            _ => None,
+        };
+        let desc = if let Some(msg) = &failed {
+            msg.clone()
+        } else if m.description.is_empty() {
             format!("{}.lua", m.id)
         } else {
             m.description.clone()
         };
-        let desc = p.fit(&desc, list_w - 52.0, 12.0, Font::Regular);
-        let name_c = if m.enabled { INK } else { MUTED };
+        let desc = p.fit(&desc, room.max(40.0), 12.0, Font::Regular);
+        let name_c = if m.enabled { pal().ink } else { pal().muted };
         p.text(&name, x + 36.0, top(cy - 8.0, 14.0), 14.0, Font::Medium, name_c);
-        p.text(&desc, x + 36.0, top(cy + 10.0, 12.0), 12.0, Font::Regular, MUTED);
+        let desc_c = if failed.is_some() { pal().danger } else { pal().muted };
+        p.text(&desc, x + 36.0, top(cy + 10.0, 12.0), 12.0, Font::Regular, desc_c);
         if !ver.is_empty() {
             p.text(
                 &ver,
@@ -830,10 +1116,29 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
                 top(cy - 8.0, 11.0),
                 11.0,
                 Font::Mono,
-                MUTED,
+                pal().muted,
             );
         }
         st.s.ui.hits.push((r, Action::Select(i)));
+        if buttons {
+            let enabled = st.s.mods[i].enabled;
+            let toggle = if enabled { "Turn off" } else { "Turn on" };
+            let mut bx = x + list_w - 8.0;
+            for (key, label, action) in [
+                ("n-reload", "Reload", Action::Reload(i)),
+                ("n-toggle", toggle, Action::Toggle(i)),
+                ("n-edit", "Edit", Action::Edit(i)),
+            ] {
+                bx -= p.measure(label, 13.0, Font::Medium) + 28.0;
+                let style = if action == Action::Edit(i) {
+                    Style::Primary
+                } else {
+                    Style::Quiet
+                };
+                pill(&mut st.s.ui, p, key, label, bx, cy - 13.0, 26.0, style, action, dt);
+                bx -= 4.0;
+            }
+        }
         ly += row_h;
     }
     p.alpha = base_a;
@@ -877,7 +1182,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         dt,
     );
     let mut ey = by + 52.0;
-    p.text("Examples", x, top(ey + 8.0, 13.0), 13.0, Font::Medium, INK_SOFT);
+    p.text("Examples", x, top(ey + 8.0, 13.0), 13.0, Font::Medium, pal().ink_soft);
     ey += 26.0;
     let mut hovered: Option<(&str, &str)> = None;
     for (i, ex) in EXAMPLES.iter().enumerate() {
@@ -890,10 +1195,17 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         if inside(r, st.s.ui.mouse) {
             hovered = Some((ex.title, ex.description));
         }
-        p.rect(r, 10.0, fade(INK, 0.05 * hv));
+        p.rect(r, 10.0, fade(pal().ink, 0.05 * hv));
         let installed = st.s.mods.iter().any(|m| m.id == ex.id);
         let title = p.fit(ex.title, list_w - 120.0, 13.0, Font::Regular);
-        p.text(&title, x + 12.0, top(ey + 15.0, 13.0), 13.0, Font::Regular, INK_SOFT);
+        p.text(
+            &title,
+            x + 12.0,
+            top(ey + 15.0, 13.0),
+            13.0,
+            Font::Regular,
+            pal().ink_soft,
+        );
         if installed {
             let t = "Installed";
             let tw = p.measure(t, 12.0, Font::Regular);
@@ -903,7 +1215,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
                 top(ey + 15.0, 12.0),
                 12.0,
                 Font::Regular,
-                MUTED,
+                pal().muted,
             );
         } else {
             let label = "Install";
@@ -926,13 +1238,14 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     // The detail: the example under the pointer, else the chosen mod.
     let dx = x + list_w + 36.0;
     let dw = w - list_w - 36.0;
-    if dw < 120.0 {
+    if narrow || dw < 200.0 {
         return;
     }
+    let bottom = y + h;
     if let Some((title, desc)) = hovered {
-        p.text(title, dx, top(y + 14.0, 20.0), 20.0, Font::Medium, INK);
+        p.text(title, dx, top(y + 14.0, 20.0), 20.0, Font::Medium, pal().ink);
         for (j, l) in p.wrap(desc, dw, 14.0, Font::Regular).iter().enumerate() {
-            p.text(l, dx, y + 36.0 + 22.0 * j as f32, 14.0, Font::Regular, INK_SOFT);
+            p.text(l, dx, y + 36.0 + 22.0 * j as f32, 14.0, Font::Regular, pal().ink_soft);
         }
         return;
     }
@@ -979,10 +1292,10 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     };
     let mut dy = y;
     let name = p.fit(&name, dw, 24.0, Font::Medium);
-    p.text(&name, dx, top(dy + 16.0, 24.0), 24.0, Font::Medium, INK);
+    p.text(&name, dx, top(dy + 16.0, 24.0), 24.0, Font::Medium, pal().ink);
     dy += 38.0;
     let meta = p.fit(&meta, dw, 12.0, Font::Regular);
-    p.text(&meta, dx, top(dy + 8.0, 12.0), 12.0, Font::Regular, MUTED);
+    p.text(&meta, dx, top(dy + 8.0, 12.0), 12.0, Font::Regular, pal().muted);
     dy += 26.0;
     let chip_w = p.measure(label, 12.0, Font::Medium) + 30.0;
     p.rect([dx, dy, chip_w, 24.0], 12.0, fade(c, 0.16));
@@ -991,14 +1304,14 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let mut chips_w = chip_w;
     if library {
         let lw = p.measure("Library", 12.0, Font::Medium) + 20.0;
-        p.rect([dx + chips_w + 8.0, dy, lw, 24.0], 12.0, fade(ACCENT, 0.16));
+        p.rect([dx + chips_w + 8.0, dy, lw, 24.0], 12.0, fade(pal().accent, 0.16));
         p.text(
             "Library",
             dx + chips_w + 18.0,
             top(dy + 12.0, 12.0),
             12.0,
             Font::Medium,
-            ACCENT,
+            pal().accent,
         );
         chips_w += lw + 8.0;
     }
@@ -1010,19 +1323,23 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             top(dy + 12.0, 11.0),
             11.0,
             Font::Mono,
-            MUTED,
+            pal().muted,
         );
     }
     dy += 38.0;
+    // As much as fits under it, keeping room for the buttons.
     for l in p.wrap(&description, dw, 14.0, Font::Regular).iter().take(4) {
-        p.text(l, dx, dy, 14.0, Font::Regular, INK_SOFT);
+        if dy + 22.0 + 40.0 > bottom {
+            break;
+        }
+        p.text(l, dx, dy, 14.0, Font::Regular, pal().ink_soft);
         dy += 22.0;
     }
     for (what, ids) in [("Uses", &uses), ("Used by", &used_by)] {
-        if !ids.is_empty() {
-            let lw = p.text(what, dx, dy, 12.0, Font::Medium, MUTED);
+        if !ids.is_empty() && dy + 20.0 + 40.0 <= bottom {
+            let lw = p.text(what, dx, dy, 12.0, Font::Medium, pal().muted);
             let ids = p.fit(ids, dw - lw - 8.0, 12.0, Font::Mono);
-            p.text(&ids, dx + lw + 8.0, dy, 12.0, Font::Mono, INK_SOFT);
+            p.text(&ids, dx + lw + 8.0, dy, 12.0, Font::Mono, pal().ink_soft);
             dy += 20.0;
         }
     }
@@ -1066,28 +1383,31 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         dt,
     );
     dy += 50.0;
-    if !commands.is_empty() {
-        p.text("Commands", dx, top(dy + 8.0, 13.0), 13.0, Font::Medium, INK_SOFT);
+    if !commands.is_empty() && dy + 46.0 <= bottom {
+        p.text("Commands", dx, top(dy + 8.0, 13.0), 13.0, Font::Medium, pal().ink_soft);
         dy += 24.0;
         for (name, help) in commands.iter().take(6) {
+            if dy + 22.0 > bottom {
+                break;
+            }
             let cmd = format!("/{name}");
-            let cw = p.text(&cmd, dx, dy, 13.0, Font::Mono, INK);
+            let cw = p.text(&cmd, dx, dy, 13.0, Font::Mono, pal().ink);
             let help = p.fit(help, dw - cw - 12.0, 13.0, Font::Regular);
-            p.text(&help, dx + cw + 12.0, dy, 13.0, Font::Regular, MUTED);
+            p.text(&help, dx + cw + 12.0, dy, 13.0, Font::Regular, pal().muted);
             dy += 22.0;
         }
         dy += 10.0;
     }
-    if let Some((msg, trace)) = failure {
+    if let Some((msg, trace)) = failure.filter(|_| dy + 38.0 <= bottom) {
         let lines = p.wrap(&msg, dw - 28.0, 12.0, Font::Mono);
         let trace = p.wrap(&trace, dw - 28.0, 11.0, Font::Mono);
         let room = ((y + h - dy - 24.0) / 18.0).max(1.0) as usize;
         let total = (lines.len() + trace.len()).min(room);
         let box_h = 20.0 + 18.0 * total as f32;
-        p.rect([dx, dy, dw, box_h], 12.0, fade(DANGER, 0.10));
+        p.rect([dx, dy, dw, box_h], 12.0, fade(pal().danger, 0.10));
         let mut ty = dy + 10.0;
         for l in lines.iter().chain(trace.iter()).take(total).enumerate() {
-            let c = if l.0 < lines.len() { DANGER } else { MUTED };
+            let c = if l.0 < lines.len() { pal().danger } else { pal().muted };
             p.text(l.1, dx + 14.0, ty, 12.0, Font::Mono, c);
             ty += 18.0;
         }
@@ -1098,10 +1418,10 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
 
 fn drop_hint(p: &mut P, x: f32, y: f32, w: f32) {
     let r = [x, y, w, 56.0];
-    p.border(r, 14.0, RULE);
+    p.border(r, 14.0, pal().rule);
     let t = "Drop a .lua file, a mod folder or a .zip on the game window to install it.";
     let t = p.fit(t, w - 32.0, 13.0, Font::Regular);
-    p.text(&t, x + 16.0, top(y + 28.0, 13.0), 13.0, Font::Regular, MUTED);
+    p.text(&t, x + 16.0, top(y + 28.0, 13.0), 13.0, Font::Regular, pal().muted);
 }
 
 enum Doc {
@@ -1139,6 +1459,9 @@ fn docs() -> Vec<Doc> {
             None => out.push(Doc::Para(doc.to_owned())),
         }
     }
+    out.push(Doc::Heading("Looks".into()));
+    out.push(Doc::Para("Settings, the last tab, changes how the studio looks: the theme (Horizon, Horizon Light, Midnight, Nord, Rose, Forest, Solar, or one of four styles after the script executors of old Roblox days), full screen or a window, the accent colour, the size of everything, how much of the game shows behind it, the code's size and whether things move. A window is dragged by its title bar and sized from its bottom right corner; its buttons roll it up, fill the screen and close it.".into()));
+    out.push(Doc::Para("The executor styles are always a window. Their buttons do the studio's work: Execute runs the editor's code, Clear empties it, Execute File saves the file and reloads its mod, Open File shows the Library, Attach and Inject reload every mod, and Options shows Settings, where the console, the Library and the docs are a click away too.".into()));
     out.push(Doc::Heading("AI agents".into()));
     out.push(Doc::Para("horizon-studio-mcp lets AI agents (Claude Code, omp, Codex, Cursor...) make mods here: they write and test them, headless and in this game, run Lua in the console and read what happened. Copy AI setup prompt, at the top right, copies a prompt for your agent that sets it all up; once one is connected, its name shows there. Options > Mods > Horizon Studio turns the AI link off.".into()));
     out.push(Doc::Heading("Commands in chat".into()));
@@ -1169,20 +1492,20 @@ fn draw_docs(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         match d {
             Doc::Heading(t) => {
                 lines.push((String::new(), 0.0, Font::Regular, 0, 10.0));
-                lines.push((t, 18.0, Font::Medium, INK, 32.0));
+                lines.push((t, 18.0, Font::Medium, pal().ink, 32.0));
             }
             Doc::Para(t) => {
                 for l in p.wrap(&t, width, 14.0, Font::Regular) {
-                    lines.push((l, 14.0, Font::Regular, INK_SOFT, 22.0));
+                    lines.push((l, 14.0, Font::Regular, pal().ink_soft, 22.0));
                 }
                 lines.push((String::new(), 0.0, Font::Regular, 0, 8.0));
             }
             Doc::Api(sig, desc) => {
                 for l in p.wrap(&sig, width, 13.0, Font::Mono) {
-                    lines.push((l, 13.0, Font::Mono, INK, 20.0));
+                    lines.push((l, 13.0, Font::Mono, pal().ink, 20.0));
                 }
                 for l in p.wrap(&desc, width, 13.0, Font::Regular) {
-                    lines.push((l, 13.0, Font::Regular, MUTED, 20.0));
+                    lines.push((l, 13.0, Font::Regular, pal().muted, 20.0));
                 }
                 lines.push((String::new(), 0.0, Font::Regular, 0, 10.0));
             }
@@ -1203,30 +1526,248 @@ fn draw_docs(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     }
 }
 
+// ----------------------------------------------------------------- settings
+
+fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
+    let look = st.s.ui.look.clone();
+    let cw = w.min(780.0);
+    let gap = 12.0;
+    let cols = (((cw + gap) / (150.0 + gap)).floor() as usize).max(1);
+    let card_w = ((cw + gap) / cols as f32 - gap).floor();
+    let card_h = 98.0;
+    let grid_h = THEMES.len().div_ceil(cols) as f32 * (card_h + gap);
+    let row_h = 46.0;
+    let total = 30.0 + grid_h + 14.0 + row_h * 7.0;
+    let ui = &mut st.s.ui;
+    ui.settings_scroll = ui.settings_scroll.clamp(0.0, (total - h).max(0.0));
+    ui.page = (h / 40.0) as usize;
+    smooth(&mut ui.smooth[3], ui.settings_scroll, dt);
+    let shown = |r: [f32; 4]| r[1] >= y - 0.5 && r[1] + r[3] <= y + h + 0.5;
+    let mut cy = y - ui.smooth[3];
+    if total > h {
+        let bar = (h * h / total).max(24.0);
+        let by = y + (h - bar) * (ui.smooth[3] / (total - h)).clamp(0.0, 1.0);
+        p.rect([x + cw + 8.0, by, 4.0, bar], 2.0, fade(pal().ink, 0.18));
+    }
+    if shown([x, cy, cw, 20.0]) {
+        p.text("Theme", x, top(cy + 10.0, 13.0), 13.0, Font::Medium, pal().ink_soft);
+    }
+    cy += 30.0;
+    for i in 0..THEMES.len() {
+        let r = [
+            x + (i % cols) as f32 * (card_w + gap),
+            cy + (i / cols) as f32 * (card_h + gap),
+            card_w,
+            card_h,
+        ];
+        if shown(r) {
+            theme_card(st, p, i, r, dt);
+        }
+    }
+    cy += grid_h + 14.0;
+    let vx = x + if cw < 460.0 { 110.0 } else { 170.0 };
+    let rows: [&str; 7] = ["Window", "Accent", "Size", "Backdrop", "Code size", "Animations", ""];
+    for (n, label) in rows.into_iter().enumerate() {
+        let r = [x, cy, cw, row_h];
+        let mid = cy + row_h / 2.0;
+        cy += row_h;
+        if !shown(r) {
+            continue;
+        }
+        if n > 0 && n < 6 {
+            p.rect([x, r[1], cw, 1.0], 0.0, fade(pal().rule, 0.6));
+        }
+        p.text(label, x, top(mid, 14.0), 14.0, Font::Regular, pal().ink);
+        let ui = &mut st.s.ui;
+        match n {
+            0 => {
+                let mut bx = vx;
+                if look.theme().layout == Layout::Studio {
+                    bx += segmented(
+                        ui,
+                        p,
+                        bx,
+                        mid,
+                        &[
+                            ("Full screen", !look.window, Action::Windowed(false)),
+                            ("Window", look.window, Action::Windowed(true)),
+                        ],
+                        dt,
+                    ) + 10.0;
+                } else {
+                    let t = p.fit(
+                        "Always a window in this style",
+                        x + cw - vx - 130.0,
+                        13.0,
+                        Font::Regular,
+                    );
+                    bx += p.text(&t, bx, top(mid, 13.0), 13.0, Font::Regular, pal().muted) + 12.0;
+                }
+                if look.windowed() {
+                    pill(
+                        ui,
+                        p,
+                        "reset-window",
+                        "Reset window",
+                        bx,
+                        mid - 14.0,
+                        28.0,
+                        Style::Quiet,
+                        Action::ResetWindow,
+                        dt,
+                    );
+                }
+            }
+            1 => {
+                let own = look.theme().palette.accent;
+                for (i, &a) in ACCENTS.iter().enumerate() {
+                    let sx = vx + 32.0 * i as f32;
+                    if sx + 24.0 > x + cw {
+                        break;
+                    }
+                    let r = [sx, mid - 12.0, 24.0, 24.0];
+                    let hv = hover(ui, id("accent", i), inside(r, ui.mouse), dt);
+                    let sel = glide(ui, id("accent-sel", i), look.accent == i, dt);
+                    p.rect(r, 12.0, if a == 0 { own } else { a });
+                    if a == 0 {
+                        // The theme's own: a ring.
+                        p.rect([sx + 7.0, mid - 5.0, 10.0, 10.0], 5.0, pal().page);
+                    }
+                    let ring = fade(pal().ink, sel.max(0.35 * hv));
+                    p.border([sx - 3.0, mid - 15.0, 30.0, 30.0], 15.0, ring);
+                    ui.hits.push((r, Action::Accent(i as u8)));
+                }
+            }
+            2..=4 => {
+                let which = (n - 2) as u8;
+                let value = match which {
+                    0 => format!("{:.0}%", look.scale * 100.0),
+                    1 => format!("{:.0}%", look.opacity * 100.0),
+                    _ => format!("{:.0}", look.code),
+                };
+                stepper(ui, p, vx, mid, &value, which, dt);
+            }
+            5 => {
+                let r = [vx, mid - 11.0, 40.0, 22.0];
+                let t = glide(ui, id("motion", 0), look.motion, dt);
+                p.rect(r, 11.0, mix(pal().plate, pal().accent, t));
+                p.rect(
+                    [r[0] + 3.0 + 18.0 * t, mid - 8.0, 16.0, 16.0],
+                    8.0,
+                    mix(pal().ink_soft, pal().ink, t),
+                );
+                ui.hits.push(([vx - 4.0, mid - 15.0, 48.0, 30.0], Action::Motion));
+            }
+            _ => {
+                let t = p.fit("Kept in look.txt, in the studio's folder.", cw, 12.0, Font::Regular);
+                p.text(&t, x, top(mid, 12.0), 12.0, Font::Regular, pal().muted);
+            }
+        }
+    }
+}
+
+/// A theme to pick: a small picture of it and its name.
+fn theme_card(st: &mut Studio, p: &mut P, i: usize, r: [f32; 4], dt: f32) {
+    let t = &THEMES[i];
+    let ui = &mut st.s.ui;
+    let hv = hover(ui, id("theme", i), inside(r, ui.mouse), dt);
+    let sel = glide(ui, id("theme-sel", i), ui.look.theme == i, dt);
+    p.rect(r, 12.0, fade(pal().ink, 0.04 + 0.05 * hv));
+    super::hstudio_skins::preview(p, t, [r[0] + 8.0, r[1] + 8.0, r[2] - 16.0, r[3] - 40.0]);
+    let name = p.fit(t.name, r[2] - 20.0, 13.0, Font::Medium);
+    p.text(
+        &name,
+        r[0] + 10.0,
+        top(r[1] + r[3] - 16.0, 13.0),
+        13.0,
+        Font::Medium,
+        pal().ink,
+    );
+    if sel > 0.0 {
+        p.border(r, 12.0, fade(pal().accent, sel));
+        p.border(
+            [r[0] + 1.0, r[1] + 1.0, r[2] - 2.0, r[3] - 2.0],
+            11.0,
+            fade(pal().accent, sel),
+        );
+    }
+    ui.hits.push((r, Action::Theme(i as u8)));
+}
+
+/// Choices side by side, the chosen one in ink; returns the width.
+fn segmented(ui: &mut Ui, p: &mut P, x: f32, cy: f32, items: &[(&str, bool, Action)], dt: f32) -> f32 {
+    let widths: Vec<f32> = items
+        .iter()
+        .map(|(l, _, _)| p.measure(l, 13.0, Font::Medium) + 28.0)
+        .collect();
+    let total: f32 = widths.iter().sum::<f32>() + 4.0;
+    p.rect([x, cy - 16.0, total, 32.0], 16.0, pal().plate_soft);
+    let mut sx = x + 2.0;
+    for (i, ((label, on, action), sw)) in items.iter().zip(widths).enumerate() {
+        let r = [sx, cy - 14.0, sw, 28.0];
+        let t = glide(ui, id(label, i), *on, dt);
+        let hv = hover(ui, id("seg", i), inside(r, ui.mouse), dt);
+        p.rect(r, 14.0, fade(pal().ink, t));
+        let c = mix(mix(pal().muted, pal().ink, hv), pal().page, t);
+        p.text(label, sx + 14.0, top(cy, 13.0), 13.0, Font::Medium, c);
+        ui.hits.push((r, *action));
+        sx += sw;
+    }
+    total
+}
+
+/// A value with a step down and a step up.
+fn stepper(ui: &mut Ui, p: &mut P, x: f32, cy: f32, value: &str, which: u8, dt: f32) {
+    for (i, (glyph, up)) in [("−", false), ("+", true)].into_iter().enumerate() {
+        let r = [x + 92.0 * i as f32, cy - 14.0, 28.0, 28.0];
+        let hv = hover(ui, id("step", usize::from(which) * 2 + i), inside(r, ui.mouse), dt);
+        p.rect(r, 14.0, mix(fade(pal().ink, 0.08), fade(pal().ink, 0.16), hv));
+        let gw = p.measure(glyph, 15.0, Font::Medium);
+        p.text(
+            glyph,
+            r[0] + (28.0 - gw) / 2.0,
+            top(cy, 15.0),
+            15.0,
+            Font::Medium,
+            pal().ink,
+        );
+        ui.hits.push((r, Action::Step(which, up)));
+    }
+    let vw = p.measure(value, 13.0, Font::Mono);
+    p.text(
+        value,
+        x + 28.0 + (64.0 - vw) / 2.0,
+        top(cy, 13.0),
+        13.0,
+        Font::Mono,
+        pal().ink_soft,
+    );
+}
+
 fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32) {
     let now = st.s.now;
     let arrive = progress(now, st.s.ui.naming_at, MOVE);
     let (a, dy) = (p.alpha, p.dy);
     p.alpha = a * arrive;
     p.dy = 0.0;
-    p.rect([0.0, 0.0, w, h], 0.0, fade(PAGE, 0.55));
+    p.rect([0.0, 0.0, w, h], 0.0, fade(pal().page, 0.55));
     p.dy = (1.0 - arrive) * RISE;
     let cw = 380f32.min(w - 32.0);
     let r = [((w - cw) / 2.0).floor(), (h / 2.0 - 84.0).floor(), cw, 168.0];
-    p.rect(r, 16.0, SURFACE);
-    p.border(r, 16.0, RULE);
-    p.text("New mod", r[0] + 22.0, r[1] + 18.0, 16.0, Font::Medium, INK);
+    p.rect(r, 16.0, pal().surface);
+    p.border(r, 16.0, pal().rule);
+    p.text("New mod", r[0] + 22.0, r[1] + 18.0, 16.0, Font::Medium, pal().ink);
     p.text(
         "What is it called?",
         r[0] + 22.0,
         r[1] + 44.0,
         13.0,
         Font::Regular,
-        MUTED,
+        pal().muted,
     );
     let f = [r[0] + 20.0, r[1] + 74.0, cw - 40.0, 40.0];
-    p.rect(f, 10.0, PAGE);
-    p.border(f, 10.0, fade(ACCENT, 0.6));
+    p.rect(f, 10.0, pal().page);
+    p.border(f, 10.0, fade(pal().accent, 0.6));
     line_edit(
         p,
         now,
@@ -1236,7 +1777,7 @@ fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32) {
         f[2] - 28.0,
         14.0,
         Font::Regular,
-        INK,
+        pal().ink,
     );
     p.text(
         "Enter to create  ·  Esc to cancel",
@@ -1244,7 +1785,7 @@ fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32) {
         r[1] + 130.0,
         12.0,
         Font::Regular,
-        MUTED,
+        pal().muted,
     );
     p.alpha = a;
     p.dy = dy;
@@ -1263,17 +1804,26 @@ pub fn draw_toast(st: &mut Studio, game: &mut dyn GameApi) {
     let arrive = progress(now, start, MOVE);
     let leave = 1.0 - progress(now, until - 0.3, QUICK);
     let (w, _, _) = game.dp();
+    use_look(&st.s.ui.look, true);
     let mut p = P {
         g: game,
         alpha: arrive * leave,
         dy: (1.0 - arrive) * -RISE,
+        s: 1.0,
     };
     let tw = p.measure(&text, 13.0, Font::Regular);
     let r = [((w - tw) / 2.0 - 28.0).floor(), 18.0, tw + 46.0, 36.0];
-    p.rect(r, 18.0, fade(SURFACE, 0.96));
-    p.border(r, 18.0, RULE);
-    p.rect([r[0] + 16.0, r[1] + 15.0, 6.0, 6.0], 3.0, ACCENT);
-    p.text(&text, r[0] + 30.0, top(r[1] + 18.0, 13.0), 13.0, Font::Regular, INK);
+    p.rect(r, 18.0, fade(pal().surface, 0.96));
+    p.border(r, 18.0, pal().rule);
+    p.rect([r[0] + 16.0, r[1] + 15.0, 6.0, 6.0], 3.0, pal().accent);
+    p.text(
+        &text,
+        r[0] + 30.0,
+        top(r[1] + 18.0, 13.0),
+        13.0,
+        Font::Regular,
+        pal().ink,
+    );
 }
 
 // ----------------------------------------------------------------- script screens
@@ -1304,6 +1854,7 @@ pub fn draw_screen(st: &mut Studio, game: &mut dyn GameApi) {
     let (focus, edit) = (sc.focus, sc.edit.clone());
     let now = st.s.now;
     let (w, h, k) = game.dp();
+    use_look(&st.s.ui.look, true);
     st.s.ui.dp = k;
     let dt = tick(&mut st.s.ui, now);
     let (alpha, rise) = presence(&st.s.ui, now);
@@ -1317,9 +1868,10 @@ pub fn draw_screen(st: &mut Studio, game: &mut dyn GameApi) {
             g: &mut *game,
             alpha,
             dy: 0.0,
+            s: 1.0,
         };
         if !matches!(field(&table, "backdrop"), super::hstudio_lua::Value::Bool(false)) {
-            p.rect([0.0, 0.0, w, h], 0.0, fade(PAGE, 0.6));
+            p.rect([0.0, 0.0, w, h], 0.0, fade(pal().page, 0.6));
         }
         p.dy = rise;
         if !canvas && (title.is_some() || !ws.is_empty()) {
@@ -1329,11 +1881,11 @@ pub fn draw_screen(st: &mut Studio, game: &mut dyn GameApi) {
             let head = if title.is_some() { 54.0 } else { 18.0 };
             let ph = head + heights.iter().sum::<f32>() + 18.0;
             let (px, py) = (((w - pw) / 2.0).floor(), ((h - ph) / 2.0).floor().max(16.0));
-            p.rect([px, py, pw, ph], 18.0, SURFACE);
-            p.border([px, py, pw, ph], 18.0, RULE);
+            p.rect([px, py, pw, ph], 18.0, pal().surface);
+            p.border([px, py, pw, ph], 18.0, pal().rule);
             if let Some(t) = &title {
                 let t = p.fit(t, inner, 18.0, Font::Medium);
-                p.text(&t, px + 24.0, top(py + 30.0, 18.0), 18.0, Font::Medium, INK);
+                p.text(&t, px + 24.0, top(py + 30.0, 18.0), 18.0, Font::Medium, pal().ink);
             }
             let mut y = py + head;
             let mouse = st.s.ui.mouse;
@@ -1346,9 +1898,9 @@ pub fn draw_screen(st: &mut Studio, game: &mut dyn GameApi) {
                         let t = hover(&mut st.s.ui, id("sbtn", i), over, dt);
                         let primary = field(wt, "primary").truthy();
                         let (bg, fg) = if primary {
-                            (mix(ACCENT, ACCENT_HOVER, t), PAGE)
+                            (mix(pal().accent, pal().accent_hover, t), on_accent())
                         } else {
-                            (mix(fade(INK, 0.08), fade(INK, 0.15), t), INK)
+                            (mix(fade(pal().ink, 0.08), fade(pal().ink, 0.15), t), pal().ink)
                         };
                         let b = [r[0], r[1] + 2.0, r[2], 36.0];
                         p.rect(b, 18.0, bg);
@@ -1368,15 +1920,15 @@ pub fn draw_screen(st: &mut Studio, game: &mut dyn GameApi) {
                         let t = glide(&mut st.s.ui, id("switch", i), on, dt);
                         let hv = hover(&mut st.s.ui, id("stog", i), over, dt);
                         if hv > 0.0 {
-                            p.rect([r[0] - 10.0, r[1], r[2] + 20.0, r[3]], 10.0, fade(INK, 0.05 * hv));
+                            p.rect([r[0] - 10.0, r[1], r[2] + 20.0, r[3]], 10.0, fade(pal().ink, 0.05 * hv));
                         }
                         let cy = r[1] + r[3] / 2.0;
                         let l = p.fit(&label, r[2] - 60.0, 14.0, Font::Regular);
-                        p.text(&l, r[0], top(cy, 14.0), 14.0, Font::Regular, INK);
+                        p.text(&l, r[0], top(cy, 14.0), 14.0, Font::Regular, pal().ink);
                         let track = [r[0] + r[2] - 40.0, cy - 11.0, 40.0, 22.0];
-                        p.rect(track, 11.0, mix(PLATE, ACCENT, t));
+                        p.rect(track, 11.0, mix(pal().plate, pal().accent, t));
                         let kx = track[0] + 3.0 + (track[2] - 22.0) * t;
-                        p.rect([kx, cy - 8.0, 16.0, 16.0], 8.0, mix(INK_SOFT, INK, t));
+                        p.rect([kx, cy - 8.0, 16.0, 16.0], 8.0, mix(pal().ink_soft, pal().ink, t));
                     }
                     "slider" => {
                         let (min, max) = (field_num(wt, "min", 0.0), field_num(wt, "max", 1.0));
@@ -1385,16 +1937,16 @@ pub fn draw_screen(st: &mut Studio, game: &mut dyn GameApi) {
                         let vs = slider_text(v, step);
                         let vw = p.measure(&vs, 12.0, Font::Mono);
                         let l = p.fit(&label, r[2] - vw - 12.0, 13.0, Font::Regular);
-                        p.text(&l, r[0], r[1] + 2.0, 13.0, Font::Regular, INK);
-                        p.text(&vs, r[0] + r[2] - vw, r[1] + 3.0, 12.0, Font::Mono, INK_SOFT);
+                        p.text(&l, r[0], r[1] + 2.0, 13.0, Font::Regular, pal().ink);
+                        p.text(&vs, r[0] + r[2] - vw, r[1] + 3.0, 12.0, Font::Mono, pal().ink_soft);
                         let ty = r[1] + 32.0;
                         let frac = if max > min {
                             ((v - min) / (max - min)) as f32
                         } else {
                             0.0
                         };
-                        p.rect([r[0], ty - 2.0, r[2], 4.0], 2.0, PLATE);
-                        p.rect([r[0], ty - 2.0, r[2] * frac, 4.0], 2.0, ACCENT);
+                        p.rect([r[0], ty - 2.0, r[2], 4.0], 2.0, pal().plate);
+                        p.rect([r[0], ty - 2.0, r[2] * frac, 4.0], 2.0, pal().accent);
                         let hv = hover(&mut st.s.ui, id("sknob", i), over, dt);
                         let kx = r[0] + r[2] * frac;
                         let kr = 7.0 + 2.0 * hv;
@@ -1402,19 +1954,19 @@ pub fn draw_screen(st: &mut Studio, game: &mut dyn GameApi) {
                             p.rect(
                                 [kx - kr - 4.0, ty - kr - 4.0, 2.0 * kr + 8.0, 2.0 * kr + 8.0],
                                 kr + 4.0,
-                                fade(ACCENT, 0.22 * hv),
+                                fade(pal().accent, 0.22 * hv),
                             );
                         }
-                        p.rect([kx - kr, ty - kr, 2.0 * kr, 2.0 * kr], kr, INK);
+                        p.rect([kx - kr, ty - kr, 2.0 * kr, 2.0 * kr], kr, pal().ink);
                     }
                     "input" => {
                         let l = p.fit(&label, r[2], 12.0, Font::Regular);
-                        p.text(&l, r[0], r[1], 12.0, Font::Regular, MUTED);
+                        p.text(&l, r[0], r[1], 12.0, Font::Regular, pal().muted);
                         let f = [r[0], r[1] + 20.0, r[2], 36.0];
-                        p.rect(f, 10.0, PAGE);
+                        p.rect(f, 10.0, pal().page);
                         let focused = focus == Some(i);
                         let ring = glide(&mut st.s.ui, id("sfocus", i), focused, dt);
-                        p.border(f, 10.0, mix(RULE, ACCENT, ring));
+                        p.border(f, 10.0, mix(pal().rule, pal().accent, ring));
                         let ty = top(f[1] + 18.0, 14.0);
                         if focused {
                             line_edit(
@@ -1426,14 +1978,14 @@ pub fn draw_screen(st: &mut Studio, game: &mut dyn GameApi) {
                                 f[2] - 24.0,
                                 14.0,
                                 Font::Regular,
-                                INK,
+                                pal().ink,
                             );
                         } else {
                             let value = field_text(wt, "value").unwrap_or_default();
                             let (shown, c) = if value.is_empty() {
-                                (field_text(wt, "placeholder").unwrap_or_default(), MUTED)
+                                (field_text(wt, "placeholder").unwrap_or_default(), pal().muted)
                             } else {
-                                (value, INK)
+                                (value, pal().ink)
                             };
                             let shown = p.fit(&shown, f[2] - 24.0, 14.0, Font::Regular);
                             p.text(&shown, f[0] + 12.0, ty, 14.0, Font::Regular, c);
@@ -1442,10 +1994,11 @@ pub fn draw_screen(st: &mut Studio, game: &mut dyn GameApi) {
                     "space" => {}
                     _ => {
                         let c = match field(wt, "color") {
-                            super::hstudio_lua::Value::Nil => INK_SOFT,
+                            super::hstudio_lua::Value::Nil => pal().ink_soft,
                             v => {
                                 let lua = super::hstudio_lua::Lua::new();
-                                super::hstudio::color_arg(&lua, &[v], 0, INK_SOFT).unwrap_or(INK_SOFT) | 0xFF00_0000
+                                super::hstudio::color_arg(&lua, &[v], 0, pal().ink_soft).unwrap_or(pal().ink_soft)
+                                    | 0xFF00_0000
                             }
                         };
                         for (j, l) in p.wrap(&label, r[2], 14.0, Font::Regular).iter().enumerate() {

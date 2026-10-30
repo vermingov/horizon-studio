@@ -44,6 +44,18 @@ name = "hstudio_look"
 source = "look.rs"
 
 [[module]]
+id = "theme"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_theme"
+source = "theme.rs"
+
+[[module]]
+id = "skins"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_skins"
+source = "skins.rs"
+
+[[module]]
 id = "examples"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_examples"

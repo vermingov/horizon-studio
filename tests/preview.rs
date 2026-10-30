@@ -520,3 +520,56 @@ fn render_the_via_picker() {
     picker.draw(&mut On(&mut c), &info, W, H, 3.6);
     c.save(&out.join("via-picker-search.png"));
 }
+
+/// Each theme on the editor, the Settings page, and the studio in a window.
+#[test]
+#[ignore]
+fn render_the_themes() {
+    use horizon_studio::game::hstudio_theme::{Layout, Look, THEMES};
+    let mut game = FakeGame::new("preview-themes");
+    let mut st = studio(&mut game);
+    for (i, ex) in horizon_studio::game::hstudio_examples::EXAMPLES.iter().enumerate() {
+        if ["coords", "waypoints", "compass", "outfit"].contains(&ex.id) {
+            st.install_example(&mut game, i).unwrap();
+        }
+    }
+    run_for(&mut st, &mut game, 0.6);
+    for line in ["player.pos()", "x = 21 * 2", "nope()"] {
+        st.run_console(&mut game, line);
+    }
+    st.s.ui.open = true;
+    let i = st.s.mods.iter().position(|m| m.id == "waypoints").unwrap();
+    st.edit_mod(i);
+    for (n, t) in THEMES.iter().enumerate() {
+        st.s.ui.look = Look {
+            theme: n,
+            motion: false,
+            ..Look::default()
+        };
+        st.s.ui.tab = Tab::Editor;
+        shot(&mut st, &format!("theme-{}", t.id), |st, p| draw(st, p));
+        if t.layout != Layout::Studio {
+            st.s.ui.tab = Tab::Library;
+            shot(&mut st, &format!("theme-{}-library", t.id), |st, p| draw(st, p));
+        }
+    }
+    st.s.ui.look = Look::default();
+    st.s.ui.tab = Tab::Settings;
+    shot(&mut st, "settings", |st, p| draw(st, p));
+    st.s.ui.look = Look {
+        theme: 1,
+        window: true,
+        motion: false,
+        ..Look::default()
+    };
+    st.s.ui.tab = Tab::Settings;
+    shot(&mut st, "settings-light-window", |st, p| draw(st, p));
+    st.s.ui.look = Look {
+        window: true,
+        scale: 0.85,
+        motion: false,
+        ..Look::default()
+    };
+    st.s.ui.tab = Tab::Console;
+    shot(&mut st, "window-small", |st, p| draw(st, p));
+}

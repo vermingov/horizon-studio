@@ -13,6 +13,9 @@ native Horizon mod that adds:
   reload them, open them in the editor, start a new one from a template, or install one of the bundled examples.
 - **Drag and drop install.** Drop a `.lua` file, a mod folder or a `.zip` on the game window and it runs.
 - **Docs.** The whole script API, in the game.
+- **Themes, and a window of its own.** Seven palettes, an accent of your choice, any size, full screen or a
+  Windows 10 style window you drag and size, and four styles after the script executors of old Roblox days
+  (Synapse X, ProtoSmasher, its classic look and RC7), each in its own draggable window.
 - **3D drawing, sounds, particles and screens.** Scripts draw lines, boxes, beams and labels in the world, play
   sounds, spawn particles, and open screens of their own with buttons, toggles, sliders and text fields.
 - **ViaHorizon: join servers of any version.** Like ViaFabricPlus for Fabric: every join goes through
@@ -88,9 +91,44 @@ In a world, press **F8** (or type `/studio`). Escape or F8 closes it. The world 
 | **Editor** | Edits a mod's file (or `scratch.lua`). Saving reloads the mod. | Ctrl+S save · Ctrl+Enter run in the console · Ctrl+Z/Y undo/redo · Ctrl+C/X/V · Ctrl+A · Ctrl+D duplicate line · Ctrl+/ comment · Tab/Shift+Tab indent · mouse click and drag |
 | **Library** | Your script mods and the examples; Open folder shows the mods folder. | Up/Down choose · Enter edit · Space on/off · R reload · N new mod |
 | **Docs** | The API. | Up/Down, Page Up/Down, wheel |
+| **Settings** | How the studio looks: see [Themes](#themes-and-the-window). | Up/Down, Page Up/Down, wheel |
 
-Ctrl+1 to Ctrl+4 switch tabs. In chat: `/studio` opens it, `/studio reload` reloads every script mod, and
+Ctrl+1 to Ctrl+5 switch tabs. In chat: `/studio` opens it, `/studio reload` reloads every script mod, and
 `/lua <code>` runs code and prints the result in chat.
+
+### Themes and the window
+
+Settings, the last tab, chooses how the studio looks, and keeps it in `look.txt` in the studio's folder:
+
+- **Theme.** Horizon (the design system's dark), Horizon Light, Midnight, Nord, Rose, Forest and Solar, or one of
+  the executor styles below.
+- **Window.** Full screen, or a window like a Windows 10 application's: drag it by its title bar, size it from its
+  bottom right corner, roll it up to its title bar (—), fill the screen (□) or close it (×). Reset window puts it
+  back in the middle.
+- **Accent**, the colour of the main buttons, the cursor and the selection; **Size**, of everything, 75% to 150%;
+  **Backdrop**, how much the studio hides the game; **Code size**, in the editor and console; **Animations** on or
+  off.
+
+The executor styles lay the studio out as the script executors of old Roblox days did, each always in its own
+window. Only their shape and colours are copied; the window says Horizon Studio, and RC7's letters read HS.
+
+| Style | Its layout |
+|---|---|
+| **Synapse X style** | Dark. The editor with its tab and +, the script list on the right (a click opens a mod), and Execute, Clear, Open File, Execute File, Save File, Console, Options and Attach along the bottom |
+| **ProtoSmasher style** | Grey. The editor, then EXECUTE, OPEN FILE, CLEAR and INJECT, the output, then SETTINGS, NEW TAB and the theme's dropdown |
+| **ProtoSmasher classic** | A white title bar over a dark body: the editor, Windows' own Execute, Open, Clear and Inject buttons, a grey output, Console and Options |
+| **RC7 style** | Maroon, with white tabs down the left (Editor, Console, Library, Docs, Options), a white editor, big letters down the right, and EXECUTE and CLEAR |
+
+Their buttons do the studio's work: Execute runs the editor's code, Clear empties it, Execute File reloads the mod
+open in the editor, Save File saves it, Open File shows the Library, Attach and Inject reload every mod, New Tab
+starts a new mod, and Options shows Settings. The console, the Library and the docs show in the editor's place,
+with their tabs above.
+
+| | |
+|---|---|
+| ![Synapse X style](docs/screenshots/theme-synapse.png) | ![ProtoSmasher style](docs/screenshots/theme-protosmasher.png) |
+| ![ProtoSmasher classic](docs/screenshots/theme-protoclassic.png) | ![RC7 style](docs/screenshots/theme-rc7.png) |
+| ![Settings](docs/screenshots/settings.png) | ![Horizon Light in a window](docs/screenshots/settings-light-window.png) |
 
 ## ViaHorizon
 
@@ -496,7 +534,10 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `lua.rs` (`hstudio_lua`) | The Lua interpreter: lexer, parser with scope resolution, evaluator, tables, budgets |
 | `lualib.rs` (`hstudio_lualib`) | The standard library, Lua patterns, `string.format` |
 | `studio.rs` (`hstudio`) | Script mods, hot reloading, events, timers, the API, the console |
-| `ui.rs` (`hstudio_ui`) | The screen: console, editor, library, docs; input |
+| `ui.rs` (`hstudio_ui`) | The screen: console, editor, library, docs, settings; input, the window's moving and sizing |
+| `look.rs` (`hstudio_look`) | How the screen draws: the studio's layout, Settings, the Windows 10 window, script screens |
+| `theme.rs` (`hstudio_theme`) | The themes' palettes, and the look chosen in Settings (`look.txt`) |
+| `skins.rs` (`hstudio_skins`) | The executor styles' layouts |
 | `examples.rs` (`hstudio_examples`) | The bundled examples, generated from `examples/` |
 | `bridge.rs` (`hstudio_bridge`) | The only module that knows Horizon's `Game`: the hooks and the game's side of the API |
 | `link.rs` (`hstudio_link`) | The AI link: the local socket the MCP server reaches the game through, polled in the frame |

@@ -611,7 +611,7 @@ impl ScriptMod {
         self.state == ModState::Running
     }
     /// The chunk name its main file's errors show.
-    fn chunk(&self) -> String {
+    pub(crate) fn chunk(&self) -> String {
         match &self.folder {
             Some(_) => format!("{}/main.lua", self.id),
             None => format!("{}.lua", self.id),
@@ -855,6 +855,7 @@ impl Studio {
         }
         self.s.started = true;
         self.s.dir = game.data_dir();
+        self.s.ui.look = super::hstudio_theme::Look::load(&self.s.dir);
         let mods = self.s.mods_dir();
         if !mods.exists() {
             let made = std::fs::create_dir_all(&mods).is_ok();

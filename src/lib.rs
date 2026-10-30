@@ -20,6 +20,10 @@ pub mod game {
     pub mod hstudio_lualib;
     #[path = "../../mixins/horizon_studio/models.rs"]
     pub mod hstudio_models;
+    #[path = "../../mixins/horizon_studio/skins.rs"]
+    pub mod hstudio_skins;
+    #[path = "../../mixins/horizon_studio/theme.rs"]
+    pub mod hstudio_theme;
     #[path = "../../mixins/horizon_studio/ui.rs"]
     pub mod hstudio_ui;
     #[path = "../../mixins/horizon_studio/via_picker.rs"]
