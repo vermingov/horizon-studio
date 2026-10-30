@@ -167,90 +167,262 @@ fn prose(id: &str) -> String {
     topic_text(id).replace("{STEPS_HELP}", crate::headless::STEPS_HELP)
 }
 
-/// What the reference holds and how to look things up.
+// ------------------------------------------------------------------ the reference as data
+
+/// A topic: its prose, filled in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TopicDoc {
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+    pub text: String,
+}
+
+/// An entry: one function, event or widget.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EntryDoc {
+    pub name: String,
+    pub topic: String,
+    pub doc: String,
+}
+
+/// The reference the MCP server answers with: the one built into it, or
+/// the one published on the repository's main branch
+/// (`docs/reference.json`), which it fetches, so the docs can change
+/// without a new release.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reference {
+    /// Where it came from, for the index.
+    pub source: String,
+    /// The studio's version it describes.
+    pub version: String,
+    pub topics: Vec<TopicDoc>,
+    pub entries: Vec<EntryDoc>,
+}
+
+/// The JSON layout of `docs/reference.json`; a server that reads another
+/// keeps its own reference.
+pub const SCHEMA: u64 = 1;
+
+/// Where the published reference is.
+pub const REFERENCE_URL: &str = "https://raw.githubusercontent.com/vermingov/horizon-studio/main/docs/reference.json";
+
+impl Reference {
+    /// The reference this program was built with.
+    pub fn built_in() -> Reference {
+        Reference {
+            source: format!("built into horizon-studio-mcp {}", crate::game::hstudio::VERSION),
+            version: crate::game::hstudio::VERSION.to_owned(),
+            topics: TOPICS
+                .iter()
+                .map(|t| TopicDoc {
+                    id: t.id.to_owned(),
+                    title: t.title.to_owned(),
+                    summary: t.summary.to_owned(),
+                    text: prose(t.id).trim().to_owned(),
+                })
+                .collect(),
+            entries: ENTRIES
+                .iter()
+                .map(|e| EntryDoc {
+                    name: e.name.to_owned(),
+                    topic: e.topic.to_owned(),
+                    doc: e.doc.trim().to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    /// As `docs/reference.json` has it.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "schema": SCHEMA,
+            "version": self.version,
+            "topics": self.topics.iter().map(|t| serde_json::json!({
+                "id": t.id, "title": t.title, "summary": t.summary, "text": t.text,
+            })).collect::<Vec<_>>(),
+            "entries": self.entries.iter().map(|e| serde_json::json!({
+                "name": e.name, "topic": e.topic, "doc": e.doc,
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    /// The text of `docs/reference.json`.
+    pub fn to_text(&self) -> String {
+        let mut text = serde_json::to_string_pretty(&self.to_json()).unwrap_or_default();
+        text.push('\n');
+        text
+    }
+
+    /// A published reference (`docs/reference.json`'s text), from `source`.
+    pub fn from_text(text: &str, source: &str) -> Result<Reference, String> {
+        let j: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("not the reference's JSON: {e}"))?;
+        if j["schema"].as_u64() != Some(SCHEMA) {
+            return Err(format!(
+                "a reference of another layout (schema {}, this server reads {SCHEMA})",
+                j["schema"]
+            ));
+        }
+        let field = |v: &serde_json::Value, k: &str| -> Result<String, String> {
+            v[k].as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("the reference lacks {k}"))
+        };
+        let list = |k: &str| {
+            j[k].as_array()
+                .cloned()
+                .ok_or_else(|| format!("the reference lacks {k}"))
+        };
+        let topics = list("topics")?
+            .iter()
+            .map(|t| {
+                Ok(TopicDoc {
+                    id: field(t, "id")?,
+                    title: field(t, "title")?,
+                    summary: field(t, "summary")?,
+                    text: field(t, "text")?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let entries = list("entries")?
+            .iter()
+            .map(|e| {
+                Ok(EntryDoc {
+                    name: field(e, "name")?,
+                    topic: field(e, "topic")?,
+                    doc: field(e, "doc")?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if topics.is_empty() || entries.is_empty() {
+            return Err("an empty reference".into());
+        }
+        Ok(Reference {
+            source: source.to_owned(),
+            version: field(&j, "version").unwrap_or_default(),
+            topics,
+            entries,
+        })
+    }
+
+    /// What the reference holds and how to look things up.
+    pub fn index(&self) -> String {
+        let mut out = format!(
+            "# Horizon Studio reference\n\n\
+             This copy: {} (Horizon Studio {}).\n\n\
+             Everything needed to write, check and test script mods, in topics (prose) and entries (one function, \
+             event or widget each). Look things up three ways:\n\n\
+             - a topic by its id, e.g. `start`, `events`, `screens`: its prose, then the full entry of everything in it;\n\
+             - an entry by its name: an API function as scripts call it (`player.pos`, `on`, `ui.open`), a standard \
+             function (`string.format`, `math.rad`, `pairs`), an event (`event:tick`, `event:hud`, `event:custom` for \
+             mod-to-mod events), a widget (`widget:button`); a trailing `()` is fine;\n\
+             - a search: words, all of which must appear (case does not matter), best matches first.\n\n\
+             New here: read `start`, `api`, `events` and `language`, then `recipes`; before testing, `tests`.\n\n\
+             ## Topics\n\n",
+            self.source, self.version
+        );
+        for t in &self.topics {
+            out.push_str(&format!("- `{}`: {}. {}\n", t.id, t.title, t.summary));
+        }
+        out.push_str("\n## Entries by topic\n\n");
+        for t in &self.topics {
+            let names: Vec<&str> = self
+                .entries
+                .iter()
+                .filter(|e| e.topic == t.id)
+                .map(|e| e.name.as_str())
+                .collect();
+            if !names.is_empty() {
+                out.push_str(&format!("- `{}`: {}\n", t.id, names.join(", ")));
+            }
+        }
+        out
+    }
+
+    /// A topic's whole text: its prose, then the full entry of each thing in it.
+    pub fn topic(&self, id: &str) -> Option<String> {
+        let id = id.trim();
+        let t = self.topics.iter().find(|t| t.id == id)?;
+        let mut out = format!("# {}\n\n{}\n", t.title, t.text.trim());
+        let entries: Vec<&EntryDoc> = self.entries.iter().filter(|e| e.topic == t.id).collect();
+        if !entries.is_empty() {
+            out.push_str("\n## Reference\n");
+            for e in entries {
+                out.push_str(&format!("\n### {}\n\n{}\n", e.name, e.doc.trim()));
+            }
+        }
+        Some(out)
+    }
+
+    /// An entry by its exact name; `player.pos()`, `player.pos(...)` and
+    /// spaces around it are fine, and any `event:mymod:name` is `event:custom`.
+    pub fn entry(&self, name: &str) -> Option<&EntryDoc> {
+        let mut n = name.trim();
+        if n.ends_with(')')
+            && let Some(open) = n.find('(')
+        {
+            n = n[..open].trim_end();
+        }
+        if let Some(e) = self.entries.iter().find(|e| e.name == n) {
+            return Some(e);
+        }
+        if let Some(e) = self.entries.iter().find(|e| e.name.eq_ignore_ascii_case(n)) {
+            return Some(e);
+        }
+        match n.strip_prefix("event:") {
+            Some(rest) if rest.contains(':') => self.entries.iter().find(|e| e.name == "event:custom"),
+            _ => None,
+        }
+    }
+
+    /// Entries and topics with every word of `query` in them (any case),
+    /// best first: (an entry's name or `topic:<id>`, a short snippet).
+    pub fn search(&self, query: &str, limit: usize) -> Vec<(String, String)> {
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        if words.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let mut hits: Vec<(u32, String, String)> = Vec::new();
+        for e in &self.entries {
+            if let Some(s) = score(&words, &e.name, &e.doc) {
+                hits.push((s + 5, e.name.clone(), snippet(&e.doc, &words)));
+            }
+        }
+        for t in &self.topics {
+            let text = format!("{}\n{}\n{}", t.title, t.summary, t.text);
+            if let Some(s) = score(&words, &t.id, &text) {
+                hits.push((s, format!("topic:{}", t.id), format!("{}: {}", t.title, t.summary)));
+            }
+        }
+        hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        hits.into_iter().take(limit).map(|(_, n, s)| (n, s)).collect()
+    }
+}
+
+/// The reference built into this program.
+pub fn built_in() -> &'static Reference {
+    static BUILT_IN: std::sync::OnceLock<Reference> = std::sync::OnceLock::new();
+    BUILT_IN.get_or_init(Reference::built_in)
+}
+
+/// The built-in reference's index.
 pub fn index() -> String {
-    let mut out = String::from(
-        "# Horizon Studio reference\n\n\
-         Everything needed to write, check and test script mods, in topics (prose) and entries (one function, \
-         event or widget each). Look things up three ways:\n\n\
-         - a topic by its id, e.g. `start`, `events`, `screens`: its prose, then the full entry of everything in it;\n\
-         - an entry by its name: an API function as scripts call it (`player.pos`, `on`, `ui.open`), a standard \
-         function (`string.format`, `math.rad`, `pairs`), an event (`event:tick`, `event:hud`, `event:custom` for \
-         mod-to-mod events), a widget (`widget:button`); a trailing `()` is fine;\n\
-         - a search: words, all of which must appear (case does not matter), best matches first.\n\n\
-         New here: read `start`, `api`, `events` and `language`, then `recipes`; before testing, `tests`.\n\n\
-         ## Topics\n\n",
-    );
-    for t in TOPICS {
-        out.push_str(&format!("- `{}`: {}. {}\n", t.id, t.title, t.summary));
-    }
-    out.push_str("\n## Entries by topic\n\n");
-    for t in TOPICS {
-        let names: Vec<&str> = ENTRIES.iter().filter(|e| e.topic == t.id).map(|e| e.name).collect();
-        if !names.is_empty() {
-            out.push_str(&format!("- `{}`: {}\n", t.id, names.join(", ")));
-        }
-    }
-    out
+    built_in().index()
 }
 
-/// A topic's whole text: its prose, then the full entry of each thing in it.
+/// A topic of the built-in reference.
 pub fn topic(id: &str) -> Option<String> {
-    let id = id.trim();
-    let t = TOPICS.iter().find(|t| t.id == id)?;
-    let mut out = format!("# {}\n\n{}\n", t.title, prose(t.id).trim());
-    let entries: Vec<&Entry> = ENTRIES.iter().filter(|e| e.topic == t.id).collect();
-    if !entries.is_empty() {
-        out.push_str("\n## Reference\n");
-        for e in entries {
-            out.push_str(&format!("\n### {}\n\n{}\n", e.name, e.doc.trim()));
-        }
-    }
-    Some(out)
+    built_in().topic(id)
 }
 
-/// An entry by its exact name; `player.pos()`, `player.pos(...)` and spaces
-/// around it are fine, and any `event:mymod:name` is `event:custom`.
-pub fn entry(name: &str) -> Option<&'static Entry> {
-    let mut n = name.trim();
-    if n.ends_with(')')
-        && let Some(open) = n.find('(')
-    {
-        n = n[..open].trim_end();
-    }
-    if let Some(e) = ENTRIES.iter().find(|e| e.name == n) {
-        return Some(e);
-    }
-    if let Some(e) = ENTRIES.iter().find(|e| e.name.eq_ignore_ascii_case(n)) {
-        return Some(e);
-    }
-    match n.strip_prefix("event:") {
-        Some(rest) if rest.contains(':') => ENTRIES.iter().find(|e| e.name == "event:custom"),
-        _ => None,
-    }
+/// An entry of the built-in reference.
+pub fn entry(name: &str) -> Option<&'static EntryDoc> {
+    built_in().entry(name)
 }
 
-/// Entries and topics with every word of `query` in them (any case), best
-/// first: (an entry's name or `topic:<id>`, a short snippet).
+/// A search of the built-in reference.
 pub fn search(query: &str, limit: usize) -> Vec<(String, String)> {
-    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    if words.is_empty() || limit == 0 {
-        return Vec::new();
-    }
-    let mut hits: Vec<(u32, String, String)> = Vec::new();
-    for e in ENTRIES {
-        if let Some(s) = score(&words, e.name, e.doc) {
-            hits.push((s + 5, e.name.to_owned(), snippet(e.doc, &words)));
-        }
-    }
-    for t in TOPICS {
-        let text = format!("{}\n{}\n{}", t.title, t.summary, prose(t.id));
-        if let Some(s) = score(&words, t.id, &text) {
-            hits.push((s, format!("topic:{}", t.id), format!("{}: {}", t.title, t.summary)));
-        }
-    }
-    hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    hits.into_iter().take(limit).map(|(_, n, s)| (n, s)).collect()
+    built_in().search(query, limit)
 }
 
 /// How well `name` and `text` match every word, or None when one is missing.
@@ -1207,7 +1379,7 @@ const MCP: &str = r##"
 
 ## The tools
 
-- `docs` (`topic`, `name`, `search`, all optional): this reference. No arguments: the index (every topic and entry name). `topic`: a topic's prose and the full entry of everything in it (`"all"`: every topic). `name`: one entry, exactly (`"player.pos"`, `"string.format"`, `"event:tick"`, `"widget:button"`). `search`: words, all of which must appear; the best matches with a line of each. The topics are also MCP resources, `horizon-studio://docs/<topic>`. Headless, no game needed.
+- `docs` (`topic`, `name`, `search`, all optional): this reference, the newest published one: the server fetches `docs/reference.json` from the repository's main branch as it starts (kept in `~/.horizon-studio/reference.json` for when it is offline; `$HORIZON_STUDIO_DOCS_URL` names another URL or a file, `off` keeps the one built in), so the docs change without a new release. The index says which copy answers. No arguments: the index (every topic and entry name). `topic`: a topic's prose and the full entry of everything in it (`"all"`: every topic). `name`: one entry, exactly (`"player.pos"`, `"string.format"`, `"event:tick"`, `"widget:button"`). `search`: words, all of which must appear; the best matches with a line of each. The topics are also MCP resources, `horizon-studio://docs/<topic>`. Headless, no game needed.
 - `examples` (`id` optional): without an id, the list of bundled examples (`id`, `title`, `description`); with one, its source.
 - `game_status` (no arguments): `{"linked": true, "game": {studio, protocol, frame, screen, in_world, ticks, fps, player, mods_dir, log_seq, chat_seq, agents, mods}}`, or `{"linked": false, "why", "mods_dir", "horizon_ctl"}`.
 - `list_mods` (`mods_dir` optional): `{"mods_dir", "mods"}`: every mod in the folder, with its live state when the game is linked.

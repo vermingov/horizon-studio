@@ -258,3 +258,76 @@ fn every_mcp_tool_is_in_the_mcp_topic() {
         assert!(text.contains(&format!("`{name}`")), "topic mcp lacks the tool {name}");
     }
 }
+
+/// docs/reference.json is what the MCP server fetches: it must say what
+/// this code says. `HORIZON_STUDIO_WRITE_DOCS=1 cargo test --test mcp_docs`
+/// (or `horizon-studio-mcp docs-json > docs/reference.json`) writes it.
+#[test]
+fn the_published_reference_is_current() {
+    use horizon_studio::mcp_docs::Reference;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/reference.json");
+    let now = Reference::built_in().to_text();
+    if std::env::var_os("HORIZON_STUDIO_WRITE_DOCS").is_some() {
+        std::fs::write(&path, &now).unwrap();
+    }
+    let published = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(
+        published == now,
+        "docs/reference.json is behind the code: run HORIZON_STUDIO_WRITE_DOCS=1 cargo test --test mcp_docs"
+    );
+    // It reads back as the same reference.
+    let back = Reference::from_text(&published, "test").unwrap();
+    assert_eq!(
+        (back.topics, back.entries),
+        (Reference::built_in().topics, Reference::built_in().entries)
+    );
+}
+
+#[test]
+fn the_server_answers_with_a_published_reference() {
+    use horizon_studio::mcp::Server;
+    use horizon_studio::mcp_docs::{Reference, TopicDoc};
+    let dir = std::env::temp_dir().join(format!("hs-docs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut r = Reference::built_in();
+    r.topics.push(TopicDoc {
+        id: "news".into(),
+        title: "What's new".into(),
+        summary: "Published after the release.".into(),
+        text: "A topic the release did not have.".into(),
+    });
+    let file = dir.join("reference.json");
+    std::fs::write(&file, r.to_text()).unwrap();
+    let mut s = Server::new();
+    assert!(s.reference().source.starts_with("built into"));
+    s.load_docs(file.to_str().unwrap()).unwrap();
+    let answer = s.call_tool("docs", &serde_json::json!({ "topic": "news" }));
+    let text = answer["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("A topic the release did not have."), "{answer}");
+    assert!(
+        s.call_tool("docs", &serde_json::json!({}))["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("This copy: the published reference")
+    );
+    // One for an older studio, or of another layout, is not taken.
+    let mut old = Reference::built_in();
+    old.version = "0.0.1".into();
+    std::fs::write(&file, old.to_text()).unwrap();
+    assert!(
+        s.load_docs(file.to_str().unwrap())
+            .unwrap_err()
+            .contains("older than this server's")
+    );
+    std::fs::write(&file, "{\"schema\": 99}").unwrap();
+    assert!(
+        s.load_docs(file.to_str().unwrap())
+            .unwrap_err()
+            .contains("another layout")
+    );
+    assert!(
+        s.reference().topics.iter().any(|t| t.id == "news"),
+        "the last good one stays"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

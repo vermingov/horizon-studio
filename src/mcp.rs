@@ -10,7 +10,7 @@
 use crate::game::hstudio::VERSION;
 use crate::game::hstudio_examples::EXAMPLES;
 use crate::headless::{Run, STEPS_HELP, Source, check_id, read_mod, run_steps, write_mod};
-use crate::mcp_docs;
+use crate::mcp_docs::{self, Reference};
 use serde_json::{Value as Json, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -261,8 +261,8 @@ pub fn tools() -> Json {
               of topics and entry names. topic: a whole topic. name: one entry (\"player.pos\", \"string.format\", \
               \"event:tick\", \"widget:button\"). search: words to find. Read it before writing a mod.",
             json!({
-                "topic": { "type": "string", "enum": doc_topics(),
-                           "description": "A topic: its prose and every entry in it (\"all\": everything)." },
+                "topic": { "type": "string",
+                           "description": "A topic id from the index (start, api, events, screens, meshes, recipes...): its prose and every entry in it (\"all\": everything)." },
                 "name": { "type": "string", "description": "One entry by its exact name." },
                 "search": { "type": "string", "description": "Words that must all appear; the best matches first." },
             }),
@@ -433,11 +433,78 @@ pub struct Server {
     link: Arc<Mutex<Option<LinkClient>>>,
     /// The agent, from `initialize`.
     client: Arc<Mutex<Option<String>>>,
+    /// The published reference, once fetched or read from the cache (None:
+    /// the built-in one).
+    docs: Arc<Mutex<Option<Arc<Reference>>>>,
 }
 
 impl Server {
     pub fn new() -> Server {
         Server::default()
+    }
+
+    /// The reference the docs tool answers with.
+    pub fn reference(&self) -> Arc<Reference> {
+        let current = self.docs.lock().ok().and_then(|d| d.clone());
+        current.unwrap_or_else(built_in_reference)
+    }
+
+    /// Answers with the reference at `location` (an http(s) URL, or a file),
+    /// unless it is for an older studio than this server's own; returns its
+    /// text, for the cache.
+    pub fn load_docs(&self, location: &str) -> Result<String, String> {
+        let text = read_reference(location)?;
+        let r = Reference::from_text(&text, &format!("the published reference, {location}"))?;
+        use_reference(&self.docs, r)?;
+        Ok(text)
+    }
+
+    /// The published reference: its cached copy at once, then the newest from
+    /// `$HORIZON_STUDIO_DOCS_URL` (default: the repository's main branch; a
+    /// file path works too; `off`: the built-in one only), in the background.
+    pub fn fetch_docs(&self) {
+        let location = std::env::var("HORIZON_STUDIO_DOCS_URL").unwrap_or_else(|_| mcp_docs::REFERENCE_URL.to_owned());
+        if location.is_empty() || location == "off" {
+            return;
+        }
+        let cache = docs_cache();
+        if let Some(text) = cache.as_ref().and_then(|c| std::fs::read_to_string(c).ok())
+            && let Ok(r) = Reference::from_text(
+                &text,
+                &format!("the copy of {location} cached in ~/.horizon-studio (fetching the newest)"),
+            )
+        {
+            let _ = use_reference(&self.docs, r);
+        }
+        let docs = self.docs.clone();
+        let _ = std::thread::Builder::new()
+            .name("horizon-studio-docs".into())
+            .spawn(move || {
+                let fetched = read_reference(&location).and_then(|text| {
+                    let r = Reference::from_text(&text, &format!("the published reference, {location}"))?;
+                    use_reference(&docs, r)?;
+                    Ok(text)
+                });
+                match fetched {
+                    Ok(text) => {
+                        if let Some(c) = &cache {
+                            if let Some(dir) = c.parent() {
+                                let _ = std::fs::create_dir_all(dir);
+                            }
+                            let _ = std::fs::write(c, text);
+                        }
+                    }
+                    Err(why) => {
+                        // The cached copy (or the built-in one) stays, saying so.
+                        if let Ok(mut d) = docs.lock() {
+                            let mut r = d.as_deref().cloned().unwrap_or_else(|| (*built_in_reference()).clone());
+                            let was = r.source.trim_end_matches(" (fetching the newest)").to_owned();
+                            r.source = format!("{was}; the newest could not be fetched: {why}");
+                            *d = Some(Arc::new(r));
+                        }
+                    }
+                }
+            });
     }
 
     /// The agent's name, from its `initialize`.
@@ -513,7 +580,7 @@ impl Server {
     fn tool(&mut self, name: &str, args: &Json) -> Result<Json, String> {
         let dir = || mods_dir(args.get("mods_dir").and_then(Json::as_str));
         match name {
-            "docs" => docs(args).map(Json::String),
+            "docs" => docs(args, &self.reference()).map(Json::String),
             "examples" => match args.get("id").and_then(Json::as_str) {
                 Some(id) => EXAMPLES
                     .iter()
@@ -960,15 +1027,65 @@ pub fn check(source: &Source) -> Result<(Json, Run), String> {
 /// Where the docs' topics are as MCP resources.
 const DOCS_URI: &str = "horizon-studio://docs/";
 
-fn doc_topics() -> Vec<&'static str> {
+/// The built-in reference, shared.
+fn built_in_reference() -> Arc<Reference> {
+    static BUILT_IN: std::sync::OnceLock<Arc<Reference>> = std::sync::OnceLock::new();
+    BUILT_IN.get_or_init(|| Arc::new(mcp_docs::built_in().clone())).clone()
+}
+
+/// Where the published reference is kept between runs.
+fn docs_cache() -> Option<PathBuf> {
+    Some(link_file()?.parent()?.join("reference.json"))
+}
+
+/// A reference's text from an http(s) URL or a file.
+fn read_reference(location: &str) -> Result<String, String> {
+    if location.starts_with("http://") || location.starts_with("https://") {
+        let agent = ureq::AgentBuilder::new()
+            .try_proxy_from_env(true)
+            .timeout_connect(Duration::from_secs(5))
+            .timeout_read(Duration::from_secs(20))
+            .user_agent(&format!("horizon-studio-mcp/{VERSION}"))
+            .build();
+        agent
+            .get(location)
+            .call()
+            .map_err(|e| e.to_string())?
+            .into_string()
+            .map_err(|e| e.to_string())
+    } else {
+        std::fs::read_to_string(location).map_err(|e| format!("{location}: {e}"))
+    }
+}
+
+/// A version's numbers ("0.2.0" as [0, 2, 0]).
+fn version_numbers(v: &str) -> Vec<u64> {
+    v.split(['.', '-']).map_while(|n| n.parse().ok()).collect()
+}
+
+/// Answers with `r`, unless it describes an older studio than this server's.
+fn use_reference(slot: &Mutex<Option<Arc<Reference>>>, r: Reference) -> Result<(), String> {
+    if version_numbers(&r.version) < version_numbers(VERSION) {
+        return Err(format!(
+            "the published reference is for Horizon Studio {}, older than this server's {VERSION}",
+            r.version
+        ));
+    }
+    if let Ok(mut d) = slot.lock() {
+        *d = Some(Arc::new(r));
+    }
+    Ok(())
+}
+
+fn doc_topics(r: &Reference) -> Vec<&str> {
     std::iter::once("all")
-        .chain(mcp_docs::TOPICS.iter().map(|t| t.id))
+        .chain(r.topics.iter().map(|t| t.id.as_str()))
         .collect()
 }
 
-fn doc_resources() -> Json {
+fn doc_resources(r: &Reference) -> Json {
     Json::Array(
-        mcp_docs::TOPICS
+        r.topics
             .iter()
             .map(|t| {
                 json!({ "uri": format!("{DOCS_URI}{}", t.id), "name": t.id, "title": t.title,
@@ -978,8 +1095,8 @@ fn doc_resources() -> Json {
     )
 }
 
-/// The `docs` tool: the index, a topic, an entry or a search.
-fn docs(args: &Json) -> Result<String, String> {
+/// The `docs` tool: the index, a topic, an entry or a search, in `r`.
+fn docs(args: &Json, r: &Reference) -> Result<String, String> {
     let get = |k: &str| {
         args.get(k)
             .and_then(Json::as_str)
@@ -987,13 +1104,13 @@ fn docs(args: &Json) -> Result<String, String> {
             .filter(|v| !v.is_empty())
     };
     if let Some(name) = get("name") {
-        return match mcp_docs::entry(name) {
+        return match r.entry(name) {
             Some(e) => Ok(format!("# {}\n\n{}\n", e.name, e.doc.trim())),
             None => {
                 // Entries near each part of the name ("player", "teleport").
                 let mut near: Vec<String> = Vec::new();
                 for part in name.split(['.', ':', '_', '(', ')', ' ']).filter(|p| p.len() > 1) {
-                    for (n, _) in mcp_docs::search(part, 6) {
+                    for (n, _) in r.search(part, 6) {
                         if !near.contains(&n) && near.len() < 10 {
                             near.push(n);
                         }
@@ -1008,7 +1125,7 @@ fn docs(args: &Json) -> Result<String, String> {
         };
     }
     if let Some(query) = get("search") {
-        let hits = mcp_docs::search(query, 20);
+        let hits = r.search(query, 20);
         if hits.is_empty() {
             return Ok(format!("Nothing has every word of '{query}'. Try fewer words."));
         }
@@ -1019,13 +1136,16 @@ fn docs(args: &Json) -> Result<String, String> {
         return Ok(out);
     }
     match get("topic") {
-        None => Ok(mcp_docs::index()),
-        Some("all") => Ok(mcp_docs::TOPICS
+        None => Ok(r.index()),
+        Some("all") => Ok(r
+            .topics
             .iter()
-            .filter_map(|t| mcp_docs::topic(t.id))
+            .filter_map(|t| r.topic(&t.id))
             .collect::<Vec<_>>()
             .join("\n\n")),
-        Some(id) => mcp_docs::topic(id).ok_or_else(|| format!("no topic '{id}': one of {}", doc_topics().join(", "))),
+        Some(id) => r
+            .topic(id)
+            .ok_or_else(|| format!("no topic '{id}': one of {}", doc_topics(r).join(", "))),
     }
 }
 
@@ -1056,10 +1176,11 @@ pub fn handle(server: &mut Server, msg: &Json) -> Option<Json> {
             let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
             Ok(server.call_tool(name, &args))
         }
-        "resources/list" => Ok(json!({ "resources": doc_resources() })),
+        "resources/list" => Ok(json!({ "resources": doc_resources(&server.reference()) })),
         "resources/read" => {
             let uri = params["uri"].as_str().unwrap_or("");
-            match uri.strip_prefix(DOCS_URI).and_then(mcp_docs::topic) {
+            let r = server.reference();
+            match uri.strip_prefix(DOCS_URI).and_then(|id| r.topic(id)) {
                 Some(text) => Ok(json!({ "contents": [{ "uri": uri, "mimeType": "text/markdown", "text": text }] })),
                 None => Err(json!({ "code": -32002, "message": format!("no resource '{uri}'") })),
             }
@@ -1078,6 +1199,7 @@ pub fn handle(server: &mut Server, msg: &Json) -> Option<Json> {
 pub fn serve() {
     let mut server = Server::new();
     server.keep_linked();
+    server.fetch_docs();
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     for line in stdin.lock().lines() {
