@@ -373,6 +373,20 @@ impl Default for Look {
     }
 }
 
+/// A window `r` kept on a `w` x `h` screen: no bigger than it (and no
+/// smaller than a window can be, room allowing), and all of it on it, so
+/// a smaller screen (the game's window sized down) brings it along.
+pub fn fit(r: [f32; 4], w: f32, h: f32) -> [f32; 4] {
+    let rw = r[2].max(320.0).min(w.max(1.0));
+    let rh = r[3].max(220.0).min(h.max(1.0));
+    [
+        r[0].clamp(0.0, (w - rw).max(0.0)),
+        r[1].clamp(0.0, (h - rh).max(0.0)),
+        rw,
+        rh,
+    ]
+}
+
 impl Look {
     pub fn theme(&self) -> &'static Theme {
         &THEMES[self.theme.min(THEMES.len() - 1)]
@@ -409,14 +423,7 @@ impl Look {
             Layout::Rc7 => (520.0, 470.0),
         };
         let r = self.rect.unwrap_or([(w - dw) / 2.0, (h - dh) / 2.0, dw, dh]);
-        let (rw, rh) = (r[2].clamp(320.0, w.max(320.0)), r[3].clamp(220.0, h.max(220.0)));
-        // At least its title bar stays reachable.
-        [
-            r[0].clamp(-rw + 120.0, w - 120.0),
-            r[1].clamp(0.0, (h - 40.0).max(0.0)),
-            rw,
-            rh,
-        ]
+        fit(r, w, h)
     }
 
     pub fn load(dir: &Path) -> Look {

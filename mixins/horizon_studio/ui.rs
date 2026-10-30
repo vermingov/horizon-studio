@@ -122,6 +122,50 @@ pub(crate) enum Action {
     /// Settings shown, or back to the editor (the executor styles).
     Settings,
     ClearEditor,
+    /// A suggestion taken.
+    Suggest(u8),
+    /// The editor's bottom panel: a tab of it, shown or hidden, sized from its
+    /// edge (a drag), focused; a problem's line.
+    PanelTab(Panel),
+    TogglePanel,
+    PanelResize,
+    FocusPanel,
+    Problem(usize),
+    /// The editor's file changed on disk while edited: take that, or keep these.
+    ReloadFile,
+    KeepMine,
+    /// The agent: the next one found, or stop it.
+    AgentNext,
+    AgentStop,
+    ClearLog,
+    /// Over something that takes no click (it doesn't reach what is under it).
+    Block,
+}
+
+/// The suggestions shown as you type: under the editor's cursor, or over
+/// the console's input.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Suggest {
+    pub items: Vec<super::hstudio_assist::Suggestion>,
+    pub sel: usize,
+    /// Where the word it replaces starts (a byte of the line or input).
+    pub start: usize,
+    pub console: bool,
+    /// When it opened (its motion), and whether the arrows moved it (then
+    /// Enter takes the suggestion, not a new line).
+    pub at: f64,
+    pub moved: bool,
+    /// The first one the list shows (it scrolls to keep `sel` in view).
+    pub(crate) first: usize,
+}
+
+/// The editor's bottom panel, as in VS Code.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Panel {
+    #[default]
+    Console,
+    Problems,
+    Agent,
 }
 
 /// A window being moved or sized: how, from where the pointer was, and the
@@ -166,6 +210,20 @@ pub struct Ui {
     /// The screen in the studio's units, from the last frame.
     pub(crate) screen: (f32, f32),
     pub(crate) settings_scroll: f32,
+    pub suggest: Option<Suggest>,
+    /// The editor's bottom panel: which tab, shown, focused (typing goes to
+    /// it), its share of the editor's height, being sized (from where).
+    pub panel: Panel,
+    pub panel_hidden: bool,
+    pub panel_focus: bool,
+    pub panel_h: f32,
+    pub(crate) panel_drag: Option<(f32, f32)>,
+    /// The height the panel's share is of, from the last frame.
+    pub(crate) panel_room: f32,
+    /// What the agent is asked, typed in its panel.
+    pub agent_input: LineEdit,
+    pub(crate) problem_sel: usize,
+    pub agent: AgentPane,
     /// The pointer, in dp.
     pub mouse: (f32, f32),
     /// Whether the left and right buttons are held (over a script screen).
@@ -187,7 +245,23 @@ pub struct Ui {
     pub(crate) pill: [f32; 2],
     pub(crate) pill_from: [f32; 2],
     pub(crate) anim: std::collections::HashMap<u64, f32>,
-    pub(crate) smooth: [f32; 4],
+    pub(crate) smooth: [f32; 8],
+    /// The editor's caret as drawn (it glides), where it is going, and when
+    /// it last moved (it blinks only when still).
+    pub(crate) caret: Option<[f32; 2]>,
+    pub(crate) caret_to: [f32; 2],
+    pub(crate) caret_moved: f64,
+    /// When the editor's file was last looked at on disk.
+    pub(crate) disk_at: f64,
+    /// Where the bottom panel was drawn (None: it wasn't), for the wheel.
+    pub(crate) panel_at: Option<[f32; 4]>,
+    /// When each of the editor's problems first showed (its fade in).
+    pub(crate) problem_at: std::collections::HashMap<u64, f64>,
+    /// The window as drawn: it glides to where it is going (maximised,
+    /// restored, the screen resized).
+    pub(crate) win_shown: Option<[f32; 4]>,
+    /// When the bottom panel's tab last changed (its content's motion).
+    pub(crate) panel_tab_at: f64,
     pub(crate) naming_at: f64,
 }
 
@@ -339,6 +413,20 @@ pub struct Editor {
     last_kind: Option<EditKind>,
     /// Why the file could not be read, if it couldn't.
     pub problem: Option<String>,
+    /// Bumped by every edit: the live check runs on a new one.
+    pub revision: u64,
+    /// The revision `problems` are of.
+    pub checked: Option<u64>,
+    /// The live check's findings (syntax errors, unknown names).
+    pub problems: Vec<super::hstudio_assist::Problem>,
+    /// When it was last edited (the studio's clock): the check waits for a pause.
+    pub edited_at: f64,
+    /// The file as last read or written (size, time), to see others' changes.
+    pub disk: Option<(u64, Option<std::time::SystemTime>)>,
+    /// The file changed on disk while this buffer had unsaved edits.
+    pub conflict: bool,
+    /// When the file was read again after a change elsewhere (an agent's).
+    pub reloaded_at: Option<f64>,
 }
 
 impl Default for Editor {
@@ -359,8 +447,123 @@ impl Default for Editor {
             redo: Vec::new(),
             last_kind: None,
             problem: None,
+            revision: 0,
+            checked: None,
+            problems: Vec::new(),
+            edited_at: 0.0,
+            disk: None,
+            conflict: false,
+            reloaded_at: None,
         }
     }
+}
+
+/// A file's size and time, to see when it changes.
+fn disk_stamp(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+    std::fs::metadata(path).ok().map(|m| (m.len(), m.modified().ok()))
+}
+
+/// The closer of an opening bracket or quote.
+fn closer(c: char) -> Option<char> {
+    match c {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '"' | '\'' => Some(c),
+        _ => None,
+    }
+}
+
+/// A line's code: strings blanked, its comment cut (byte for byte).
+fn code_of(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) => {
+                out.extend(std::iter::repeat_n(' ', c.len_utf8()));
+                if c == '\\' {
+                    if let Some(n) = chars.next() {
+                        out.extend(std::iter::repeat_n(' ', n.len_utf8()));
+                    }
+                } else if c == q {
+                    quote = None;
+                }
+            }
+            None if c == '-' && chars.peek() == Some(&'-') => break,
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                out.push(' ');
+            }
+            None => out.push(c),
+        }
+    }
+    out
+}
+
+/// Whether the end of `before` is inside a string.
+fn in_string(before: &str) -> bool {
+    let mut quote: Option<char> = None;
+    let mut chars = before.chars();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) if c == '\\' => {
+                let _ = (q, chars.next());
+            }
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None => {}
+        }
+    }
+    quote.is_some()
+}
+
+/// What a line of code opens and closes, in order: +1 with its closer for
+/// `function`, `do`, `then`, `repeat` and brackets; -1 for `end`, `until`,
+/// `elseif` (whose own `then` opens again) and closing brackets.
+fn block_marks(code: &str) -> Vec<(i32, &'static str)> {
+    let mut out = Vec::new();
+    let mut word = String::new();
+    for c in code.chars().chain([' ']) {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            word.push(c);
+            continue;
+        }
+        match word.as_str() {
+            "function" | "do" | "then" => out.push((1, "end")),
+            "repeat" => out.push((1, "until")),
+            "end" | "until" | "elseif" => out.push((-1, "")),
+            _ => {}
+        }
+        word.clear();
+        match c {
+            '(' => out.push((1, ")")),
+            '{' => out.push((1, "}")),
+            '[' => out.push((1, "]")),
+            ')' | '}' | ']' => out.push((-1, "")),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The blocks lines `0..row` leave open, innermost last: the indent of the
+/// line that opened each, and what closes it.
+fn open_blocks(lines: &[String], row: usize) -> Vec<(usize, &'static str)> {
+    let mut stack: Vec<(usize, &'static str)> = Vec::new();
+    for line in &lines[..row.min(lines.len())] {
+        let indent = line.len() - line.trim_start().len();
+        for (d, close) in block_marks(&code_of(line)) {
+            if d > 0 {
+                stack.push((indent, close));
+            } else {
+                stack.pop();
+            }
+        }
+    }
+    stack
 }
 
 impl Editor {
@@ -374,9 +577,42 @@ impl Editor {
             path: Some(path.to_path_buf()),
             title: title.to_owned(),
             problem,
+            disk: disk_stamp(path),
             ..Editor::default()
         };
         self.set_text(&text);
+    }
+    /// Reads the file again when it changed on disk (an agent wrote it):
+    /// at once while there are no unsaved edits (the cursor stays where it
+    /// was, and Ctrl+Z goes back), else it is marked as a conflict. True
+    /// when it read it.
+    pub fn sync_disk(&mut self) -> bool {
+        let Some(path) = self.path.clone() else {
+            return false;
+        };
+        let now = disk_stamp(&path);
+        if now.is_none() || now == self.disk {
+            return false;
+        }
+        self.disk = now;
+        if self.dirty {
+            self.conflict = true;
+            return false;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return false;
+        };
+        if text.replace("\r\n", "\n") == self.text() {
+            return false;
+        }
+        let scroll = self.scroll;
+        self.begin(EditKind::Other);
+        self.set_text(&text);
+        self.dirty = false;
+        self.conflict = false;
+        self.anchor = None;
+        self.scroll = scroll.min(self.lines.len().saturating_sub(1));
+        true
     }
     pub fn set_text(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n").replace('\t', INDENT);
@@ -389,6 +625,8 @@ impl Editor {
         while !self.lines[self.row].is_char_boundary(self.col) {
             self.col -= 1;
         }
+        // Whatever set it, the live check looks again.
+        self.revision += 1;
     }
     pub fn text(&self) -> String {
         self.lines.join("\n")
@@ -405,6 +643,8 @@ impl Editor {
         std::fs::write(&path, text).map_err(|e| e.to_string())?;
         self.dirty = false;
         self.problem = None;
+        self.conflict = false;
+        self.disk = disk_stamp(&path);
         Ok(path)
     }
     fn snapshot(&self) -> Snapshot {
@@ -426,6 +666,7 @@ impl Editor {
         self.redo.clear();
         self.dirty = true;
         self.goal = None;
+        self.revision += 1;
     }
     pub fn undo(&mut self) {
         if let Some(s) = self.undo.pop() {
@@ -446,6 +687,7 @@ impl Editor {
         self.anchor = None;
         self.last_kind = None;
         self.dirty = true;
+        self.revision += 1;
     }
     /// The selection, start first.
     pub fn selection(&self) -> Option<((usize, usize), (usize, usize))> {
@@ -512,13 +754,139 @@ impl Editor {
         let line = &self.lines[self.row];
         let indent: String = line.chars().take_while(|c| *c == ' ').collect();
         let before = line[..self.col].trim_end();
-        let opens = ["then", "do", "else", "repeat", "{", "("]
+        let after = line[self.col..].to_owned();
+        let opens = ["then", "do", "else", "repeat", "{", "(", "["]
             .iter()
             .any(|k| before.ends_with(k))
             || (before.contains("function") && before.ends_with(')'))
             || before.ends_with("function()");
+        // Between a bracket and its closer: the closer goes a line down.
+        let between = before
+            .chars()
+            .last()
+            .filter(|c| !matches!(c, '"' | '\''))
+            .and_then(closer)
+            .is_some_and(|c| after.trim_start().starts_with(c));
+        if between {
+            let rest = after.trim_start().to_owned();
+            self.begin(EditKind::Other);
+            self.delete_selection();
+            let line = &mut self.lines[self.row];
+            line.truncate(self.col);
+            let inner = format!("{indent}{INDENT}");
+            self.lines.insert(self.row + 1, inner.clone());
+            self.lines.insert(self.row + 2, format!("{indent}{rest}"));
+            self.row += 1;
+            self.col = inner.len();
+            return;
+        }
         let extra = if opens { INDENT } else { "" };
+        // A block this line opens that nothing closes: its closer (and the
+        // call it is in: `on("tick", function()` takes `end)`) a line down.
+        let close = if opens && after.trim().is_empty() {
+            self.missing_closer()
+        } else {
+            None
+        };
         self.insert(&format!("\n{indent}{extra}"));
+        if let Some(close) = close {
+            self.lines.insert(self.row + 1, format!("{indent}{close}"));
+        }
+    }
+
+    /// The closer the cursor's line needs when the file leaves the block it
+    /// opens unclosed: `end` or `until `, then the closers of the brackets the
+    /// line leaves open (none when the file has as many closers as openers).
+    fn missing_closer(&self) -> Option<String> {
+        let line = &self.lines[self.row];
+        let mut stack: Vec<&'static str> = Vec::new();
+        for (d, close) in block_marks(&code_of(&line[..self.col])) {
+            if d > 0 {
+                stack.push(close);
+            } else {
+                stack.pop();
+            }
+        }
+        let first = stack.iter().rposition(|c| *c == "end" || *c == "until")?;
+        let unclosed = open_blocks(&self.lines, self.lines.len());
+        if !unclosed.iter().any(|b| b.1 == stack[first]) {
+            return None;
+        }
+        let mut out = stack[first].to_owned();
+        if out == "until" {
+            out.push(' ');
+        }
+        for c in stack[..first].iter().rev() {
+            if c.len() == 1 {
+                out.push_str(c);
+            }
+        }
+        Some(out)
+    }
+
+    /// Types `s` as from the keyboard: brackets and quotes close themselves
+    /// (and wrap a selection), a closer that is next is typed over, and a line
+    /// that starts with `end`, `else`, `elseif`, `until` or a closer goes back
+    /// to its block's indent.
+    pub fn type_text(&mut self, s: &str) {
+        let mut chars = s.chars();
+        let (Some(c), None) = (chars.next(), chars.next()) else {
+            return self.insert(s);
+        };
+        if let (Some(_), Some(close)) = (self.selection(), closer(c)) {
+            let inner = self.selected_text().unwrap_or_default();
+            self.insert(&format!("{c}{inner}{close}"));
+            return;
+        }
+        let line = &self.lines[self.row];
+        let (before, after) = (&line[..self.col], &line[self.col..]);
+        let next = after.chars().next();
+        let prev = before.chars().last();
+        let quoting = in_string(before);
+        // Typing over the closer already there.
+        let over = next == Some(c)
+            && match c {
+                ')' | ']' | '}' => !quoting,
+                '"' | '\'' => quoting,
+                _ => false,
+            };
+        if over {
+            self.anchor = None;
+            self.col += c.len_utf8();
+            return;
+        }
+        let pair = closer(c).filter(|_| {
+            let free_after = next.is_none_or(|n| n.is_whitespace() || ")]},".contains(n));
+            let quote_ok = !matches!(c, '"' | '\'') || !prev.is_some_and(|p| p.is_alphanumeric() || p == '_');
+            free_after && quote_ok && !quoting
+        });
+        match pair {
+            Some(close) => {
+                self.insert(&format!("{c}{close}"));
+                self.col -= close.len_utf8();
+            }
+            None => self.insert(s),
+        }
+        self.dedent_closer();
+    }
+
+    /// A line that is just a closer (`end`, `else`, `}`...) goes to the
+    /// indent of the block it closes.
+    fn dedent_closer(&mut self) {
+        let line = &self.lines[self.row];
+        let word = line.trim_start();
+        let indent = line.len() - word.len();
+        if !matches!(word, "end" | "else" | "elseif" | "until" | "}" | ")" | "]") {
+            return;
+        }
+        let Some(&(target, _)) = open_blocks(&self.lines, self.row).last() else {
+            return;
+        };
+        if target < indent {
+            let cut = indent - target;
+            self.lines[self.row].replace_range(..cut, "");
+            self.col = self.col.saturating_sub(cut);
+        }
     }
     pub fn backspace(&mut self, word: bool) {
         if self.selection().is_some() {
@@ -540,6 +908,15 @@ impl Editor {
         }
         self.begin(EditKind::Deleting);
         let line = &self.lines[self.row];
+        // An empty pair goes together.
+        let (prev, next) = (line[..self.col].chars().last(), line[self.col..].chars().next());
+        if !word && prev.and_then(closer).is_some_and(|c| Some(c) == next) {
+            let to = prev_char(line, self.col);
+            let end = self.col + next.map_or(0, char::len_utf8);
+            self.lines[self.row].replace_range(to..end, "");
+            self.col = to;
+            return;
+        }
         let to = if word {
             word_left(line, self.col)
         } else if line[..self.col].ends_with(INDENT) && line[..self.col].trim().is_empty() {
@@ -1035,22 +1412,186 @@ pub use super::hstudio_look::{code_line, draw, draw_screen};
 // ----------------------------------------------------------------- input
 
 pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult {
+    let revision = st.s.editor.revision;
+    let out = handle_input(st, game, input);
+    if st.s.editor.revision != revision {
+        st.s.editor.edited_at = st.s.now;
+    }
+    out
+}
+
+/// Where typing goes now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Target {
+    Editor,
+    Console,
+    Agent,
+    Elsewhere,
+}
+
+pub fn target(ui: &Ui) -> Target {
+    match ui.tab {
+        Tab::Console => Target::Console,
+        Tab::Editor
+            if ui.panel_focus && !ui.panel_hidden && ui.look.theme().layout == super::hstudio_theme::Layout::Studio =>
+        {
+            match ui.panel {
+                Panel::Console => Target::Console,
+                Panel::Agent => Target::Agent,
+                Panel::Problems => Target::Elsewhere,
+            }
+        }
+        Tab::Editor => Target::Editor,
+        _ => Target::Elsewhere,
+    }
+}
+
+/// Opens, updates or closes the suggestions for what is typed now.
+pub fn refresh_suggest(st: &mut Studio) {
+    let console = match target(&st.s.ui) {
+        Target::Console => true,
+        Target::Editor => false,
+        _ => {
+            st.s.ui.suggest = None;
+            return;
+        }
+    };
+    let found = if console {
+        let i = &st.s.ui.input;
+        super::hstudio_assist::suggest(&i.text[..i.cursor], &[], true)
+    } else {
+        let ed = &st.s.editor;
+        if ed.selection().is_some() {
+            None
+        } else {
+            super::hstudio_assist::suggest(&ed.lines[ed.row][..ed.col], &ed.lines, false)
+        }
+    };
+    let ui = &mut st.s.ui;
+    ui.suggest = match found {
+        Some((start, items)) if !items.is_empty() => {
+            let at = ui
+                .suggest
+                .as_ref()
+                .filter(|s| s.console == console && s.start == start)
+                .map_or(st.s.now, |s| s.at);
+            Some(Suggest {
+                items,
+                sel: 0,
+                start,
+                console,
+                at,
+                moved: false,
+                first: 0,
+            })
+        }
+        _ => None,
+    };
+}
+
+/// Takes suggestion `i`: it replaces the word typed; a function gets its
+/// brackets (the cursor in them), a library its dot (and its members).
+pub fn accept_suggestion(st: &mut Studio, i: usize) {
+    use super::hstudio_assist::Kind;
+    let Some(sg) = st.s.ui.suggest.take() else { return };
+    let Some(item) = sg.items.get(i).cloned() else { return };
+    if sg.console {
+        let input = &mut st.s.ui.input;
+        let end = input.cursor.max(sg.start);
+        input.text.replace_range(sg.start.min(end)..end, &item.insert);
+        input.cursor = sg.start + item.insert.len();
+        let next = input.text[input.cursor..].chars().next();
+        match item.kind {
+            Kind::Function if next != Some('(') => {
+                input.insert("()");
+                input.cursor -= 1;
+            }
+            Kind::Namespace if next != Some('.') => input.insert("."),
+            _ => {}
+        }
+    } else {
+        let ed = &mut st.s.editor;
+        ed.anchor = Some((ed.row, sg.start.min(ed.col)));
+        ed.insert(&item.insert);
+        let next = ed.lines[ed.row][ed.col..].chars().next();
+        match item.kind {
+            Kind::Function if next != Some('(') => ed.type_text("("),
+            Kind::Namespace if next != Some('.') => ed.type_text("."),
+            _ => {}
+        }
+    }
+    if item.kind == Kind::Namespace {
+        refresh_suggest(st);
+    }
+}
+
+/// A key while suggestions show: true when it was theirs.
+fn suggest_key(st: &mut Studio, key: Key) -> bool {
+    let Some(sg) = &mut st.s.ui.suggest else { return false };
+    let n = sg.items.len().max(1);
+    match key {
+        Key::Up => {
+            sg.sel = (sg.sel + n - 1) % n;
+            sg.moved = true;
+        }
+        Key::Down => {
+            sg.sel = (sg.sel + 1) % n;
+            sg.moved = true;
+        }
+        Key::PageUp => {
+            sg.sel = sg.sel.saturating_sub(8);
+            sg.moved = true;
+        }
+        Key::PageDown => {
+            sg.sel = (sg.sel + 8).min(n - 1);
+            sg.moved = true;
+        }
+        Key::Tab => {
+            let i = sg.sel;
+            accept_suggestion(st, i);
+        }
+        Key::Enter if sg.moved => {
+            let i = sg.sel;
+            accept_suggestion(st, i);
+        }
+        Key::Escape => st.s.ui.suggest = None,
+        Key::Backspace | Key::Delete => return false,
+        _ => {
+            st.s.ui.suggest = None;
+            return false;
+        }
+    }
+    true
+}
+
+fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult {
     match input {
         Input::Mouse(x, y) => {
             // GUI pixels to dp, then to the studio's units (its size setting).
             let k = st.s.ui.dp_factor() / st.s.ui.look.scale;
             let (x, y) = (x * k, y * k);
             st.s.ui.mouse = (x, y);
+            if let Some((from, h)) = st.s.ui.panel_drag {
+                let room = st.s.ui.panel_room.max(1.0);
+                st.s.ui.panel_h = (h + (from - y) / room).clamp(0.15, 0.8);
+                return UiResult::Used;
+            }
             if let Some(d) = st.s.ui.drag {
                 let (dx, dy) = (x - d.from.0, y - d.from.1);
                 let [rx, ry, rw, rh] = d.rect;
+                let (sw, sh) = st.s.ui.screen;
                 let look = &mut st.s.ui.look;
                 look.maximized = false;
-                look.rect = Some(if d.resize {
-                    [rx, ry, (rw + dx).max(320.0), (rh + dy).max(220.0)]
-                } else {
-                    [rx + dx, ry + dy, rw, rh]
-                });
+                // Kept on the screen as it goes, so it comes back at once.
+                look.rect = Some(super::hstudio_theme::fit(
+                    if d.resize {
+                        [rx, ry, (rw + dx).min(sw - rx), (rh + dy).min(sh - ry)]
+                    } else {
+                        [rx + dx, ry + dy, rw, rh]
+                    },
+                    sw,
+                    sh,
+                ));
                 return UiResult::Used;
             }
             if st.s.ui.dragging {
@@ -1061,6 +1602,7 @@ pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult
         Input::Button { left, down } => {
             if !down {
                 st.s.ui.dragging = false;
+                st.s.ui.panel_drag = None;
                 if st.s.ui.drag.take().is_some() {
                     st.s.ui.look.save(&st.s.dir);
                 }
@@ -1089,17 +1631,46 @@ pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult
                 });
                 return UiResult::Used;
             }
+            if let Some(Action::PanelResize) = hit {
+                st.s.ui.panel_drag = Some((at.1, st.s.ui.panel_h));
+                return UiResult::Used;
+            }
+            if !matches!(hit, Some(Action::Suggest(_))) {
+                st.s.ui.suggest = None;
+            }
             if let Some(action) = hit {
                 return act(st, game, action);
             }
             if st.s.ui.tab == Tab::Editor && editor_point(st, game, at.0, at.1, false) {
                 st.s.ui.dragging = true;
+                st.s.ui.panel_focus = false;
             }
             UiResult::Used
         }
         Input::Wheel(steps) => {
             let n = (steps.abs().ceil() as usize).max(1) * 3;
             let up = steps > 0.0;
+            if st.s.ui.tab == Tab::Editor
+                && let Some(r) = st.s.ui.panel_at
+                && inside(r, st.s.ui.mouse)
+            {
+                let ui = &mut st.s.ui;
+                match ui.panel {
+                    Panel::Console if up => ui.log_scroll += n,
+                    Panel::Console => ui.log_scroll = ui.log_scroll.saturating_sub(n),
+                    Panel::Agent if up => ui.agent.scroll += n as f32,
+                    Panel::Agent => ui.agent.scroll = (ui.agent.scroll - n as f32).max(0.0),
+                    Panel::Problems => {
+                        let last = st.s.editor.problems.len().saturating_sub(1);
+                        ui.problem_sel = if up {
+                            ui.problem_sel.saturating_sub(n / 3)
+                        } else {
+                            (ui.problem_sel + n / 3).min(last)
+                        };
+                    }
+                }
+                return UiResult::Used;
+            }
             match st.s.ui.tab {
                 Tab::Console => {
                     st.s.ui.log_scroll = if up {
@@ -1151,12 +1722,39 @@ pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult
                 name.insert(&t);
                 return UiResult::Used;
             }
-            match st.s.ui.tab {
-                Tab::Console => {
+            // What opens or keeps suggestions: a name's letters, a dot, a
+            // colon, a quote (events in on("...")).
+            let suggests = t
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | ':' | '"' | '\''));
+            match target(&st.s.ui) {
+                Target::Console => {
                     st.s.ui.input.insert(&t);
                     st.s.ui.hist = None;
+                    if suggests {
+                        refresh_suggest(st);
+                    } else {
+                        st.s.ui.suggest = None;
+                    }
+                    return UiResult::Used;
                 }
-                Tab::Editor => st.s.editor.insert(&t),
+                Target::Agent => {
+                    st.s.ui.agent_input.insert(&t);
+                    return UiResult::Used;
+                }
+                Target::Editor => {
+                    st.s.editor.type_text(&t);
+                    if suggests {
+                        refresh_suggest(st);
+                    } else {
+                        st.s.ui.suggest = None;
+                    }
+                    return UiResult::Used;
+                }
+                Target::Elsewhere => {}
+            }
+            match st.s.ui.tab {
+                Tab::Console | Tab::Editor => {}
                 Tab::Library => match t.as_str() {
                     " " => {
                         if let Some(m) = st.s.mods.get(st.s.ui.library_sel) {
@@ -1330,6 +1928,56 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
             st.s.editor.set_text("");
             st.s.editor.dirty = true;
         }
+        Action::Suggest(i) => {
+            if let Some(sg) = &mut st.s.ui.suggest {
+                sg.sel = usize::from(i);
+            }
+            accept_suggestion(st, usize::from(i));
+        }
+        Action::PanelTab(p) => {
+            let ui = &mut st.s.ui;
+            if ui.panel != p {
+                ui.panel_tab_at = st.s.now;
+            }
+            ui.panel = p;
+            ui.panel_hidden = false;
+            ui.panel_focus = true;
+        }
+        Action::TogglePanel => {
+            let ui = &mut st.s.ui;
+            // As VS Code's: shown but not in use, it takes the keys; in use, it hides.
+            if ui.tab != Tab::Editor {
+                ui.tab = Tab::Editor;
+                ui.panel_hidden = false;
+            } else if ui.panel_hidden || ui.panel_focus {
+                ui.panel_hidden = !ui.panel_hidden;
+            }
+            ui.panel_focus = !ui.panel_hidden;
+            ui.suggest = None;
+        }
+        Action::PanelResize => {}
+        Action::FocusPanel => {
+            st.s.ui.panel_focus = true;
+            st.s.ui.suggest = None;
+        }
+        Action::Problem(i) => goto_problem(st, i),
+        Action::ReloadFile => {
+            let ed = &mut st.s.editor;
+            if let Some(path) = ed.path.clone() {
+                let (title, row) = (ed.title.clone(), ed.row);
+                ed.open(&path, &title);
+                ed.click(row.min(ed.lines.len() - 1), 0, false);
+                ed.reloaded_at = Some(st.s.now);
+            }
+        }
+        Action::KeepMine => st.s.editor.conflict = false,
+        Action::AgentNext => agent_next(st),
+        Action::AgentStop => agent_stop(st),
+        Action::Block => {}
+        Action::ClearLog => {
+            st.s.log.clear();
+            st.s.ui.log_scroll = 0;
+        }
         Action::CopyPrompt => {
             game.set_clipboard(super::hstudio_link::SETUP_PROMPT);
             st.s.ui.copied_at = Some(st.s.now);
@@ -1368,8 +2016,25 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
         }
         return UiResult::Used;
     }
+    if key == Key::Escape && st.s.ui.suggest.take().is_some() {
+        return UiResult::Used;
+    }
+    if key == Key::Escape && st.s.ui.tab == Tab::Editor && st.s.ui.panel_focus {
+        st.s.ui.panel_focus = false;
+        return UiResult::Used;
+    }
+    if !mods.ctrl && suggest_key(st, key) {
+        return UiResult::Used;
+    }
     match key {
         Key::Escape | Key::Toggle => return UiResult::Close,
+        Key::Char('`' | 'j') if mods.ctrl => {
+            return act(st, game, Action::TogglePanel);
+        }
+        Key::Char(' ') if mods.ctrl => {
+            refresh_suggest(st);
+            return UiResult::Used;
+        }
         Key::Char(c @ '1'..='5') if mods.ctrl => {
             st.s.ui.tab = TABS[(c as u8 - b'1') as usize].0;
             return UiResult::Used;
@@ -1382,9 +2047,20 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
         }
         _ => {}
     }
+    let open = st.s.ui.suggest.is_some();
+    match target(&st.s.ui) {
+        Target::Console => console_key(st, game, key, mods),
+        Target::Editor => editor_key(st, game, key, mods),
+        Target::Agent => agent_key(st, game, key, mods),
+        Target::Elsewhere if st.s.ui.tab == Tab::Editor => problems_key(st, key),
+        Target::Elsewhere => {}
+    }
+    // Deleting keeps the suggestions in step with the word.
+    if open && matches!(key, Key::Backspace | Key::Delete) {
+        refresh_suggest(st);
+    }
     match st.s.ui.tab {
-        Tab::Console => console_key(st, game, key, mods),
-        Tab::Editor => editor_key(st, game, key, mods),
+        Tab::Console | Tab::Editor => {}
         Tab::Library => library_key(st, game, key),
         Tab::Docs => {
             let page = st.s.ui.page.max(1);
@@ -1442,8 +2118,14 @@ fn console_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
             }
         }
         Key::Tab => {
-            if let Some(rest) = complete(&ui.input.text, ui.input.cursor) {
-                ui.input.insert(&rest);
+            refresh_suggest(st);
+            // One way to go: take it at once.
+            if st.s.ui.suggest.as_ref().is_some_and(|s| s.items.len() == 1) {
+                accept_suggestion(st, 0);
+            } else if st.s.ui.suggest.is_none()
+                && let Some(rest) = complete(&st.s.ui.input.text, st.s.ui.input.cursor)
+            {
+                st.s.ui.input.insert(&rest);
             }
         }
         Key::PageUp => ui.log_scroll += ui.page.max(1),
@@ -1463,6 +2145,295 @@ fn console_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
         Key::Char('e') if mods.ctrl => ui.input.cursor = ui.input.text.len(),
         k => {
             ui.input.key(k, mods);
+        }
+    }
+}
+
+/// One line of the Agent panel's conversation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentLine {
+    pub kind: AgentLineKind,
+    pub text: String,
+    /// When it came (its motion).
+    pub at: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentLineKind {
+    /// What the player asked.
+    You,
+    /// What the agent said.
+    Said,
+    /// A tool it used, and how that went.
+    Tool,
+    ToolOk,
+    ToolFailed,
+    Error,
+    /// The end of its answer.
+    Done,
+}
+
+/// The Agent panel: the conversation, the agent working, the conversation
+/// to resume, which agent.
+#[derive(Default)]
+pub struct AgentPane {
+    pub lines: Vec<AgentLine>,
+    /// The agent's run, while it works (and until its last events are read).
+    pub run: Option<super::hstudio_agent::AgentRun>,
+    /// The conversation it resumes, from its last run.
+    pub session: Option<String>,
+    /// The agents found here (looked for once), and which one is used.
+    pub agents: Option<Vec<super::hstudio_agent::AgentSpec>>,
+    pub chosen: usize,
+    pub(crate) scroll: f32,
+}
+
+/// Lines kept of the conversation.
+const AGENT_LINES: usize = 400;
+
+impl AgentPane {
+    fn say(&mut self, kind: AgentLineKind, text: impl Into<String>, at: f64) {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return;
+        }
+        self.lines.push(AgentLine { kind, text, at });
+        if self.lines.len() > AGENT_LINES {
+            self.lines.drain(..self.lines.len() - AGENT_LINES);
+        }
+    }
+    /// The agents here, looked for the first time they are wanted.
+    fn agents(&mut self, studio_dir: &Path) -> &[super::hstudio_agent::AgentSpec] {
+        self.agents
+            .get_or_insert_with(|| super::hstudio_agent::detect(studio_dir))
+            .as_slice()
+    }
+    fn spec(&mut self, studio_dir: &Path) -> Option<super::hstudio_agent::AgentSpec> {
+        let chosen = self.chosen;
+        let agents = self.agents(studio_dir);
+        agents.get(chosen.min(agents.len().saturating_sub(1))).cloned()
+    }
+}
+
+/// Asks the agent `text`, with what the editor has open: the file, what is
+/// selected and its problems. The agent works in the mods folder, through
+/// Horizon Studio's MCP; nothing is asked while it is still working.
+pub fn agent_ask(st: &mut Studio, text: &str) {
+    if text.is_empty() || agent_busy(st) {
+        return;
+    }
+    let now = st.s.now;
+    let dir = st.s.dir.clone();
+    let pane = &mut st.s.ui.agent;
+    pane.scroll = 0.0;
+    pane.say(AgentLineKind::You, text, now);
+    let Some(spec) = pane.spec(&dir) else {
+        pane.say(
+            AgentLineKind::Error,
+            "No agent found: install Claude Code (claude) or omp and set it up with the AI setup prompt, or name one in agent.txt in the studio's folder.",
+            now,
+        );
+        return;
+    };
+    // It reads the file from disk: unsaved edits are saved first, so it
+    // works on what the player sees (and its writes don't conflict).
+    if st.s.editor.dirty && st.s.editor.path.is_some() {
+        match st.s.editor.save() {
+            Ok(path) => {
+                st.s.log(LogKind::Info, format!("Saved {} for the agent", path.display()))
+            }
+            Err(e) => {
+                st.s.ui
+                    .agent
+                    .say(AgentLineKind::Error, format!("Could not save the file first: {e}"), now)
+            }
+        }
+    }
+    let mods_dir = st.s.mods_dir();
+    let ed = &st.s.editor;
+    let file = ed
+        .path
+        .as_ref()
+        .and_then(|p| p.strip_prefix(&mods_dir).ok())
+        .map(|p| p.to_string_lossy().replace('\\', "/"));
+    let ctx = super::hstudio_agent::AgentContext {
+        file,
+        mods_dir: mods_dir.clone(),
+        selection: ed.selected_text().filter(|t| !t.trim().is_empty()),
+        problems: ed
+            .problems
+            .iter()
+            .map(|p| format!("{}:{}: {}", ed.title, p.line, p.message))
+            .collect(),
+    };
+    let prompt = super::hstudio_agent::prompt(text, &ctx);
+    let _ = std::fs::create_dir_all(&mods_dir);
+    let pane = &mut st.s.ui.agent;
+    match super::hstudio_agent::AgentRun::start(&spec, &prompt, &mods_dir, pane.session.as_deref()) {
+        Ok(run) => pane.run = Some(run),
+        Err(e) => pane.say(AgentLineKind::Error, e, now),
+    }
+}
+
+/// What the agent did since the last frame, into the conversation. Called
+/// every frame, the studio open or not.
+pub fn agent_poll(st: &mut Studio) {
+    use super::hstudio_agent::AgentEvent;
+    let now = st.s.now;
+    let pane = &mut st.s.ui.agent;
+    let Some(run) = pane.run.as_mut() else { return };
+    let events = run.poll();
+    let mut over = false;
+    for ev in events {
+        match ev {
+            AgentEvent::Started { session } => {
+                if session.is_some() {
+                    pane.session = session;
+                }
+            }
+            AgentEvent::Text(t) => pane.say(AgentLineKind::Said, t, now),
+            AgentEvent::Tool { name, summary } => {
+                let text = if summary.is_empty() { name } else { summary };
+                pane.say(AgentLineKind::Tool, text, now);
+            }
+            AgentEvent::ToolResult { ok, summary } => {
+                let kind = if ok {
+                    AgentLineKind::ToolOk
+                } else {
+                    AgentLineKind::ToolFailed
+                };
+                pane.say(kind, summary, now);
+            }
+            AgentEvent::Done { ok, session, summary } => {
+                if session.is_some() {
+                    pane.session = session;
+                }
+                // Claude Code's result repeats what it last said.
+                let said = pane
+                    .lines
+                    .last()
+                    .filter(|l| l.kind == AgentLineKind::Said)
+                    .map(|l| l.text.trim().to_owned());
+                match summary {
+                    Some(s) if ok && said.as_deref() == Some(s.trim()) => pane.say(AgentLineKind::Done, "Done.", now),
+                    Some(s) if ok => {
+                        pane.say(AgentLineKind::Said, s, now);
+                        pane.say(AgentLineKind::Done, "Done.", now);
+                    }
+                    Some(s) => pane.say(AgentLineKind::Error, s, now),
+                    None if ok => pane.say(AgentLineKind::Done, "Done.", now),
+                    None => pane.say(AgentLineKind::Error, "It stopped.", now),
+                }
+                over = true;
+            }
+            AgentEvent::Error(e) => pane.say(AgentLineKind::Error, e, now),
+        }
+    }
+    if over {
+        pane.run = None;
+        // Its edits show at once.
+        st.s.ui.disk_at = 0.0;
+    }
+}
+
+/// Another agent found on this computer: looks again, and with several
+/// found, takes the next.
+pub fn agent_next(st: &mut Studio) {
+    if agent_busy(st) {
+        return;
+    }
+    let now = st.s.now;
+    let found = super::hstudio_agent::detect(&st.s.dir);
+    let pane = &mut st.s.ui.agent;
+    let before = pane.agents.replace(found.clone()).unwrap_or_default();
+    if found.is_empty() {
+        pane.chosen = 0;
+        pane.say(
+            AgentLineKind::Error,
+            "No agent found: install Claude Code (claude) or omp, or name one in agent.txt in the studio's folder.",
+            now,
+        );
+        return;
+    }
+    pane.chosen = if before == found {
+        (pane.chosen + 1) % found.len()
+    } else {
+        0
+    };
+    let spec = &found[pane.chosen];
+    if pane.chosen != 0 || before != found {
+        // Another agent: a new conversation.
+        pane.session = None;
+    }
+    let text = format!("Using {} ({}).", spec.name, spec.program.display());
+    pane.say(AgentLineKind::Done, text, now);
+}
+
+/// Stops the agent's work (its last events still come in).
+pub fn agent_stop(st: &mut Studio) {
+    if let Some(run) = st.s.ui.agent.run.as_mut() {
+        run.stop();
+    }
+}
+
+/// The agent's name for the panel ("Claude Code"), or None when none is found.
+pub fn agent_name(st: &mut Studio) -> Option<String> {
+    let dir = st.s.dir.clone();
+    st.s.ui.agent.spec(&dir).map(|s| s.name)
+}
+
+/// Whether the agent is working.
+pub fn agent_busy(st: &Studio) -> bool {
+    st.s.ui.agent.run.is_some()
+}
+
+/// The editor's cursor to problem `i`, and the keyboard back to the editor.
+fn goto_problem(st: &mut Studio, i: usize) {
+    let ed = &mut st.s.editor;
+    if let Some(p) = ed.problems.get(i).cloned() {
+        let row = (p.line.max(1) - 1).min(ed.lines.len() - 1);
+        let col = p.span.map_or(0, |s| s.0).min(ed.lines[row].len());
+        let chars = ed.lines[row][..col].chars().count();
+        ed.click(row, chars, false);
+        st.s.ui.problem_sel = i;
+        st.s.ui.panel_focus = false;
+    }
+}
+
+/// The Problems panel: Up and Down choose, Enter goes to it.
+fn problems_key(st: &mut Studio, key: Key) {
+    let n = st.s.editor.problems.len();
+    if n == 0 {
+        return;
+    }
+    let ui = &mut st.s.ui;
+    match key {
+        Key::Up => ui.problem_sel = ui.problem_sel.saturating_sub(1),
+        Key::Down => ui.problem_sel = (ui.problem_sel + 1).min(n - 1),
+        Key::Enter => {
+            let i = ui.problem_sel.min(n - 1);
+            goto_problem(st, i);
+        }
+        _ => {}
+    }
+}
+
+/// The Agent panel's input: Enter asks, the rest edits the line.
+fn agent_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
+    let _ = game;
+    match key {
+        // While it works, what is typed waits in the line.
+        Key::Enter if !agent_busy(st) => {
+            let ask = std::mem::take(&mut st.s.ui.agent_input).text;
+            agent_ask(st, ask.trim());
+        }
+        Key::Enter => {}
+        Key::Char('v') if mods.ctrl => {
+            let clip = game.clipboard();
+            st.s.ui.agent_input.insert(&clip);
+        }
+        k => {
+            st.s.ui.agent_input.key(k, mods);
         }
     }
 }

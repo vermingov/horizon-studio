@@ -8,6 +8,10 @@
 pub mod game {
     #[path = "../../mixins/horizon_studio/studio.rs"]
     pub mod hstudio;
+    #[path = "../../mixins/horizon_studio/agent.rs"]
+    pub mod hstudio_agent;
+    #[path = "../../mixins/horizon_studio/assist.rs"]
+    pub mod hstudio_assist;
     #[path = "../../mixins/horizon_studio/examples.rs"]
     pub mod hstudio_examples;
     #[path = "../../mixins/horizon_studio/link.rs"]

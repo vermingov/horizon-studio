@@ -318,7 +318,13 @@ fn protosmasher(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     );
     let out = [x + pad, ry + row_h + pad, w - 2.0 * pad, out_h];
     p.rect(out, 0.0, c.plate_soft);
-    draw_log(st, p, [out[0] + 8.0, out[1] + 6.0, out[2] - 16.0, out[3] - 12.0], false);
+    draw_log(
+        st,
+        p,
+        [out[0] + 8.0, out[1] + 6.0, out[2] - 16.0, out[3] - 12.0],
+        false,
+        dt,
+    );
     let fy = out[1] + out_h + pad;
     let quarter = ((w - 2.0 * pad - 12.0) / 4.0).floor();
     button(
@@ -390,7 +396,13 @@ fn protoclassic(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     );
     let out = [x + pad, ry + row_h + pad, w - 2.0 * pad, out_h];
     p.rect(out, 0.0, 0xFF3C_3C3C);
-    draw_log(st, p, [out[0] + 6.0, out[1] + 4.0, out[2] - 12.0, out[3] - 8.0], false);
+    draw_log(
+        st,
+        p,
+        [out[0] + 6.0, out[1] + 4.0, out[2] - 12.0, out[3] - 8.0],
+        false,
+        dt,
+    );
     let fy = out[1] + out_h + pad;
     let running = st.s.mods.iter().filter(|m| m.running()).count();
     let status = format!("{running} of {} mods running", st.s.mods.len());

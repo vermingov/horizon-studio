@@ -1617,6 +1617,7 @@ impl Studio {
         self.start(game);
         let dt = if dt.is_finite() { dt.clamp(0.0, 1.0) } else { 0.0 };
         self.s.now += dt;
+        super::hstudio_ui::agent_poll(self);
         self.s.send_tokens = (self.s.send_tokens + dt * SEND_RATE).min(SEND_BURST);
         self.s.particles = 0;
         self.s.sounds = 0;

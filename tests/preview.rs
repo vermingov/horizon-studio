@@ -18,6 +18,15 @@ const DENSITY: f32 = 1.5;
 const W: f32 = 1240.0;
 const H: f32 = 720.0;
 
+thread_local! {
+    /// The screen drawn on, in dp: W x H unless a test sets another.
+    static SIZE: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((W, H)) };
+}
+
+fn size() -> (f32, f32) {
+    SIZE.with(std::cell::Cell::get)
+}
+
 struct Canvas {
     w: usize,
     h: usize,
@@ -51,10 +60,38 @@ fn font(dir: &Path, name: &str) -> FontRef<'static> {
     FontRef::try_from_slice(bytes).unwrap()
 }
 
+thread_local! {
+    static FONTS: std::cell::OnceCell<[FontRef<'static>; 3]> = const { std::cell::OnceCell::new() };
+}
+
+/// Geist, Geist Medium and Geist Mono, read once.
+fn fonts() -> [FontRef<'static>; 3] {
+    FONTS.with(|f| {
+        f.get_or_init(|| {
+            let dir = fonts_dir();
+            [
+                font(&dir, "Geist-Regular.ttf"),
+                font(&dir, "Geist-Medium.ttf"),
+                font(&dir, "GeistMono-Regular.ttf"),
+            ]
+        })
+        .clone()
+    })
+}
+
 impl Canvas {
+    /// One that only measures, for frames drawn to let motion settle.
+    fn blind() -> Canvas {
+        Canvas {
+            w: 0,
+            h: 0,
+            px: Vec::new(),
+            fonts: fonts(),
+        }
+    }
     fn new() -> Canvas {
-        let dir = fonts_dir();
-        let (w, h) = ((W * DENSITY) as usize, (H * DENSITY) as usize);
+        let (sw, sh) = size();
+        let (w, h) = ((sw * DENSITY) as usize, (sh * DENSITY) as usize);
         // A stand-in for the world behind the veil: sky over grass.
         let mut px = vec![[0.0; 3]; w * h];
         for y in 0..h {
@@ -72,11 +109,7 @@ impl Canvas {
             w,
             h,
             px,
-            fonts: [
-                font(&dir, "Geist-Regular.ttf"),
-                font(&dir, "Geist-Medium.ttf"),
-                font(&dir, "GeistMono-Regular.ttf"),
-            ],
+            fonts: fonts(),
         }
     }
     fn blend(&mut self, x: usize, y: usize, argb: u32, cover: f32) {
@@ -96,6 +129,9 @@ impl Canvas {
     }
     /// A rounded rectangle's coverage at a pixel centre, by its distance field.
     fn rounded(&mut self, r: [f32; 4], radius: f32, argb: u32, ring: bool) {
+        if self.w == 0 {
+            return;
+        }
         let d = DENSITY;
         let (x0, y0, x1, y1) = (
             (r[0] * d).round(),
@@ -153,6 +189,9 @@ impl Canvas {
         w / DENSITY
     }
     fn text(&mut self, s: &str, at: [f32; 2], size: f32, f: Font, argb: u32) -> f32 {
+        if self.w == 0 {
+            return self.measure(s, size, f);
+        }
         let px = size * DENSITY;
         let scale = self.scale(f, px);
         let font = self.face(f).clone();
@@ -245,7 +284,7 @@ impl GameApi for Preview {
     }
     fn set_clipboard(&mut self, _: &str) {}
     fn gui_size(&self) -> (f32, f32) {
-        (W / 2.0, H / 2.0)
+        (size().0 / 2.0, size().1 / 2.0)
     }
     fn text_width(&self, text: &str) -> f32 {
         self.canvas.measure(text, 8.0, Font::Regular)
@@ -274,7 +313,7 @@ impl GameApi for Preview {
         Ok(())
     }
     fn dp(&mut self) -> (f32, f32, f32) {
-        (W, H, 2.0)
+        (size().0, size().1, 2.0)
     }
     fn dp_rect(&mut self, r: [f32; 4], radius: f32, argb: u32) {
         self.canvas.rounded(r, radius, argb, false);
@@ -679,4 +718,135 @@ fn render_the_statue_meshes() {
     render(&store, &meshes[0], 0.0, "statue-front");
     render(&store, &meshes[0], -35.0, "statue-turned");
     render(&store, &meshes[1], -30.0, "statue-crystal");
+}
+
+/// The editor as in VS Code (its problems marked, the suggestions open, the
+/// panel under it on each of its tabs) at the sizes a game window comes
+/// in, full screen and windowed: nothing should overlap or run off.
+#[test]
+#[ignore]
+fn render_the_editor_at_every_size() {
+    use horizon_studio::game::hstudio_theme::Look;
+    use horizon_studio::game::hstudio_ui::{AgentLine, AgentLineKind, Panel, refresh_suggest};
+    let mut game = FakeGame::new("preview-sizes");
+    let mut st = studio(&mut game);
+    for (i, ex) in horizon_studio::game::hstudio_examples::EXAMPLES.iter().enumerate() {
+        if ex.id == "waypoints" {
+            st.install_example(&mut game, i).unwrap();
+        }
+    }
+    run_for(&mut st, &mut game, 0.6);
+    for line in ["player.pos()", "x = 21 * 2", "nope()"] {
+        st.run_console(&mut game, line);
+    }
+    st.s.ui.open = true;
+    let i = st.s.mods.iter().position(|m| m.id == "waypoints").unwrap();
+    st.edit_mod(i);
+    st.s.ui.tab = Tab::Editor;
+    // A typo and a broken line, for the live check.
+    let mut text = st.s.editor.text();
+    text = text.replacen("local", "local plyer = player.poss()\nlocal", 1);
+    st.s.editor.set_text(&text);
+    st.s.editor.click(0, 0, false);
+    let now = st.s.now;
+    st.s.ui.agent.lines = vec![
+        AgentLine {
+            kind: AgentLineKind::You,
+            text: "Make the waypoints glow at night".into(),
+            at: now,
+        },
+        AgentLine {
+            kind: AgentLineKind::Said,
+            text: "I'll read the script first, then add a glow that turns on after dusk.".into(),
+            at: now,
+        },
+        AgentLine {
+            kind: AgentLineKind::ToolOk,
+            text: "read_mod waypoints".into(),
+            at: now,
+        },
+        AgentLine {
+            kind: AgentLineKind::Tool,
+            text: "write_mod waypoints".into(),
+            at: now,
+        },
+    ];
+    let settle = |st: &mut Studio, p: &mut Preview| {
+        // Frames a 60th of a second apart, so everything settles.
+        for _ in 0..60 {
+            st.s.now += 1.0 / 60.0;
+            let mut warm = Preview {
+                game: FakeGame::new("sizes-warm"),
+                canvas: Canvas::blind(),
+            };
+            warm.game.dir = st.s.dir.clone();
+            draw(st, &mut warm);
+            std::mem::forget(warm.game);
+        }
+        draw(st, p);
+    };
+    for (w, h) in [(640.0, 400.0), (960.0, 540.0), (1240.0, 720.0), (1920.0, 1080.0)] {
+        SIZE.with(|c| c.set((w, h)));
+        for windowed in [false, true] {
+            st.s.ui.look = Look {
+                window: windowed,
+                ..Look::default()
+            };
+            for panel in [Panel::Problems, Panel::Console, Panel::Agent] {
+                st.s.ui.panel = panel;
+                st.s.ui.panel_hidden = false;
+                st.s.ui.panel_focus = panel == Panel::Agent;
+                // The suggestions for what is typed on the line with the typo.
+                st.s.ui.panel_focus = false;
+                let row = st.s.editor.lines.iter().position(|l| l.contains("plyer")).unwrap();
+                st.s.editor.click(row, "local plyer = player.po".len(), false);
+                refresh_suggest(&mut st);
+                st.s.ui.panel_focus = panel == Panel::Agent;
+                let name = format!(
+                    "sizes-{}x{}{}-{:?}",
+                    w as u32,
+                    h as u32,
+                    if windowed { "-window" } else { "" },
+                    panel
+                )
+                .to_lowercase();
+                shot(&mut st, &name, settle);
+            }
+        }
+    }
+    // A syntax error where it shows.
+    SIZE.with(|c| c.set((1240.0, 720.0)));
+    st.s.ui.look = Look::default();
+    st.s.ui.suggest = None;
+    let broken = text.replacen("local colors = {", "local colors = {{", 1);
+    st.s.editor.set_text(&broken);
+    st.s.ui.panel = Panel::Problems;
+    st.s.ui.panel_focus = false;
+    shot(&mut st, "sizes-syntax-error", settle);
+    st.s.editor.set_text(&text);
+    // The other tabs, and the executor styles, at the smallest and largest.
+    for (w, h) in [(640.0, 400.0), (1920.0, 1080.0)] {
+        SIZE.with(|c| c.set((w, h)));
+        for tab in [Tab::Console, Tab::Library, Tab::Docs, Tab::Settings] {
+            st.s.ui.look = Look::default();
+            st.s.ui.tab = tab;
+            shot(
+                &mut st,
+                &format!("sizes-{}x{}-{:?}", w as u32, h as u32, tab).to_lowercase(),
+                settle,
+            );
+        }
+        for (n, t) in horizon_studio::game::hstudio_theme::THEMES.iter().enumerate() {
+            if t.layout == horizon_studio::game::hstudio_theme::Layout::Studio {
+                continue;
+            }
+            st.s.ui.look = Look {
+                theme: n,
+                ..Look::default()
+            };
+            st.s.ui.tab = Tab::Editor;
+            shot(&mut st, &format!("sizes-{}x{}-{}", w as u32, h as u32, t.id), settle);
+        }
+    }
+    SIZE.with(|c| c.set((W, H)));
 }

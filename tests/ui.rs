@@ -70,13 +70,18 @@ fn enter_keeps_and_adds_indent() {
     e.newline();
     e.insert("y()");
     e.newline();
-    assert_eq!(e.text(), "if x then\n  y()\n  ");
+    assert_eq!(e.text(), "if x then\n  y()\n  \nend", "the block gets its end");
     e.backspace(false);
-    assert_eq!(e.text(), "if x then\n  y()\n", "backspace takes a whole indent");
+    assert_eq!(e.text(), "if x then\n  y()\n\nend", "backspace takes a whole indent");
     let mut f = editor("on('tick', function()");
     f.end(false);
     f.newline();
-    assert_eq!(f.text(), "on('tick', function()\n  ");
+    assert_eq!(f.text(), "on('tick', function()\n  \nend)", "and the call its bracket");
+    // A block already closed gets no second end.
+    let mut g = editor("if x then\nend");
+    g.end(false);
+    g.newline();
+    assert_eq!(g.text(), "if x then\n  \nend");
 }
 
 #[test]
@@ -247,11 +252,15 @@ fn console_through_keys() {
         handle(&mut st, &mut game, Input::Text(c.to_string()));
     }
     handle(&mut st, &mut game, key(Key::Tab, NONE));
-    assert_eq!(st.s.ui.input.text, "player.facing(");
+    assert_eq!(
+        st.s.ui.input.text, "player.facing()",
+        "a function comes with its brackets"
+    );
+    assert_eq!(st.s.ui.input.cursor, "player.facing(".len(), "the cursor in them");
     game.clipboard = "print('pasted')".into();
     handle(&mut st, &mut game, key(Key::Char('a'), CTRL));
     handle(&mut st, &mut game, key(Key::Char('x'), CTRL));
-    assert_eq!(game.clipboard, "player.facing(");
+    assert_eq!(game.clipboard, "player.facing()");
     handle(&mut st, &mut game, Input::Text("dump(1)".into()));
     handle(&mut st, &mut game, key(Key::Enter, NONE));
     assert_eq!(log(&st).last().map(String::as_str), Some("\"1\""));
@@ -500,6 +509,8 @@ fn themes_and_the_window() {
     let mut game = FakeGame::new("ui-themes");
     let mut st = studio(&mut game);
     st.s.ui.open = true;
+    // The window lands where it goes at once (no time passes here).
+    st.s.ui.look.motion = false;
     handle(&mut st, &mut game, key(Key::Char('5'), CTRL));
     assert_eq!(st.s.ui.tab, Tab::Settings);
     redraw(&mut st, &mut game);
@@ -659,4 +670,276 @@ fn clicks_land_at_any_size() {
         click(&mut st, &mut game, (plus.0 + 1.0, plus.1 + 2.0));
     }
     assert_eq!(st.s.ui.look.scale, 1.5);
+}
+
+/// Where `text` was last drawn (the panel's tabs share names with the studio's).
+fn last_text_at(game: &FakeGame, text: &str) -> (f32, f32) {
+    let line = game
+        .drawn
+        .iter()
+        .rev()
+        .find(|d| d.starts_with(&format!("text {text} @")))
+        .unwrap_or_else(|| panic!("{text:?} not drawn"));
+    let at: Vec<f32> = line
+        .split('[')
+        .nth(1)
+        .unwrap()
+        .split(']')
+        .next()
+        .unwrap()
+        .split(',')
+        .map(|n| n.trim().parse().unwrap())
+        .collect();
+    (at[0] + 2.0, at[1] + 4.0)
+}
+
+fn type_text(st: &mut horizon_studio::game::hstudio::Studio, game: &mut FakeGame, text: &str) {
+    for c in text.chars() {
+        handle(st, game, Input::Text(c.to_string()));
+    }
+}
+
+#[test]
+fn the_editor_finds_problems_as_you_type_and_goes_to_them() {
+    use horizon_studio::game::hstudio_ui::Panel;
+    let mut game = FakeGame::new("ui-problems");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.now = 10.0;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    st.s.editor.set_text("local here = 1\n\nprint(player.poss())\n");
+    redraw(&mut st, &mut game);
+    let found = st.s.editor.problems.clone();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!((found[0].line, found[0].error), (3, false));
+    assert_eq!(found[0].message, "player has no 'poss'");
+    assert!(
+        game.drawn.iter().any(|d| d.contains("text player has no 'poss'")),
+        "its message at the line's end"
+    );
+    // Typing waits for a pause before it looks again.
+    st.s.editor.click(1, 0, false);
+    type_text(&mut st, &mut game, "if");
+    redraw(&mut st, &mut game);
+    assert!(st.s.editor.problems.iter().all(|p| !p.error), "not while typing");
+    st.s.now += 0.5;
+    redraw(&mut st, &mut game);
+    assert!(
+        st.s.editor.problems.iter().any(|p| p.error),
+        "{:?}",
+        st.s.editor.problems
+    );
+    // The Problems tab lists them; a click on one goes to it.
+    handle(&mut st, &mut game, key(Key::Char('z'), CTRL));
+    st.s.now += 0.5;
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.editor.problems.len(), 1);
+    let at = last_text_at(&game, "Problems");
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.ui.panel, Panel::Problems);
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "player has no 'poss'");
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.editor.row, 2, "the cursor on its line");
+    assert_eq!(st.s.editor.col, "print(player.".len(), "at the name");
+    assert!(!st.s.ui.panel_focus, "and the keys back on the code");
+}
+
+#[test]
+fn suggestions_open_as_you_type_and_tab_takes_one() {
+    let mut game = FakeGame::new("ui-suggest");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    st.s.editor.set_text("");
+    type_text(&mut st, &mut game, "player.fa");
+    let shown = st.s.ui.suggest.as_ref().expect("suggestions open");
+    assert_eq!(shown.items[0].label, "facing");
+    redraw(&mut st, &mut game);
+    assert!(
+        game.drawn.iter().any(|d| d.starts_with("text cing @")),
+        "the rest of what is typed, in the list"
+    );
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert_eq!(st.s.editor.text(), "player.facing()");
+    assert_eq!(st.s.editor.col, "player.facing(".len(), "the cursor in its brackets");
+    assert!(st.s.ui.suggest.is_none());
+    // A library takes its dot, and its members open.
+    st.s.editor.set_text("");
+    type_text(&mut st, &mut game, "pla");
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert_eq!(st.s.editor.text(), "player.");
+    assert!(
+        st.s.ui
+            .suggest
+            .as_ref()
+            .is_some_and(|s| s.items.iter().any(|i| i.label == "pos"))
+    );
+    // Esc closes them and the studio stays open.
+    assert_eq!(handle(&mut st, &mut game, key(Key::Escape, NONE)), UiResult::Used);
+    assert!(st.s.ui.suggest.is_none());
+    assert!(st.s.ui.open);
+    // Ctrl+Space opens them where nothing would.
+    handle(&mut st, &mut game, key(Key::Char(' '), CTRL));
+    assert!(st.s.ui.suggest.is_some());
+}
+
+#[test]
+fn the_panel_console_runs_what_is_typed_in_it() {
+    use horizon_studio::game::hstudio_ui::Panel;
+    let mut game = FakeGame::new("ui-panel");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    st.s.editor.set_text("");
+    redraw(&mut st, &mut game);
+    // Ctrl+` puts the keys on the panel (it is shown), then hides it.
+    handle(&mut st, &mut game, key(Key::Char('`'), CTRL));
+    assert!(st.s.ui.panel_focus && !st.s.ui.panel_hidden);
+    assert_eq!(st.s.ui.panel, Panel::Console);
+    type_text(&mut st, &mut game, "21 * 2");
+    assert_eq!(st.s.ui.input.text, "21 * 2");
+    assert_eq!(st.s.editor.text(), "", "not in the code");
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert_eq!(log(&st).last().map(String::as_str), Some("42"));
+    // Esc takes the keys back to the code.
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    assert!(!st.s.ui.panel_focus);
+    assert!(st.s.ui.open);
+    type_text(&mut st, &mut game, "x");
+    assert_eq!(st.s.editor.text(), "x");
+    handle(&mut st, &mut game, key(Key::Char('`'), CTRL));
+    handle(&mut st, &mut game, key(Key::Char('`'), CTRL));
+    assert!(st.s.ui.panel_hidden && !st.s.ui.panel_focus);
+    // A click on its tab shows it again, with the keys.
+    handle(&mut st, &mut game, key(Key::Char('j'), CTRL));
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, "Agent");
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.ui.panel, Panel::Agent);
+    assert!(st.s.ui.panel_focus);
+    type_text(&mut st, &mut game, "hi");
+    assert_eq!(st.s.ui.agent_input.text, "hi");
+}
+
+#[test]
+fn a_file_changed_on_disk_is_read_again_or_asked_about() {
+    let mut game = FakeGame::new("ui-disk");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    let i = mod_index(&st, "hello");
+    st.edit_mod(i);
+    st.s.ui.tab = Tab::Editor;
+    let path = st.s.editor.path.clone().unwrap();
+    redraw(&mut st, &mut game);
+    // Changed elsewhere, with nothing unsaved here: read again.
+    std::fs::write(&path, "print('from the agent')\n").unwrap();
+    st.s.now += 1.0;
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.editor.text(), "print('from the agent')\n");
+    assert!(st.s.editor.reloaded_at.is_some());
+    assert!(!st.s.editor.dirty);
+    // Undo goes back to what it was.
+    handle(&mut st, &mut game, key(Key::Char('z'), CTRL));
+    assert_ne!(st.s.editor.text(), "print('from the agent')\n");
+    handle(&mut st, &mut game, key(Key::Char('y'), CTRL));
+    // With unsaved edits it asks.
+    st.s.editor.click(0, 0, false);
+    type_text(&mut st, &mut game, "-- mine\n");
+    std::fs::write(&path, "print('again, longer this time')\n").unwrap();
+    st.s.now += 1.0;
+    redraw(&mut st, &mut game);
+    assert!(st.s.editor.conflict);
+    assert!(st.s.editor.text().starts_with("-- mine"), "the edits stay");
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "Reload");
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.editor.text(), "print('again, longer this time')\n");
+    assert!(!st.s.editor.conflict && !st.s.editor.dirty);
+    // Saving doesn't count as a change elsewhere.
+    type_text(&mut st, &mut game, "x");
+    handle(&mut st, &mut game, key(Key::Char('s'), CTRL));
+    type_text(&mut st, &mut game, "y");
+    st.s.now += 1.0;
+    redraw(&mut st, &mut game);
+    assert!(!st.s.editor.conflict);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_agent_answers_in_its_panel() {
+    use horizon_studio::game::hstudio_agent::AgentSpec;
+    use horizon_studio::game::hstudio_ui::{AgentLineKind, agent_ask, agent_busy};
+    let mut game = FakeGame::new("ui-agent");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    // A stand-in agent: it says back what it was asked.
+    st.s.ui.agent.agents = Some(vec![AgentSpec {
+        id: "custom".into(),
+        name: "Echo".into(),
+        program: "/bin/echo".into(),
+        args: vec!["{prompt}".into()],
+        json: false,
+    }]);
+    let i = mod_index(&st, "hello");
+    st.edit_mod(i);
+    // Unsaved edits are saved first: it reads the file.
+    st.s.editor.set_text("print('mine')\n");
+    st.s.editor.dirty = true;
+    agent_ask(&mut st, "make it glow");
+    assert!(agent_busy(&st));
+    let path = st.s.editor.path.clone().unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "print('mine')\n");
+    assert!(!st.s.editor.dirty);
+    for _ in 0..200 {
+        run_for(&mut st, &mut game, 0.05);
+        if !agent_busy(&st) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(!agent_busy(&st), "it finished");
+    let lines = &st.s.ui.agent.lines;
+    assert_eq!(lines[0].kind, AgentLineKind::You);
+    assert_eq!(lines[0].text, "make it glow");
+    let said: Vec<&str> = lines
+        .iter()
+        .filter(|l| l.kind == AgentLineKind::Said)
+        .map(|l| l.text.as_str())
+        .collect();
+    assert!(said.iter().any(|l| l.contains("make it glow")), "{said:?}");
+    assert!(
+        said.iter().any(|l| l.contains("hello.lua")),
+        "the file open was in the prompt: {said:?}"
+    );
+    assert_eq!(lines.last().unwrap().kind, AgentLineKind::Done);
+    // Its name is on the panel.
+    st.s.ui.tab = Tab::Editor;
+    st.s.ui.panel = horizon_studio::game::hstudio_ui::Panel::Agent;
+    redraw(&mut st, &mut game);
+    assert!(game.drawn.iter().any(|d| d.starts_with("text Echo @")));
+}
+
+#[test]
+fn the_window_stays_on_a_smaller_screen() {
+    use horizon_studio::game::hstudio_theme::Look;
+    let look = Look {
+        window: true,
+        rect: Some([900.0, 500.0, 800.0, 500.0]),
+        ..Look::default()
+    };
+    for (w, h) in [(1920.0, 1080.0), (960.0, 540.0), (640.0, 400.0)] {
+        let r = look.window_rect(w, h);
+        assert!(r[0] >= 0.0 && r[1] >= 0.0, "{r:?} on {w}x{h}");
+        assert!(r[0] + r[2] <= w && r[1] + r[3] <= h, "{r:?} on {w}x{h}");
+    }
+    assert_eq!(
+        look.window_rect(1920.0, 1080.0),
+        [900.0, 500.0, 800.0, 500.0],
+        "as it was, where it fits"
+    );
 }

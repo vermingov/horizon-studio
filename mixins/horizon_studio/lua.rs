@@ -633,11 +633,17 @@ fn tok_text(t: &Tok) -> String {
     }
 }
 
-fn lex(src: &[u8], chunk: &str) -> Result<Vec<(Tok, u32)>, String> {
+/// The tokens with their lines, and where each starts (a byte of the source).
+type Lexed = (Vec<(Tok, u32)>, Vec<usize>);
+
+fn lex(src: &[u8], chunk: &str) -> Result<Lexed, String> {
     let mut out = Vec::new();
+    // Where each token starts, for the editor's marks.
+    let mut starts: Vec<usize> = Vec::new();
     let mut i = 0;
     let mut line = 1u32;
     let err = |line: u32, msg: &str| format!("{chunk}:{line}: {msg}");
+    let mark = |at: usize| SYNTAX_AT.with(|s| s.set(Some(at)));
     // A `#!` first line, as lua allows.
     if src.starts_with(b"#!") {
         while i < src.len() && src[i] != b'\n' {
@@ -676,6 +682,7 @@ fn lex(src: &[u8], chunk: &str) -> Result<Vec<(Tok, u32)>, String> {
                 i += 1;
             }
             let word = std::str::from_utf8(&src[start..i]).unwrap_or("");
+            starts.push(start);
             match KEYWORDS.iter().find(|k| **k == word) {
                 Some(k) => out.push((Tok::Op(k), line)),
                 None => out.push((Tok::Name(word.into()), line)),
@@ -702,16 +709,22 @@ fn lex(src: &[u8], chunk: &str) -> Result<Vec<(Tok, u32)>, String> {
             }
             let text = &src[start..i];
             let n = str_to_num(text).ok_or_else(|| {
+                mark(start);
                 err(
                     line,
                     &format!("malformed number near '{}'", String::from_utf8_lossy(text)),
                 )
             })?;
+            starts.push(start);
             out.push((Tok::Num(n), line));
             continue;
         }
         if c == b'"' || c == b'\'' {
-            let (s, end, lines) = short_string(src, i).map_err(|m| err(line, m))?;
+            let (s, end, lines) = short_string(src, i).map_err(|m| {
+                mark(i);
+                err(line, m)
+            })?;
+            starts.push(i);
             out.push((Tok::Str(s.into()), line));
             line += lines;
             i = end;
@@ -720,7 +733,11 @@ fn lex(src: &[u8], chunk: &str) -> Result<Vec<(Tok, u32)>, String> {
         if c == b'['
             && let Some(level) = long_bracket(src, i)
         {
-            let (s, end, lines) = long_string(src, i, level).ok_or_else(|| err(line, "unfinished long string"))?;
+            let (s, end, lines) = long_string(src, i, level).ok_or_else(|| {
+                mark(i);
+                err(line, "unfinished long string")
+            })?;
+            starts.push(i);
             out.push((Tok::Str(s.into()), line));
             line += lines;
             i = end;
@@ -728,10 +745,12 @@ fn lex(src: &[u8], chunk: &str) -> Result<Vec<(Tok, u32)>, String> {
         }
         match SYMBOLS.iter().find(|s| src[i..].starts_with(s.as_bytes())) {
             Some(s) => {
+                starts.push(i);
                 out.push((Tok::Op(s), line));
                 i += s.len();
             }
             None => {
+                mark(i);
                 return Err(err(
                     line,
                     &format!("unexpected symbol near '{}'", String::from_utf8_lossy(&src[i..i + 1])),
@@ -739,8 +758,20 @@ fn lex(src: &[u8], chunk: &str) -> Result<Vec<(Tok, u32)>, String> {
             }
         }
     }
+    starts.push(src.len());
     out.push((Tok::Eof, line));
-    Ok(out)
+    Ok((out, starts))
+}
+
+thread_local! {
+    /// Where the last syntax error was, a byte of the source.
+    static SYNTAX_AT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Where the last chunk that failed to load on this thread failed: a byte of
+/// its source (the token the parser stopped at), for the editor's marks.
+pub fn syntax_error_at() -> Option<usize> {
+    SYNTAX_AT.with(std::cell::Cell::get)
 }
 
 /// `[[`, `[=[`...: the level, if `src[i..]` opens a long bracket.
@@ -977,6 +1008,8 @@ enum Var {
 
 struct Parser {
     toks: Vec<(Tok, u32)>,
+    /// Where each token starts in the source.
+    starts: Vec<usize>,
     pos: usize,
     chunk: Rc<str>,
     fs: Vec<FuncState>,
@@ -1015,6 +1048,8 @@ impl Parser {
         }
     }
     fn error<T>(&self, msg: &str) -> PResult<T> {
+        let at = self.starts.get(self.pos).copied();
+        SYNTAX_AT.with(|s| s.set(at));
         Err(format!(
             "{}:{}: {} near '{}'",
             self.chunk,
@@ -1673,9 +1708,11 @@ impl Lua {
         self.load_bytes(src.as_bytes(), chunk, env)
     }
     pub fn load_bytes(&mut self, src: &[u8], chunk: &str, env: &TableRef) -> Result<Value, String> {
-        let toks = lex(src, chunk)?;
+        SYNTAX_AT.with(|s| s.set(None));
+        let (toks, starts) = lex(src, chunk)?;
         let parser = Parser {
             toks,
+            starts,
             pos: 0,
             chunk: chunk.into(),
             fs: Vec::new(),

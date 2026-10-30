@@ -92,6 +92,18 @@ name = "hstudio_models"
 source = "models.rs"
 
 [[module]]
+id = "assist"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_assist"
+source = "assist.rs"
+
+[[module]]
+id = "agent"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_agent"
+source = "agent.rs"
+
+[[module]]
 id = "link"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_link"

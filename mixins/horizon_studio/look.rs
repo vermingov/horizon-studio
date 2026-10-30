@@ -9,7 +9,7 @@ use super::hstudio::{API, CONSOLE_API, Font, GameApi, LogKind, ModState, Studio}
 use super::hstudio_examples::EXAMPLES;
 use super::hstudio_theme::{ACCENTS, Layout, Look, Palette, THEMES};
 use super::hstudio_ui::{
-    Action, EditorView, LineEdit, Long, Tab, Tint, Ui, complete, field, field_num, field_text, highlight, kind,
+    Action, EditorView, LineEdit, Long, Panel, Tab, Tint, Ui, field, field_num, field_text, highlight, kind,
     slider_text, widgets,
 };
 
@@ -18,6 +18,8 @@ thread_local! {
     static PAL: std::cell::Cell<Palette> = const { std::cell::Cell::new(super::hstudio_theme::THEMES[0].palette) };
     static CODE: std::cell::Cell<f32> = const { std::cell::Cell::new(13.0) };
     static MOTION: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// The studio's palette easing to a newly chosen one: from, to, since.
+    static EASE: std::cell::Cell<Option<(Palette, Palette, f64)>> = const { std::cell::Cell::new(None) };
 }
 
 /// This frame's palette.
@@ -51,6 +53,45 @@ fn motion() -> bool {
     MOTION.with(std::cell::Cell::get)
 }
 
+fn mix_palette(a: Palette, b: Palette, t: f32) -> Palette {
+    Palette {
+        page: mix(a.page, b.page, t),
+        surface: mix(a.surface, b.surface, t),
+        plate_soft: mix(a.plate_soft, b.plate_soft, t),
+        plate: mix(a.plate, b.plate, t),
+        rule: mix(a.rule, b.rule, t),
+        ink: mix(a.ink, b.ink, t),
+        ink_soft: mix(a.ink_soft, b.ink_soft, t),
+        muted: mix(a.muted, b.muted, t),
+        accent: mix(a.accent, b.accent, t),
+        accent_hover: mix(a.accent_hover, b.accent_hover, t),
+        danger: mix(a.danger, b.danger, t),
+        success: mix(a.success, b.success, t),
+        keyword: mix(a.keyword, b.keyword, t),
+        string: mix(a.string, b.string, t),
+        number: mix(a.number, b.number, t),
+        comment: mix(a.comment, b.comment, t),
+        global: mix(a.global, b.global, t),
+        round: a.round + (b.round - a.round) * t.clamp(0.0, 1.0),
+    }
+}
+
+/// Eases the palette set to a newly chosen one (another theme or accent),
+/// from wherever the last change had got to.
+fn ease_palette(now: f64) {
+    let target = pal();
+    let shown = EASE.with(|e| {
+        let (from, since) = match e.get() {
+            Some((from, to, since)) if to == target => (from, since),
+            Some((from, to, since)) => (mix_palette(from, to, progress(now, since, MOVE)), now),
+            None => (target, now),
+        };
+        e.set(Some((from, target, since)));
+        mix_palette(from, target, progress(now, since, MOVE))
+    });
+    set_pal(shown);
+}
+
 /// Text that reads on `c`: near black on a light colour, white on a dark one.
 pub(super) fn on(c: u32) -> u32 {
     let ch = |s: u32| ((c >> s) & 0xFF) as f32;
@@ -58,6 +99,16 @@ pub(super) fn on(c: u32) -> u32 {
         0xFF0D_0E13
     } else {
         0xFFFF_FFFF
+    }
+}
+
+/// Warnings' amber, the same in every theme (some themes' numbers are
+/// green), darker on a light page.
+pub(super) fn warn() -> u32 {
+    if on(pal().page) == 0xFFFF_FFFF {
+        0xFFE8_B04A
+    } else {
+        0xFFA8_6400
     }
 }
 
@@ -343,9 +394,12 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
     let now = st.s.now;
     let look = st.s.ui.look.clone();
     use_look(&look, false);
+    ease_palette(now);
     let (dw, dh, k) = game.dp();
     let s = look.scale;
     let (w, h) = (dw / s, dh / s);
+    // Back after a while (opened again): nothing glides from before.
+    let fresh = now - st.s.ui.last_draw > 0.25;
     let dt = {
         let ui = &mut st.s.ui;
         ui.dp = k;
@@ -354,6 +408,13 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         ui.view = None;
         tick(ui, now)
     };
+    // The open file changed on disk (an agent wrote it): read it again.
+    if now - st.s.ui.disk_at >= 0.5 {
+        st.s.ui.disk_at = now;
+        if st.s.editor.sync_disk() {
+            st.s.editor.reloaded_at = Some(now);
+        }
+    }
     let (alpha, rise) = presence(&st.s.ui, now);
     let mut p = P {
         g: game,
@@ -365,9 +426,10 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         p.rect([0.0, 0.0, w, h], 0.0, fade(0xFF00_0000, 0.4 * look.opacity));
         p.dy = rise;
         let layout = look.theme().layout;
-        let r = look.window_rect(w, h);
+        let r = glide_window(&mut st.s.ui, look.window_rect(w, h), fresh, dt);
         let c = chrome(layout);
-        if let Some(b) = window(st, &mut p, r, c, dt) {
+        if let Some((b, shown)) = window(st, &mut p, r, c, dt) {
+            p.alpha = alpha * shown;
             match layout {
                 Layout::Studio => studio_page(
                     st,
@@ -378,7 +440,10 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
                 ),
                 _ => super::hstudio_skins::draw(st, &mut p, layout, b, dt),
             }
-            grip(st, &mut p, r, c);
+            p.alpha = alpha;
+            if shown >= 1.0 {
+                grip(st, &mut p, r, c);
+            }
         }
     } else {
         p.rect([0.0, 0.0, w, h], 0.0, fade(pal().page, look.opacity));
@@ -414,7 +479,7 @@ fn studio_page(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32, wind
 /// A tab's page in `body`.
 pub(super) fn page(st: &mut Studio, p: &mut P, tab: Tab, body: [f32; 4], dt: f32) {
     match tab {
-        Tab::Console => draw_console(st, p, body),
+        Tab::Console => draw_console(st, p, body, dt),
         Tab::Editor => draw_editor(st, p, body, dt),
         Tab::Library => draw_library(st, p, body, dt),
         Tab::Docs => draw_docs(st, p, body, dt),
@@ -449,14 +514,37 @@ fn chrome(layout: Layout) -> Chrome {
     }
 }
 
+/// The window as drawn, gliding to `to` (maximised, restored, the screen
+/// resized); while it is moved or sized it follows the pointer at once.
+fn glide_window(ui: &mut Ui, to: [f32; 4], fresh: bool, dt: f32) -> [f32; 4] {
+    let shown = match ui.win_shown {
+        Some(r) if motion() && !fresh && ui.drag.is_none() => {
+            let k = 1.0 - (-dt * 16.0).exp();
+            let mut out = [0.0; 4];
+            for i in 0..4 {
+                out[i] = r[i] + (to[i] - r[i]) * k;
+                if (out[i] - to[i]).abs() < 0.5 {
+                    out[i] = to[i];
+                }
+            }
+            out
+        }
+        _ => to,
+    };
+    ui.win_shown = Some(shown);
+    shown
+}
+
 /// A Windows 10 window: its shadow, its title bar (the studio's mark, its
-/// name, then minimise, maximise and close) and its edge. Returns its body,
-/// or None while it is rolled up to the title bar.
-fn window(st: &mut Studio, p: &mut P, r: [f32; 4], c: Chrome, dt: f32) -> Option<[f32; 4]> {
+/// name, then minimise, maximise and close) and its edge. Returns its body
+/// and how much of it shows: rolling up to the title bar, what is in it
+/// goes first, then the window folds; unrolling, the reverse.
+fn window(st: &mut Studio, p: &mut P, r: [f32; 4], c: Chrome, dt: f32) -> Option<([f32; 4], f32)> {
     let ui = &mut st.s.ui;
     let (rolled, maxed) = (ui.collapsed, ui.look.maximized);
     let [x, y, w, full_h] = r;
-    let h = if rolled { TITLE } else { full_h };
+    let roll = glide(ui, id("roll", 0), rolled, dt);
+    let h = full_h + (TITLE - full_h) * roll;
     let round = pal().round;
     set_pal(Palette { round: 0.0, ..pal() });
     if !maxed {
@@ -508,12 +596,18 @@ fn window(st: &mut Studio, p: &mut P, r: [f32; 4], c: Chrome, dt: f32) -> Option
     }
     p.border([x, y, w, h], 0.0, c.edge);
     set_pal(Palette { round, ..pal() });
-    (!rolled).then_some([x + 1.0, y + TITLE, w - 2.0, full_h - TITLE - 1.0])
+    // (The eased value is a hair off 0 at rest.)
+    let shown = if roll < 0.001 {
+        1.0
+    } else {
+        (1.0 - roll / 0.15).clamp(0.0, 1.0)
+    };
+    (shown > 0.0).then_some(([x + 1.0, y + TITLE, w - 2.0, full_h - TITLE - 1.0], shown))
 }
 
 /// The grip that sizes the window, at its bottom right, over its body.
 fn grip(st: &mut Studio, p: &mut P, r: [f32; 4], c: Chrome) {
-    if st.s.ui.look.maximized {
+    if st.s.ui.look.maximized || st.s.ui.collapsed {
         return;
     }
     let (gx, gy) = (r[0] + r[2] - 4.0, r[1] + r[3] - 4.0);
@@ -641,12 +735,23 @@ fn footer(st: &mut Studio, p: &mut P, x: f32, cy: f32, w: f32) {
             ("Tab", "complete"),
             ("Ctrl L", "clear"),
         ],
+        Tab::Editor if st.s.ui.panel_focus && !st.s.ui.panel_hidden => match st.s.ui.panel {
+            Panel::Console => &[
+                ("⏎", "run"),
+                ("Tab", "complete"),
+                ("↑ ↓", "history"),
+                ("Esc", "back to the code"),
+            ],
+            Panel::Problems => &[("↑ ↓", "choose"), ("⏎", "go to it"), ("Esc", "back to the code")],
+            Panel::Agent => &[("⏎", "ask"), ("Esc", "back to the code"), ("Ctrl `", "hide the panel")],
+        },
         Tab::Editor => &[
             ("Ctrl S", "save and reload"),
             ("Ctrl ⏎", "run"),
+            ("Ctrl Space", "suggest"),
+            ("Ctrl `", "panel"),
             ("Ctrl Z", "undo"),
             ("Ctrl /", "comment"),
-            ("Ctrl D", "duplicate"),
         ],
         Tab::Library => &[("⏎", "edit"), ("Space", "on or off"), ("R", "reload"), ("N", "new mod")],
         Tab::Docs => &[("↑ ↓", "scroll"), ("PgUp PgDn", "page")],
@@ -667,17 +772,36 @@ fn footer(st: &mut Studio, p: &mut P, x: f32, cy: f32, w: f32) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn line_edit(p: &mut P, now: f64, e: &LineEdit, x: f32, y: f32, max: f32, size: f32, font: Font, c: u32) {
+fn line_edit(p: &mut P, now: f64, e: &LineEdit, x: f32, y: f32, max: f32, size: f32, font: Font, c: u32) -> usize {
+    edit_line(p, now, e, [x, y, max], size, font, c, true)
+}
+
+/// A line being edited in `[x, y, max width]`, scrolled to keep the cursor
+/// in view, with the cursor when `caret`. Returns the first byte shown.
+#[allow(clippy::too_many_arguments)]
+fn edit_line(
+    p: &mut P,
+    now: f64,
+    e: &LineEdit,
+    [x, y, max]: [f32; 3],
+    size: f32,
+    font: Font,
+    c: u32,
+    caret: bool,
+) -> usize {
     let mut start = 0;
     while start < e.cursor && p.measure(&e.text[start..e.cursor], size, font) > max - 6.0 {
         start += e.text[start..].chars().next().map_or(1, char::len_utf8);
     }
     let shown = p.fit(&e.text[start..], max, size, font);
     p.text(&shown, x, y, size, font, c);
-    let blink = 0.55 + 0.45 * (now as f32 * std::f32::consts::PI * 1.6).cos();
-    let cx = x + p.measure(&e.text[start..e.cursor], size, font);
-    let line = (size * 1.45).round();
-    p.rect([cx.floor(), y + 1.0, 2.0, line - 2.0], 1.0, fade(pal().accent, blink));
+    if caret {
+        let blink = 0.55 + 0.45 * (now as f32 * std::f32::consts::PI * 1.6).cos();
+        let cx = x + p.measure(&e.text[start..e.cursor], size, font);
+        let line = (size * 1.45).round();
+        p.rect([cx.floor(), y + 1.0, 2.0, line - 2.0], 1.0, fade(pal().accent, blink));
+    }
+    start
 }
 
 fn log_color(kind: LogKind) -> u32 {
@@ -690,14 +814,14 @@ fn log_color(kind: LogKind) -> u32 {
     }
 }
 
-fn draw_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4]) {
+fn draw_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let now = st.s.now;
     p.rect([x, y, w, h], 14.0, pal().plate_soft);
     let pad = 18.0;
     let field_h = 44.0;
     let log_top = y + pad;
     let log_bottom = y + h - pad - field_h - 10.0;
-    draw_log(st, p, [x + pad, log_top, w - 2.0 * pad, log_bottom - log_top], true);
+    draw_log(st, p, [x + pad, log_top, w - 2.0 * pad, log_bottom - log_top], true, dt);
     if st.s.log.is_empty() {
         p.text(
             "Nothing yet. Try player.pos() or help().",
@@ -719,7 +843,7 @@ fn draw_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4]) {
     let ty = top(cy, 14.0);
     if input.text.is_empty() {
         p.text(
-            "Type Lua and press Enter. help() lists the API.",
+            "Type Lua and press Enter. Tab completes, help() lists the API.",
             tx,
             ty,
             14.0,
@@ -727,26 +851,46 @@ fn draw_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4]) {
             pal().muted,
         );
     }
-    line_edit(p, now, &input, tx, ty, f[2] - 52.0, 14.0, Font::Mono, pal().ink);
-    if input.cursor == input.text.len()
-        && let Some(rest) = complete(&input.text, input.cursor)
-    {
-        let cx = tx + p.measure(&input.text, 14.0, Font::Mono) + 2.0;
-        if cx + p.measure(&rest, 14.0, Font::Mono) < f[0] + f[2] - 16.0 {
-            p.text(&rest, cx, ty, 14.0, Font::Mono, fade(pal().muted, 0.8));
-        }
-    }
+    let start = line_edit(p, now, &input, tx, ty, f[2] - 52.0, 14.0, Font::Mono, pal().ink);
+    console_suggest(st, p, &input, [tx, f[1], field_h], start, 14.0, dt);
+}
+
+/// The console's suggestions, over its input (`[x, top, height]` of the
+/// line, `shown` its first byte drawn).
+fn console_suggest(
+    st: &mut Studio,
+    p: &mut P,
+    input: &LineEdit,
+    [tx, fy, fh]: [f32; 3],
+    shown: usize,
+    size: f32,
+    dt: f32,
+) {
+    let Some(start) = st.s.ui.suggest.as_ref().filter(|s| s.console).map(|s| s.start) else {
+        return;
+    };
+    let start = start.min(input.cursor);
+    let ax = if start >= shown && input.text.is_char_boundary(start) {
+        tx + p.measure(&input.text[shown..start], size, Font::Mono)
+    } else {
+        tx
+    };
+    let typed = input.text.get(start..input.cursor).unwrap_or("").to_owned();
+    draw_suggest(st, p, [ax, fy, fh], &typed, true, dt);
 }
 
 /// The log's last lines in `[x, y, w, h]`, the newest at the bottom; with
 /// `scrolled` as far back as the console is scrolled (the executors'
 /// output shows the newest).
-pub(super) fn draw_log(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], scrolled: bool) {
+pub(super) fn draw_log(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], scrolled: bool, dt: f32) {
     let now = st.s.now;
     let log_bottom = y + h;
+    if h < code_line() {
+        return;
+    }
     let rows = (h / code_line()).max(1.0) as usize;
     let scroll = if scrolled { st.s.ui.log_scroll } else { 0 };
-    let need = rows + scroll + 1;
+    let need = rows + scroll + 2;
     let text_w = w - 20.0;
     let mut shown: Vec<(String, u32, f64, bool)> = Vec::new();
     for line in st.s.log.iter().rev() {
@@ -764,14 +908,26 @@ pub(super) fn draw_log(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], scrol
         }
     }
     let skip = scroll.min(shown.len().saturating_sub(rows));
-    if scrolled {
+    // Scrolling back glides, a line at a time.
+    let back = if scrolled {
         st.s.ui.page = rows;
         st.s.ui.log_scroll = skip;
-    }
-    let base = p.alpha;
-    for (i, (line, c, at, prompt)) in shown.iter().skip(skip).take(rows).enumerate() {
-        let ly = log_bottom - code_line() * (i as f32 + 1.0);
-        p.alpha = base * progress(now, *at, QUICK);
+        smooth(&mut st.s.ui.smooth[0], skip as f32, dt);
+        st.s.ui.smooth[0]
+    } else {
+        0.0
+    };
+    let first = back.floor().max(0.0) as usize;
+    let frac = back - first as f32;
+    let (base, dy) = (p.alpha, p.dy);
+    for (i, (line, c, at, prompt)) in shown.iter().skip(first).take(rows + 1).enumerate() {
+        let ly = log_bottom - code_line() * (i as f32 + 1.0 - frac);
+        if ly < y - 0.5 || ly + code_line() > log_bottom + 0.5 {
+            continue;
+        }
+        let t = progress(now, *at, QUICK);
+        p.alpha = base * t;
+        p.dy = dy + (1.0 - t) * 4.0;
         let ty = ly + (code_line() - (code_size() * 1.45).round()) / 2.0;
         if *prompt {
             p.text("›", x, ty, code_size(), Font::Mono, pal().accent);
@@ -779,6 +935,7 @@ pub(super) fn draw_log(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], scrol
         p.text(line, x + 20.0, ty, code_size(), Font::Mono, *c);
     }
     p.alpha = base;
+    p.dy = dy;
     if skip > 0 {
         let more = format!("{skip} below");
         let mw = p.measure(&more, 11.0, Font::Mono) + 16.0;
@@ -805,11 +962,30 @@ pub(super) fn tint(t: Tint) -> u32 {
     }
 }
 
+/// The bottom panel's tab strip, and the bar between it and the code.
+const STRIP: f32 = 32.0;
+const SPLIT: f32 = 8.0;
+/// The least the code keeps of the editor's height with the panel open,
+/// and the least the panel takes (room allowing) to show a few lines.
+const CODE_MIN: f32 = 100.0;
+const PANEL_MIN: f32 = 150.0;
+
+/// The editor's page, as in VS Code: the file's name and its problems, Save
+/// and Run, the code, and under it the panel (the console, the problems,
+/// the agent), sized by the bar between them.
 fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let title = st.s.editor.title.clone();
+    let tmax = (w * 0.45).max(80.0);
+    let title = p.fit(&title, tmax, 15.0, Font::Medium);
     let tw = p.text(&title, x, top(y + 16.0, 15.0), 15.0, Font::Medium, pal().ink);
-    if st.s.editor.dirty {
-        p.rect([x + tw + 10.0, y + 13.0, 7.0, 7.0], 3.5, pal().accent);
+    let dirty = glide(&mut st.s.ui, id("dirty", 0), st.s.editor.dirty, dt);
+    if dirty > 0.01 {
+        let d = 7.0 * dirty;
+        p.rect(
+            [x + tw + 13.5 - d / 2.0, y + 16.5 - d / 2.0, d, d],
+            d / 2.0,
+            pal().accent,
+        );
     }
     let mut bx = x + w;
     {
@@ -842,8 +1018,40 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             dt,
         );
     }
+    // Its problems at a glance; a click shows them.
+    let mut px = x + tw + 28.0;
+    let (errors, warnings) = counts(&st.s.editor.problems);
+    if errors + warnings > 0 && px + 90.0 < bx - 16.0 {
+        let shown: Vec<(String, u32)> = [(errors, pal().danger), (warnings, warn())]
+            .into_iter()
+            .filter(|(n, _)| *n > 0)
+            .map(|(n, c)| (n.to_string(), c))
+            .collect();
+        let cw: f32 = shown
+            .iter()
+            .map(|(l, _)| 12.0 + p.measure(l, 12.0, Font::Medium) + 10.0)
+            .sum();
+        let chip = [px - 8.0, y + 4.0, cw + 6.0, 24.0];
+        let ui = &mut st.s.ui;
+        let hv = hover(ui, id("problem-chip", 0), inside(chip, ui.mouse), dt);
+        p.rect(chip, 12.0, fade(pal().ink, 0.04 + 0.06 * hv));
+        let mut cx = px;
+        for (label, c) in shown {
+            p.rect([cx, y + 12.5, 7.0, 7.0], 3.5, c);
+            cx +=
+                12.0 + p.text(
+                    &label,
+                    cx + 12.0,
+                    top(y + 16.0, 12.0),
+                    12.0,
+                    Font::Medium,
+                    mix(pal().ink_soft, pal().ink, hv),
+                ) + 10.0;
+        }
+        ui.hits.push((chip, Action::PanelTab(Panel::Problems)));
+        px += cw + 14.0;
+    }
     if let Some(problem) = st.s.editor.problem.clone() {
-        let px = x + tw + 28.0;
         let msg = p.fit(
             &format!("Could not read the file: {problem}"),
             bx - px - 16.0,
@@ -852,15 +1060,732 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         );
         p.text(&msg, px, top(y + 16.0, 13.0), 13.0, Font::Regular, pal().danger);
     }
-    draw_code(st, p, [x, y + 46.0, w, h - 46.0], dt);
+    let by = y + 46.0;
+    let bh = h - 46.0;
+    // The panel's height glides to its share of the page (none while
+    // hidden); sizing it, and the window, follow the pointer at once.
+    let ui = &mut st.s.ui;
+    if ui.panel_h <= 0.0 {
+        ui.panel_h = 0.4;
+    }
+    ui.panel_room = bh;
+    let room = (bh - CODE_MIN - SPLIT).max(0.0);
+    let open = !ui.panel_hidden && room >= STRIP + 60.0;
+    let want = if open {
+        (bh * ui.panel_h).clamp(PANEL_MIN.min(room), room)
+    } else {
+        0.0
+    };
+    if ui.panel_drag.is_some() || ui.drag.is_some() {
+        ui.smooth[4] = want;
+    } else {
+        smooth(&mut ui.smooth[4], want, dt);
+    }
+    let ph = ui.smooth[4].min(room).round();
+    if ph >= 2.0 {
+        let gap = SPLIT * (ph / STRIP).min(1.0);
+        let code_h = bh - ph - gap;
+        let sy = by + code_h;
+        let split = [x, sy, w, gap];
+        let held = ui.panel_drag.is_some();
+        let hv = hover(ui, id("splitter", 0), held || inside(split, ui.mouse), dt);
+        let c = if held {
+            pal().accent
+        } else {
+            fade(pal().ink, 0.14 + 0.22 * hv)
+        };
+        let bw = 36.0 + 24.0 * hv;
+        p.rect([x + (w - bw) / 2.0, sy + gap / 2.0 - 1.5, bw, 3.0], 1.5, c);
+        ui.hits.push((split, Action::PanelResize));
+        draw_panel(st, p, [x, sy + gap, w, ph], dt);
+        draw_code(st, p, [x, by, w, code_h], dt);
+    } else {
+        ui.panel_at = None;
+        draw_code(st, p, [x, by, w, bh], dt);
+    }
+}
+
+/// How many of `problems` are errors, and how many warnings.
+fn counts(problems: &[super::hstudio_assist::Problem]) -> (usize, usize) {
+    let errors = problems.iter().filter(|p| p.error).count();
+    (errors, problems.len() - errors)
+}
+
+/// The bottom panel in `r`: its tabs, what each tab shows.
+fn draw_panel(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
+    let ui = &mut st.s.ui;
+    ui.panel_at = Some([x, y, w, h]);
+    let focus = glide(ui, id("panel-focus", 0), ui.panel_focus, dt);
+    p.rect([x, y, w, h], 14.0, pal().plate_soft);
+    p.border([x, y, w, h], 14.0, fade(pal().accent, 0.35 * focus));
+    ui.hits.push(([x, y, w, h], Action::FocusPanel));
+    let (errors, warnings) = counts(&st.s.editor.problems);
+    let busy = super::hstudio_ui::agent_busy(st);
+    let ui = &mut st.s.ui;
+    let cy = y + STRIP / 2.0 + 1.0;
+    let mut tx = x + 8.0;
+    let mut active = [tx, 0.0];
+    for (panel, label) in [
+        (Panel::Console, "Console"),
+        (Panel::Problems, "Problems"),
+        (Panel::Agent, "Agent"),
+    ] {
+        let lw = p.measure(label, 12.0, Font::Medium);
+        let badge = match panel {
+            Panel::Problems if errors + warnings > 0 => {
+                let n = (errors + warnings).to_string();
+                p.measure(&n, 10.5, Font::Medium) + 18.0
+            }
+            Panel::Agent if busy => 14.0,
+            _ => 0.0,
+        };
+        let r = [tx, y + 4.0, lw + 24.0 + badge, STRIP - 6.0];
+        let on = ui.panel == panel;
+        let hv = hover(ui, id("panel-tab", panel as usize), inside(r, ui.mouse), dt);
+        p.rect(r, 9.0, fade(pal().ink, 0.07 * hv));
+        let c = if on { pal().ink } else { mix(pal().muted, pal().ink, hv) };
+        p.text(label, tx + 12.0, top(cy, 12.0), 12.0, Font::Medium, c);
+        let bx = tx + 12.0 + lw + 6.0;
+        match panel {
+            Panel::Problems if errors + warnings > 0 => {
+                let n = (errors + warnings).to_string();
+                let nw = p.measure(&n, 10.5, Font::Medium) + 10.0;
+                let bc = if errors > 0 { pal().danger } else { warn() };
+                p.rect([bx, cy - 8.0, nw, 16.0], 8.0, fade(bc, 0.18));
+                p.text(&n, bx + 5.0, top(cy, 10.5), 10.5, Font::Medium, bc);
+            }
+            Panel::Agent if busy => {
+                let pulse = 0.45 + 0.55 * (st.s.now as f32 * 4.0).sin().abs();
+                p.rect([bx + 1.0, cy - 3.5, 7.0, 7.0], 3.5, fade(pal().accent, pulse));
+            }
+            _ => {}
+        }
+        if on {
+            active = [r[0] + 8.0, r[2] - 16.0];
+        }
+        ui.hits.push((r, Action::PanelTab(panel)));
+        tx += r[2] + 2.0;
+    }
+    // The line under the tab shown glides to it.
+    let key = id("panel-tab-line", 0);
+    let mut lx = ui.anim.get(&key).copied().unwrap_or(active[0] - x);
+    smooth(&mut lx, active[0] - x, dt);
+    ui.anim.insert(key, lx);
+    let wkey = id("panel-tab-width", 0);
+    let mut lw = ui.anim.get(&wkey).copied().unwrap_or(active[1]);
+    smooth(&mut lw, active[1], dt);
+    ui.anim.insert(wkey, lw);
+    let line_c = mix(pal().ink_soft, pal().accent, focus);
+    p.rect([x + lx, y + STRIP - 3.0, lw, 2.0], 1.0, line_c);
+    p.rect([x + 10.0, y + STRIP - 1.0, w - 20.0, 1.0], 0.0, fade(pal().rule, 0.8));
+    // At the right: the tab's own buttons, and hiding the panel.
+    let mut rx = x + w - 8.0;
+    let hide = [rx - 26.0, y + 4.0, 26.0, STRIP - 6.0];
+    let hv = hover(ui, id("panel-hide", 0), inside(hide, ui.mouse), dt);
+    p.rect(hide, 9.0, fade(pal().ink, 0.08 * hv));
+    let xw = p.measure("×", 16.0, Font::Regular);
+    p.text(
+        "×",
+        hide[0] + (26.0 - xw) / 2.0,
+        top(cy - 1.0, 16.0),
+        16.0,
+        Font::Regular,
+        mix(pal().muted, pal().ink, hv),
+    );
+    ui.hits.push((hide, Action::TogglePanel));
+    rx = hide[0] - 4.0;
+    let panel = ui.panel;
+    let name = super::hstudio_ui::agent_name(st);
+    let ui = &mut st.s.ui;
+    let button = |ui: &mut Ui, p: &mut P, key: &str, label: &str, action: Action, rx: &mut f32| {
+        let bw = p.measure(label, 12.0, Font::Medium) + 20.0;
+        if *rx - bw < tx + 12.0 {
+            return;
+        }
+        *rx -= bw;
+        let r = [*rx, y + 5.0, bw, STRIP - 8.0];
+        let hv = hover(ui, id(key, 0), inside(r, ui.mouse), dt);
+        let danger = action == Action::AgentStop;
+        let c = if danger { pal().danger } else { pal().ink };
+        p.rect(r, (STRIP - 8.0) / 2.0, fade(c, 0.07 + 0.09 * hv));
+        p.text(
+            label,
+            *rx + 10.0,
+            top(cy, 12.0),
+            12.0,
+            Font::Medium,
+            if danger { c } else { mix(pal().ink_soft, c, hv) },
+        );
+        ui.hits.push((r, action));
+        *rx -= 6.0;
+    };
+    match panel {
+        Panel::Console => button(ui, p, "panel-clear", "Clear", Action::ClearLog, &mut rx),
+        Panel::Agent => {
+            if busy {
+                button(ui, p, "agent-stop", "Stop", Action::AgentStop, &mut rx);
+            }
+            let label = name.clone().unwrap_or_else(|| "Look for an agent".into());
+            button(ui, p, "agent-next", &label, Action::AgentNext, &mut rx);
+        }
+        Panel::Problems => {}
+    }
+    // What the tab shows, coming in as the panel opens.
+    let body = [x + 14.0, y + STRIP + 5.0, w - 28.0, h - STRIP - 10.0];
+    if body[3] < 18.0 {
+        return;
+    }
+    let base = p.alpha;
+    let shown = progress(st.s.now, st.s.ui.tab_at, MOVE) * progress(st.s.now, st.s.ui.panel_tab_at, MOVE);
+    p.alpha = base * ((h - STRIP) / 60.0).clamp(0.0, 1.0) * shown;
+    p.dy += (1.0 - shown) * RISE * 0.5;
+    match panel {
+        Panel::Console => panel_console(st, p, body, dt),
+        Panel::Problems => panel_problems(st, p, body, dt),
+        Panel::Agent => panel_agent(st, p, body, name.as_deref(), dt),
+    }
+    p.alpha = base;
+    p.dy -= (1.0 - shown) * RISE * 0.5;
+}
+
+/// The console in the panel: the same log and input as the Console tab.
+fn panel_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
+    let now = st.s.now;
+    let field_h = 30.0;
+    let page = st.s.ui.page;
+    draw_log(st, p, [x, y, w, h - field_h - 6.0], true, dt);
+    st.s.ui.page = page;
+    let focused = st.s.ui.panel_focus && st.s.ui.panel == Panel::Console;
+    let f = [x - 4.0, y + h - field_h, w + 8.0, field_h];
+    let fo = glide(&mut st.s.ui, id("panel-input", 0), focused, dt);
+    p.rect(f, 9.0, pal().page);
+    p.border(f, 9.0, mix(pal().rule, fade(pal().accent, 0.55), fo));
+    let cy = f[1] + field_h / 2.0;
+    let size = code_size();
+    p.text("›", f[0] + 10.0, top(cy, size), size, Font::Mono, pal().accent);
+    let input = st.s.ui.input.clone();
+    let tx = f[0] + 26.0;
+    let ty = top(cy, size);
+    if input.text.is_empty() {
+        let hint = if focused {
+            "Lua to run. Tab completes, Esc goes back to the code."
+        } else {
+            "Click to run Lua here."
+        };
+        let hint = p.fit(hint, f[2] - 40.0, 12.5, Font::Regular);
+        p.text(&hint, tx, top(cy, 12.5), 12.5, Font::Regular, pal().muted);
+    }
+    let start = edit_line(
+        p,
+        now,
+        &input,
+        [tx, ty, f[2] - 36.0],
+        size,
+        Font::Mono,
+        pal().ink,
+        focused,
+    );
+    if focused {
+        console_suggest(st, p, &input, [tx, f[1], field_h], start, size, dt);
+    }
+}
+
+/// The problems the live check found: a row each, a click goes to it.
+fn panel_problems(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
+    let now = st.s.now;
+    let n = st.s.editor.problems.len();
+    if n == 0 {
+        let checked = st.s.editor.checked == Some(st.s.editor.revision);
+        let (label, c) = if checked {
+            ("No problems found in this file.", pal().success)
+        } else {
+            ("Checking…", pal().muted)
+        };
+        p.rect([x + 2.0, y + 9.0, 8.0, 8.0], 4.0, c);
+        p.text(
+            label,
+            x + 18.0,
+            top(y + 13.0, 13.0),
+            13.0,
+            Font::Regular,
+            pal().ink_soft,
+        );
+        return;
+    }
+    const ROW: f32 = 26.0;
+    let rows = ((h / ROW).floor() as usize).max(1);
+    let ui = &mut st.s.ui;
+    ui.problem_sel = ui.problem_sel.min(n - 1);
+    let first_key = id("problem-first", 0);
+    let mut first = ui.anim.get(&first_key).copied().unwrap_or(0.0) as usize;
+    if ui.problem_sel < first {
+        first = ui.problem_sel;
+    } else if ui.problem_sel >= first + rows {
+        first = ui.problem_sel + 1 - rows;
+    }
+    first = first.min(n.saturating_sub(rows));
+    ui.anim.insert(first_key, first as f32);
+    let focused = ui.panel_focus && ui.panel == Panel::Problems;
+    let base = p.alpha;
+    let problems = st.s.editor.problems.clone();
+    let lines = st.s.editor.lines.clone();
+    for (k, pr) in problems.iter().enumerate().skip(first).take(rows) {
+        let ry = y + (k - first) as f32 * ROW;
+        if ry + ROW > y + h + 0.5 {
+            break;
+        }
+        let r = [x - 6.0, ry, w + 12.0, ROW - 2.0];
+        let ui = &mut st.s.ui;
+        let at = ui.problem_at.get(&problem_key(pr, &lines)).copied().unwrap_or(0.0);
+        p.alpha = base * progress(now, at, MOVE);
+        let hv = hover(ui, id("problem-row", k), inside(r, ui.mouse), dt);
+        let sel = glide(ui, id("problem-sel", k), k == ui.problem_sel && focused, dt);
+        p.rect(r, 8.0, fade(pal().ink, 0.05 * hv + 0.07 * sel));
+        let c = if pr.error { pal().danger } else { warn() };
+        p.rect([x + 2.0, ry + ROW / 2.0 - 5.0, 8.0, 8.0], 4.0, c);
+        let place = format!("line {}", pr.line);
+        let lw = p.measure(&place, 11.5, Font::Mono);
+        p.text(
+            &place,
+            x + w - lw,
+            top(ry + ROW / 2.0 - 1.0, 11.5),
+            11.5,
+            Font::Mono,
+            pal().muted,
+        );
+        let msg = p.fit(&pr.message, w - lw - 40.0, 13.0, Font::Regular);
+        p.text(
+            &msg,
+            x + 18.0,
+            top(ry + ROW / 2.0 - 1.0, 13.0),
+            13.0,
+            Font::Regular,
+            mix(pal().ink_soft, pal().ink, hv.max(sel)),
+        );
+        ui.hits.push((r, Action::Problem(k)));
+    }
+    p.alpha = base;
+    if n > rows {
+        let more = format!("{} more", n - rows);
+        let _ = more;
+        let track = h;
+        let bar = (track * rows as f32 / n as f32).max(16.0);
+        let by = y + (track - bar) * (first as f32 / (n - rows) as f32);
+        p.rect([x + w + 6.0, by, 3.0, bar], 1.5, fade(pal().ink, 0.18));
+    }
+}
+
+/// What tells a problem apart as the code moves: its message and its
+/// line's text, not its line's number.
+pub(super) fn problem_key(pr: &super::hstudio_assist::Problem, lines: &[String]) -> u64 {
+    let line = lines.get(pr.line.wrapping_sub(1)).map_or("", String::as_str);
+    id(
+        &format!("{}\u{1}{}", pr.message, line.trim()),
+        pr.span.map_or(usize::MAX, |s| s.0),
+    )
+}
+
+/// One line of the agent's conversation as drawn.
+struct Said {
+    text: String,
+    font: Font,
+    size: f32,
+    c: u32,
+    indent: f32,
+    mark: Option<u32>,
+    bar: bool,
+    at: f64,
+}
+
+/// The agent: the conversation (newest at the bottom), and what to ask it.
+fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<&str>, dt: f32) {
+    use super::hstudio_ui::AgentLineKind as K;
+    let now = st.s.now;
+    let field_h = 30.0;
+    let log_h = h - field_h - 8.0;
+    const ROW: f32 = 19.0;
+    let busy = super::hstudio_ui::agent_busy(st);
+    let visible = (log_h / ROW).floor().max(0.0) as usize;
+    let want = visible + st.s.ui.agent.scroll.ceil() as usize + 2;
+    let mut rows: Vec<Said> = Vec::new();
+    let mut whole = true;
+    for line in st.s.ui.agent.lines.iter().rev() {
+        let (font, size, c, indent, mark, bar) = match line.kind {
+            K::You => (Font::Regular, 13.0, pal().ink, 12.0, None, true),
+            K::Said => (Font::Regular, 13.0, pal().ink, 0.0, None, false),
+            K::Tool => (Font::Mono, 12.0, pal().muted, 14.0, Some(pal().muted), false),
+            K::ToolOk => (Font::Mono, 12.0, pal().muted, 14.0, Some(pal().success), false),
+            K::ToolFailed => (Font::Mono, 12.0, pal().danger, 14.0, Some(pal().danger), false),
+            K::Error => (Font::Regular, 13.0, pal().danger, 0.0, None, false),
+            K::Done => (Font::Regular, 11.5, pal().muted, 0.0, None, false),
+        };
+        let pieces = p.wrap(&line.text, w - indent - 8.0, size, font);
+        let n = pieces.len();
+        for (i, piece) in pieces.into_iter().enumerate().rev() {
+            rows.push(Said {
+                text: piece,
+                font,
+                size,
+                c,
+                indent,
+                mark: if i == 0 { mark } else { None },
+                bar: bar && n > 0,
+                at: line.at,
+            });
+        }
+        if line.kind == K::You || line.kind == K::Done {
+            // A turn's end: a breath before the next.
+            rows.push(Said {
+                text: String::new(),
+                font,
+                size,
+                c,
+                indent: 0.0,
+                mark: None,
+                bar: false,
+                at: line.at,
+            });
+        }
+        if rows.len() >= want {
+            whole = false;
+            break;
+        }
+    }
+    if whole {
+        let max = rows.len().saturating_sub(visible) as f32;
+        st.s.ui.agent.scroll = st.s.ui.agent.scroll.min(max);
+    }
+    let target = st.s.ui.agent.scroll;
+    smooth(&mut st.s.ui.smooth[7], target, dt);
+    let scroll = st.s.ui.smooth[7];
+    let (base, dy) = (p.alpha, p.dy);
+    let working = if busy { 1 } else { 0 };
+    if rows.is_empty() && !busy {
+        let msg = match name {
+            Some(n) => format!(
+                "Ask {n} to write or change this script. It sees the open file, what you selected and its problems, and works through Horizon Studio's MCP: its edits show here as they land."
+            ),
+            None => "No agent found on this computer. Install Claude Code (claude) or omp, set up the MCP (Copy AI setup prompt), then press Look for an agent.".to_owned(),
+        };
+        for (i, l) in p.wrap(&msg, w - 8.0, 13.0, Font::Regular).iter().enumerate() {
+            let ly = y + 4.0 + i as f32 * ROW;
+            if ly + ROW > y + log_h {
+                break;
+            }
+            p.text(l, x, ly, 13.0, Font::Regular, pal().muted);
+        }
+    }
+    for (i, row) in rows.iter().enumerate() {
+        let ly = y + log_h - ROW * ((i + working) as f32 + 1.0 - scroll);
+        if ly < y - 0.5 || ly + ROW > y + log_h + 0.5 {
+            continue;
+        }
+        let t = progress(now, row.at, ENTER);
+        p.alpha = base * t;
+        p.dy = dy + (1.0 - t) * RISE * 0.5;
+        if row.bar {
+            p.rect([x, ly + 2.0, 2.0, ROW - 4.0], 1.0, fade(pal().accent, 0.8));
+        }
+        if let Some(c) = row.mark {
+            p.rect([x + 2.0, ly + ROW / 2.0 - 3.0, 6.0, 6.0], 3.0, c);
+        }
+        p.text(
+            &row.text,
+            x + row.indent,
+            top(ly + ROW / 2.0, row.size),
+            row.size,
+            row.font,
+            row.c,
+        );
+    }
+    p.alpha = base;
+    p.dy = dy;
+    if busy {
+        let ly = y + log_h - ROW * (1.0 - scroll);
+        if ly + ROW <= y + log_h + 0.5 {
+            let lw = p.text(
+                "Working",
+                x,
+                top(ly + ROW / 2.0, 12.5),
+                12.5,
+                Font::Medium,
+                pal().ink_soft,
+            );
+            for k in 0..3 {
+                let a = 0.25 + 0.75 * ((now as f32 * 5.0 - k as f32 * 0.7).sin() * 0.5 + 0.5);
+                p.rect(
+                    [x + lw + 5.0 + k as f32 * 7.0, ly + ROW / 2.0, 3.5, 3.5],
+                    1.75,
+                    fade(pal().accent, a),
+                );
+            }
+        }
+    }
+    if scroll > 0.5 {
+        let more = "newer below";
+        let mw = p.measure(more, 11.0, Font::Mono) + 16.0;
+        p.rect([x + w - mw, y + log_h - 22.0, mw, 20.0], 10.0, fade(pal().ink, 0.10));
+        p.text(
+            more,
+            x + w - mw + 8.0,
+            top(y + log_h - 12.0, 11.0),
+            11.0,
+            Font::Mono,
+            pal().ink_soft,
+        );
+    }
+    // What to ask.
+    let focused = st.s.ui.panel_focus && st.s.ui.panel == Panel::Agent;
+    let f = [x - 4.0, y + h - field_h, w + 8.0, field_h];
+    let fo = glide(&mut st.s.ui, id("agent-input", 0), focused, dt);
+    p.rect(f, 9.0, pal().page);
+    p.border(f, 9.0, mix(pal().rule, fade(pal().accent, 0.55), fo));
+    let cy = f[1] + field_h / 2.0;
+    p.text("›", f[0] + 10.0, top(cy, 14.0), 14.0, Font::Mono, pal().accent);
+    let input = st.s.ui.agent_input.clone();
+    let tx = f[0] + 26.0;
+    if input.text.is_empty() {
+        let hint = match (name, busy) {
+            (_, true) => "It's working. Stop ends it; send your next request when it's done.".to_owned(),
+            (Some(n), _) => format!("Ask {n} about this script, Enter sends."),
+            (None, _) => "No agent found.".to_owned(),
+        };
+        let hint = p.fit(&hint, f[2] - 40.0, 12.5, Font::Regular);
+        p.text(&hint, tx, top(cy, 12.5), 12.5, Font::Regular, pal().muted);
+    }
+    edit_line(
+        p,
+        now,
+        &input,
+        [tx, top(cy, 13.0), f[2] - 36.0],
+        13.0,
+        Font::Regular,
+        pal().ink,
+        focused,
+    );
+}
+
+/// The suggestions for the word being typed, under its line (or over it,
+/// with `above`, or where there is no room below): `word` is where the
+/// word starts, the line's top and its height; `typed` what of it is typed.
+fn draw_suggest(st: &mut Studio, p: &mut P, [wx, ly, lh]: [f32; 3], typed: &str, above: bool, dt: f32) {
+    use super::hstudio_assist::Kind;
+    let now = st.s.now;
+    let (sw, sh) = st.s.ui.screen;
+    let Some(sg) = st.s.ui.suggest.as_mut() else { return };
+    let n = sg.items.len();
+    if n == 0 {
+        return;
+    }
+    let size = code_size().clamp(11.0, 15.0);
+    let row_h = (size * 1.8).round().max(22.0);
+    let rows = n.min(8);
+    sg.sel = sg.sel.min(n - 1);
+    if sg.sel < sg.first {
+        sg.first = sg.sel;
+    } else if sg.sel >= sg.first + rows {
+        sg.first = sg.sel + 1 - rows;
+    }
+    sg.first = sg.first.min(n - rows);
+    let (first, sel, at) = (sg.first, sg.sel, sg.at);
+    let items: Vec<_> = sg.items[first..first + rows].to_vec();
+    let chosen = sg.items[sel].clone();
+    // As wide as what it shows, within the screen.
+    let mut label_w: f32 = 0.0;
+    let mut detail_w: f32 = 0.0;
+    for it in &items {
+        label_w = label_w.max(p.measure(&it.label, size, Font::Mono));
+        detail_w = detail_w.max(p.measure(&it.detail, 11.0, Font::Mono));
+    }
+    let pw = (34.0 + label_w + 24.0 + detail_w.min(200.0) + 14.0)
+        .clamp(220.0, 480.0)
+        .min(sw - 16.0);
+    let ph = rows as f32 * row_h + 8.0;
+    let px = (wx - 34.0).min(sw - pw - 8.0).max(8.0);
+    let below = ly + lh + 4.0;
+    let over = ly - ph - 4.0;
+    let fits_below = below + ph <= sh - 8.0;
+    let fits_over = over >= 8.0;
+    let up = (above && fits_over) || (!fits_below && fits_over);
+    let py = if up { over } else { below.min(sh - ph - 8.0) };
+    let t = progress(now, at, QUICK);
+    let (base, dy) = (p.alpha, p.dy);
+    p.alpha = base * t;
+    p.dy = dy + (1.0 - t) * if up { 6.0 } else { -6.0 };
+    for i in 1..=6 {
+        let f = i as f32 * 1.5;
+        p.rect(
+            [px - f, py - f + 3.0, pw + 2.0 * f, ph + 2.0 * f],
+            10.0 + f,
+            fade(0xFF00_0000, 0.035),
+        );
+    }
+    let r = [px, py, pw, ph];
+    p.rect(r, 10.0, pal().surface);
+    p.border(r, 10.0, pal().rule);
+    // The highlight glides to the one chosen.
+    let ui = &mut st.s.ui;
+    if (ui.smooth[5] - sel as f32).abs() > rows as f32 || t < 0.05 {
+        ui.smooth[5] = sel as f32;
+    }
+    smooth(&mut ui.smooth[5], sel as f32, dt);
+    let hy = (ui.smooth[5] - first as f32).clamp(0.0, (rows - 1) as f32);
+    p.rect(
+        [px + 4.0, py + 4.0 + hy * row_h, pw - 8.0, row_h],
+        7.0,
+        fade(pal().accent, 0.16),
+    );
+    for (k, it) in items.iter().enumerate() {
+        let i = first + k;
+        let ry = py + 4.0 + k as f32 * row_h;
+        let rr = [px + 4.0, ry, pw - 8.0, row_h];
+        let hv = hover(ui, id("suggest-row", k), inside(rr, ui.mouse), dt);
+        if i != sel {
+            p.rect(rr, 7.0, fade(pal().ink, 0.05 * hv));
+        }
+        let (mark, c) = match it.kind {
+            Kind::Function => ("f", pal().global),
+            Kind::Namespace => ("m", pal().number),
+            Kind::Keyword => ("k", pal().keyword),
+            Kind::Event => ("e", pal().string),
+            Kind::Word => ("a", pal().muted),
+            Kind::Value => ("v", pal().number),
+        };
+        let cy = ry + row_h / 2.0;
+        p.rect([px + 10.0, cy - 9.0, 18.0, 18.0], 5.0, fade(c, 0.18));
+        let mw = p.measure(mark, 11.0, Font::Mono);
+        p.text(mark, px + 19.0 - mw / 2.0, top(cy, 11.0), 11.0, Font::Mono, c);
+        let lx = px + 36.0;
+        let lc = if i == sel { pal().ink } else { pal().ink_soft };
+        // What is typed of it, in the accent.
+        let typed_len = if !typed.is_empty()
+            && it.label.to_lowercase().starts_with(&typed.to_lowercase())
+            && it.label.is_char_boundary(typed.len())
+        {
+            typed.len()
+        } else {
+            0
+        };
+        let room = pw - 36.0 - 12.0;
+        let label = p.fit(&it.label, room, size, Font::Mono);
+        let hx = if typed_len > 0 && label.len() >= typed_len && label.is_char_boundary(typed_len) {
+            p.text(&label[..typed_len], lx, top(cy, size), size, Font::Mono, pal().accent)
+        } else {
+            0.0
+        };
+        let lw = hx
+            + p.text(
+                label.get(typed_len.min(label.len())..).unwrap_or(""),
+                lx + hx,
+                top(cy, size),
+                size,
+                Font::Mono,
+                lc,
+            );
+        let left = px + pw - 12.0 - (lx + lw + 16.0);
+        if left > 30.0 && !it.detail.is_empty() {
+            let d = p.fit(&it.detail, left, 11.0, Font::Mono);
+            let dw = p.measure(&d, 11.0, Font::Mono);
+            p.text(&d, px + pw - 12.0 - dw, top(cy, 11.0), 11.0, Font::Mono, pal().muted);
+        }
+        ui.hits.push((rr, Action::Suggest(i.min(255) as u8)));
+    }
+    if n > rows {
+        let track = ph - 12.0;
+        let bar = (track * rows as f32 / n as f32).max(14.0);
+        let by = py + 6.0 + (track - bar) * (first as f32 / (n - rows) as f32);
+        p.rect([px + pw - 5.0, by, 2.5, bar], 1.25, fade(pal().ink, 0.2));
+    }
+    // About the one chosen: beside the list, or under (over) it.
+    if !chosen.doc.is_empty() || p.measure(&chosen.detail, 11.0, Font::Mono) > 200.0 {
+        let dw = 280.0f32.min(sw - 16.0);
+        let mut lines: Vec<(String, Font, f32, u32)> = Vec::new();
+        for l in p.wrap(&chosen.detail, dw - 24.0, 11.5, Font::Mono).into_iter().take(3) {
+            lines.push((l, Font::Mono, 11.5, pal().ink));
+        }
+        for l in p.wrap(&chosen.doc, dw - 24.0, 12.0, Font::Regular).into_iter().take(6) {
+            lines.push((l, Font::Regular, 12.0, pal().ink_soft));
+        }
+        let dh = 16.0 + lines.len() as f32 * 18.0;
+        let (dx, dy0) = if px + pw + 6.0 + dw <= sw - 8.0 {
+            (px + pw + 6.0, py)
+        } else if px - 6.0 - dw >= 8.0 {
+            (px - 6.0 - dw, py)
+        } else if up && py - dh - 6.0 >= 8.0 {
+            (px, py - dh - 6.0)
+        } else if !up && py + ph + 6.0 + dh <= sh - 8.0 {
+            (px, py + ph + 6.0)
+        } else {
+            (f32::NAN, 0.0)
+        };
+        if dx.is_finite() {
+            let dr = [dx, dy0, dw, dh];
+            p.rect(dr, 10.0, pal().surface);
+            p.border(dr, 10.0, pal().rule);
+            for (k, (l, font, size, c)) in lines.iter().enumerate() {
+                p.text(l, dx + 12.0, dy0 + 8.0 + k as f32 * 18.0, *size, *font, *c);
+            }
+        }
+    }
+    p.alpha = base;
+    p.dy = dy;
+}
+
+/// A wavy line under `[x, y, w]`, as editors mark problems.
+fn squiggle(p: &mut P, x: f32, y: f32, w: f32, c: u32) {
+    const LIFT: [f32; 4] = [0.0, 0.9, 1.8, 0.9];
+    let mut k = 0;
+    let mut sx = x;
+    while sx < x + w {
+        p.rect([sx, y + LIFT[k % 4], 1.6, 1.3], 0.0, c);
+        sx += 1.5;
+        k += 1;
+    }
+}
+
+/// The largest char boundary of `s` at or before `i`.
+fn floor_char(s: &str, i: usize) -> usize {
+    let mut i = i.min(s.len());
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 /// The editor's text on a panel: line numbers, highlighting, the selection,
-/// the cursor, the line that failed, a scrollbar.
+/// the cursor (it glides), the problems the live check finds (a squiggle,
+/// a dot and their message at the line's end), the line that failed, a
+/// scrollbar, the suggestions, and the file changing on disk.
 pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     let now = st.s.now;
+    // The live check, once typing pauses.
+    {
+        let s = &mut st.s;
+        let ed = &mut s.editor;
+        // (A file opened or read again is checked at once; typing, at a pause.)
+        let typing = ed.edited_at > 0.0 && now - ed.edited_at < 0.3;
+        if ed.checked != Some(ed.revision) && !typing {
+            ed.problems = super::hstudio_assist::check(&ed.lines, &ed.title);
+            ed.checked = Some(ed.revision);
+            let old = std::mem::take(&mut s.ui.problem_at);
+            for pr in &ed.problems {
+                let k = problem_key(pr, &ed.lines);
+                s.ui.problem_at.insert(k, old.get(&k).copied().unwrap_or(now));
+            }
+        }
+    }
     p.rect(panel, 14.0, pal().plate_soft);
+    if let Some(at) = st.s.editor.reloaded_at {
+        // Read again after a change elsewhere: a flash.
+        let k = ((now - at) / 0.9).clamp(0.0, 1.0) as f32;
+        if k < 1.0 && motion() {
+            p.rect(panel, 14.0, fade(pal().accent, 0.10 * (1.0 - k)));
+        }
+    }
     let top_y = panel[1] + 12.0;
+    if panel[3] < 24.0 + code_line() {
+        return;
+    }
     let rows = ((panel[3] - 24.0) / code_line()).max(1.0) as usize;
     st.s.ui.page = rows;
     let gutter = p.measure("0000", 12.0, Font::Mono) + 30.0;
@@ -894,13 +1819,49 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     }
     let target = ed.scroll as f32;
     smooth(&mut st.s.ui.smooth[1], target, dt);
+    // The cursor glides to where it is (as far as a screen; farther, it jumps).
+    let (row, col) = (st.s.editor.row, st.s.editor.col);
+    let to = [
+        row as f32,
+        p.measure(&st.s.editor.lines[row][..col], code_size(), Font::Mono),
+    ];
+    {
+        let ui = &mut st.s.ui;
+        if ui.caret_to != to {
+            ui.caret_to = to;
+            ui.caret_moved = now;
+        }
+        let c = match ui.caret {
+            Some(c) if motion() && (c[0] - to[0]).abs() <= rows as f32 => {
+                let k = 1.0 - (-dt * 30.0).exp();
+                let mut c = [c[0] + (to[0] - c[0]) * k, c[1] + (to[1] - c[1]) * k];
+                if (c[0] - to[0]).abs() < 0.02 && (c[1] - to[1]).abs() < 0.3 {
+                    c = to;
+                }
+                c
+            }
+            _ => to,
+        };
+        ui.caret = Some(c);
+    }
+    let caret = st.s.ui.caret.unwrap_or(to);
     let ed = &st.s.editor;
     let s = st.s.ui.smooth[1];
     let first = s.floor().max(0.0) as usize;
     let frac = s - first as f32;
     let sel = ed.selection();
     let bottom = panel[1] + panel[3] - 8.0;
-    let blink = 0.55 + 0.45 * (now as f32 * std::f32::consts::PI * 1.6).cos();
+    // The line the cursor is on, under it, gliding with it.
+    let cly = top_y + (caret[0] - s) * code_line();
+    if cly >= top_y - 0.5 && cly + code_line() <= bottom + 0.5 {
+        p.rect(
+            [panel[0] + 6.0, cly, panel[2] - 12.0, code_line()],
+            6.0,
+            fade(pal().ink, 0.045),
+        );
+    }
+    let problem_at = &st.s.ui.problem_at;
+    let base = p.alpha;
     for i in 0..=rows {
         let r = first + i;
         if r >= ed.lines.len() {
@@ -912,13 +1873,6 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
         }
         let line = &ed.lines[r];
         let from = line.char_indices().nth(ed.hscroll).map_or(line.len(), |(i, _)| i);
-        if r == ed.row {
-            p.rect(
-                [panel[0] + 6.0, ly, panel[2] - 12.0, code_line()],
-                6.0,
-                fade(pal().ink, 0.045),
-            );
-        }
         if ed.error_line == Some(r + 1) {
             p.rect(
                 [panel[0] + 6.0, ly, panel[2] - 12.0, code_line()],
@@ -970,16 +1924,65 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
             p.text(&shown, px, ty, code_size(), Font::Mono, tint(t));
             px += pw;
         }
-        if r == ed.row && ed.col >= from {
-            let cx = text_x + p.measure(&line[from..ed.col], code_size(), Font::Mono);
-            if cx <= text_x + text_w {
-                p.rect(
-                    [cx.floor(), ly + 2.0, 2.0, code_line() - 4.0],
-                    1.0,
-                    fade(pal().accent, blink),
-                );
+        // Its problems: the worst marks the gutter and says why at the end.
+        let mut said = false;
+        for pr in ed.problems.iter().filter(|pr| pr.line == r + 1) {
+            let fadein = problem_at
+                .get(&problem_key(pr, &ed.lines))
+                .map_or(1.0, |at| progress(now, *at, MOVE));
+            p.alpha = base * fadein;
+            let c = if pr.error { pal().danger } else { warn() };
+            let (a, b) = match pr.span {
+                Some((a, b)) => (floor_char(line, a), floor_char(line, b)),
+                None => (line.len() - line.trim_start().len(), line.len()),
+            };
+            let a = a.max(from);
+            let sx = text_x + p.measure(&line[from..a], code_size(), Font::Mono);
+            let mut sw = if b > a {
+                p.measure(&line[a..b], code_size(), Font::Mono)
+            } else {
+                0.0
+            };
+            if sw < 6.0 {
+                sw = p.measure("m", code_size(), Font::Mono).max(6.0);
+            }
+            let sw = sw.min(text_x + text_w - sx);
+            if sw > 0.0 {
+                squiggle(p, sx, ly + code_line() - 3.5, sw, c);
+            }
+            if !said {
+                said = true;
+                p.rect([panel[0] + 12.0, ly + code_line() / 2.0 - 3.0, 6.0, 6.0], 3.0, c);
+                let end = text_x + p.measure(&line[from..], code_size(), Font::Mono) + 20.0;
+                let room = text_x + text_w - end;
+                if room > 70.0 {
+                    let msg = p.fit(&pr.message, room, 12.0, Font::Regular);
+                    p.text(
+                        &msg,
+                        end,
+                        top(ly + code_line() / 2.0, 12.0),
+                        12.0,
+                        Font::Regular,
+                        fade(c, 0.85),
+                    );
+                }
             }
         }
+        p.alpha = base;
+    }
+    // The cursor, solid while it moves and blinking once still.
+    let caret_y = top_y + (caret[0] - s) * code_line();
+    let line = &ed.lines[ed.row];
+    let from = line.char_indices().nth(ed.hscroll).map_or(line.len(), |(i, _)| i);
+    let cx = text_x + caret[1] - p.measure(&line[..from], code_size(), Font::Mono);
+    if caret_y >= top_y - 0.5 && caret_y + code_line() <= bottom + 0.5 && cx >= text_x - 1.0 && cx <= text_x + text_w {
+        let still = (now - st.s.ui.caret_moved - 0.5).max(0.0);
+        let blink = 0.55 + 0.45 * (still as f32 * std::f32::consts::PI * 1.6).cos();
+        p.rect(
+            [cx.floor(), caret_y + 2.0, 2.0, code_line() - 4.0],
+            1.0,
+            fade(pal().accent, blink),
+        );
     }
     if ed.lines.len() > rows {
         let track = panel[3] - 24.0;
@@ -987,6 +1990,12 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
         let span = (ed.lines.len() - rows).max(1) as f32;
         let by = top_y + (track - bar) * (s / span).clamp(0.0, 1.0);
         p.rect([panel[0] + panel[2] - 9.0, by, 4.0, bar], 2.0, fade(pal().ink, 0.18));
+        // Where the problems are, on the track.
+        for pr in &ed.problems {
+            let my = top_y + track * ((pr.line.max(1) - 1) as f32 / ed.lines.len() as f32);
+            let c = if pr.error { pal().danger } else { warn() };
+            p.rect([panel[0] + panel[2] - 11.0, my, 8.0, 2.0], 1.0, fade(c, 0.85));
+        }
     }
     st.s.ui.view = Some(EditorView {
         x: text_x,
@@ -994,6 +2003,101 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
         w: text_w,
         rows,
     });
+    file_changed(st, p, panel, dt);
+    // The suggestions, at the word being typed.
+    if st.s.ui.suggest.as_ref().is_some_and(|sg| !sg.console) {
+        let ed = &st.s.editor;
+        let start = st.s.ui.suggest.as_ref().map_or(0, |sg| sg.start).min(ed.col);
+        let line = &ed.lines[ed.row];
+        let from = line.char_indices().nth(ed.hscroll).map_or(line.len(), |(i, _)| i);
+        let wx = if start >= from && line.is_char_boundary(start) {
+            text_x + p.measure(&line[from..start], code_size(), Font::Mono)
+        } else {
+            text_x
+        };
+        let typed = line.get(start..ed.col).unwrap_or("").to_owned();
+        let ly = top_y + (ed.row as f32 - st.s.ui.smooth[1]) * code_line();
+        draw_suggest(st, p, [wx, ly, code_line()], &typed, false, dt);
+    }
+}
+
+/// Over the code: the file changed on disk while it had edits here (take
+/// that, or keep these), or a note that it was read again.
+fn file_changed(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
+    let now = st.s.now;
+    let c = glide(&mut st.s.ui, id("conflict", 0), st.s.editor.conflict, dt);
+    let base = p.alpha;
+    if c > 0.01 {
+        p.alpha = base * c;
+        let r = [
+            panel[0] + 10.0,
+            panel[1] + 8.0 - (1.0 - c) * 10.0,
+            panel[2] - 20.0,
+            36.0,
+        ];
+        p.rect(r, 10.0, mix(pal().surface, warn(), 0.16));
+        p.border(r, 10.0, fade(warn(), 0.6));
+        st.s.ui.hits.push((r, Action::Block));
+        let cy = r[1] + 18.0;
+        let mut bx = r[0] + r[2] - 6.0;
+        let kw = p.measure("Keep mine", 13.0, Font::Medium) + 28.0;
+        bx -= kw;
+        pill(
+            &mut st.s.ui,
+            p,
+            "keep-mine",
+            "Keep mine",
+            bx,
+            cy - 13.0,
+            26.0,
+            Style::Quiet,
+            Action::KeepMine,
+            dt,
+        );
+        let rw = p.measure("Reload", 13.0, Font::Medium) + 28.0;
+        bx -= rw + 6.0;
+        pill(
+            &mut st.s.ui,
+            p,
+            "reload-file",
+            "Reload",
+            bx,
+            cy - 13.0,
+            26.0,
+            Style::Secondary,
+            Action::ReloadFile,
+            dt,
+        );
+        let msg = p.fit(
+            "This file changed on disk while you were editing it.",
+            bx - r[0] - 24.0,
+            13.0,
+            Font::Regular,
+        );
+        p.text(&msg, r[0] + 14.0, top(cy, 13.0), 13.0, Font::Regular, pal().ink);
+        p.alpha = base;
+    }
+    if let Some(at) = st.s.editor.reloaded_at {
+        let age = now - at;
+        if age < 2.4 {
+            let a = progress(now, at, QUICK) * (1.0 - ((age - 1.8) / 0.6).clamp(0.0, 1.0) as f32);
+            p.alpha = base * a;
+            let label = "Changed on disk: read again";
+            let lw = p.measure(label, 12.0, Font::Medium) + 30.0;
+            let r = [panel[0] + panel[2] - lw - 14.0, panel[1] + 10.0, lw, 24.0];
+            p.rect(r, 12.0, fade(pal().accent, 0.16));
+            p.rect([r[0] + 10.0, r[1] + 8.5, 7.0, 7.0], 3.5, pal().accent);
+            p.text(
+                label,
+                r[0] + 22.0,
+                top(r[1] + 12.0, 12.0),
+                12.0,
+                Font::Medium,
+                pal().ink,
+            );
+            p.alpha = base;
+        }
+    }
 }
 
 fn status(state: &ModState, enabled: bool) -> (&'static str, u32) {

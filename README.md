@@ -7,8 +7,14 @@ native Horizon mod that adds:
   `player.pos()` and see where you are, or `game.run("time set day")`. `/lua <code>` does the same from chat.
 - **Script mods with hot reloading.** A script mod is a `.lua` file in your Horizon folder. Save it, from the in-game
   editor or any other editor, and it reloads at once: no rebuild, no restart.
-- **An in-game editor.** Lua highlighting, line numbers, undo and redo, the clipboard, comment toggling and
-  auto-indent. A syntax or runtime error marks its line.
+- **An in-game editor, laid out like VS Code.** Lua highlighting, suggestions as you type (the whole API, events,
+  keywords and your own names, with their signatures and docs), problems found as you type (syntax errors and
+  misspelled names, underlined, with their message at the line's end), auto-indent that closes blocks with their
+  `end`, brackets and quotes that close themselves, undo and redo, and under the code a panel with the console, the
+  problems and an AI agent.
+- **An AI agent in the game.** Ask Claude Code or omp, the one installed on your computer, to write or fix the
+  script open in the editor: it sees the file, what you selected and its problems, works through Horizon Studio's
+  MCP, and its edits land in the editor as it makes them.
 - **A mod library.** Every script mod with its state, error, commands and cost per call. Turn mods on and off,
   reload them, open them in the editor, start a new one from a template, or install one of the bundled examples.
 - **Drag and drop install.** Drop a `.lua` file, a mod folder or a `.zip` on the game window and it runs.
@@ -90,14 +96,51 @@ In a world, press **F8** (or type `/studio`). Escape or F8 closes it. The world 
 
 | Tab | What it does | Keys |
 |---|---|---|
-| **Console** | Runs Lua at once. An expression's value is printed, tables expanded. What you register here (`on`, `command`, `every`) runs until `clear()`. | Enter run · Up/Down history · Tab complete · Page Up/Down scroll · Ctrl+L clear |
-| **Editor** | Edits a mod's file (or `scratch.lua`). Saving reloads the mod. | Ctrl+S save · Ctrl+Enter run in the console · Ctrl+Z/Y undo/redo · Ctrl+C/X/V · Ctrl+A · Ctrl+D duplicate line · Ctrl+/ comment · Tab/Shift+Tab indent · mouse click and drag |
+| **Console** | Runs Lua at once. An expression's value is printed, tables expanded. What you register here (`on`, `command`, `every`) runs until `clear()`. Suggestions show as you type. | Enter run · Tab complete · Up/Down history (or choose a suggestion) · Esc close the suggestions · Page Up/Down scroll · Ctrl+L clear |
+| **Editor** | Edits a mod's file (or `scratch.lua`), with the console, the problems and the agent in a panel under it. Saving reloads the mod. | Ctrl+S save · Ctrl+Enter run in the console · Ctrl+Space suggest · Tab take a suggestion · Ctrl+\` or Ctrl+J show or hide the panel · Esc back to the code · Ctrl+Z/Y undo/redo · Ctrl+C/X/V · Ctrl+A · Ctrl+D duplicate line · Ctrl+/ comment · Tab/Shift+Tab indent · mouse click and drag |
 | **Library** | Your script mods and the examples; Open folder shows the mods folder. | Up/Down choose · Enter edit · Space on/off · R reload · N new mod |
 | **Docs** | The API. | Up/Down, Page Up/Down, wheel |
 | **Settings** | How the studio looks: see [Themes](#themes-and-the-window). | Up/Down, Page Up/Down, wheel |
 
 Ctrl+1 to Ctrl+5 switch tabs. In chat: `/studio` opens it, `/studio reload` reloads every script mod, and
 `/lua <code>` runs code and prints the result in chat.
+
+### The editor
+
+- **Suggestions** open as you type a name: after `player.` the player's functions, after `on("` the events, and
+  otherwise the libraries, the standard library, keywords and the names in your file, best matches first. Each shows
+  its kind, its signature, and beside the list what it does. Up and Down choose, Tab takes one (Enter too, once you
+  have moved through the list), Esc closes them, Ctrl+Space opens them anywhere. A function comes with its brackets,
+  the cursor between them; a library with its dot, and its members open.
+- **Problems** are found as you type, a moment after you pause: a syntax error underlined in red where the parser
+  stopped, and in amber a name nothing defines (*nothing defines 'plyer' (did you mean player?)*) or a library
+  function that doesn't exist (*player has no 'poss'*). Each line with one has a dot in the gutter and its message at
+  the end, the scrollbar marks where they are, and the count by the file's name opens the Problems panel. A runtime
+  error still marks its line in red.
+- **Typing** keeps your indent, and Enter after `then`, `do`, `function(` or `repeat` indents the next line and
+  closes the block below with its `end` (`end)` for a function passed to a call, `until` for `repeat`), unless it is
+  already closed. Brackets and quotes close themselves, typing the closing one steps over it, and Backspace between
+  an empty pair deletes both. A selection typed over with a bracket or quote is wrapped in it.
+- **The panel** under the code has three tabs: the **Console** (the same log and input as the Console tab),
+  **Problems** (a click, or Enter, goes to one) and the **Agent**. Drag the bar above it to size it; Ctrl+\` hides
+  and shows it; a click in it, or on a tab, sends typing there, and Esc back to the code.
+- **The file on disk** is watched: when something else changes it (another editor, or the agent), the editor reads it
+  again, keeping your place, and Ctrl+Z goes back. If you had unsaved edits, it asks first: Reload, or Keep mine.
+
+### The agent
+
+The Agent tab runs the coding agent installed on your computer: **Claude Code** (`claude`) or **omp**, found on your
+PATH or where their installers put them. Set up the MCP server first (see [AI agents](#ai-agents-mcp)), so the agent
+has Horizon Studio's tools. Type what you want (*make the waypoints glow at night*, *why does this error?*) and Enter
+sends it, with the file open in the editor, what you selected and its problems. The answer, and each tool it uses,
+come in as it works, and its edits show in the editor as they land; the next question continues the conversation.
+**Stop** ends its work, and the button with its name switches agent when you have several.
+
+It works in your mods folder and runs with its own permissions: Claude Code may use Horizon Studio's MCP tools and
+read files, and asks for nothing else (in a run from the game, anything that needs your approval is refused); omp
+runs with `--approval-mode write`, which refuses shell commands. To use another agent, put its command line in
+`horizon-mods/.horizon-mod-data/horizon_studio/agent.txt` (`{prompt}` where the request goes, or it is sent on its
+input; a first line `name: My agent` names it).
 
 ### Themes and the window
 
@@ -547,6 +590,8 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `lualib.rs` (`hstudio_lualib`) | The standard library, Lua patterns, `string.format` |
 | `studio.rs` (`hstudio`) | Script mods, hot reloading, events, timers, the API, the console |
 | `ui.rs` (`hstudio_ui`) | The screen: console, editor, library, docs, settings; input, the window's moving and sizing |
+| `assist.rs` (`hstudio_assist`) | The editor's and console's suggestions, and the live check of a script (syntax, unknown names) |
+| `agent.rs` (`hstudio_agent`) | The in-game agent: finding Claude Code and omp, running one with the editor's context, reading its events |
 | `meshes.rs` (`hstudio_meshes`) | Textures and meshes: PNG and base64, `.obj` and `.bbmodel`, box UV, drawing them as textured triangles |
 | `look.rs` (`hstudio_look`) | How the screen draws: the studio's layout, Settings, the Windows 10 window, script screens |
 | `theme.rs` (`hstudio_theme`) | The themes' palettes, and the look chosen in Settings (`look.txt`) |
