@@ -785,6 +785,7 @@ fn is_api_global(word: &str) -> bool {
             | "json"
             | "ui"
             | "draw"
+            | "model"
             | "sound"
             | "export"
             | "import"

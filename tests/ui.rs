@@ -218,7 +218,9 @@ fn lua_highlighting() {
 
 #[test]
 fn completion() {
-    assert_eq!(complete("player.po", 9).as_deref(), Some("s("));
+    assert_eq!(complete("player.fac", 10).as_deref(), Some("ing("));
+    // pos and pose: as far as they agree.
+    assert_eq!(complete("player.po", 9).as_deref(), Some("s"));
     assert_eq!(complete("pla", 3).as_deref(), Some("yer."));
     assert_eq!(complete("hud.pa", 6).as_deref(), Some("nel("));
     assert_eq!(complete("x = ag", 6).as_deref(), Some("ent."));

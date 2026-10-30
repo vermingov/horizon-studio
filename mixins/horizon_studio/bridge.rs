@@ -4,7 +4,9 @@
 // horizon-mixin.toml. Hooks that find the studio busy (a script's agent
 // command can reach the game's own command path) do nothing.
 
-use super::hstudio::{Camera, Corner, Font, GameApi, ID, NAME, OPEN_KEY, PlayerInfo, Reply, Studio, VERSION, ViaInfo};
+use super::hstudio::{
+    Camera, Corner, Font, GameApi, ID, NAME, OPEN_KEY, PartFrame, PlayerInfo, PlayerPose, Reply, Studio, VERSION, ViaInfo,
+};
 use horizon_client::net::hstudio_via as via;
 use super::hstudio_ui::{Input, Key, Mods, UiResult, draw, draw_screen, handle, handle_screen};
 use super::{Game, Screen};
@@ -39,6 +41,9 @@ thread_local! {
     static COPIED: Cell<Option<Instant>> = const { Cell::new(None) };
     /// Frames, to refresh the settings pages' labels now and then.
     static FRAMES: Cell<u32> = const { Cell::new(0) };
+    /// The vanilla mappings' state this frame, for `keys.mapping` in `world`
+    /// handlers (which run while the game is only read).
+    static MAPPINGS_NOW: RefCell<Vec<(&'static str, (bool, String))>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Runs `f` with the studio, unless it is busy (a hook reached from a script).
@@ -197,7 +202,11 @@ impl GameApi for Host<'_, '_> {
         [a, b, c]
     }
     fn mapping(&mut self, name: &str) -> Option<(bool, String)> {
-        self.g_mut()?.native_mapping(name)
+        match self.g_mut() {
+            Some(g) => g.native_mapping(name),
+            // As the world draws the game is only read: this frame's answers.
+            None => MAPPINGS_NOW.with(|m| m.borrow().iter().find(|(n, _)| *n == name).map(|(_, v)| v.clone())),
+        }
     }
     fn screen(&self) -> String {
         self.g().screen_label().to_owned()
@@ -381,6 +390,144 @@ impl GameApi for Host<'_, '_> {
             }
         }
     }
+    fn part_frame(&self, target: Option<u32>, part: &str) -> Option<PartFrame> {
+        let g = self.g();
+        g.player.as_ref()?;
+        let (mob, alpha) = match target {
+            None => (g.player_model.as_ref()?, g.clock.camera_fraction() as f32),
+            Some(id) => (g.mobs.iter().find(|m| m.id == id)?, g.clock.fraction() as f32),
+        };
+        // Relative to the mob, then back: f32 keeps a millimetre near it,
+        // not far from the world's origin.
+        let at = glam::DVec3::new(mob.position.x, mob.position.y, mob.position.z);
+        let m = if part == "root" {
+            horizon_client::mobs::render::base_transform(mob, alpha, at)
+        } else {
+            horizon_client::mobs::render::part_transform(mob, alpha, at, g.res.mob_data(), part)?
+        };
+        // Model space has y down and z back: turned, its axes are left, up, forward.
+        let m = m * glam::Mat4::from_rotation_x(std::f32::consts::PI);
+        let v = |c: glam::Vec4| [f64::from(c.x), f64::from(c.y), f64::from(c.z)];
+        let o = v(m.w_axis);
+        Some(PartFrame {
+            origin: [at.x + o[0], at.y + o[1], at.z + o[2]],
+            left: v(m.x_axis),
+            up: v(m.y_axis),
+            forward: v(m.z_axis),
+        })
+    }
+    fn body_shown(&self) -> bool {
+        self.g().own_body_in_view()
+    }
+    fn pose(&self) -> Option<PlayerPose> {
+        use horizon_client::pose::Pose;
+        let g = self.g();
+        let p = g.player.as_ref()?;
+        let pose = match p.pose {
+            Pose::Crouching => "crouching",
+            Pose::Swimming => "swimming",
+            Pose::FallFlying => "gliding",
+            Pose::SpinAttack => "spin_attack",
+            Pose::Sleeping => "sleeping",
+            _ => "standing",
+        };
+        let camera = match g.camera_type {
+            super::perspective::CameraType::FirstPerson => "first",
+            super::perspective::CameraType::ThirdPersonBack => "third_back",
+            super::perspective::CameraType::ThirdPersonFront => "third_front",
+        };
+        Some(PlayerPose {
+            pose: pose.into(),
+            sprinting: p.sprinting,
+            on_ground: p.ground.on_ground,
+            flying: p.flying,
+            camera: camera.into(),
+        })
+    }
+    fn world_item(&mut self, id: &str, m: [[f64; 3]; 4], display: &str, light_at: Option<[f64; 3]>) -> Result<(), String> {
+        use horizon_assets::item_model::DisplayContext;
+        let game = match &self.game {
+            GameRef::Mut(g) => &**g,
+            GameRef::Shared(g) => *g,
+        };
+        let Some((out, cam)) = self.world.as_mut() else {
+            return Err("items are drawn only with the world".into());
+        };
+        let context = match display {
+            "head" => DisplayContext::Head,
+            "hand" => DisplayContext::ThirdPersonRightHand,
+            "left_hand" => DisplayContext::ThirdPersonLeftHand,
+            "ground" => DisplayContext::Ground,
+            "gui" => DisplayContext::Gui,
+            _ => DisplayContext::Fixed,
+        };
+        let stack = horizon_client::items::ItemStack::new(id, 1);
+        let state = game.resolve_item(&stack, context, None, 0);
+        if state.is_empty() {
+            return Err(format!("no item '{id}'"));
+        }
+        let axis = |c: [f64; 3]| glam::Vec4::new(c[0] as f32, c[1] as f32, c[2] as f32, 0.0);
+        let o = m[3];
+        let origin = glam::Vec4::new(
+            (o[0] - cam.pos[0]) as f32,
+            (o[1] - cam.pos[1]) as f32,
+            (o[2] - cam.pos[2]) as f32,
+            1.0,
+        );
+        let pose = glam::Mat4::from_cols(axis(m[0]), axis(m[1]), axis(m[2]), origin);
+        let light = light_at.map_or(240 | (240 << 8), |p| {
+            horizon_client::block_entity_render::vertex_light(game.world.light(
+                p[0].floor() as i32,
+                p[1].floor() as i32,
+                p[2].floor() as i32,
+            ))
+        });
+        game.submit_item_world(&state, pose, light, out);
+        Ok(())
+    }
+    fn world_quad_lit(&mut self, corners: [[f64; 3]; 4], argb: u32, normal: [f64; 3], light_at: Option<[f64; 3]>) {
+        let game = match &self.game {
+            GameRef::Mut(g) => &**g,
+            GameRef::Shared(g) => *g,
+        };
+        let white = game.gui.atlas.font.white();
+        let light = light_at.map_or(240 | (240 << 8), |p| {
+            horizon_client::block_entity_render::vertex_light(game.world.light(
+                p[0].floor() as i32,
+                p[1].floor() as i32,
+                p[2].floor() as i32,
+            ))
+        });
+        let Some((out, cam)) = self.world.as_mut() else {
+            return;
+        };
+        let len = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt().max(1e-9);
+        let n = |i: usize| (normal[i] / len * 127.0) as i8;
+        let uv = [
+            [white.u0, white.v1],
+            [white.u1, white.v1],
+            [white.u1, white.v0],
+            [white.u0, white.v0],
+        ];
+        let [a, r, g, b] = argb.to_be_bytes();
+        let color = u32::from_le_bytes([r, g, b, a]);
+        for (k, p) in corners.iter().enumerate() {
+            out.push(Vertex {
+                pos: [
+                    (p[0] - cam.pos[0]) as f32,
+                    (p[1] - cam.pos[1]) as f32,
+                    (p[2] - cam.pos[2]) as f32,
+                ],
+                uv: uv[k],
+                layer: 0,
+                color,
+                light,
+                // Shaded by the normal, from either side.
+                normal: [n(0), n(1), n(2), -127],
+                glint_uv: [0.0, 0.0],
+            });
+        }
+    }
     fn quad(&mut self, corners: [[f32; 2]; 4], argb: u32) {
         let game = match &self.game {
             GameRef::Mut(g) => &**g,
@@ -453,6 +600,19 @@ fn give_back(game: &mut Game<'_>) {
 
 // ----------------------------------------------------------------- hooks
 
+/// The vanilla mappings `keys.mapping` knows (Horizon's `native_mapping`).
+const MAPPING_NAMES: [&str; 9] = [
+    "key.forward",
+    "key.left",
+    "key.back",
+    "key.right",
+    "key.jump",
+    "key.sneak",
+    "key.sprint",
+    "key.attack",
+    "key.use",
+];
+
 /// Each frame, with the event loop (poll_control): the input the window
 /// hook queued, the studio's frame, and opening or closing it.
 pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
@@ -475,6 +635,11 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
             }
         }
     }
+    let mappings: Vec<(&'static str, (bool, String))> = MAPPING_NAMES
+        .iter()
+        .filter_map(|&name| game.native_mapping(name).map(|v| (name, v)))
+        .collect();
+    MAPPINGS_NOW.with(|m| *m.borrow_mut() = mappings);
     // ViaHorizon runs from the title screen on, while the studio is on.
     let on = game.native_on(ID);
     if on {

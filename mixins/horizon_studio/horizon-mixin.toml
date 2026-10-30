@@ -68,6 +68,12 @@ name = "hstudio_natrium"
 source = "natrium.rs"
 
 [[module]]
+id = "models"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_models"
+source = "models.rs"
+
+[[module]]
 id = "link"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_link"

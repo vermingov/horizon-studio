@@ -1123,7 +1123,7 @@ fn docs() -> Vec<Doc> {
         Doc::Heading("Console".into()),
         Doc::Para("Type Lua and press Enter: it runs at once in the game, and an expression's value is shown. /lua <code> does the same from chat. What the console registers (on, command...) lasts until clear().".into()),
         Doc::Heading("The language".into()),
-        Doc::Para("Lua 5.3 without coroutines, goto and bitwise operators. Numbers are 64-bit floats. string (with Lua patterns, format, split, trim), math, table and os.clock, os.time and os.date are there; io and the rest of os are not. Each call into a script has a step budget, so an endless loop stops the script, not the game.".into()),
+        Doc::Para("Lua 5.3 without coroutines and goto. Numbers are 64-bit floats (bitwise operators work on whole numbers). string (with Lua patterns, format, split, trim), math, table, utf8 and os.clock, os.time, os.date and os.difftime are there; io and the rest of os are not. Each call into a script has a step budget, so an endless loop stops the script, not the game.".into()),
         Doc::Heading("API".into()),
     ];
     let api = API

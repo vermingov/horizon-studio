@@ -285,6 +285,8 @@ The Library's **New mod** writes a file like this to start from.
 | `player.facing()`, `player.dimension()` | `"north"`...; `"minecraft:overworld"`... |
 | `player.health()`, `player.food()`, `player.held()` | Health and max; food and saturation; the held item's id and count. |
 | `player.info()` | All of these in a table, with `level`, `mode` and `slot`. |
+| `player.pose()`, `player.camera()` | `{pose = "standing"\|"crouching"\|"swimming"\|"gliding"\|"spin_attack"\|"sleeping", crouching, swimming, gliding, sleeping, sprinting, on_ground, flying, camera}`; the view: `"first"`, `"third_back"` or `"third_front"` (F5). |
+| `player.part(name[, target])` | Where a body part is this frame, as it moves and animates: `{x, y, z, left = {x, y, z}, up = {...}, forward = {...}}`, axes a block long (a model pixel is 1/16 of one); of the player, or of an entity by id. |
 | `world.block(x, y, z)` | The block's id, `nil` where nothing is loaded. |
 | `world.time()` | Time of day (0 to 23999), game time in ticks, the day number. |
 | `world.find(block[, radius])` | The nearest loaded blocks of a kind: `{count = n, nearest = {{pos = {x, y, z}, distance = d}, ...}}`. |
@@ -300,6 +302,9 @@ The Library's **New mod** writes a file like this to start from.
 | `draw.fill(x1, y1, z1, x2, y2, z2[, color])` | A solid box. |
 | `draw.beam(x, z[, color[, width[, y1[, y2]]]])` | A vertical beam (from y -64 to 320 unless given), like a waypoint's. |
 | `draw.text(x, y, z, text[, color[, distance]])` | A label at a place, seen through walls; `distance` = `true` adds how far it is. |
+| `draw.item(id, x, y, z[, opts])` | An item (or block) as a 3D model at a place, lit by the world; `opts`: `yaw`, `pitch`, `roll` (degrees), `scale`, `display` (`"fixed"`, `"ground"`, `"gui"`, `"head"`, `"hand"`), `glow`. |
+| `model.attach(part, spec)` | A model that follows a body part as it moves and animates, drawn every frame until removed (or the mod reloads); returns its id. `part`: `root`, `head`, `body`, `right_arm`, `left_arm`, `right_leg`, `left_leg` (or `hat`, `jacket`, the sleeves and pants). `spec`: `item` (worn on the head or held in a hand where the game puts them) and/or `boxes = {{from = {x, y, z}, to = {x, y, z}, color = "#rrggbb"}, ...}`, in pixels from the part's pivot (x to its right, y up, z forward); `offset`, `rotation = {pitch, yaw, roll}`, `scale`, `display`, `glow`, `first_person` (shown in first person too; the body isn't), `visible`, `target` (an entity id instead of the player). See the Outfit example. |
+| `model.set(id, spec)`, `model.remove(id)`, `model.clear()`, `model.list()` | Change the fields given (`item = false`, `boxes = false` remove them); remove one; remove all; this mod's models. |
 | `sound.play(id[, volume[, pitch]])`, `sound.at(id, x, y, z[, volume[, pitch]])` | A sound event (`"entity.experience_orb.pickup"`, `"minecraft:block.bell.use"`): for you, or from a place. |
 | `world.particle(id, x, y, z[, dx, dy, dz[, count[, color]]])` | Particles (`"flame"`, `"heart"`, `"note"`, `"dust"` with a color...): `dx dy dz` is their speed, `count` up to 64 scattered around the point. Particles that need a block or an item aren't offered. |
 | `ui.open(screen)`, `ui.close()`, `ui.is_open()` | A screen of the mod's own: see [Screens](#screens). |
@@ -431,11 +436,13 @@ Lua 5.3, interpreted by the studio itself (native mods cannot add libraries, so 
 `local`, closures and upvalues, varargs and multiple results, every statement but `goto`, metatables
 (`__index`, `__newindex`, `__call`, the arithmetic, comparison, `__concat`, `__len`, `__tostring`, `__pairs`),
 `pcall`/`xpcall`/`error`, and the standard library: base functions, `string` (with Lua patterns, `format`,
-`gsub`, `gmatch`, and the extras `split`, `trim`, `startswith`, `endswith`), `math` (with `clamp`), `table`, and
-`os.clock`, `os.time` and `os.date` (UTC). `dump(value)` pretty-prints a value.
+`gsub`, `gmatch`, and the extras `split`, `trim`, `startswith`, `endswith`), `math` (all of 5.3's, the older
+`atan2`, `pow`, `log10`, `sinh`/`cosh`/`tanh`, `frexp`/`ldexp`, and `clamp`), `table` (with `move`), `utf8`, the
+bitwise operators (`& | ~ << >>` and unary `~`, on whole numbers) and `os.clock`, `os.time`, `os.date` (UTC) and
+`os.difftime`. `dump(value)` pretty-prints a value.
 
-Not there: coroutines, `goto`, bitwise operators, integers as a separate type (numbers are 64-bit floats, printed
-without a fraction when whole), `io`, the rest of `os`, `string.pack`, `utf8`. Strings are byte strings, as in Lua.
+Not there: coroutines, `goto`, integers as a separate type (numbers are 64-bit floats, printed
+without a fraction when whole), `io`, the rest of `os`, `string.pack`. Strings are byte strings, as in Lua.
 
 ### Examples
 
@@ -456,6 +463,7 @@ The Library installs these; their source is in [`examples/`](examples).
 | Waypoints | `draw.beam`, `draw.text` and `draw.block` through walls, and a menu screen (`/wp`) |
 | Selection box | `draw.box` and a size label between two corners (`/pos1`, `/pos2`), `sound.play` |
 | Playground | a screen with a toggle, a slider, a button and a text field; `world.particle`, `sound.at` |
+| Outfit | `model.attach`: a hat, a crown, a cape, a sword, a halo and an orbiting shard that follow your body (`/outfit hat`, F5 to see) |
 | UI Kit | a library mod: `gfx.*`, a canvas screen, `export` (installed with the studio) |
 | ViaHorizon | the ViaHorizon screen: `via.*`, a searchable list made with the UI Kit (`/via`, installed with the studio) |
 | UI Kit demo | `import("uikit")`: tabs, toggles, a slider, a text field, a list and a HUD card (`/kitdemo`) |

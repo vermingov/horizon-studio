@@ -288,6 +288,39 @@ pub trait GameApi {
         let _ = (enabled, version);
         Err("ViaHorizon isn't available here".into())
     }
+    /// A body part's frame this frame: of the player (`target` None) or of an
+    /// entity by id. None where there is no such part, or no world.
+    fn part_frame(&self, target: Option<u32>, part: &str) -> Option<PartFrame> {
+        let _ = (target, part);
+        None
+    }
+    /// Whether the player's own body is drawn (not in first person).
+    fn body_shown(&self) -> bool {
+        true
+    }
+    fn pose(&self) -> Option<PlayerPose> {
+        None
+    }
+    /// An item as a 3D model in the world: `m` is its frame (its x, y and z
+    /// axes and its origin, in blocks); `display` how the game shows it
+    /// ("head", "hand", "left_hand", "fixed", "ground", "gui"); lit by the
+    /// light at `light_at`, or full bright. Only while the world draws.
+    fn world_item(
+        &mut self,
+        id: &str,
+        m: [[f64; 3]; 4],
+        display: &str,
+        light_at: Option<[f64; 3]>,
+    ) -> Result<(), String> {
+        let _ = (id, m, display, light_at);
+        Err("items are drawn only with the world".into())
+    }
+    /// `world_quad`, shaded by its outward normal and lit by the light at
+    /// `light_at` (full bright without one).
+    fn world_quad_lit(&mut self, corners: [[f64; 3]; 4], argb: u32, normal: [f64; 3], light_at: Option<[f64; 3]>) {
+        let _ = (normal, light_at);
+        self.world_quad(corners, argb);
+    }
 }
 
 /// ViaHorizon's state, for `via.*`.
@@ -311,6 +344,29 @@ pub enum Font {
     Regular,
     Medium,
     Mono,
+}
+
+/// Where a body part is this frame: its origin (the part's pivot) and its
+/// left, up and forward axes, a block long each (a model pixel is 1/16 of an
+/// axis; the player's model is 15/16 the size of a block-sized one).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PartFrame {
+    pub origin: [f64; 3],
+    pub left: [f64; 3],
+    pub up: [f64; 3],
+    pub forward: [f64; 3],
+}
+
+/// The player's pose, for `player.pose()`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlayerPose {
+    /// "standing", "crouching", "swimming", "gliding", "spin_attack" or "sleeping".
+    pub pose: String,
+    pub sprinting: bool,
+    pub on_ground: bool,
+    pub flying: bool,
+    /// "first", "third_back" or "third_front".
+    pub camera: String,
 }
 
 /// A frame's camera: where it is, where it looks, its vertical field of view.
@@ -369,7 +425,7 @@ pub fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 pub fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
-fn scale(a: [f64; 3], k: f64) -> [f64; 3] {
+pub fn scale(a: [f64; 3], k: f64) -> [f64; 3] {
     [a[0] * k, a[1] * k, a[2] * k]
 }
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -504,6 +560,8 @@ pub struct ScriptMod {
     /// Milliseconds its handlers took, averaged, per kind of event.
     pub cost_ms: f64,
     pub reloads: u32,
+    /// Models attached to bodies (`model.attach`).
+    pub models: Vec<super::hstudio_models::Attachment>,
 }
 
 impl ScriptMod {
@@ -532,6 +590,7 @@ impl ScriptMod {
             stamp: Vec::new(),
             cost_ms: 0.0,
             reloads: 0,
+            models: Vec::new(),
         }
     }
     /// Drops everything it made: back to not running.
@@ -546,6 +605,7 @@ impl ScriptMod {
         self.modules.clear();
         self.pending.clear();
         self.ready.clear();
+        self.models.clear();
     }
     pub fn running(&self) -> bool {
         self.state == ModState::Running
@@ -655,6 +715,8 @@ pub struct State {
     pub seen: HashSet<String>,
     send_tokens: f64,
     next_timer: u32,
+    /// The last id `model.attach` gave.
+    pub next_model: u32,
     queued_keys: Vec<(String, bool)>,
     queued_commands: Vec<String>,
     queued_chat: Vec<String>,
@@ -766,6 +828,7 @@ impl Studio {
                 seen: HashSet::new(),
                 send_tokens: SEND_BURST,
                 next_timer: 1,
+                next_model: 0,
                 queued_keys: Vec::new(),
                 queued_commands: Vec::new(),
                 queued_chat: Vec::new(),
@@ -1643,6 +1706,25 @@ impl Studio {
         self.s.overlay.clear();
         self.s.world_quads = 0;
         self.dispatch(game, "world", &[], Phase::World);
+        self.draw_models(game);
+    }
+
+    /// Every running mod's attachments, at their parts this frame.
+    fn draw_models(&mut self, game: &mut dyn GameApi) {
+        let shown = game.body_shown();
+        let mut budget = MAX_WORLD_QUADS.saturating_sub(self.s.world_quads);
+        let mods = self.s.mods.iter().chain(std::iter::once(&self.s.console_mod));
+        for m in mods.filter(|m| m.running()) {
+            for a in m.models.iter().filter(|a| a.visible) {
+                if a.target.is_none() && !shown && !a.first_person {
+                    continue;
+                }
+                if let Some(f) = game.part_frame(a.target, &a.part) {
+                    super::hstudio_models::draw(game, &f, a, &mut budget);
+                }
+            }
+        }
+        self.s.world_quads = MAX_WORLD_QUADS - budget;
     }
 
     /// The `world` handlers' through-wall lines and labels, on the GUI.
@@ -2662,6 +2744,60 @@ pub const API: &[(&str, &str, u32, &str)] = &[
     ),
     ("ui", "close", 131, "ui.close(): close this mod's screen"),
     ("ui", "is_open", 132, "ui.is_open(): whether this mod's screen shows"),
+    (
+        "model",
+        "attach",
+        170,
+        "model.attach(part, spec): attach a model to a body part of the player (or of spec.target, an entity id) that follows it as it moves and animates; returns its id. part: root, head, body, right_arm, left_arm, right_leg, left_leg (or hat, jacket, sleeves, pants). spec: {item = \"minecraft:carved_pumpkin\"} an item (blocks too), worn on the head or held in a hand where the game puts them; {boxes = {{from = {x, y, z}, to = {x, y, z}, color = \"#rrggbb\"}, ...}} coloured boxes; offset = {right, up, forward} in pixels (1/16 block), rotation = {pitch, yaw, roll} in degrees, scale = n or {x, y, z}, display = \"head\"|\"hand\"|\"left_hand\"|\"fixed\"|\"ground\"|\"gui\", glow = true (full bright), first_person = true (shown in first person too), visible = false",
+    ),
+    (
+        "model",
+        "set",
+        171,
+        "model.set(id, spec): change an attached model: only the fields given (item = false and boxes = false remove them)",
+    ),
+    (
+        "model",
+        "remove",
+        172,
+        "model.remove(id): remove an attached model; true if there was one",
+    ),
+    (
+        "model",
+        "clear",
+        173,
+        "model.clear(): remove every model this mod attached",
+    ),
+    (
+        "model",
+        "list",
+        174,
+        "model.list(): this mod's models: {{id, part, item, boxes (count), target}, ...}",
+    ),
+    (
+        "player",
+        "pose",
+        175,
+        "player.pose(): {pose = \"standing\"|\"crouching\"|\"swimming\"|\"gliding\"|\"spin_attack\"|\"sleeping\", crouching, swimming, gliding, sleeping, sprinting, on_ground, flying, camera = \"first\"|\"third_back\"|\"third_front\"}; nil outside a world",
+    ),
+    (
+        "player",
+        "part",
+        176,
+        "player.part(name[, target]): where a body part is this frame: {x, y, z, left = {x, y, z}, up = {...}, forward = {...}}, axes a block long (a model pixel is 1/16 of one); of the player, or of an entity by id; nil if there is none",
+    ),
+    (
+        "player",
+        "camera",
+        177,
+        "player.camera(): \"first\", \"third_back\" or \"third_front\" (F5)",
+    ),
+    (
+        "draw",
+        "item",
+        116,
+        "draw.item(id, x, y, z[, opts]): an item (or block) as a 3D model at a place (inside on(\"world\")); opts: {yaw, pitch, roll (degrees), scale, display = \"fixed\"|\"ground\"|\"gui\"|\"head\"|\"hand\", glow = true}",
+    ),
 ];
 
 /// Only in the console.
@@ -2871,6 +3007,131 @@ impl Ctx<'_> {
         let n = scale(n, width / 2.0 / len);
         self.quad3(lua, [sub(a, n), add(a, n), add(b, n), sub(b, n)], argb)
     }
+    /// `draw.item(id, x, y, z[, opts])`.
+    fn draw_item(&mut self, lua: &Lua, args: &[Value]) -> Res {
+        if self.phase != Phase::World {
+            return Err(lua.rt_error("draw.item draws only inside on(\"world\", function() ... end)"));
+        }
+        let mut a = super::hstudio_models::Attachment::new(0, "root");
+        a.item = Some(check_text(lua, args, 0, "item")?);
+        let at = [
+            check_num(lua, args, 1, "item")?,
+            check_num(lua, args, 2, "item")?,
+            check_num(lua, args, 3, "item")?,
+        ];
+        let mut display = "fixed".to_owned();
+        if let Some(Value::Table(o)) = args.get(4) {
+            let o = o.borrow();
+            let num = |k: &str, d: f64| o.get_str(k).to_num().unwrap_or(d);
+            a.rotation = [num("pitch", 0.0), num("yaw", 0.0), num("roll", 0.0)];
+            a.scale = [num("scale", 1.0); 3];
+            a.glow = o.get_str("glow").truthy();
+            if let Some(d) = o.get_str("display").as_text() {
+                if !super::hstudio_models::DISPLAYS.contains(&d.as_str()) {
+                    return Err(bad_arg(
+                        lua,
+                        4,
+                        "item",
+                        "display is fixed, ground, gui, head, hand or left_hand",
+                    ));
+                }
+                display = d;
+            }
+        }
+        if self.s.world_quads >= MAX_WORLD_QUADS {
+            return Err(lua.rt_error("too much drawn in the world this frame"));
+        }
+        self.s.world_quads += 1;
+        a.display = Some(display);
+        let frame = PartFrame {
+            origin: at,
+            left: [1.0, 0.0, 0.0],
+            up: [0.0, 1.0, 0.0],
+            forward: [0.0, 0.0, 1.0],
+        };
+        let item = a.item.clone().unwrap_or_default();
+        let r = super::hstudio_models::rotation(a.rotation);
+        let col = |i: usize| [r[i][0] * a.scale[0], r[i][1] * a.scale[1], r[i][2] * a.scale[2]];
+        let light = (!a.glow).then_some(frame.origin);
+        let display = a.display.clone().unwrap_or_default();
+        self.game
+            .world_item(&item, [col(0), col(1), col(2), at], &display, light)
+            .map_err(|e| lua.rt_error(format!("draw.item: {e}")))?;
+        Ok(Vec::new())
+    }
+
+    /// `model.*`: this mod's attached models.
+    fn model(&mut self, lua: &Lua, id: u32, args: &[Value]) -> Res {
+        use super::hstudio_models::{Attachment, MAX_MODELS, apply_spec, check_part, target_of};
+        let name = ["attach", "set", "remove", "clear", "list"][(id - 170) as usize];
+        match id {
+            170 => {
+                let part = check_text(lua, args, 0, name)?;
+                let spec = check_table(lua, args, 1, name)?;
+                let target = target_of(lua, &spec.borrow().get_str("target"), "model.attach")?.flatten();
+                check_part(lua, &part, target, name)?;
+                if self.s.owner_mod(self.owner).models.len() >= MAX_MODELS {
+                    return Err(lua.rt_error(format!("a mod attaches at most {MAX_MODELS} models")));
+                }
+                self.s.next_model += 1;
+                let mut a = Attachment::new(self.s.next_model, &part);
+                apply_spec(lua, &mut a, &spec.borrow(), "model.attach")?;
+                if a.item.is_none() && a.boxes.is_empty() {
+                    return Err(lua.rt_error("model.attach: give an item or boxes"));
+                }
+                let n = a.id;
+                self.s.owner_mod(self.owner).models.push(a);
+                Ok(vec![Value::Num(f64::from(n))])
+            }
+            171 => {
+                let n = check_num(lua, args, 0, name)? as u32;
+                let spec = check_table(lua, args, 1, name)?;
+                let m = self.s.owner_mod(self.owner);
+                let a = m
+                    .models
+                    .iter_mut()
+                    .find(|a| a.id == n)
+                    .ok_or_else(|| lua.rt_error(format!("model.set: this mod has no model {n}")))?;
+                apply_spec(lua, a, &spec.borrow(), "model.set")?;
+                Ok(Vec::new())
+            }
+            172 => {
+                let n = check_num(lua, args, 0, name)? as u32;
+                let m = self.s.owner_mod(self.owner);
+                let before = m.models.len();
+                m.models.retain(|a| a.id != n);
+                Ok(vec![Value::Bool(m.models.len() < before)])
+            }
+            173 => {
+                self.s.owner_mod(self.owner).models.clear();
+                Ok(Vec::new())
+            }
+            _ => {
+                let list: Vec<Value> = self
+                    .s
+                    .owner_mod(self.owner)
+                    .models
+                    .iter()
+                    .map(|a| {
+                        let mut t = Table::new();
+                        t.set_str("id", Value::Num(f64::from(a.id)));
+                        t.set_str("part", Value::str(&a.part));
+                        if let Some(item) = &a.item {
+                            t.set_str("item", Value::str(item));
+                        }
+                        t.set_str("boxes", Value::Num(a.boxes.len() as f64));
+                        t.set_str(
+                            "target",
+                            a.target.map_or(Value::str("player"), |id| Value::Num(f64::from(id))),
+                        );
+                        Value::table(t)
+                    })
+                    .collect();
+                Ok(vec![Value::table(Table::from_list(list))])
+            }
+        }
+    }
+
     fn quad3(&mut self, lua: &Lua, corners: [[f64; 3]; 4], argb: u32) -> Result<(), Throw> {
         if self.s.world_quads >= MAX_WORLD_QUADS {
             return Err(lua.rt_error("too much drawn in the world this frame"));
@@ -3211,7 +3472,7 @@ impl Host for Ctx<'_> {
                         lua,
                         0,
                         "mapping",
-                        "a vanilla mapping such as \"key.jump\" expected",
+                        "one of key.forward, key.left, key.back, key.right, key.jump, key.sneak, key.sprint, key.attack, key.use",
                     )),
                 }
             }
@@ -3506,6 +3767,39 @@ impl Host for Ctx<'_> {
                 none()
             }
             110..=115 => self.draw(lua, id, &args),
+            116 => self.draw_item(lua, &args),
+            170..=174 => self.model(lua, id, &args),
+            175 => Ok(vec![match self.game.pose() {
+                None => Value::Nil,
+                Some(p) => {
+                    let mut t = Table::new();
+                    t.set_str("pose", Value::str(&p.pose));
+                    for (k, v) in [
+                        ("crouching", p.pose == "crouching"),
+                        ("swimming", p.pose == "swimming"),
+                        ("gliding", p.pose == "gliding"),
+                        ("sleeping", p.pose == "sleeping"),
+                        ("sprinting", p.sprinting),
+                        ("on_ground", p.on_ground),
+                        ("flying", p.flying),
+                    ] {
+                        t.set_str(k, Value::Bool(v));
+                    }
+                    t.set_str("camera", Value::str(&p.camera));
+                    Value::table(t)
+                }
+            }]),
+            176 => {
+                let part = check_text(lua, &args, 0, "part")?;
+                let target = super::hstudio_models::target_of(lua, &arg(&args, 1), "player.part")?.flatten();
+                super::hstudio_models::check_part(lua, &part, target, "part")?;
+                Ok(vec![
+                    self.game
+                        .part_frame(target, &part)
+                        .map_or(Value::Nil, |f| super::hstudio_models::frame_table(&f)),
+                ])
+            }
+            177 => Ok(vec![self.game.pose().map_or(Value::Nil, |p| Value::str(&p.camera))]),
             120 | 121 => {
                 let name = if id == 120 { "play" } else { "at" };
                 // A screen's draw may click (UI libraries draw and react at once).
@@ -3561,22 +3855,33 @@ impl Host for Ctx<'_> {
             200..=205 if self.owner != Owner::Console => Err(lua.rt_error("this works only in the console")),
             200 => {
                 let want = opt_str(lua, &args, 0, "help")?.map(|s| text_of(&s));
-                let mut lines = Vec::new();
-                for (table, name, _, doc) in API {
-                    let full = if table.is_empty() {
-                        (*name).to_owned()
-                    } else {
-                        format!("{table}.{name}")
-                    };
-                    if want.as_ref().is_none_or(|w| full.contains(w.as_str())) {
-                        lines.push((*doc).to_owned());
-                    }
-                }
-                for (name, _, doc) in CONSOLE_API {
-                    if want.as_ref().is_none_or(|w| name.contains(w.as_str())) {
-                        lines.push((*doc).to_owned());
-                    }
-                }
+                let all = API
+                    .iter()
+                    .map(|(table, name, _, doc)| {
+                        let full = if table.is_empty() {
+                            (*name).to_owned()
+                        } else {
+                            format!("{table}.{name}")
+                        };
+                        (full, *doc)
+                    })
+                    .chain(CONSOLE_API.iter().map(|(name, _, doc)| ((*name).to_owned(), *doc)));
+                let all: Vec<(String, &str)> = all.collect();
+                // A function's own name gives that one; else every name with it in.
+                let lines: Vec<String> = match want.as_deref() {
+                    Some(w) if all.iter().any(|(full, _)| full == w) => all
+                        .iter()
+                        .filter(|(full, _)| full == w)
+                        .map(|(_, d)| (*d).to_owned())
+                        .collect(),
+                    Some(w) => all
+                        .iter()
+                        .filter(|(full, _)| full.contains(w))
+                        .map(|(_, d)| (*d).to_owned())
+                        .collect(),
+                    None => all.iter().map(|(_, d)| (*d).to_owned()).collect(),
+                };
+                let mut lines = lines;
                 if lines.is_empty() {
                     lines.push("nothing by that name".into());
                 }

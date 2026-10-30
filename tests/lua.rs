@@ -328,7 +328,10 @@ fn syntax_errors_say_where() {
         "test.lua:1: unexpected symbol near '<eof>'"
     );
     assert!(try_run("goto done").unwrap_err().contains("not supported"));
-    assert!(try_run("x = 1 & 2").unwrap_err().contains("bitwise"));
+    assert_eq!(
+        try_run("x = 1 &").unwrap_err(),
+        "test.lua:1: unexpected symbol near '<eof>'"
+    );
     assert_eq!(
         try_run("f() = 1").unwrap_err(),
         "test.lua:1: syntax error (cannot assign to this)"
@@ -777,4 +780,64 @@ fn values_round_trip_through_tables() {
     let f = lua.load("return answer * 2", "x.lua", &env).unwrap();
     let r = lua.call(&mut NoHost::default(), &f, Vec::new()).ok().unwrap();
     assert_eq!(r[0].as_num(), Some(84.0));
+}
+
+#[test]
+fn bitwise_operators_as_in_lua_5_3() {
+    assert_eq!(
+        eval("return 5 & 3, 5 | 3, 5 ~ 3, ~0, 1 << 4, 256 >> 4"),
+        "1, 7, 6, -1, 16, 16"
+    );
+    // Logical shifts on 64 bits, and shifts past the width.
+    assert_eq!(eval("return -1 >> 63, 1 << 64, 1 << -1, 2 >> -1"), "1, 0, 0, 4");
+    // Precedence: comparison < | < ~ < & < shift < .. < + -.
+    assert_eq!(
+        eval("return 3 | 4 == 7, 2 + 3 & 7, 1 | 2 ~ 3 & 1, 1 << 2 + 1"),
+        "true, 5, 3, 8"
+    );
+    assert_eq!(eval("return \"6\" & 3, 2.0 | 1"), "2, 3");
+    assert!(error_of("return 1.5 & 1").contains("has no integer representation"));
+    assert!(error_of("return {} | 1").contains("attempt to perform bitwise operation on a table value"));
+    let mt = "setmetatable({}, { __band = function(a, b) return 'band' end, __bnot = function() return 'bnot' end })";
+    assert_eq!(eval(&format!("local t = {mt} return t & 1, ~t")), "\"band\", \"bnot\"");
+}
+
+#[test]
+fn the_standard_library_has_lua_5_3s_functions() {
+    assert_eq!(
+        eval("return math.rad(180) == math.pi, math.deg(math.pi), math.ult(1, -1), math.ult(-1, 1)"),
+        "true, 180, true, false"
+    );
+    assert_eq!(
+        eval("return math.atan2(1, 1) == math.atan(1, 1), math.pow(2, 10), math.log10(1000), math.ldexp(0.5, 4)"),
+        "true, 1024, 3, 8"
+    );
+    assert_eq!(eval("return math.frexp(8)"), "0.5, 4");
+    assert_eq!(eval("return math.sinh(0), math.cosh(0), math.tanh(0)"), "0, 1, 0");
+    // table.move, overlapping forwards and into another table.
+    assert_eq!(
+        eval("local t = {1, 2, 3, 4, 5} table.move(t, 2, 4, 1) return table.concat(t, ',')"),
+        "\"2,3,4,4,5\""
+    );
+    assert_eq!(
+        eval("local t = {1, 2, 3} table.move(t, 1, 3, 2) return table.concat(t, ',')"),
+        "\"1,1,2,3\""
+    );
+    assert_eq!(
+        eval("return table.concat(table.move({1, 2, 3}, 1, 3, 3, {9, 9}), ',')"),
+        "\"9,9,1,2,3\""
+    );
+    assert_eq!(eval("return os.difftime(10, 4), collectgarbage('count')"), "6, 0");
+    // utf8.
+    assert_eq!(eval("return utf8.char(72, 228, 8364, 128512)"), "\"Hä€😀\"");
+    assert_eq!(
+        eval("return utf8.len('häl€'), utf8.codepoint('h€', 2), utf8.offset('a€b', 3), utf8.offset('a€b', -1)"),
+        "4, 8364, 5, 5"
+    );
+    assert_eq!(eval("return utf8.len('a\\xffb')"), "nil, 2");
+    assert_eq!(
+        eval("local t = {} for p, c in utf8.codes('aé€') do t[#t + 1] = p .. ':' .. c end return table.concat(t, ' ')"),
+        "\"1:97 2:233 4:8364\""
+    );
+    assert_eq!(eval("return ('añb'):match(utf8.charpattern, 2)"), "\"ñ\"");
 }

@@ -24,7 +24,7 @@ const PROTOCOLS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-
 /// What an agent is told when it connects.
 pub const INSTRUCTIONS: &str = "Horizon Studio makes Minecraft mods for Horizon (Minecraft Java 26.3 in Rust) in Lua, \
 hot reloaded in the running game. Workflow: read `docs` once (the scripting API and the language: Lua 5.3 without \
-coroutines, goto or bitwise operators); look at `examples` for idioms; write a mod with `write_mod` (one file, or a \
+coroutines or goto); look at `examples` for idioms; write a mod with `write_mod` (one file, or a \
 folder with main.lua; a library calls export(table) and others import(\"id\")); fix what `write_mod`'s check reports; \
 then `test_mod` with steps, headless first (no game needed) and live once `game_status` says the game is linked. \
 `run_lua`, `send_chat` and `game_log` work in the running game; `horizon_ctl` plays it and takes screenshots when the \

@@ -16,7 +16,7 @@ pub fn new_env(lua: &mut Lua) -> TableRef {
     let env = Rc::new(RefCell::new(Table::new()));
     {
         let mut g = env.borrow_mut();
-        let base: [(&str, super::hstudio_lua::Builtin); 21] = [
+        let base: [(&str, super::hstudio_lua::Builtin); 22] = [
             ("print", print),
             ("type", type_),
             ("tostring", tostring),
@@ -38,6 +38,7 @@ pub fn new_env(lua: &mut Lua) -> TableRef {
             ("unpack", unpack),
             ("dump", dump),
             ("inspect", dump),
+            ("collectgarbage", collectgarbage),
         ];
         for (name, f) in base {
             g.set_str(name, Native::builtin(name, f));
@@ -52,6 +53,7 @@ pub fn new_env(lua: &mut Lua) -> TableRef {
         g.set_str("math", Value::Table(math_lib()));
         g.set_str("table", Value::Table(table_lib()));
         g.set_str("os", Value::Table(os_lib()));
+        g.set_str("utf8", Value::Table(utf8_lib()));
     }
     if lua.string_lib.is_none()
         && let Value::Table(s) = env.borrow().get_str("string")
@@ -1367,6 +1369,18 @@ fn math_lib() -> TableRef {
         ("tointeger", m_tointeger),
         ("type", m_type),
         ("clamp", m_clamp),
+        ("rad", m_rad),
+        ("deg", m_deg),
+        ("ult", m_ult),
+        // Lua 5.1 and 5.2's, which code still uses.
+        ("atan2", m_atan),
+        ("pow", m_pow),
+        ("log10", m_log10),
+        ("sinh", m_sinh),
+        ("cosh", m_cosh),
+        ("tanh", m_tanh),
+        ("frexp", m_frexp),
+        ("ldexp", m_ldexp),
     ]);
     {
         let mut m = t.borrow_mut();
@@ -1398,6 +1412,51 @@ math1!(m_tan, "tan", f64::tan);
 math1!(m_asin, "asin", f64::asin);
 math1!(m_acos, "acos", f64::acos);
 math1!(m_exp, "exp", f64::exp);
+math1!(m_rad, "rad", f64::to_radians);
+math1!(m_deg, "deg", f64::to_degrees);
+math1!(m_log10, "log10", f64::log10);
+math1!(m_sinh, "sinh", f64::sinh);
+math1!(m_cosh, "cosh", f64::cosh);
+math1!(m_tanh, "tanh", f64::tanh);
+
+fn m_pow(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let x = check_num(lua, &args, 0, "pow")?;
+    let y = check_num(lua, &args, 1, "pow")?;
+    one(Value::Num(x.powf(y)))
+}
+
+/// `math.ult(m, n)`: whether m < n as unsigned 64-bit integers.
+fn m_ult(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let m = check_int(lua, &args, 0, "ult")?;
+    let n = check_int(lua, &args, 1, "ult")?;
+    one(Value::Bool((m as u64) < (n as u64)))
+}
+
+/// `math.frexp(x)`: m, e with x = m * 2^e and 0.5 <= |m| < 1.
+fn m_frexp(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let x = check_num(lua, &args, 0, "frexp")?;
+    if x == 0.0 || !x.is_finite() {
+        return Ok(vec![Value::Num(x), Value::Num(0.0)]);
+    }
+    let e = x.abs().log2().floor() + 1.0;
+    let mut m = x / 2f64.powf(e);
+    let mut e = e;
+    // Rounding at the edges.
+    if m.abs() >= 1.0 {
+        m /= 2.0;
+        e += 1.0;
+    } else if m.abs() < 0.5 {
+        m *= 2.0;
+        e -= 1.0;
+    }
+    Ok(vec![Value::Num(m), Value::Num(e)])
+}
+
+fn m_ldexp(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let m = check_num(lua, &args, 0, "ldexp")?;
+    let e = check_num(lua, &args, 1, "ldexp")?;
+    one(Value::Num(m * 2f64.powf(e)))
+}
 
 fn m_atan(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
     let y = check_num(lua, &args, 0, "atan")?;
@@ -1525,7 +1584,37 @@ fn table_lib() -> TableRef {
         ("sort", t_sort),
         ("unpack", unpack),
         ("pack", t_pack),
+        ("move", t_move),
     ])
+}
+
+/// `table.move(a1, f, e, t[, a2])`: a1[f..e] into a2 from t (a2 is a1 by
+/// default), overlapping ranges kept right; returns a2.
+fn t_move(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let a1 = check_table(lua, &args, 0, "move")?;
+    let f = check_int(lua, &args, 1, "move")?;
+    let e = check_int(lua, &args, 2, "move")?;
+    let t = check_int(lua, &args, 3, "move")?;
+    let a2 = match args.get(4) {
+        None | Some(Value::Nil) => a1.clone(),
+        Some(_) => check_table(lua, &args, 4, "move")?,
+    };
+    if e >= f {
+        if e - f >= 1 << 24 {
+            return Err(bad_arg(lua, 2, "move", "too many elements to move"));
+        }
+        lua.charge((e - f + 1) as usize)?;
+        let values: Vec<Value> = {
+            let src = a1.borrow();
+            (f..=e).map(|i| src.get_int(i)).collect()
+        };
+        let mut dst = a2.borrow_mut();
+        for (k, v) in values.into_iter().enumerate() {
+            dst.set(Value::Num((t + k as i64) as f64), v)
+                .map_err(|m| lua.rt_error(m))?;
+        }
+    }
+    one(Value::Table(a2))
 }
 
 fn t_insert(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
@@ -1657,7 +1746,195 @@ fn merge_sort(lua: &mut Lua, h: &mut dyn Host, mut src: Vec<Value>, cmp: Option<
 // ----------------------------------------------------------------- os
 
 fn os_lib() -> TableRef {
-    lib(&[("clock", os_clock), ("time", os_time), ("date", os_date)])
+    lib(&[
+        ("clock", os_clock),
+        ("time", os_time),
+        ("date", os_date),
+        ("difftime", os_difftime),
+    ])
+}
+
+fn os_difftime(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let t2 = check_num(lua, &args, 0, "difftime")?;
+    let t1 = opt_num(lua, &args, 1, "difftime", 0.0)?;
+    one(Value::Num(t2 - t1))
+}
+
+/// `collectgarbage([opt])`: memory is managed for scripts; "count" is 0 and
+/// the rest do nothing.
+fn collectgarbage(_: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {
+    one(Value::Num(0.0))
+}
+
+// ----------------------------------------------------------------- utf8
+
+fn utf8_lib() -> TableRef {
+    let t = lib(&[
+        ("char", u_char),
+        ("codepoint", u_codepoint),
+        ("len", u_len),
+        ("offset", u_offset),
+        ("codes", u_codes),
+    ]);
+    t.borrow_mut()
+        .set_str("charpattern", Value::bytes(b"[\x00-\x7F\xC2-\xFD][\x80-\xBF]*"));
+    t
+}
+
+/// The code point at byte `i` and its length in bytes, if a whole one starts there.
+fn utf8_at(s: &[u8], i: usize) -> Option<(u32, usize)> {
+    let b0 = *s.get(i)?;
+    let (len, first) = match b0 {
+        0x00..=0x7F => return Some((u32::from(b0), 1)),
+        0xC2..=0xDF => (2, u32::from(b0 & 0x1F)),
+        0xE0..=0xEF => (3, u32::from(b0 & 0x0F)),
+        0xF0..=0xF4 => (4, u32::from(b0 & 0x07)),
+        _ => return None,
+    };
+    let mut code = first;
+    for k in 1..len {
+        let b = *s.get(i + k)?;
+        if b & 0xC0 != 0x80 {
+            return None;
+        }
+        code = (code << 6) | u32::from(b & 0x3F);
+    }
+    let shortest = match len {
+        2 => code >= 0x80,
+        3 => code >= 0x800,
+        _ => (0x1_0000..=0x10_FFFF).contains(&code),
+    };
+    shortest.then_some((code, len))
+}
+
+/// A 1-based (or negative, from the end) position as a 0-based index.
+fn byte_pos(i: i64, len: usize) -> i64 {
+    if i >= 0 { i - 1 } else { len as i64 + i }
+}
+
+fn u_char(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let mut out = String::new();
+    for i in 0..args.len() {
+        let c = check_int(lua, &args, i, "char")?;
+        let ch = u32::try_from(c)
+            .ok()
+            .and_then(char::from_u32)
+            .ok_or_else(|| bad_arg(lua, i, "char", "value out of range"))?;
+        out.push(ch);
+    }
+    one(Value::str(&out))
+}
+
+fn u_codepoint(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let s = check_str(lua, &args, 0, "codepoint")?;
+    let i = opt_int(lua, &args, 1, "codepoint", 1)?;
+    let j = opt_int(lua, &args, 2, "codepoint", i)?;
+    let (from, to) = (byte_pos(i, s.len()), byte_pos(j, s.len()));
+    if from < 0 || to >= s.len() as i64 {
+        return Err(bad_arg(lua, 1, "codepoint", "out of range"));
+    }
+    let mut out = Vec::new();
+    let mut at = from as usize;
+    while (at as i64) <= to {
+        let (code, n) = utf8_at(&s, at).ok_or_else(|| lua.rt_error("invalid UTF-8 code"))?;
+        out.push(Value::Num(f64::from(code)));
+        at += n;
+    }
+    Ok(out)
+}
+
+fn u_len(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let s = check_str(lua, &args, 0, "len")?;
+    let i = opt_int(lua, &args, 1, "len", 1)?;
+    let j = opt_int(lua, &args, 2, "len", -1)?;
+    let (mut at, to) = (byte_pos(i, s.len()), byte_pos(j, s.len()));
+    if at < 0 || at > s.len() as i64 {
+        return Err(bad_arg(lua, 1, "len", "initial position out of string"));
+    }
+    let mut n = 0;
+    while at <= to && (at as usize) < s.len() {
+        match utf8_at(&s, at as usize) {
+            Some((_, len)) => {
+                at += len as i64;
+                n += 1;
+            }
+            None => return Ok(vec![Value::Nil, Value::Num((at + 1) as f64)]),
+        }
+    }
+    one(Value::Num(f64::from(n)))
+}
+
+fn u_offset(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let s = check_str(lua, &args, 0, "offset")?;
+    let mut n = check_int(lua, &args, 1, "offset")?;
+    let len = s.len() as i64;
+    let default = if n >= 0 { 1 } else { len + 1 };
+    let mut at = byte_pos(opt_int(lua, &args, 2, "offset", default)?, s.len());
+    if at < 0 || at > len {
+        return Err(bad_arg(lua, 2, "offset", "position out of range"));
+    }
+    let cont = |p: i64| p < len && s[p as usize] & 0xC0 == 0x80;
+    if n == 0 {
+        while at > 0 && cont(at) {
+            at -= 1;
+        }
+        return one(Value::Num((at + 1) as f64));
+    }
+    if cont(at) {
+        return Err(lua.rt_error("initial position is a continuation byte"));
+    }
+    if n < 0 {
+        while n < 0 && at > 0 {
+            at -= 1;
+            while at > 0 && cont(at) {
+                at -= 1;
+            }
+            n += 1;
+        }
+    } else {
+        n -= 1;
+        while n > 0 && at < len {
+            at += 1;
+            while cont(at) {
+                at += 1;
+            }
+            n -= 1;
+        }
+    }
+    if n == 0 {
+        one(Value::Num((at + 1) as f64))
+    } else {
+        one(Value::Nil)
+    }
+}
+
+/// `for pos, code in utf8.codes(s)`.
+fn u_codes(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let s = check_str(lua, &args, 0, "codes")?;
+    Ok(vec![
+        Native::builtin("codes", u_codes_next),
+        Value::Str(s),
+        Value::Num(0.0),
+    ])
+}
+
+fn u_codes_next(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let s = check_str(lua, &args, 0, "codes")?;
+    let mut at = check_int(lua, &args, 1, "codes")? - 1;
+    let len = s.len() as i64;
+    if at < 0 {
+        at = 0;
+    } else if at < len {
+        at += 1;
+        while at < len && s[at as usize] & 0xC0 == 0x80 {
+            at += 1;
+        }
+    }
+    if at >= len {
+        return Ok(Vec::new());
+    }
+    let (code, _) = utf8_at(&s, at as usize).ok_or_else(|| lua.rt_error("invalid UTF-8 code"))?;
+    Ok(vec![Value::Num((at + 1) as f64), Value::Num(f64::from(code))])
 }
 
 fn os_clock(lua: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {

@@ -5,7 +5,9 @@
 //! second (a frame is one tick, 50 ms), and a record of everything the mods
 //! print, send, draw, play and spawn.
 
-use crate::game::hstudio::{Camera, Corner, Font, GameApi, LogKind, PlayerInfo, Reply, Studio, ViaInfo};
+use crate::game::hstudio::{
+    Camera, Corner, Font, GameApi, LogKind, PartFrame, PlayerInfo, PlayerPose, Reply, Studio, ViaInfo,
+};
 use crate::game::hstudio_examples::EXAMPLES;
 use crate::game::hstudio_link::mods as mods_json;
 use crate::game::hstudio_ui::{Input, handle_screen};
@@ -46,6 +48,12 @@ pub struct HeadlessGame {
     pub sounds: Vec<String>,
     pub particles: Vec<String>,
     pub world_quads: usize,
+    /// Items drawn as models: (id, where, display).
+    pub items: Vec<(String, [f64; 3], String)>,
+    /// "first", "third_back" or "third_front".
+    pub camera_mode: String,
+    /// The player's pose ("standing", "crouching"...).
+    pub pose: String,
     /// How many of `sent` reached the mods' commands.
     routed: usize,
 }
@@ -82,8 +90,41 @@ impl HeadlessGame {
             sounds: Vec::new(),
             particles: Vec::new(),
             world_quads: 0,
+            items: Vec::new(),
+            camera_mode: "third_back".into(),
+            pose: "standing".into(),
             routed: 0,
         }
+    }
+    /// The player's body parts, standing still: the player model's pivots
+    /// (pixels: x to its left, y down from the neck), 15/16 of a block-sized model.
+    fn player_part(&self, part: &str) -> Option<PartFrame> {
+        let p = self.player.as_ref()?;
+        let pivot: [f64; 3] = match part {
+            "root" | "head" | "hat" | "body" | "jacket" => [0.0, 0.0, 0.0],
+            "right_arm" | "right_sleeve" => [-5.0, 2.0, 0.0],
+            "left_arm" | "left_sleeve" => [5.0, 2.0, 0.0],
+            "right_leg" | "right_pants" => [-1.9, 12.0, 0.0],
+            "left_leg" | "left_pants" => [1.9, 12.0, 0.0],
+            _ => return None,
+        };
+        let k = 0.9375;
+        let yaw = f64::from(p.yaw).to_radians();
+        let left = [yaw.cos() * k, 0.0, yaw.sin() * k];
+        let up = [0.0, k, 0.0];
+        let forward = [-yaw.sin() * k, 0.0, yaw.cos() * k];
+        let crouch = if self.pose == "crouching" { 0.2 } else { 0.0 };
+        let px = |v: [f64; 3], n: f64| [v[0] * n / 16.0, v[1] * n / 16.0, v[2] * n / 16.0];
+        let mut origin = [p.x, p.y - crouch, p.z];
+        for d in [px(left, pivot[0]), px(up, 24.0 - pivot[1]), px(forward, -pivot[2])] {
+            origin = [origin[0] + d[0], origin[1] + d[1], origin[2] + d[2]];
+        }
+        Some(PartFrame {
+            origin,
+            left,
+            up,
+            forward,
+        })
     }
     fn camera_at(&self) -> Option<Camera> {
         let p = self.player.as_ref()?;
@@ -223,6 +264,40 @@ impl GameApi for HeadlessGame {
             status: "Not in a headless test".into(),
             ..ViaInfo::default()
         }
+    }
+    fn part_frame(&self, target: Option<u32>, part: &str) -> Option<PartFrame> {
+        match target {
+            None => self.player_part(part),
+            // No mobs in the headless world.
+            Some(_) => None,
+        }
+    }
+    fn body_shown(&self) -> bool {
+        self.camera_mode != "first"
+    }
+    fn pose(&self) -> Option<PlayerPose> {
+        self.player.as_ref()?;
+        Some(PlayerPose {
+            pose: self.pose.clone(),
+            sprinting: false,
+            on_ground: true,
+            flying: false,
+            camera: self.camera_mode.clone(),
+        })
+    }
+    fn world_item(
+        &mut self,
+        id: &str,
+        m: [[f64; 3]; 4],
+        display: &str,
+        _light_at: Option<[f64; 3]>,
+    ) -> Result<(), String> {
+        let id = resource_id(id, "item", "minecraft:diamond_sword")?;
+        self.items.push((id, m[3], display.to_owned()));
+        Ok(())
+    }
+    fn world_quad_lit(&mut self, _corners: [[f64; 3]; 4], _argb: u32, _normal: [f64; 3], _light_at: Option<[f64; 3]>) {
+        self.world_quads += 1;
     }
 }
 
@@ -581,6 +656,7 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
         let log_mark = run.studio.s.log_seq;
         let (chat_mark, sent_mark) = (run.game.chats.len(), run.game.sent.len());
         let (sound_mark, particle_mark) = (run.game.sounds.len(), run.game.particles.len());
+        let item_mark = run.game.items.len();
         let mut failures: Vec<String> = Vec::new();
         let mut drawn: BTreeSet<String> = BTreeSet::new();
         let mut output: Vec<String> = Vec::new();
@@ -649,6 +725,15 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
                 }
                 _ => failures.push("\"block\" is [x, y, z]".into()),
             }
+        } else if let Some(mode) = step.get("camera").and_then(Json::as_str) {
+            if !["first", "third_back", "third_front"].contains(&mode) {
+                failures.push("\"camera\" is first, third_back or third_front".into());
+            }
+            run.game.camera_mode = mode.to_owned();
+            frames(run, 1, &mut drawn);
+        } else if let Some(pose) = step.get("pose").and_then(Json::as_str) {
+            run.game.pose = pose.to_owned();
+            frames(run, 1, &mut drawn);
         } else if let Some(t) = step.get("time").and_then(Json::as_i64) {
             if let Some(c) = run.game.clock.as_mut() {
                 c.0 = t;
@@ -677,7 +762,7 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
             // Expectations only: about the state as it is.
         } else {
             failures.push(format!(
-                "unknown step {}: use frames, seconds, command, chat, key, lua, player, block, time, click, type or reload",
+                "unknown step {}: use frames, seconds, command, chat, key, lua, player, block, time, camera, pose, click, type or reload",
                 describe(step)
             ));
         }
@@ -686,6 +771,12 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
         let sent: Vec<String> = run.game.sent[sent_mark..].to_vec();
         let sounds: Vec<String> = run.game.sounds[sound_mark..].to_vec();
         let particles: Vec<String> = run.game.particles[particle_mark..].to_vec();
+        let mut items: Vec<String> = run.game.items[item_mark..]
+            .iter()
+            .map(|(id, _, _)| id.clone())
+            .collect();
+        items.sort();
+        items.dedup();
         let log: Vec<(LogKind, String)> = run
             .studio
             .log_since(log_mark)
@@ -741,6 +832,11 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
                 failures.push(format!("no sound like '{want}' (played: {sounds:?})"));
             }
         }
+        for want in texts(step.get("expect_item")) {
+            if !items.iter().any(|s| s.contains(&want)) {
+                failures.push(format!("no item model like '{want}' drawn (drawn: {items:?})"));
+            }
+        }
         for want in texts(step.get("expect_particle")) {
             if !particles.iter().any(|s| s.contains(&want)) {
                 failures.push(format!("no particle like '{want}' (spawned: {particles:?})"));
@@ -786,6 +882,7 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
         put("drawn", drawn.into_iter().collect());
         put("sounds", sounds);
         put("particles", particles);
+        put("items", items);
         reports.push(report);
         if frames_left == 0 {
             reports.push(json!({ "ok": false, "failures": ["the test ran out of frames (10 minutes of game time)"] }));
@@ -811,9 +908,11 @@ presses and releases a key mapping (or with \"down\": true/false); {\"lua\": \"c
 (globals; import(\"id\") gets a library; assert() fails the step); {\"player\": {\"x\":..,\"y\":..,\"z\":..,\"health\":..,\
 \"mode\":\"creative\",\"held\":\"minecraft:stick\"}} moves or changes the player; {\"block\": [x,y,z], \"id\": \
 \"minecraft:stone\"} sets a block (live: not available); {\"time\": 13000} sets the day time; {\"click\": \"label\"} \
-clicks text on the open script screen; {\"type\": \"text\"} types into it; {\"reload\": \"id\"} (or true) reloads. \
+clicks text on the open script screen; {\"type\": \"text\"} types into it; {\"reload\": \"id\"} (or true) reloads; \
+{\"camera\": \"first\"|\"third_back\"|\"third_front\"} and {\"pose\": \"crouching\"} set the view and the player's pose \
+(headless). \
 Expectations (strings or lists of them, matched as substrings): expect_chat, expect_no_chat, expect_output (the lua \
 step's printed values), expect_log, expect_sent, expect_drawn (text drawn on the HUD or screen during the step), \
-expect_sound, expect_particle; expect_state {\"id\": \"running\"|\"failed\"|\"off\"}; expect_screen true/false; \
+expect_sound, expect_particle, expect_item (item models drawn: model.attach, draw.item); expect_state {\"id\": \"running\"|\"failed\"|\"off\"}; expect_screen true/false; \
 expect_error true or \"text\" (otherwise any error logged during a step fails it). A step of expectations alone \
 checks the state as it is.";

@@ -9,7 +9,7 @@
 // when they are whole), byte strings, tables with metatables, closures with
 // upvalues, varargs and multiple results, every statement but goto, and the
 // operators but the bitwise ones. The standard library is in hstudio_lualib.
-// Not here: coroutines, goto, integer subtypes, bitwise operators, io, os
+// Not here: coroutines, goto, integer subtypes, io, os
 // beyond the clock, load of binary chunks, string.pack, utf8.
 
 use std::cell::RefCell;
@@ -543,6 +543,11 @@ enum BinOp {
     Le,
     Gt,
     Ge,
+    BAnd,
+    BOr,
+    BXor,
+    Shl,
+    Shr,
 }
 
 #[derive(Clone, Copy)]
@@ -550,6 +555,7 @@ enum UnOp {
     Neg,
     Not,
     Len,
+    BNot,
 }
 
 enum Expr {
@@ -1415,9 +1421,9 @@ impl Parser {
                 self.advance();
                 Expr::Un(UnOp::Len, Box::new(self.subexpr(12)?))
             }
-            Tok::Op(o @ ("~" | "&" | "|" | "<<" | ">>")) => {
-                let o = *o;
-                return self.error(&format!("bitwise operator '{o}' is not supported"));
+            Tok::Op("~") => {
+                self.advance();
+                Expr::Un(UnOp::BNot, Box::new(self.subexpr(12)?))
             }
             _ => self.simple()?,
         };
@@ -1439,10 +1445,12 @@ impl Parser {
                 Tok::Op("//") => (Some(BinOp::IDiv), 11, 11),
                 Tok::Op("%") => (Some(BinOp::Mod), 11, 11),
                 Tok::Op("^") => (Some(BinOp::Pow), 14, 13),
-                Tok::Op(o @ ("~" | "&" | "|" | "<<" | ">>")) => {
-                    let o = *o;
-                    return self.error(&format!("bitwise operator '{o}' is not supported"));
-                }
+                // Lua 5.3: | then ~ then & then the shifts, between comparison and `..`.
+                Tok::Op("|") => (Some(BinOp::BOr), 4, 4),
+                Tok::Op("~") => (Some(BinOp::BXor), 5, 5),
+                Tok::Op("&") => (Some(BinOp::BAnd), 6, 6),
+                Tok::Op("<<") => (Some(BinOp::Shl), 7, 7),
+                Tok::Op(">>") => (Some(BinOp::Shr), 7, 7),
                 _ => break,
             };
             if left <= limit {
@@ -2205,7 +2213,7 @@ impl Lua {
                 BinOp::Le => return Ok(Value::Bool(p <= q)),
                 BinOp::Gt => return Ok(Value::Bool(p > q)),
                 BinOp::Ge => return Ok(Value::Bool(p >= q)),
-                BinOp::Concat => {}
+                BinOp::Concat | BinOp::BAnd | BinOp::BOr | BinOp::BXor | BinOp::Shl | BinOp::Shr => {}
                 _ => return Ok(Value::Num(arith(op, *p, *q))),
             }
         }
@@ -2227,6 +2235,13 @@ impl Lua {
                             a.describe()
                         )));
                     }
+                },
+            },
+            UnOp::BNot => match integer(&x) {
+                Ok(i) => Value::Num(!i as f64),
+                Err(why) => match self.metamethod(&x, "__bnot") {
+                    Some(mm) => self.call1(h, &mm, vec![x.clone(), x])?,
+                    None => return Err(self.rt_error(bitwise_error(why, &x, a))),
                 },
             },
             UnOp::Len => match &x {
@@ -2359,6 +2374,26 @@ impl Lua {
             BinOp::Le => Ok(Value::Bool(self.less(h, &x, &y, true)?)),
             BinOp::Gt => Ok(Value::Bool(self.less(h, &y, &x, false)?)),
             BinOp::Ge => Ok(Value::Bool(self.less(h, &y, &x, true)?)),
+            BinOp::BAnd | BinOp::BOr | BinOp::BXor | BinOp::Shl | BinOp::Shr => {
+                let (p, q) = (integer(&x), integer(&y));
+                if let (Ok(p), Ok(q)) = (&p, &q) {
+                    return Ok(Value::Num(bitwise(op, *p, *q) as f64));
+                }
+                let event = match op {
+                    BinOp::BAnd => "__band",
+                    BinOp::BOr => "__bor",
+                    BinOp::BXor => "__bxor",
+                    BinOp::Shl => "__shl",
+                    _ => "__shr",
+                };
+                if let Some(mm) = self.metamethod(&x, event).or_else(|| self.metamethod(&y, event)) {
+                    return self.call1(h, &mm, vec![x, y]);
+                }
+                Err(self.rt_error(match p {
+                    Err(why) => bitwise_error(why, &x, a),
+                    Ok(_) => bitwise_error(q.err().unwrap_or(false), &y, b),
+                }))
+            }
             BinOp::Concat => {
                 let piece = |v: &Value| -> Option<Vec<u8>> {
                     match v {
@@ -2468,6 +2503,52 @@ impl Lua {
             };
         }
         Ok(v.plain_text())
+    }
+}
+
+/// A value as an integer for a bitwise operator: a number (or a string of
+/// one) with an exact integer value; else whether it was a number (that has
+/// no integer representation) or something else.
+fn integer(v: &Value) -> Result<i64, bool> {
+    match v.to_num() {
+        Some(n) if n.fract() == 0.0 && (-9.223_372_036_854_776e18..9.223_372_036_854_776e18).contains(&n) => {
+            Ok(n as i64)
+        }
+        Some(_) => Err(true),
+        None => Err(false),
+    }
+}
+
+fn bitwise_error(number: bool, v: &Value, e: &Expr) -> String {
+    if number {
+        format!("number{} has no integer representation", e.describe())
+    } else {
+        format!(
+            "attempt to perform bitwise operation on a {} value{}",
+            v.type_name(),
+            e.describe()
+        )
+    }
+}
+
+/// Lua 5.3's bitwise operators on 64-bit integers; shifts are logical, and a
+/// negative shift goes the other way.
+fn bitwise(op: BinOp, a: i64, b: i64) -> i64 {
+    let shl = |x: i64, n: i64| -> i64 {
+        if n <= -64 || n >= 64 {
+            0
+        } else if n >= 0 {
+            ((x as u64) << n) as i64
+        } else {
+            ((x as u64) >> -n) as i64
+        }
+    };
+    match op {
+        BinOp::BAnd => a & b,
+        BinOp::BOr => a | b,
+        BinOp::BXor => a ^ b,
+        BinOp::Shl => shl(a, b),
+        _ => shl(a, b.saturating_neg()),
     }
 }
 
