@@ -30,6 +30,8 @@ pub mod game {
     pub mod hstudio_models;
     #[path = "../../mixins/horizon_studio/net.rs"]
     pub mod hstudio_net;
+    #[path = "../../mixins/horizon_studio/rbx_file.rs"]
+    pub mod hstudio_rbx_file;
     #[path = "../../mixins/horizon_studio/skins.rs"]
     pub mod hstudio_skins;
     #[path = "../../mixins/horizon_studio/theme.rs"]
