@@ -13,6 +13,10 @@ on:
         description: "Publish a release with this tag (v0.1.0); empty: build only"
         required: false
         default: ""
+      notes:
+        description: "The release's notes, in Markdown (empty: the standard line)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -81,8 +85,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
+          NOTES: ${{ inputs.notes }}
         run: |
-          notes="horizon-studio-mcp, Horizon Studio's MCP server for AI agents. Install: see the README's AI agents section."
+          notes="${NOTES:-horizon-studio-mcp, Horizon Studio's MCP server for AI agents. Install: see the README's AI agents section.}"
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Horizon Studio $TAG" --notes "$notes" \
             || gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
