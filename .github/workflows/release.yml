@@ -1,12 +1,18 @@
 name: Release
 
 # horizon-studio-mcp for each platform, with SHA256SUMS, on a release tag
-# (v0.1.0...): what mcp/install.sh and mcp/install.ps1 download. Run by hand,
-# it only builds and keeps the files as artifacts.
+# (v0.1.0...): what mcp/install.sh and mcp/install.ps1 download. Run by hand
+# (Actions > Release > Run workflow) with a tag, it publishes that release
+# from the branch it runs on; without one it only builds.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Publish a release with this tag (v0.1.0); empty: build only"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -62,7 +68,7 @@ jobs:
 
   release:
     needs: mcp
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -74,8 +80,9 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           notes="horizon-studio-mcp, Horizon Studio's MCP server for AI agents. Install: see the README's AI agents section."
-          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
-            --title "Horizon Studio $GITHUB_REF_NAME" --notes "$notes" \
-            || gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Horizon Studio $TAG" --notes "$notes" \
+            || gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
