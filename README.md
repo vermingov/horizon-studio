@@ -545,14 +545,15 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `via.rs` (`net::hstudio_via`) | In the game's library: ViaHorizon's settings, Java, the downloads, ViaProxy's process, which joins it routes |
 | `via_auth.rs` (`net::hstudio_via_auth`) | ViaHorizon's sign-in with the account a join is made as |
 | `via_picker.rs`, `via_menu.rs` (`hstudio_via_picker`, `hstudio_via_menu`) | The multiplayer screen's button and the version picker (drawn with the design system's shapes and fonts) |
-| `via_net.rs` (`horizon_protocol::hstudio_via_net`) | In the protocol crate: ViaProxy's internal host, the redirect, OpenAuthMod's answers |
+| `via_net.rs` (`horizon_protocol::hstudio_via_net`) | In the protocol crate: ViaProxy's internal host, the redirect, OpenAuthMod's answers, the pings answered while the game draws no frames |
+| `via_lend.rs` (`net::hstudio_via_lend`) | Lends the server connection's writer to the network thread for those answers |
 | `natrium.rs` (`hstudio_natrium`) | Natrium's settings, its Options → Mods row and page, the preset |
 | `natrium_video.rs` (`options_ui::natrium_video`) | Natrium's section of Video Settings, whose buttons are its page's |
 | `natrium_flags.rs` (`horizon_core::natrium`) | In the core crate, which the renderer and the server both read: Natrium's switches and counts |
 | `natrium_particles.rs` (`particles::natrium_particles`) | In the renderer: Horizon's particle loop, with the view test first |
 | `natrium_items.rs`, `natrium_villagers.rs`, `natrium_paths.rs` | Next to the code they speed up: item merging, villagers' item pickup, swimmers' path search |
 
-The hooks, HEAD hooks but where it says otherwise (via-address, via-srv, via-recv and Natrium's particle, Video
+The hooks, HEAD hooks but where it says otherwise (via-address, via-srv, via-recv, via-ping and Natrium's particle, Video
 Settings, merge, pickup and swim hooks can answer in their function's place):
 
 | Hook | Target | For |
@@ -565,6 +566,7 @@ Settings, merge, pickup and swim hooks can answer in their function's place):
 | via-address | `horizon_protocol::servers::parse_address` | on the threads that join and ping servers, an address ViaHorizon routes parses as ViaProxy's internal host (the server and version, for ViaProxy to read from the handshake) |
 | via-srv | `horizon_protocol::resolver::srv_redirect` | that host's SRV lookup answers with the local ViaProxy, so the connection goes there |
 | via-recv | `horizon_protocol::connection::Connection::recv` | during login, ViaProxy's OpenAuthMod sign-in requests are answered |
+| via-ping | `horizon_protocol::connection::ConnReader::recv` | while the game draws no frames (a minimised or covered window: on Wayland its main thread then waits to present), the server's pings are answered on the network thread, as keep-alives are, so anticheats behind ViaProxy don't time the player out |
 | via-menu-draw | `game::chat::Game::draw_link_prompt` | after the title screen draws: ViaHorizon's button on the multiplayer list, and its picker |
 | via-startup | `game::startup_menu::Loading::draw_menu` (a RETURN hook) | the same on the startup menu's title screen, before the game has loaded |
 | via-session, via-transfer | `net::Session::connect`, `connect_transferred` | the account the join is made as, for that sign-in |

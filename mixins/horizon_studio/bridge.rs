@@ -664,6 +664,11 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
         return;
     }
     catch_up(game);
+    // Once frames stop (a hidden window), the network thread answers the
+    // server's pings itself: it learns here when the last frame began, and
+    // which connection to answer on.
+    horizon_protocol::hstudio_via_net::frame_at(game.previous);
+    horizon_client::net::hstudio_via_lend::lend(game.remote.as_ref().map(|r| &r.session));
     // Natrium's switches follow its settings.
     super::hstudio_natrium::sync(game);
     // While the options are open, the studio's and Natrium's pages show what

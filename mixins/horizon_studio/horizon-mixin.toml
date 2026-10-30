@@ -254,6 +254,13 @@ source = "via.rs"
 visibility = "pub"
 
 [[module]]
+id = "via-lend"
+file = "crates/horizon-client/src/net.rs"
+name = "hstudio_via_lend"
+source = "via_lend.rs"
+visibility = "pub"
+
+[[module]]
 id = "via-auth"
 file = "crates/horizon-client/src/net.rs"
 name = "hstudio_via_auth"
@@ -290,6 +297,18 @@ target = "horizon_protocol::connection::Connection::recv"
 helper = "via_recv.rs"
 bindings = [
   { name = "conn", ty = "&mut Connection", value = "&mut *self" },
+]
+
+# Play packets: while the game draws no frames, the server's pings are
+# answered on the network thread (hstudio_via_net::answer_ping).
+[[injection]]
+id = "via-ping"
+kind = "HEAD"
+cancellable = true
+target = "horizon_protocol::connection::ConnReader::recv"
+helper = "via_ping.rs"
+bindings = [
+  { name = "reader", ty = "&mut ConnReader", value = "&mut *self" },
 ]
 
 # A join (or a transfer) notes the account it is made as.

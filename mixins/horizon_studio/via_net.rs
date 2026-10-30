@@ -4,12 +4,17 @@
 // and version, for ViaProxy to read from the handshake); that host's SRV
 // lookup answers with the local ViaProxy, so the connection goes there; and
 // OpenAuthMod's sign-in request, which ViaProxy sends for an online-mode
-// server, is answered with the player's own session. Only the standard
-// library: the client registers what it knows (how to route, where ViaProxy
-// listens, how to join a session) as callbacks.
+// server, is answered with the player's own session. And while the game
+// draws no frames (its window hidden: on Wayland its main thread then waits
+// to present), the network thread answers the server's pings itself, which
+// nothing else would, and which anticheats behind ViaProxy time the player
+// out for. Only the standard library: the client registers what it knows
+// (how to route, where ViaProxy listens, how to join a session, how to send
+// on its connection) as callbacks.
 
+use std::cell::Cell;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// What ViaProxy splits an internal handshake host on:
 /// `original-host \x07 address:port \x07 version`.
@@ -197,5 +202,83 @@ impl<'a> Reader<'a> {
         let s = std::str::from_utf8(&self.data[self.at..end]).ok()?;
         self.at = end;
         Some(s)
+    }
+}
+
+// ------------------------------------------------------------------ pings while the game is stalled
+
+/// How long the game may go without a frame before the network thread
+/// answers the server's pings itself (frames are 10 a second at the least
+/// while they come: the game's own limit for an idle or minimised window).
+pub const STALL: Duration = Duration::from_millis(1500);
+
+type Pong = Arc<dyn Fn(&[u8]) -> bool + Send + Sync>;
+
+static PONG: Mutex<Option<Pong>> = Mutex::new(None);
+static LAST_FRAME: Mutex<Option<Instant>> = Mutex::new(None);
+
+thread_local! {
+    static READING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The game began a frame at `at`: its main thread handles the server's
+/// packets (pings among them) as frames come.
+pub fn frame_at(at: Instant) {
+    *LAST_FRAME.lock().unwrap_or_else(|e| e.into_inner()) = Some(at);
+}
+
+/// Whether the game has drawn no frame for longer than [`STALL`].
+pub fn stalled(now: Instant) -> bool {
+    LAST_FRAME
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some_and(|t| now.saturating_duration_since(t) > STALL)
+}
+
+/// How to send a packet body on the game's server connection (true: sent).
+pub fn set_pong(f: impl Fn(&[u8]) -> bool + Send + Sync + 'static) {
+    *PONG.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
+}
+
+/// The game has no server connection.
+pub fn clear_pong() {
+    *PONG.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// A play packet the network thread read: when it is a ping (`ping`, its
+/// id) and the game is stalled, it is answered with a pong (`pong`) here and
+/// dropped (true). Otherwise it goes on to the game (false).
+pub fn answer_ping(id: i32, payload: &[u8], ping: i32, pong: i32) -> bool {
+    if id != ping || payload.len() != 4 || !stalled(Instant::now()) {
+        return false;
+    }
+    let Some(send) = PONG.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        return false;
+    };
+    let mut body = Vec::with_capacity(5 + payload.len());
+    varint(&mut body, pong);
+    body.extend_from_slice(payload);
+    send(&body)
+}
+
+/// Whether this thread is in the read that answers pings: its own reads
+/// pass straight through.
+pub fn reading() -> bool {
+    READING.with(Cell::get)
+}
+
+/// This thread reads for the ping answers until it is dropped.
+pub struct Reading(());
+
+impl Reading {
+    pub fn start() -> Reading {
+        READING.with(|r| r.set(true));
+        Reading(())
+    }
+}
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        READING.with(|r| r.set(false));
     }
 }

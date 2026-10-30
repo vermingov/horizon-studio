@@ -294,3 +294,40 @@ fn the_viahorizon_mod_comes_installed_and_picks_versions() {
         log(&st)
     );
 }
+
+#[test]
+fn pings_are_answered_on_the_network_thread_once_frames_stop() {
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    let sent = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let ping = [0, 0, 0, 7];
+    let log = sent.clone();
+    wire::set_pong(move |body| {
+        log.lock().unwrap().push(body.to_vec());
+        true
+    });
+    // While frames come, the game answers its pings.
+    wire::frame_at(Instant::now());
+    assert!(!wire::answer_ping(62, &ping, 62, 45));
+    // No frame for 2 seconds: the ping is answered here and dropped.
+    wire::frame_at(Instant::now() - Duration::from_secs(2));
+    assert!(wire::answer_ping(62, &ping, 62, 45));
+    assert_eq!(sent.lock().unwrap().as_slice(), &[vec![45, 0, 0, 0, 7]]);
+    // Other packets go on to the game, and so do pings with no connection
+    // to answer on, or whose answer could not be sent.
+    assert!(!wire::answer_ping(61, &ping, 62, 45));
+    assert!(!wire::answer_ping(62, &[7], 62, 45));
+    wire::clear_pong();
+    assert!(!wire::answer_ping(62, &ping, 62, 45));
+    wire::set_pong(|_| false);
+    assert!(!wire::answer_ping(62, &ping, 62, 45));
+    wire::clear_pong();
+    assert_eq!(sent.lock().unwrap().len(), 1);
+    // The hook's own reads pass through it.
+    assert!(!wire::reading());
+    {
+        let _reading = wire::Reading::start();
+        assert!(wire::reading());
+    }
+    assert!(!wire::reading());
+}
