@@ -112,7 +112,7 @@ Ctrl+1 to Ctrl+5 switch tabs. In chat: `/studio` opens it, `/studio reload` relo
   its kind, its signature, and beside the list what it does. Up and Down choose, Tab takes one (Enter too, once you
   have moved through the list), Esc closes them, Ctrl+Space opens them anywhere. A function comes with its brackets,
   the cursor between them; a library with its dot, and its members open.
-- **Problems** are found as you type, a moment after you pause: a syntax error underlined in red where the parser
+- **Problems** are found as you type, a second after you stop typing: a syntax error underlined in red where the parser
   stopped, and in amber a name nothing defines (*nothing defines 'plyer' (did you mean player?)*) or a library
   function that doesn't exist (*player has no 'poss'*). Each line with one has a dot in the gutter and its message at
   the end, the scrollbar marks where they are, and the count by the file's name opens the Problems panel. A runtime

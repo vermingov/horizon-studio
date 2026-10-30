@@ -718,11 +718,14 @@ fn the_editor_finds_problems_as_you_type_and_goes_to_them() {
         game.drawn.iter().any(|d| d.contains("text player has no 'poss'")),
         "its message at the line's end"
     );
-    // Typing waits for a pause before it looks again.
+    // Typing waits a second's pause before it looks again.
     st.s.editor.click(1, 0, false);
     type_text(&mut st, &mut game, "if");
     redraw(&mut st, &mut game);
     assert!(st.s.editor.problems.iter().all(|p| !p.error), "not while typing");
+    st.s.now += 0.6;
+    redraw(&mut st, &mut game);
+    assert!(st.s.editor.problems.iter().all(|p| !p.error), "nor at a short pause");
     st.s.now += 0.5;
     redraw(&mut st, &mut game);
     assert!(
@@ -732,7 +735,7 @@ fn the_editor_finds_problems_as_you_type_and_goes_to_them() {
     );
     // The Problems tab lists them; a click on one goes to it.
     handle(&mut st, &mut game, key(Key::Char('z'), CTRL));
-    st.s.now += 0.5;
+    st.s.now += 1.1;
     redraw(&mut st, &mut game);
     assert_eq!(st.s.editor.problems.len(), 1);
     let at = last_text_at(&game, "Problems");

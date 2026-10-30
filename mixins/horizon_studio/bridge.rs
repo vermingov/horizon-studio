@@ -369,7 +369,13 @@ impl GameApi for Host<'_, '_> {
         };
         match self.batch.as_deref_mut() {
             Some(b) => paint::measure(&game.gui.atlas, b, paint_font(font), size, text),
-            None => 7.0 * text.chars().count() as f32 * size / 13.0,
+            // No frame being drawn (the pointer's handling): measured as the
+            // frame measures, at the screen's density (as `dp` has it).
+            None => {
+                let (w, h, scale) = gui(game);
+                let density = (w * scale / 1040.0).min(h * scale / 700.0).clamp(1.0, 4.0);
+                paint::measure_at(&game.gui.atlas, density, paint_font(font), size, text)
+            }
         }
     }
     fn via(&self) -> ViaInfo {

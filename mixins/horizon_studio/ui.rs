@@ -1795,26 +1795,28 @@ fn editor_point(st: &mut Studio, game: &mut dyn GameApi, x: f32, y: f32, drag: b
     if !drag && (x < v.x - 30.0 || y < v.y || y > v.y + code_line() * v.rows as f32 || x > v.x + v.w + 4.0) {
         return false;
     }
+    // The line drawn under the pointer: rows glide as the view scrolls, so
+    // the view as drawn (not where it is going) says which.
+    let (drawn, scale) = (st.s.ui.smooth[1], st.s.ui.look.scale);
     let ed = &mut st.s.editor;
-    let row_in_view = ((y - v.y) / code_line()).floor().max(0.0) as usize;
-    let row = (ed.scroll + row_in_view.min(v.rows)).min(ed.lines.len() - 1);
-    let col = ed.hscroll + column_at(game, &ed.lines[row], ed.hscroll, x - v.x);
+    let at = drawn.max(0.0) + ((y - v.y) / code_line()).clamp(0.0, v.rows as f32);
+    let row = (at.floor() as usize).min(ed.lines.len() - 1);
+    let col = ed.hscroll + column_at(game, &ed.lines[row], ed.hscroll, x - v.x, scale);
     let anchor = if drag { ed.anchor } else { None };
     ed.click(row, col, drag);
     ed.anchor = Some(anchor.unwrap_or((ed.row, ed.col)));
     true
 }
 
-/// The char column nearest `dx` GUI pixels into `line`, past `skip` chars.
-fn column_at(game: &mut dyn GameApi, line: &str, skip: usize, dx: f32) -> usize {
+/// The char column nearest `dx` (the studio's units) into `line`, past
+/// `skip` chars, measured as the editor draws it: at the code's size times
+/// the studio's `scale`.
+fn column_at(game: &mut dyn GameApi, line: &str, skip: usize, dx: f32, scale: f32) -> usize {
     let from = line.char_indices().nth(skip).map_or(line.len(), |(i, _)| i);
+    let size = super::hstudio_look::code_size() * scale;
     let mut prev = 0.0;
     for (n, (i, c)) in line[from..].char_indices().enumerate() {
-        let w = game.dp_measure(
-            &line[from..from + i + c.len_utf8()],
-            super::hstudio_look::code_size(),
-            Font::Mono,
-        );
+        let w = game.dp_measure(&line[from..from + i + c.len_utf8()], size, Font::Mono) / scale;
         if dx < (prev + w) / 2.0 {
             return n;
         }

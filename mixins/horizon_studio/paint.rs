@@ -68,6 +68,39 @@ pub fn measure(atlas: &HudAtlas, batch: &mut HudBatch, font: Font, size: f32, s:
     }
 }
 
+/// `measure` at the screen's `density`, for when no frame is being drawn
+/// (the pointer's handling, a script's input handler): the same widths
+/// as the frame's, where `HudBatch`-less code had only an estimate.
+pub fn measure_at(atlas: &HudAtlas, density: f32, font: Font, size: f32, s: &str) -> f32 {
+    let px = (size * density * 4.0).round() / 4.0;
+    let face = match font {
+        Font::Regular => Face::Regular,
+        Font::Medium => Face::Medium,
+        Font::Mono => {
+            return MONO.with(|f| {
+                let scaled = f.as_scaled(mono_scale(f, px));
+                s.chars().map(|c| scaled.h_advance(f.glyph_id(c))).sum::<f32>() / density
+            });
+        }
+    };
+    // As the toolkit's own `Ui::measure`, with kerning.
+    with_cache(atlas, |c| {
+        let f = c.fonts.face(face);
+        let scaled = f.as_scaled(c.fonts.scale(face, px));
+        let mut w = 0.0;
+        let mut prev = None;
+        for ch in s.chars() {
+            let id = f.glyph_id(ch);
+            if let Some(p) = prev {
+                w += scaled.kern(p, id);
+            }
+            w += scaled.h_advance(id);
+            prev = Some(id);
+        }
+        w / density
+    })
+}
+
 /// Hands the glyphs rasterized this frame to the batch's atlas uploads.
 pub fn flush(atlas: &HudAtlas, batch: &mut HudBatch) {
     ui(atlas, batch).finish();

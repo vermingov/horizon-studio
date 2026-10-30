@@ -1731,6 +1731,9 @@ fn draw_suggest(st: &mut Studio, p: &mut P, [wx, ly, lh]: [f32; 3], typed: &str,
     p.dy = dy;
 }
 
+/// How long typing pauses before the live check looks again.
+pub const CHECK_PAUSE: f64 = 1.0;
+
 /// A wavy line under `[x, y, w]`, as editors mark problems.
 fn squiggle(p: &mut P, x: f32, y: f32, w: f32, c: u32) {
     const LIFT: [f32; 4] = [0.0, 0.9, 1.8, 0.9];
@@ -1763,7 +1766,7 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
         let s = &mut st.s;
         let ed = &mut s.editor;
         // (A file opened or read again is checked at once; typing, at a pause.)
-        let typing = ed.edited_at > 0.0 && now - ed.edited_at < 0.3;
+        let typing = ed.edited_at > 0.0 && now - ed.edited_at < CHECK_PAUSE;
         if ed.checked != Some(ed.revision) && !typing {
             ed.problems = super::hstudio_assist::check(&ed.lines, &ed.title);
             ed.checked = Some(ed.revision);
