@@ -14,7 +14,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # The game has it (horizon-client); the studio reads the agent's JSON replies with it.
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 # The game has it too (zip 2, deflate): dropped .zip mods.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # ViaHorizon's downloads, as the game has them: HTTPS (ureq 2 with rustls),

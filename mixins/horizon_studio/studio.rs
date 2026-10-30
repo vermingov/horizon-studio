@@ -640,6 +640,8 @@ pub struct State {
     pub console_mod: ScriptMod,
     pub console_env: Option<TableRef>,
     pub log: VecDeque<LogLine>,
+    /// Lines logged since the start: the last line in `log` is number `log_seq`.
+    pub log_seq: u64,
     pub history: Vec<String>,
     pub ui: Ui,
     pub editor: Editor,
@@ -685,6 +687,7 @@ impl State {
             if self.log.len() >= MAX_LOG {
                 self.log.pop_front();
             }
+            self.log_seq += 1;
             self.log.push_back(LogLine {
                 kind,
                 text: line.replace('\t', "    "),
@@ -750,6 +753,7 @@ impl Studio {
                 },
                 console_env: None,
                 log: VecDeque::new(),
+                log_seq: 0,
                 history: Vec::new(),
                 ui: Ui::default(),
                 editor: Editor::default(),
@@ -1839,13 +1843,19 @@ impl Studio {
     /// Runs a line (or a chunk) of Lua in the console: an expression's values
     /// are printed. Returns the lines it logged.
     pub fn run_console(&mut self, game: &mut dyn GameApi, src: &str) -> Vec<(LogKind, String)> {
+        self.run_chunk(game, src, true)
+    }
+
+    /// `run_console`, kept out of the console's history with `history` false
+    /// (code an AI runs through the link).
+    pub fn run_chunk(&mut self, game: &mut dyn GameApi, src: &str, history: bool) -> Vec<(LogKind, String)> {
         self.start(game);
-        let mark = self.s.log.len();
+        let mark = self.s.log_seq;
         let src = src.trim();
         if src.is_empty() {
             return Vec::new();
         }
-        if self.s.history.last().is_none_or(|l| l != src) {
+        if history && self.s.history.last().is_none_or(|l| l != src) {
             self.s.history.push(src.to_owned());
             self.save_history();
         }
@@ -1868,14 +1878,23 @@ impl Studio {
             },
         }
         self.do_requests(game);
-        let skip = mark.min(self.s.log.len());
+        self.log_since(mark)
+            .filter(|(_, l)| l.kind != LogKind::Input)
+            .map(|(_, l)| (l.kind, l.text.clone()))
+            .collect()
+    }
+
+    /// The log lines after line number `seq`, with their numbers (those
+    /// still kept: the log holds the last 1000).
+    pub fn log_since(&self, seq: u64) -> impl Iterator<Item = (u64, &LogLine)> {
+        let first = self.s.log_seq - self.s.log.len() as u64 + 1;
+        let skip = seq.saturating_sub(first - 1).min(self.s.log.len() as u64) as usize;
         self.s
             .log
             .iter()
+            .enumerate()
             .skip(skip)
-            .filter(|l| l.kind != LogKind::Input)
-            .map(|l| (l.kind, l.text.clone()))
-            .collect()
+            .map(move |(i, l)| (first + i as u64, l))
     }
 
     fn do_requests(&mut self, game: &mut dyn GameApi) {
@@ -2183,7 +2202,13 @@ pub fn lua_to_json(v: &Value, depth: usize) -> Result<serde_json::Value, String>
 pub fn error_line(msg: &str) -> Option<usize> {
     let mut parts = msg.splitn(3, ':');
     let _chunk = parts.next()?;
-    parts.next()?.trim().parse().ok()
+    if let Some(line) = parts.next().and_then(|p| p.trim().parse().ok()) {
+        return Some(line);
+    }
+    // After an event's name ("tick: mod.lua:12: ..."): the first file's line.
+    let at = msg.find(".lua:")? + 5;
+    let digits: String = msg[at..].chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
 /// An agent reply's JSON as script values: the table, or nil and the error.

@@ -23,6 +23,9 @@ native Horizon mod that adds:
   shared config. Libraries load first, and mods using one reload with it. Mods send each other events, and
   `gfx.*` draws in Horizon's own style (rounded shapes, the Geist fonts) so a UI library can be written in Lua. The
   bundled **UI Kit** is one, installed with the studio.
+- **An MCP server for AI agents.** `horizon-studio-mcp` lets Claude Code, omp, Codex, Cursor and other agents write
+  whole mods and libraries, test them end to end (headless, and live in the running game), run Lua in the game and
+  read what happened. One line installs and registers it; see [AI agents](#ai-agents-mcp).
 - **Natrium: Sodium's and Lithium's ideas for Horizon.** A second native mod in the same bundle: particles off
   screen and terrain hidden in thick fog aren't drawn, the server's ticks skip work that changes nothing, and a
   graphics preset sets Horizon's own options for frame time. It draws and ticks the same as without it, and its
@@ -152,6 +155,64 @@ section.
   Leave it on; off draws every face, for comparisons.
 
 Each part checks its own switch at the moment it runs, so turning one off takes effect on the next frame or tick. To see what it gains on your machine, compare the FPS counter (F3) with Natrium on and off.
+
+## AI agents (MCP)
+
+`horizon-studio-mcp` is an [MCP](https://modelcontextprotocol.io) server that gives AI agents Horizon Studio: they
+write mods (single files, folders, libraries), check and test them, and drive the running game.
+
+**Give your agent this prompt** and it sets everything up (it installs the server, checks Horizon Studio is in your
+game, and tells you when to restart it):
+
+```text
+Set up Horizon Studio's MCP server so you can make and test Horizon mods for me. Read
+https://raw.githubusercontent.com/vermingov/horizon-studio/main/AI_SETUP.md (with curl if you can't open web pages)
+and follow it step by step: run the commands yourself, ask me before building anything into my game, and tell me
+when to restart you.
+```
+
+In the game, the prompt is a click away: F8 opens the studio, and **Copy AI setup prompt** at its top right copies it
+(so does the button in Options → Mods → Horizon Studio). Once an agent is connected, its name shows there instead
+(*Claude Code connected*), and on that settings page.
+
+**Or install it yourself**, on Linux or macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/vermingov/horizon-studio/main/mcp/install.sh | sh
+```
+
+and on Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/vermingov/horizon-studio/main/mcp/install.ps1 | iex
+```
+
+It downloads the program for your machine from the latest release (checked against its SHA-256 sums), puts it in
+`~/.local/bin` (`%LOCALAPPDATA%\horizon-studio\bin`), and registers it with the agents it finds: Claude Code (user
+scope, through `claude mcp add`), omp (`~/.omp/agent/mcp.json`), Codex, Cursor, Gemini CLI, Claude Desktop and
+OpenCode, keeping their other settings. Run it again to update; `horizon-studio-mcp uninstall` takes it out again. Any
+other client: a stdio server running `horizon-studio-mcp` with no arguments (`horizon-studio-mcp install --print`
+shows the JSON). Then restart the agent.
+
+| Tool | What it does |
+|---|---|
+| `docs`, `examples` | The scripting API, the language and the test format; the bundled mods' source |
+| `write_mod`, `read_mod`, `list_mods`, `delete_mod` | Mods in the game's mods folder; `write_mod` checks the mod first and reloads it in the game |
+| `check_mod` | Loads a mod headless: does it run, its error and line, its commands, handlers and libraries |
+| `test_mod` | Steps (commands, chat, keys, Lua assertions, player and blocks, screen clicks...) with expectations (chat, output, text drawn, sounds, particles, mod state), headless or `live` |
+| `game_status`, `run_lua`, `send_chat`, `game_log`, `reload_mod` | The running game: its state and mods, Lua in the console, chat and commands, the console log |
+| `horizon_ctl` | Horizon's own `horizon-ctl` commands for a game started with `--control`: playing it, its widgets, screenshots |
+
+**Headless** tests run the studio itself (the interpreter, events, commands, timers, libraries, screens) on a
+simulated game: a player in a world of the blocks a test sets, 20 ticks a second, with a record of everything the mods
+print, send, draw, play and spawn. They need no game, so an agent can iterate fast. **Live** tests run the same steps in
+the game, through the studio's AI link.
+
+**The AI link.** While Horizon runs with the studio, it listens on `127.0.0.1` (a free port) for the MCP server. The
+port and a random token are in `~/.horizon-studio/link.json`, which only your user can read; a client must send the
+token first. Through it an agent can do what a script mod or the console can (the same sandbox), and reload mods. It
+is on by default; Options → Mods → Horizon Studio → AI link (MCP) turns it off. The MCP server keeps its link open
+while both run, so an agent shows as connected from the start of its session.
 
 ## Write a script mod
 
@@ -430,6 +491,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `ui.rs` (`hstudio_ui`) | The screen: console, editor, library, docs; input |
 | `examples.rs` (`hstudio_examples`) | The bundled examples, generated from `examples/` |
 | `bridge.rs` (`hstudio_bridge`) | The only module that knows Horizon's `Game`: the hooks and the game's side of the API |
+| `link.rs` (`hstudio_link`) | The AI link: the local socket the MCP server reaches the game through, polled in the frame |
 | `paint.rs` (`ui_theme::hstudio_paint`) | In the game's library: Horizon's design system's shapes and fonts, for the studio and `gfx.*` |
 | `via.rs` (`net::hstudio_via`) | In the game's library: ViaHorizon's settings, Java, the downloads, ViaProxy's process, which joins it routes |
 | `via_auth.rs` (`net::hstudio_via_auth`) | ViaHorizon's sign-in with the account a join is made as |
@@ -486,7 +548,13 @@ python3 tools/studio.py check        # apply on the pinned Horizon and cargo che
 python3 tools/studio.py build        # build the modded game (fast profile); prints its path
 python3 tools/studio.py package      # target/horizon_studio-<version>.hnmod
 python3 tools/via_e2e.py             # ViaHorizon end to end (after check): see below
+cargo run --bin horizon-studio-mcp   # the MCP server, from source (src/mcp.rs, src/headless.rs)
 ```
+
+`tests/mcp.rs` speaks MCP to the server, tests mods headless, and has an agent drive a game (the studio on a fake game,
+its AI link polled each frame as the bridge does) through the real socket: writing a mod, Lua in the console,
+commands, live test steps. A `v*` tag makes the release workflow build `horizon-studio-mcp` for Linux (x86_64,
+aarch64), macOS (Apple silicon, Intel) and Windows, with `SHA256SUMS`.
 
 `tools/via_e2e.py` builds `tools/via_probe.rs` inside the staged game and joins two fake 1.8 servers
 (`tools/fake_server_1_8.py`, offline and online mode) through the real ViaProxy, as 1.8.x and with Auto detect,

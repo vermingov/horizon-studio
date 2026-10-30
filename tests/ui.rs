@@ -421,3 +421,35 @@ fn clicks_hit_what_was_drawn() {
     );
     assert_eq!(st.s.editor.selected_text().as_deref(), Some("abcd"));
 }
+
+#[test]
+fn the_ai_setup_prompt_copies_from_the_header() {
+    let mut game = FakeGame::new("ui-ai-prompt");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    draw(&mut st, &mut game);
+    let drawn = game
+        .drawn
+        .iter()
+        .find(|d| d.starts_with("text Copy AI setup prompt @"))
+        .cloned()
+        .expect("the button shows while no agent is connected");
+    let at: Vec<f32> = drawn
+        .split('@')
+        .nth(1)
+        .unwrap()
+        .trim_start_matches('[')
+        .split(']')
+        .next()
+        .unwrap()
+        .split(", ")
+        .map(|v| v.parse().unwrap())
+        .collect();
+    handle(&mut st, &mut game, Input::Mouse(at[0] + 3.0, at[1] + 3.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    assert_eq!(game.clipboard, horizon_studio::game::hstudio_link::SETUP_PROMPT);
+    assert!(game.clipboard.contains("AI_SETUP.md"));
+    game.drawn.clear();
+    draw(&mut st, &mut game);
+    assert!(game.drawn.iter().any(|d| d.starts_with("text Copied @")), "it says so");
+}

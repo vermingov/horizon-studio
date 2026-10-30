@@ -35,6 +35,10 @@ thread_local! {
     static INPUTS: RefCell<Vec<Input>> = const { RefCell::new(Vec::new()) };
     /// Files dropped on the window, to install as script mods.
     static DROPPED: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+    /// When the AI setup prompt was copied from the settings page.
+    static COPIED: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// Frames, to refresh the settings pages' labels now and then.
+    static FRAMES: Cell<u32> = const { Cell::new(0) };
 }
 
 /// Runs `f` with the studio, unless it is busy (a hook reached from a script).
@@ -130,11 +134,13 @@ fn gui(game: &Game<'_>) -> (f32, f32, f32) {
 
 impl GameApi for Host<'_, '_> {
     fn chat(&mut self, text: &str) {
+        super::hstudio_link::record("out", text);
         if let Some(g) = self.g_mut() {
             g.native_chat(text);
         }
     }
     fn send(&mut self, line: &str) {
+        super::hstudio_link::record("sent", line);
         if let Some(g) = self.g_mut() {
             g.send_chat(line);
         }
@@ -455,6 +461,20 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
     }
     // Natrium's switches follow its settings.
     super::hstudio_natrium::sync(game);
+    // While the options are open, the studio's and Natrium's pages show what
+    // is now (an agent connecting, what Natrium skipped).
+    let frames = FRAMES.with(|f| {
+        f.set(f.get().wrapping_add(1));
+        f.get()
+    });
+    if game.screen == Screen::Options && frames % 20 == 0 {
+        for id in [ID, super::hstudio_natrium::ID] {
+            let row = game.settings.mods.installed.iter().position(|m| m.id == id && m.native.is_some());
+            if let Some(i) = row {
+                game.native_settings_refresh(i);
+            }
+        }
+    }
     // ViaHorizon runs from the title screen on, while the studio is on.
     let on = game.native_on(ID);
     if on {
@@ -476,6 +496,7 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
                 give_back(game);
             }
             OPEN.with(|o| o.set(false));
+            super::hstudio_link::stop();
             return;
         }
         SCALE.with(|s| s.set(gui(game).2));
@@ -491,6 +512,8 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
             let mut host = Host::new(game);
             host.event_loop = Some(event_loop);
             st.frame(&mut host, dt);
+            // The AI link's requests (horizon-studio-mcp), after the scripts' frame.
+            super::hstudio_link::poll(st, &mut host);
             for path in dropped {
                 let line = match st.install_path(&mut host, &path) {
                     Ok(line) => line,
@@ -787,7 +810,9 @@ pub(super) fn chat_line(game: &Game<'_>, text: &horizon_client::text::Text, sour
     if !game.native_window() || *source == horizon_client::chat::ChatSource::Client {
         return;
     }
-    with(|st| st.chat_line(&text.plain()));
+    let text = text.plain();
+    super::hstudio_link::record("chat", &text);
+    with(|st| st.chat_line(&text));
 }
 
 /// The zoom the scripts ask for.
@@ -863,6 +888,18 @@ pub(super) fn settings(buttons: &mut Vec<String>) {
     buttons.push(via::status_text());
     let running = with(|st| st.s.mods.iter().filter(|m| m.running()).count()).unwrap_or(0);
     buttons.push(format!("Reload script mods ({running} running)"));
+    let link = with(|st| super::hstudio_link::enabled(&st.s.dir)).unwrap_or(true);
+    buttons.push(match (link, super::hstudio_link::agents_line()) {
+        (false, _) => "AI link (MCP): Off".into(),
+        (true, None) => "AI link (MCP): On, no agent connected".into(),
+        (true, Some(line)) => format!("AI link (MCP): On, {line}"),
+    });
+    let copied = COPIED.with(Cell::get).is_some_and(|t| t.elapsed().as_secs_f32() < 3.0);
+    buttons.push(if copied {
+        "Copied: paste it into your AI agent".into()
+    } else {
+        "Copy AI setup prompt".into()
+    });
 }
 
 pub(super) fn settings_click(game: &mut Game<'_>, button: usize) {
@@ -884,6 +921,16 @@ pub(super) fn settings_click(game: &mut Game<'_>, button: usize) {
                 let mut host = Host::new(game);
                 st.start(&mut host);
                 st.reload_all(&mut host);
+            });
+        }
+        7 => {
+            Host::new(game).set_clipboard(super::hstudio_link::SETUP_PROMPT);
+            COPIED.with(|c| c.set(Some(Instant::now())));
+        }
+        6 => {
+            with(|st| {
+                let on = super::hstudio_link::enabled(&st.s.dir);
+                super::hstudio_link::set_enabled(&st.s.dir, !on);
             });
         }
         _ => {}

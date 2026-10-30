@@ -373,7 +373,41 @@ fn header(st: &mut Studio, p: &mut P, x: f32, y: f32, w: f32, dt: f32) {
     );
     ui.hits.push((r, Action::Close));
     let esc_w = p.measure("Esc", 11.0, Font::Mono) + 12.0;
-    keycap(p, "Esc", "", r[0] - esc_w - 10.0, y + 16.0);
+    let esc_x = r[0] - esc_w - 10.0;
+    keycap(p, "Esc", "", esc_x, y + 16.0);
+    // The AI link: the agent connected, else the prompt that sets one up.
+    let right = esc_x - 16.0;
+    match super::hstudio_link::agents_line() {
+        Some(line) => {
+            let cw = p.measure(&line, 12.0, Font::Medium) + 36.0;
+            let cx = right - cw;
+            if cx > sx + 16.0 {
+                let pulse = 0.75 + 0.25 * (now as f32 * 2.4).sin();
+                p.rect([cx, y + 2.0, cw, 28.0], 14.0, fade(SUCCESS, 0.14));
+                p.rect([cx + 13.0, y + 12.0, 8.0, 8.0], 4.0, fade(SUCCESS, pulse));
+                p.text(&line, cx + 27.0, top(y + 16.0, 12.0), 12.0, Font::Medium, INK);
+            }
+        }
+        None => {
+            let copied = ui.copied_at.is_some_and(|t| now - t < 2.5);
+            let label = if copied { "Copied" } else { "Copy AI setup prompt" };
+            let pw = p.measure(label, 13.0, Font::Medium) + 28.0;
+            if right - pw > sx + 16.0 {
+                pill(
+                    ui,
+                    p,
+                    "ai-prompt",
+                    label,
+                    right - pw,
+                    y + 2.0,
+                    28.0,
+                    Style::Quiet,
+                    Action::CopyPrompt,
+                    dt,
+                );
+            }
+        }
+    }
 }
 
 fn footer(st: &mut Studio, p: &mut P, x: f32, cy: f32, w: f32) {
@@ -1105,10 +1139,25 @@ fn docs() -> Vec<Doc> {
             None => out.push(Doc::Para(doc.to_owned())),
         }
     }
+    out.push(Doc::Heading("AI agents".into()));
+    out.push(Doc::Para("horizon-studio-mcp lets AI agents (Claude Code, omp, Codex, Cursor...) make mods here: they write and test them, headless and in this game, run Lua in the console and read what happened. Copy AI setup prompt, at the top right, copies a prompt for your agent that sets it all up; once one is connected, its name shows there. Options > Mods > Horizon Studio turns the AI link off.".into()));
     out.push(Doc::Heading("Commands in chat".into()));
     out.push(Doc::Para(
         "/studio opens this screen, /studio reload reloads every script mod, /lua <code> runs code.".into(),
     ));
+    out
+}
+
+/// The Docs tab as Markdown, for tools outside the game (the MCP server).
+pub fn docs_markdown() -> String {
+    let mut out = String::from("# Horizon Studio scripting\n");
+    for d in docs() {
+        match d {
+            Doc::Heading(t) => out.push_str(&format!("\n## {t}\n\n")),
+            Doc::Para(t) => out.push_str(&format!("{t}\n\n")),
+            Doc::Api(sig, desc) => out.push_str(&format!("- `{sig}`: {desc}\n")),
+        }
+    }
     out
 }
 

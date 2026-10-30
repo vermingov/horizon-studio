@@ -100,6 +100,8 @@ pub(crate) enum Action {
     Save,
     Run,
     OpenFolder,
+    /// Copies the prompt that sets an AI agent up (`hstudio_link::SETUP_PROMPT`).
+    CopyPrompt,
 }
 
 /// Where the editor's text was drawn, for the pointer.
@@ -125,6 +127,8 @@ pub struct Ui {
     pub docs_scroll: usize,
     /// The New mod prompt, while it is open.
     pub naming: Option<LineEdit>,
+    /// When the AI setup prompt was copied (its button says so a moment).
+    pub copied_at: Option<f64>,
     /// The pointer, in dp.
     pub mouse: (f32, f32),
     /// Whether the left and right buttons are held (over a script screen).
@@ -1185,6 +1189,14 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
         }
         Action::Save => st.save_editor(game),
         Action::Run => st.run_editor(game),
+        Action::CopyPrompt => {
+            game.set_clipboard(super::hstudio_link::SETUP_PROMPT);
+            st.s.ui.copied_at = Some(st.s.now);
+            st.s.toast = Some((
+                "Copied the AI setup prompt: paste it into Claude Code, omp or another agent".into(),
+                st.s.now + 3.5,
+            ));
+        }
     }
     UiResult::Used
 }

@@ -10,6 +10,8 @@ pub mod game {
     pub mod hstudio;
     #[path = "../../mixins/horizon_studio/examples.rs"]
     pub mod hstudio_examples;
+    #[path = "../../mixins/horizon_studio/link.rs"]
+    pub mod hstudio_link;
     #[path = "../../mixins/horizon_studio/look.rs"]
     pub mod hstudio_look;
     #[path = "../../mixins/horizon_studio/lua.rs"]
@@ -30,3 +32,12 @@ pub mod net {
 /// Natrium's switches, as horizon-core has them (`horizon_core::natrium`).
 #[path = "../mixins/horizon_studio/natrium_flags.rs"]
 pub mod natrium;
+
+/// Script mods on a simulated game, without Horizon (the MCP server's tests).
+pub mod headless;
+
+/// horizon-studio-mcp: the studio for AI agents, over MCP.
+pub mod mcp;
+
+/// `horizon-studio-mcp install`: registering it with the agents here.
+pub mod mcp_install;

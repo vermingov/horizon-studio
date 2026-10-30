@@ -1,0 +1,81 @@
+name: Release
+
+# horizon-studio-mcp for each platform, with SHA256SUMS, on a release tag
+# (v0.1.0...): what mcp/install.sh and mcp/install.ps1 download. Run by hand,
+# it only builds and keeps the files as artifacts.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mcp:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, musl: true, run: true }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, musl: true, run: true }
+          - { os: macos-14, target: aarch64-apple-darwin, run: true }
+          - { os: macos-14, target: x86_64-apple-darwin, run: false }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, run: true }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        run: cargo build --release --locked --bin horizon-studio-mcp --target ${{ matrix.target }}
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+      - name: It answers MCP
+        if: matrix.run
+        shell: bash
+        run: |
+          exe=target/${{ matrix.target }}/release/horizon-studio-mcp
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"check_mod","arguments":{"id":"hi","files":{"hi.lua":"command(\"hi\", function() return \"hi\" end)"},"mods_dir":"none"}}}' \
+            | "$exe" > answers.jsonl
+          cat answers.jsonl
+          grep -q '"protocolVersion":"2025-06-18"' answers.jsonl
+          grep -q 'running' answers.jsonl
+      - name: Package
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a "$GITHUB_WORKSPACE/horizon-studio-mcp-${{ matrix.target }}.zip" horizon-studio-mcp.exe
+          else
+            tar -czf "$GITHUB_WORKSPACE/horizon-studio-mcp-${{ matrix.target }}.tar.gz" horizon-studio-mcp
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-${{ matrix.target }}
+          path: horizon-studio-mcp-${{ matrix.target }}.*
+
+  release:
+    needs: mcp
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum horizon-studio-mcp-* > SHA256SUMS && cat SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="horizon-studio-mcp, Horizon Studio's MCP server for AI agents. Install: see the README's AI agents section."
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "Horizon Studio $GITHUB_REF_NAME" --notes "$notes" \
+            || gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
