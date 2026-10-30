@@ -1,7 +1,8 @@
 // Horizon Studio's Lua standard library: the base functions, string (with
-// Lua patterns and string.format), math, table and os.clock/time/date, as in
-// Lua 5.3, for the interpreter in hstudio_lua. Nothing here reaches files,
-// the network or other processes.
+// Lua patterns and string.format), math, table, coroutine and
+// os.clock/time/date, as in Lua 5.3, for the interpreter in hstudio_lua
+// (pcall and xpcall are the VM's own). Nothing here reaches files, the
+// network or other processes.
 
 use super::hstudio_lua::{
     Host, Lua, MAX_STRING, Native, Res, Resume, Str, Table, TableRef, Thread, Throw, Value, arg, bad_arg, check_func,

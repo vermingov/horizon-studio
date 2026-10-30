@@ -66,6 +66,7 @@ pub enum Value {
     Func(Rc<Closure>),
     Native(Rc<Native>),
     Thread(Rc<Thread>),
+    #[allow(dead_code)]
     Userdata(Rc<Userdata>),
 }
 
@@ -267,11 +268,13 @@ impl Throw {
 
 /// A value a host makes for scripts: Rust data, a metatable (for its
 /// methods and operators) and identity by pointer.
+#[allow(dead_code)]
 pub struct Userdata {
     pub data: RefCell<Box<dyn Any>>,
     pub meta: RefCell<Option<TableRef>>,
 }
 
+#[allow(dead_code)]
 impl Userdata {
     /// A userdata value holding `data`.
     pub fn value<T: Any>(data: T, meta: Option<TableRef>) -> Value {
@@ -324,9 +327,11 @@ impl Thread {
     pub fn status(&self) -> Status {
         self.status.get()
     }
+    #[allow(dead_code)]
     pub fn is_dead(&self) -> bool {
         self.status.get() == Status::Dead
     }
+    #[allow(dead_code)]
     pub fn is_suspended(&self) -> bool {
         self.status.get() == Status::Suspended
     }
@@ -481,6 +486,7 @@ impl Table {
     }
     /// Frozen: every write fails with "attempt to modify a readonly table"
     /// (`table.freeze`, `setreadonly`).
+    #[allow(dead_code)]
     pub fn set_readonly(&mut self, on: bool) {
         self.readonly = on;
     }
@@ -488,6 +494,7 @@ impl Table {
         self.readonly
     }
     /// Names the values this is the metatable of, for `typeof` (`__type`).
+    #[allow(dead_code)]
     pub fn set_type_name(&mut self, name: &str) {
         self.set_str("__type", Value::str(name));
     }
@@ -2126,6 +2133,7 @@ const _: () = assert!(std::mem::size_of::<Op>() == 8);
 /// them: a global import, a table constructor's keys, a closure it can
 /// share. They keep the constants numbered as Luau numbers them.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum Special {
     /// The constants of the names, `string` then `format`.
     Import(Box<[u32]>),
@@ -2138,6 +2146,7 @@ pub enum Special {
 /// A local of a compiled function: its register, its cell if a closure
 /// captured it, and the instructions it is in scope for.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct LocalVar {
     pub name: Rc<str>,
     pub reg: u16,
@@ -2147,6 +2156,7 @@ pub struct LocalVar {
 }
 
 /// A compiled function.
+#[allow(dead_code)]
 pub struct Proto {
     /// `function 'name'`, `function <main.lua:12>` or `main chunk`.
     pub name: Rc<str>,
@@ -2179,6 +2189,7 @@ pub struct Proto {
     descs: Vec<(u32, [Desc; 2])>,
 }
 
+#[allow(dead_code)]
 impl Proto {
     /// The constants as Luau numbers them: None for an import, a table
     /// template or a shared closure.
@@ -3096,8 +3107,6 @@ impl<'a> Compiler<'a> {
     fn closure(&mut self, f: &'a FuncAst, dest: usize) {
         let proto = self.function(f);
         let id = self.g.protos.len();
-        let child = &self.g.protos;
-        let _ = child;
         // Luau shares a closure whose upvalues cannot change (DUPCLOSURE),
         // which takes a constant; here closures are always new, but the
         // constant keeps the numbering.
@@ -3683,6 +3692,7 @@ pub struct Body {
     pub env: TableRef,
 }
 
+#[allow(dead_code)]
 impl Closure {
     pub fn new(proto: Rc<Proto>, upvals: Vec<Cell>, env: TableRef) -> Closure {
         Closure::from_body(Rc::new(Body { proto, upvals, env }))
@@ -3733,6 +3743,7 @@ enum Ret {
 
 /// A Lua function running.
 struct Frame {
+    #[allow(dead_code)]
     closure: Rc<Closure>,
     body: Rc<Body>,
     /// The next instruction, while another frame runs.
@@ -3795,6 +3806,7 @@ struct Registry {
 }
 
 /// Debug information about a running Lua function.
+#[allow(dead_code)]
 pub struct FrameInfo {
     pub closure: Rc<Closure>,
     pub proto: Rc<Proto>,
@@ -5580,6 +5592,7 @@ impl Lua {
         Ok(v.plain_text())
     }
     /// `typeof`: a userdata's `__type`, else `type`.
+    #[allow(dead_code)]
     pub fn type_of(&self, v: &Value) -> String {
         match v {
             Value::Userdata(u) => u.type_name().unwrap_or_else(|| "userdata".into()),
@@ -5723,9 +5736,12 @@ impl Lua {
             }
         }
     }
+}
 
-    // ------------------------------------------------------------- introspection
-
+/// The host's view into the VM, for the debug functions (Luau's, sUNC's)
+/// built on it.
+#[allow(dead_code)]
+impl Lua {
     /// The method name of the running `obj:Name(...)` call on a userdata
     /// (`getnamecallmethod`).
     pub fn namecall_method(&self) -> Option<Str> {
