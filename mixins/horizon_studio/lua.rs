@@ -2306,7 +2306,8 @@ impl<'a> Gen<'a> {
             breaks: Vec::new(),
         }
     }
-    fn finish(self, chunk: &Rc<str>) -> Proto {
+    fn finish(mut self, chunk: &Rc<str>) -> Proto {
+        self.descs.sort_by_key(|d| d.0);
         Proto {
             name: self.f.name.clone(),
             debug_name: self.f.debug_name.clone(),
@@ -4143,7 +4144,10 @@ impl Lua {
         let (base, varargs, nvarargs) = if p.vararg {
             let nfix = p.nparams;
             let base = func + 1 + n;
-            st.resize(base + p.maxstack.max(nfix), Value::Nil);
+            let need = base + p.maxstack.max(nfix);
+            if st.len() < need {
+                st.resize(need, Value::Nil);
+            }
             for i in 0..nfix {
                 st[base + i] = if i < n {
                     std::mem::take(&mut st[func + 1 + i])
@@ -4154,7 +4158,10 @@ impl Lua {
             (base, func + 1 + nfix.min(n), n.saturating_sub(nfix))
         } else {
             let base = func + 1;
-            st.resize(base + p.maxstack.max(p.nparams), Value::Nil);
+            let need = base + p.maxstack.max(p.nparams);
+            if st.len() < need {
+                st.resize(need, Value::Nil);
+            }
             for v in st.iter_mut().skip(base + n).take(p.nparams.saturating_sub(n)) {
                 *v = Value::Nil;
             }
@@ -4810,10 +4817,9 @@ impl Lua {
                     if let NativeKind::Pcall(handler) = nat.kind {
                         return self.op_pcall(h, func, n, nres, handler, ret);
                     }
-                    let args: Vec<Value> = self.cur.stack[func + 1..func + 1 + n]
-                        .iter_mut()
-                        .map(std::mem::take)
-                        .collect();
+                    // The arguments stay in their registers while it runs,
+                    // as Luau has them (debug.getstack sees them).
+                    let args = self.cur.stack[func + 1..func + 1 + n].to_vec();
                     return match self.call_native(h, &nat, args) {
                         Ok(vals) => {
                             self.deliver(func, vals, nres, ret);
@@ -4992,7 +4998,9 @@ impl Lua {
     /// Moves results `src..src + n` to `dst`, as the caller wants them.
     fn place(&mut self, dst: usize, src: usize, n: usize, nres: u16, ret: Ret) {
         let mut pre = Vec::new();
-        self.prefix(ret, &mut pre);
+        if let Ret::Wrapped = ret {
+            self.prefix(ret, &mut pre);
+        }
         let to = dst + pre.len();
         let st = &mut self.cur.stack;
         if st.len() < to + n {
@@ -5016,7 +5024,9 @@ impl Lua {
     /// A native's results to `dst`, as the caller wants them.
     fn deliver(&mut self, dst: usize, vals: Vec<Value>, nres: u16, ret: Ret) {
         let mut pre = Vec::new();
-        self.prefix(ret, &mut pre);
+        if let Ret::Wrapped = ret {
+            self.prefix(ret, &mut pre);
+        }
         let count = pre.len() + vals.len();
         let st = &mut self.cur.stack;
         if st.len() < dst + count {
@@ -5027,24 +5037,27 @@ impl Lua {
         }
         self.finish(dst, count, nres);
     }
-    /// After `count` results went to `dst`: pads or cuts them to `nres`
-    /// and sizes the stack for the frame that goes on.
+    /// After `count` results went to `dst`: pads them to `nres` and makes
+    /// sure the frame that goes on has its registers. The stack only grows
+    /// here (registers above the frame are free); it shrinks when a call
+    /// from Rust returns.
     fn finish(&mut self, dst: usize, count: usize, nres: u16) {
         let end = self.cur.frames.last().map_or(0, |f| f.base + f.body.proto.maxstack);
         let st = &mut self.cur.stack;
         if nres == MULTI {
             let top = dst + count;
             self.cur.top = top;
-            st.resize(end.max(top), Value::Nil);
+            if st.len() < end.max(top) {
+                st.resize(end.max(top), Value::Nil);
+            }
         } else {
             let want = nres as usize;
-            if st.len() < dst + want {
-                st.resize(dst + want, Value::Nil);
+            if st.len() < end.max(dst + want) {
+                st.resize(end.max(dst + want), Value::Nil);
             }
             for v in st.iter_mut().skip(dst + count).take(want.saturating_sub(count)) {
                 *v = Value::Nil;
             }
-            st.resize(end.max(dst + want), Value::Nil);
         }
     }
     fn vararg(&mut self, fi: usize, dst: usize, n: u16) {
