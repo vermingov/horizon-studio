@@ -730,3 +730,19 @@ fn the_library_opens_the_mods_folder() {
     handle(&mut st, &mut game, Input::Button { left: true, down: true });
     assert_eq!(game.opened, vec![game.mods_dir()]);
 }
+
+#[test]
+fn colors_in_every_written_form() {
+    use horizon_studio::game::hstudio::color_arg;
+    use horizon_studio::game::hstudio_lua::{Lua, Value};
+    let lua = Lua::new();
+    let c = |v: Value| color_arg(&lua, &[v], 0, 0);
+    assert_eq!(c(Value::str("#fff")).ok(), Some(0xFFFF_FFFF), "#rgb is #rrggbb");
+    assert_eq!(c(Value::str("#c0392b")).ok(), Some(0xFFC0_392B));
+    assert_eq!(c(Value::str("80ff0000")).ok(), Some(0x80FF_0000));
+    assert_eq!(c(Value::Num(f64::from(0x40FF_FFFFu32))).ok(), Some(0x40FF_FFFF));
+    assert_eq!(c(Value::Nil).ok(), Some(0));
+    for bad in ["#ff", "#ffff", "#fffff", "#gggggg"] {
+        assert!(c(Value::str(bad)).is_err(), "{bad}");
+    }
+}

@@ -2384,9 +2384,15 @@ pub fn color_arg(lua: &Lua, args: &[Value], i: usize, default: u32) -> Result<u3
         Some(Value::Str(s)) => {
             let t = String::from_utf8_lossy(s);
             let hex = t.trim_start_matches('#');
-            let v = u32::from_str_radix(hex, 16)
-                .map_err(|_| bad_arg(lua, i, "color", "'#rrggbb' or '#aarrggbb' expected"))?;
-            Ok(if hex.len() <= 6 { 0xFF00_0000 | v } else { v })
+            // #rgb is #rrggbb; without alpha a colour is opaque.
+            let full: String = match hex.len() {
+                3 => hex.chars().flat_map(|c| [c, c]).collect(),
+                6 | 8 => hex.to_owned(),
+                _ => String::new(),
+            };
+            let v = u32::from_str_radix(&full, 16)
+                .map_err(|_| bad_arg(lua, i, "color", "'#rgb', '#rrggbb' or '#aarrggbb' expected"))?;
+            Ok(if full.len() == 6 { 0xFF00_0000 | v } else { v })
         }
         Some(_) => Err(bad_arg(lua, i, "color", "number or '#rrggbb' expected")),
     }
@@ -2498,7 +2504,7 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "world",
         "block",
         40,
-        "world.block(x, y, z): \"minecraft:stone\", or nil where nothing is loaded",
+        "world.block(x, y, z): \"minecraft:stone\"; \"minecraft:air\" where nothing is loaded, nil outside a world",
     ),
     (
         "world",
@@ -2516,7 +2522,7 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "world",
         "entities",
         43,
-        "world.entities([radius[, type]]): mobs, items and orbs near you, nearest first",
+        "world.entities([radius[, type]]): mobs, items and orbs near you as {entities = {...}}, nearest first (radius 16, at most 128)",
     ),
     (
         "hud",
@@ -2585,7 +2591,7 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "mod",
         "info",
         100,
-        "mod.info(): this mod's id, name, version and folder name",
+        "mod.info(): this mod's {id, name, version, author, reloads}",
     ),
     (
         "",
@@ -2797,7 +2803,7 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "draw",
         "item",
         116,
-        "draw.item(id, x, y, z[, opts]): an item (or block) as a 3D model at a place (inside on(\"world\")); opts: {yaw, pitch, roll (degrees), scale, display = \"fixed\"|\"ground\"|\"gui\"|\"head\"|\"hand\", glow = true}",
+        "draw.item(id, x, y, z[, opts]): an item (or block) as a 3D model at a place (inside on(\"world\")); opts: {yaw, pitch, roll (degrees), scale, display = \"fixed\"|\"ground\"|\"gui\"|\"head\"|\"hand\"|\"left_hand\", glow = true}",
     ),
 ];
 
@@ -2832,7 +2838,7 @@ impl Ctx<'_> {
             Ok(())
         } else {
             Err(lua.rt_error(format!(
-                "hud.{what} draws only inside on(\"hud\", function(w, h) ... end) or a screen's draw"
+                "{what} draws only inside on(\"hud\", function(w, h) ... end) or a screen's draw"
             )))
         }
     }
@@ -3434,7 +3440,7 @@ impl Host for Ctx<'_> {
                 none()
             }
             51 => {
-                self.drawing(lua, "text")?;
+                self.drawing(lua, "hud.text")?;
                 let x = check_num(lua, &args, 0, "text")? as f32;
                 let y = check_num(lua, &args, 1, "text")? as f32;
                 let text = lua.tostring(self, &arg(&args, 2))?;
@@ -3444,7 +3450,7 @@ impl Host for Ctx<'_> {
                 none()
             }
             52 => {
-                self.drawing(lua, "rect")?;
+                self.drawing(lua, "hud.rect")?;
                 let mut r = [0f32; 4];
                 for (i, v) in r.iter_mut().enumerate() {
                     *v = check_num(lua, &args, i, "rect")? as f32;
@@ -3620,7 +3626,7 @@ impl Host for Ctx<'_> {
                 Ok(vec![Value::Num(f64::from(w)), Value::Num(f64::from(h))])
             }
             151 | 152 => {
-                let name = if id == 151 { "rect" } else { "border" };
+                let name = if id == 151 { "gfx.rect" } else { "gfx.border" };
                 self.drawing(lua, name)?;
                 let mut r = [0f32; 4];
                 for (i, v) in r.iter_mut().enumerate() {
@@ -3638,7 +3644,7 @@ impl Host for Ctx<'_> {
                 none()
             }
             153 => {
-                self.drawing(lua, "text")?;
+                self.drawing(lua, "gfx.text")?;
                 let x = check_num(lua, &args, 0, "text")? as f32;
                 let y = check_num(lua, &args, 1, "text")? as f32;
                 let mut text = lua.tostring(self, &arg(&args, 2))?;

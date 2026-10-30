@@ -10,6 +10,7 @@
 use crate::game::hstudio::VERSION;
 use crate::game::hstudio_examples::EXAMPLES;
 use crate::headless::{Run, STEPS_HELP, Source, check_id, read_mod, run_steps, write_mod};
+use crate::mcp_docs;
 use serde_json::{Value as Json, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -23,8 +24,9 @@ const PROTOCOLS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-
 
 /// What an agent is told when it connects.
 pub const INSTRUCTIONS: &str = "Horizon Studio makes Minecraft mods for Horizon (Minecraft Java 26.3 in Rust) in Lua, \
-hot reloaded in the running game. Workflow: read `docs` once (the scripting API and the language: Lua 5.3 without \
-coroutines or goto); look at `examples` for idioms; write a mod with `write_mod` (one file, or a \
+hot reloaded in the running game. Workflow: call `docs` with no arguments for its index, then read the topics you need \
+(`start`, `api`, `events`, `language`, `recipes`...); `docs` with `name` gives one function, event or widget in full \
+and `search` finds anything, so nothing needs looking up elsewhere. Look at `examples` for idioms; write a mod with `write_mod` (one file, or a \
 folder with main.lua; a library calls export(table) and others import(\"id\")); fix what `write_mod`'s check reports; \
 then `test_mod` with steps, headless first (no game needed) and live once `game_status` says the game is linked. \
 `run_lua`, `send_chat` and `game_log` work in the running game; `horizon_ctl` plays it and takes screenshots when the \
@@ -253,9 +255,17 @@ pub fn tools() -> Json {
     json!([
         tool(
             "docs",
-            "Horizon Studio's scripting API (every function, event and screen), the Lua it runs, how mods \
-              and libraries are made, and the test step format. Read it before writing a mod.",
-            json!({ "topic": { "type": "string", "enum": ["all", "api", "tests"], "description": "Default all." } }),
+            "The complete reference for making mods: every API function, event, screen widget and standard \
+              library function with its arguments, results, errors and an example; the Lua it runs; libraries; \
+              limits; error messages and their fixes; recipes; test steps; these tools. No arguments: the index \
+              of topics and entry names. topic: a whole topic. name: one entry (\"player.pos\", \"string.format\", \
+              \"event:tick\", \"widget:button\"). search: words to find. Read it before writing a mod.",
+            json!({
+                "topic": { "type": "string", "enum": doc_topics(),
+                           "description": "A topic: its prose and every entry in it (\"all\": everything)." },
+                "name": { "type": "string", "description": "One entry by its exact name." },
+                "search": { "type": "string", "description": "Words that must all appear; the best matches first." },
+            }),
             &[]
         ),
         tool(
@@ -503,16 +513,7 @@ impl Server {
     fn tool(&mut self, name: &str, args: &Json) -> Result<Json, String> {
         let dir = || mods_dir(args.get("mods_dir").and_then(Json::as_str));
         match name {
-            "docs" => {
-                let topic = args.get("topic").and_then(Json::as_str).unwrap_or("all");
-                let api = crate::game::hstudio_look::docs_markdown();
-                let tests = format!("# Testing mods (test_mod)\n\n{STEPS_HELP}\n\n{TEST_EXAMPLE}");
-                Ok(Json::String(match topic {
-                    "api" => api,
-                    "tests" => tests,
-                    _ => format!("{GUIDE}\n\n{api}\n\n{tests}"),
-                }))
-            }
+            "docs" => docs(args).map(Json::String),
             "examples" => match args.get("id").and_then(Json::as_str) {
                 Some(id) => EXAMPLES
                     .iter()
@@ -804,13 +805,13 @@ impl Server {
                 };
                 self.live("reload", params)?;
                 wait(self, 2)?;
-            } else if ["player", "block", "time", "click", "type"]
+            } else if ["player", "block", "time", "click", "type", "camera", "pose"]
                 .iter()
                 .any(|k| step.get(*k).is_some())
             {
                 failures.push(
-                    "player, block, time, click and type steps are headless only: live, use a command step \
-                     (\"/tp\", \"/setblock\", \"/time set\") or horizon_ctl"
+                    "player, block, time, click, type, camera and pose steps are headless only: live, use a \
+                     command step (\"/tp\", \"/setblock\", \"/time set\") or horizon_ctl (F5, sneaking)"
                         .into(),
                 );
             } else if !step
@@ -954,26 +955,79 @@ pub fn check(source: &Source) -> Result<(Json, Run), String> {
     ))
 }
 
-const GUIDE: &str = "# Making mods with Horizon Studio
+// ------------------------------------------------------------------ docs
 
-- A script mod is `<id>.lua` in the mods folder, or a folder `<id>/` with `main.lua` (and other files `require`d \
-  from it). Header lines `-- name:`, `-- version:`, `-- author:`, `-- description:` name it.
-- Its file runs when it loads; what it registers with `on(...)`, `command(...)`, `every(...)`/`after(...)` then runs \
-  in the game. Saving reloads it at once (hot reload), and libraries' users reload with them.
-- A library calls `export{...}` (or returns a table); other mods `local kit = import(\"id\")`. Use it for anything \
-  shared: a UI kit, a pathfinder, config. `emit(\"id:event\", ...)` and `on(\"id:event\", fn)` let mods talk.
-- Errors stop only that mod; `check_mod` and `write_mod` report them with the line. Each call has a step budget.
-- Test: `test_mod` with steps, headless first, then `live: true` with the game running. Look at the game with \
-  `horizon_ctl screenshot` when Horizon runs with --control.";
+/// Where the docs' topics are as MCP resources.
+const DOCS_URI: &str = "horizon-studio://docs/";
 
-const TEST_EXAMPLE: &str = "Example (a mod with a /greet command and a tick counter):
-[
-  {\"frames\": 5, \"expect_state\": {\"greeter\": \"running\"}},
-  {\"command\": \"/greet Alex\", \"expect_chat\": \"Hello, Alex\"},
-  {\"lua\": \"local g = import('greeter'); assert(g.count() == 1, 'counted once')\"},
-  {\"seconds\": 2},
-  {\"key\": \"key.jump\", \"expect_chat\": \"jumped\"}
-]";
+fn doc_topics() -> Vec<&'static str> {
+    std::iter::once("all")
+        .chain(mcp_docs::TOPICS.iter().map(|t| t.id))
+        .collect()
+}
+
+fn doc_resources() -> Json {
+    Json::Array(
+        mcp_docs::TOPICS
+            .iter()
+            .map(|t| {
+                json!({ "uri": format!("{DOCS_URI}{}", t.id), "name": t.id, "title": t.title,
+                        "description": t.summary, "mimeType": "text/markdown" })
+            })
+            .collect(),
+    )
+}
+
+/// The `docs` tool: the index, a topic, an entry or a search.
+fn docs(args: &Json) -> Result<String, String> {
+    let get = |k: &str| {
+        args.get(k)
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    };
+    if let Some(name) = get("name") {
+        return match mcp_docs::entry(name) {
+            Some(e) => Ok(format!("# {}\n\n{}\n", e.name, e.doc.trim())),
+            None => {
+                // Entries near each part of the name ("player", "teleport").
+                let mut near: Vec<String> = Vec::new();
+                for part in name.split(['.', ':', '_', '(', ')', ' ']).filter(|p| p.len() > 1) {
+                    for (n, _) in mcp_docs::search(part, 6) {
+                        if !near.contains(&n) && near.len() < 10 {
+                            near.push(n);
+                        }
+                    }
+                }
+                Err(if near.is_empty() {
+                    format!("no entry '{name}': docs with no arguments lists them")
+                } else {
+                    format!("no entry '{name}'; near: {}", near.join(", "))
+                })
+            }
+        };
+    }
+    if let Some(query) = get("search") {
+        let hits = mcp_docs::search(query, 20);
+        if hits.is_empty() {
+            return Ok(format!("Nothing has every word of '{query}'. Try fewer words."));
+        }
+        let mut out = format!("# Search: {query}\n\nRead one with name (or topic for topic:<id>).\n\n");
+        for (name, line) in hits {
+            out.push_str(&format!("- `{name}`: {line}\n"));
+        }
+        return Ok(out);
+    }
+    match get("topic") {
+        None => Ok(mcp_docs::index()),
+        Some("all") => Ok(mcp_docs::TOPICS
+            .iter()
+            .filter_map(|t| mcp_docs::topic(t.id))
+            .collect::<Vec<_>>()
+            .join("\n\n")),
+        Some(id) => mcp_docs::topic(id).ok_or_else(|| format!("no topic '{id}': one of {}", doc_topics().join(", "))),
+    }
+}
 
 // ------------------------------------------------------------------ JSON-RPC
 
@@ -990,7 +1044,7 @@ pub fn handle(server: &mut Server, msg: &Json) -> Option<Json> {
             let version = PROTOCOLS.iter().find(|v| **v == asked).copied().unwrap_or(PROTOCOLS[1]);
             Ok(json!({
                 "protocolVersion": version,
-                "capabilities": { "tools": { "listChanged": false } },
+                "capabilities": { "tools": { "listChanged": false }, "resources": { "listChanged": false } },
                 "serverInfo": { "name": SERVER_NAME, "title": "Horizon Studio", "version": VERSION },
                 "instructions": INSTRUCTIONS,
             }))
@@ -1002,7 +1056,15 @@ pub fn handle(server: &mut Server, msg: &Json) -> Option<Json> {
             let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
             Ok(server.call_tool(name, &args))
         }
-        "resources/list" => Ok(json!({ "resources": [] })),
+        "resources/list" => Ok(json!({ "resources": doc_resources() })),
+        "resources/read" => {
+            let uri = params["uri"].as_str().unwrap_or("");
+            match uri.strip_prefix(DOCS_URI).and_then(mcp_docs::topic) {
+                Some(text) => Ok(json!({ "contents": [{ "uri": uri, "mimeType": "text/markdown", "text": text }] })),
+                None => Err(json!({ "code": -32002, "message": format!("no resource '{uri}'") })),
+            }
+        }
+        "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
         "prompts/list" => Ok(json!({ "prompts": [] })),
         other => Err(json!({ "code": -32601, "message": format!("no method '{other}'") })),
     };

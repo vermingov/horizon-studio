@@ -903,8 +903,9 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
 /// How to write test steps, for the MCP tools' descriptions.
 pub const STEPS_HELP: &str = "Each step is an object with one action and any expectations. Actions: \
 {\"frames\": N} or {\"seconds\": S} run the game (20 ticks a second); {\"command\": \"/name args\"} runs a chat command \
-(a mod's own, or the studio's); {\"chat\": \"<Alex> hi\"} is a chat line arriving (on(\"chat\")); {\"key\": \"key.jump\"} \
-presses and releases a key mapping (or with \"down\": true/false); {\"lua\": \"code\"} runs Lua in the console \
+(a mod's own, or the studio's); {\"chat\": \"<Alex> hi\"} is a chat line arriving (on(\"chat\")); {\"key\": \"key.keyboard.j\"} \
+presses and releases a key: on(\"key\") gets that name as for a real press (\"key.keyboard.space\", \"key.mouse.left\"; \
+headless, keys.down sees it held), or with \"down\": true/false; {\"lua\": \"code\"} runs Lua in the console \
 (globals; import(\"id\") gets a library; assert() fails the step); {\"player\": {\"x\":..,\"y\":..,\"z\":..,\"health\":..,\
 \"mode\":\"creative\",\"held\":\"minecraft:stick\"}} moves or changes the player; {\"block\": [x,y,z], \"id\": \
 \"minecraft:stone\"} sets a block (live: not available); {\"time\": 13000} sets the day time; {\"click\": \"label\"} \

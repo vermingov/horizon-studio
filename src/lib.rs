@@ -44,6 +44,7 @@ pub mod headless;
 
 /// horizon-studio-mcp: the studio for AI agents, over MCP.
 pub mod mcp;
+pub mod mcp_docs;
 
 /// `horizon-studio-mcp install`: registering it with the agents here.
 pub mod mcp_install;

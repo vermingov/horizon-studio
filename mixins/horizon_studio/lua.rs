@@ -7,10 +7,10 @@
 //
 // What is here: nil, booleans, numbers (64-bit floats, printed as integers
 // when they are whole), byte strings, tables with metatables, closures with
-// upvalues, varargs and multiple results, every statement but goto, and the
-// operators but the bitwise ones. The standard library is in hstudio_lualib.
-// Not here: coroutines, goto, integer subtypes, io, os
-// beyond the clock, load of binary chunks, string.pack, utf8.
+// upvalues, varargs and multiple results, every statement but goto, and every
+// operator (the bitwise ones on whole numbers). The standard library is in
+// hstudio_lualib. Not here: coroutines, goto, integer subtypes, io, os beyond
+// the clock, load of binary chunks, string.pack.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

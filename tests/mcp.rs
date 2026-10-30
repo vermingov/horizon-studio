@@ -20,7 +20,7 @@ command("greet", function(rest, argv)
   chat.show("Hello, " .. (argv[1] or "you") .. "!")
 end, "greets someone")
 on("key", function(key, down)
-  if key == "key.jump" and down then chat.show("jumped") end
+  if key == "key.keyboard.j" and down then chat.show("jumped") end
 end)
 export{ count = function() return count end }
 "#;
@@ -86,10 +86,50 @@ fn it_speaks_mcp() {
     }
     let missing = handle(&mut s, &json!({ "jsonrpc": "2.0", "id": 4, "method": "nope" })).unwrap();
     assert_eq!(missing["error"]["code"], -32601);
-    // The docs carry the API and the test format.
-    let (docs, _) = call(&mut s, "docs", json!({}));
-    let docs = docs.as_str().unwrap();
-    assert!(docs.contains("chat.show(text)") && docs.contains("expect_chat") && docs.contains("import("));
+    // The docs: an index, topics, entries by name, a search, and the topics as resources.
+    let (index, _) = call(&mut s, "docs", json!({}));
+    let index = index.as_str().unwrap();
+    assert!(index.contains("`start`") && index.contains("`recipes`") && index.contains("chat.show"));
+    let (tests, _) = call(&mut s, "docs", json!({ "topic": "tests" }));
+    assert!(tests.as_str().unwrap().contains("expect_chat"));
+    let (show, _) = call(&mut s, "docs", json!({ "name": "chat.show()" }));
+    assert!(show.as_str().unwrap().starts_with("# chat.show"), "{show}");
+    let (found, _) = call(&mut s, "docs", json!({ "search": "radians" }));
+    assert!(found.as_str().unwrap().contains("`math.rad`"), "{found}");
+    let (nope, error) = call(&mut s, "docs", json!({ "name": "player.teleport" }));
+    assert!(error && nope.as_str().unwrap().contains("near: "), "{nope}");
+    let (all, _) = call(&mut s, "docs", json!({ "topic": "all" }));
+    assert!(all.as_str().unwrap().contains("import(") && all.as_str().unwrap().len() > 100_000);
+    let list = handle(
+        &mut s,
+        &json!({ "jsonrpc": "2.0", "id": 5, "method": "resources/list" }),
+    )
+    .unwrap();
+    let uris: Vec<&str> = list["result"]["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["uri"].as_str().unwrap())
+        .collect();
+    assert!(uris.contains(&"horizon-studio://docs/events"), "{uris:?}");
+    let read = handle(
+        &mut s,
+        &json!({ "jsonrpc": "2.0", "id": 6, "method": "resources/read",
+                 "params": { "uri": "horizon-studio://docs/events" } }),
+    )
+    .unwrap();
+    assert!(
+        read["result"]["contents"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("event:tick")
+    );
+    let gone = handle(
+        &mut s,
+        &json!({ "jsonrpc": "2.0", "id": 7, "method": "resources/read", "params": { "uri": "horizon-studio://docs/nope" } }),
+    )
+    .unwrap();
+    assert_eq!(gone["error"]["code"], -32002);
     let (examples, _) = call(&mut s, "examples", json!({}));
     assert!(examples.as_array().unwrap().iter().any(|e| e["id"] == "uikit"));
 }
@@ -148,7 +188,7 @@ fn headless_tests_run_commands_keys_lua_and_screens() {
             json!({ "frames": 5, "expect_state": { "greeter": "running" } }),
             json!({ "command": "/greet Alex", "expect_chat": "Hello, Alex" }),
             json!({ "lua": "local g = import('greeter'); assert(g.count() == 1, 'counted once'); return g.count() * 10", "expect_output": "10" }),
-            json!({ "key": "key.jump", "expect_chat": "jumped" }),
+            json!({ "key": "key.keyboard.j", "expect_chat": "jumped" }),
             json!({ "seconds": 1 }),
         ],
     );
@@ -349,7 +389,7 @@ fn an_agent_writes_tests_and_runs_a_mod_in_the_linked_game() {
             { "frames": 3, "expect_state": { "greeter": "running" } },
             { "command": "/greet Alex", "expect_chat": "Hello, Alex" },
             { "lua": "return import('greeter').count()", "expect_output": "1" },
-            { "key": "key.jump", "expect_chat": "jumped" },
+            { "key": "key.keyboard.j", "expect_chat": "jumped" },
             { "chat": "<Bo> hi" },
             { "block": [0, 0, 0], "id": "minecraft:stone" },
         ] }),

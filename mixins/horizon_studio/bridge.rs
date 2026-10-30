@@ -44,6 +44,43 @@ thread_local! {
     /// The vanilla mappings' state this frame, for `keys.mapping` in `world`
     /// handlers (which run while the game is only read).
     static MAPPINGS_NOW: RefCell<Vec<(&'static str, (bool, String))>> = const { RefCell::new(Vec::new()) };
+    /// What scripts asked of the game while it was only read (a screen's or
+    /// the world's drawing), done at the next frame.
+    static LATER: RefCell<Vec<Later>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A call that changes the game, kept for the next frame.
+enum Later {
+    Chat(String),
+    Send(String),
+    Clipboard(String),
+    Sound(String, Option<[f64; 3]>, f32, f32),
+    Particle(horizon_client::particles::ParticleOptions, [f64; 3], [f64; 3]),
+}
+
+/// The most kept for one frame (a screen drawn 60 times a second can't pile up).
+const MAX_LATER: usize = 2048;
+
+fn later(call: Later) {
+    LATER.with(|l| {
+        let mut l = l.borrow_mut();
+        if l.len() < MAX_LATER {
+            l.push(call);
+        }
+    });
+}
+
+/// Does what was kept for this frame.
+fn catch_up(game: &mut Game<'_>) {
+    for call in LATER.with(|l| std::mem::take(&mut *l.borrow_mut())) {
+        match call {
+            Later::Chat(text) => game.native_chat(&text),
+            Later::Send(line) => game.send_chat(&line),
+            Later::Clipboard(text) => game.clipboard.set(&text),
+            Later::Sound(id, at, volume, pitch) => game.audio.play(&id, at, volume, pitch),
+            Later::Particle(options, at, velocity) => game.particles.add(&options, at, velocity),
+        }
+    }
 }
 
 /// Runs `f` with the studio, unless it is busy (a hook reached from a script).
@@ -140,14 +177,16 @@ fn gui(game: &Game<'_>) -> (f32, f32, f32) {
 impl GameApi for Host<'_, '_> {
     fn chat(&mut self, text: &str) {
         super::hstudio_link::record("out", text);
-        if let Some(g) = self.g_mut() {
-            g.native_chat(text);
+        match self.g_mut() {
+            Some(g) => g.native_chat(text),
+            None => later(Later::Chat(text.to_owned())),
         }
     }
     fn send(&mut self, line: &str) {
         super::hstudio_link::record("sent", line);
-        if let Some(g) = self.g_mut() {
-            g.send_chat(line);
+        match self.g_mut() {
+            Some(g) => g.send_chat(line),
+            None => later(Later::Send(line.to_owned())),
         }
     }
     fn player(&mut self) -> Option<PlayerInfo> {
@@ -233,8 +272,9 @@ impl GameApi for Host<'_, '_> {
         self.g_mut().map(|g| g.clipboard.get()).unwrap_or_default()
     }
     fn set_clipboard(&mut self, text: &str) {
-        if let Some(g) = self.g_mut() {
-            g.clipboard.set(text);
+        match self.g_mut() {
+            Some(g) => g.clipboard.set(text),
+            None => later(Later::Clipboard(text.to_owned())),
         }
     }
     fn gui_size(&self) -> (f32, f32) {
@@ -539,8 +579,10 @@ impl GameApi for Host<'_, '_> {
         }
     }
     fn sound(&mut self, id: &str, at: Option<[f64; 3]>, volume: f32, pitch: f32) -> Result<(), String> {
-        let g = self.g_mut().ok_or("sounds can't play here")?;
-        g.audio.play(id, at, volume, pitch);
+        match self.g_mut() {
+            Some(g) => g.audio.play(id, at, volume, pitch),
+            None => later(Later::Sound(id.to_owned(), at, volume, pitch)),
+        }
         Ok(())
     }
     fn particle(&mut self, id: &str, at: [f64; 3], velocity: [f64; 3], color: Option<[f32; 4]>) -> Result<(), String> {
@@ -566,8 +608,10 @@ impl GameApi for Host<'_, '_> {
         if let Some(c) = color {
             options.color = c;
         }
-        let g = self.g_mut().ok_or("particles can't spawn here")?;
-        g.particles.add(&options, at, velocity);
+        match self.g_mut() {
+            Some(g) => g.particles.add(&options, at, velocity),
+            None => later(Later::Particle(options, at, velocity)),
+        }
         Ok(())
     }
     fn place(&mut self, corner: Corner, w: f32, h: f32) -> (f32, f32) {
@@ -619,6 +663,7 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
     if !game.native_window() {
         return;
     }
+    catch_up(game);
     // Natrium's switches follow its settings.
     super::hstudio_natrium::sync(game);
     // While the options are open, the studio's and Natrium's pages show what
