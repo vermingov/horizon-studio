@@ -260,6 +260,13 @@ source = "via.rs"
 visibility = "pub"
 
 [[module]]
+id = "mcp-update"
+file = "crates/horizon-client/src/net.rs"
+name = "hstudio_mcp_update"
+source = "mcp_update.rs"
+visibility = "pub"
+
+[[module]]
 id = "via-lend"
 file = "crates/horizon-client/src/net.rs"
 name = "hstudio_via_lend"

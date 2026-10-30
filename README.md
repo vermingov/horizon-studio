@@ -238,6 +238,7 @@ shows the JSON). Then restart the agent.
 | Tool | What it does |
 |---|---|
 | `docs`, `examples` | The complete reference, so an agent never looks elsewhere: every function, event, widget and standard library function with its arguments, results, errors and an example, the language, limits, error messages and fixes, recipes and the test steps; by topic, by exact name (`player.pos`, `event:tick`) or by search, and as MCP resources (`horizon-studio://docs/<topic>`). The server fetches the newest reference from this repository's main branch (`docs/reference.json`) as it starts, so the docs change without a new release. The bundled mods' source |
+| `update_server` | Updates the server to the newest release in place; it switches to the new binary at its next call, without a restart or a reinstall (also Options → Mods → Horizon Studio in the game, and `horizon-studio-mcp update`) |
 | `write_mod`, `read_mod`, `list_mods`, `delete_mod` | Mods in the game's mods folder; `write_mod` checks the mod first and reloads it in the game |
 | `check_mod` | Loads a mod headless: does it run, its error and line, its commands, handlers and libraries |
 | `test_mod` | Steps (commands, chat, keys, Lua assertions, player and blocks, screen clicks...) with expectations (chat, output, text drawn, sounds, particles, mod state), headless or `live` |

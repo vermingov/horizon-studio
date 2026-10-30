@@ -8,6 +8,22 @@ fn main() {
         None | Some("serve") => horizon_studio::mcp::serve(),
         Some("install") => std::process::exit(horizon_studio::mcp_install::install(&args[1..])),
         Some("uninstall") => std::process::exit(horizon_studio::mcp_install::uninstall(&args[1..])),
+        Some("update") => {
+            let exe = std::env::current_exe().expect("its own path");
+            match horizon_studio::net::hstudio_mcp_update::update(&exe, horizon_studio::game::hstudio::VERSION) {
+                Ok(Some(v)) => {
+                    println!("Updated to horizon-studio-mcp {v}; running servers switch to it at their next call.")
+                }
+                Ok(None) => println!(
+                    "horizon-studio-mcp {} is the newest release.",
+                    horizon_studio::game::hstudio::VERSION
+                ),
+                Err(e) => {
+                    eprintln!("Couldn't update: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         // The reference as published (docs/reference.json), from this build.
         Some("docs-json") => print!("{}", horizon_studio::mcp_docs::Reference::built_in().to_text()),
         Some("--version" | "-V" | "version") => {
@@ -19,6 +35,7 @@ fn main() {
                  Usage:\n  horizon-studio-mcp            serve MCP on stdin/stdout (what agents run)\n  \
                  horizon-studio-mcp install    register it with Claude Code, omp, Codex, Cursor, Gemini CLI, Claude Desktop\n  \
                  horizon-studio-mcp uninstall  remove it from them\n  \
+                 horizon-studio-mcp update     update to the newest release (running servers switch at their next call)\n  \
                  horizon-studio-mcp docs-json  print the reference it serves, as published in docs/reference.json\n  \
                  horizon-studio-mcp --version",
                 horizon_studio::game::hstudio::VERSION

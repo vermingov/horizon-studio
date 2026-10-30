@@ -366,6 +366,14 @@ pub fn tools() -> Json {
             json!({ "command": { "type": "string" } }),
             &["command"]
         ),
+        tool(
+            "update_server",
+            "Updates this MCP server to the newest release of horizon-studio-mcp (as the game's Options > Mods > \
+              Horizon Studio button does): its binary is replaced, and this server switches to it at the next \
+              call, without a restart or a reinstall.",
+            json!({}),
+            &[]
+        ),
     ])
 }
 
@@ -792,6 +800,14 @@ impl Server {
                 };
                 self.live("reload", params)
             }
+            "update_server" => {
+                let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+                match crate::net::hstudio_mcp_update::update(&exe, VERSION)? {
+                    Some(v) => Ok(json!({ "updated": true, "from": VERSION, "to": v,
+                        "note": "this server switches to it at the next call" })),
+                    None => Ok(json!({ "updated": false, "version": VERSION, "note": "the newest release already" })),
+                }
+            }
             "horizon_ctl" => {
                 let command = str_arg(args, "command")?.trim();
                 if command == "screenshot"
@@ -1035,7 +1051,7 @@ fn built_in_reference() -> Arc<Reference> {
 
 /// Where the published reference is kept between runs.
 fn docs_cache() -> Option<PathBuf> {
-    Some(link_file()?.parent()?.join("reference.json"))
+    Some(crate::net::hstudio_mcp_update::studio_home()?.join("reference.json"))
 }
 
 /// A reference's text from an http(s) URL or a file.
@@ -1164,7 +1180,7 @@ pub fn handle(server: &mut Server, msg: &Json) -> Option<Json> {
             let version = PROTOCOLS.iter().find(|v| **v == asked).copied().unwrap_or(PROTOCOLS[1]);
             Ok(json!({
                 "protocolVersion": version,
-                "capabilities": { "tools": { "listChanged": false }, "resources": { "listChanged": false } },
+                "capabilities": { "tools": { "listChanged": true }, "resources": { "listChanged": false } },
                 "serverInfo": { "name": SERVER_NAME, "title": "Horizon Studio", "version": VERSION },
                 "instructions": INSTRUCTIONS,
             }))
@@ -1195,31 +1211,142 @@ pub fn handle(server: &mut Server, msg: &Json) -> Option<Json> {
     })
 }
 
-/// Serves MCP on stdin and stdout until stdin closes.
+// ------------------------------------------------------------------ serving, and switching to a new binary
+
+/// What a server hands the one that takes its place: the agent's name, and
+/// what it read but did not answer.
+const RESUME: &str = "HORIZON_STUDIO_MCP_RESUME";
+
+/// The running binary as it was when this server started.
+struct Binary {
+    path: PathBuf,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl Binary {
+    fn now() -> Option<Binary> {
+        let path = std::env::current_exe().ok()?;
+        let m = std::fs::metadata(&path).ok()?;
+        Some(Binary {
+            len: m.len(),
+            modified: m.modified().ok(),
+            path,
+        })
+    }
+    /// Whether another binary is in its place now (an update, a reinstall).
+    fn replaced(&self) -> bool {
+        std::fs::metadata(&self.path).is_ok_and(|m| m.len() != self.len || m.modified().ok() != self.modified)
+    }
+}
+
+/// Hands over to the binary now at `bin`: the same arguments, and `pending`
+/// (what was read and not answered) with the agent's name. On Unix the
+/// process becomes the new server; elsewhere the new one runs on the same
+/// stdin and stdout and this one waits for it. Returns only if it can't.
+fn hand_over(bin: &Binary, client: Option<String>, pending: &str) -> String {
+    let ok = std::process::Command::new(&bin.path)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).starts_with("horizon-studio-mcp"));
+    if !ok {
+        return "the new binary doesn't run".into();
+    }
+    let file = std::env::temp_dir().join(format!("horizon-studio-mcp-resume-{}.json", std::process::id()));
+    let state = json!({ "client": client, "pending": pending });
+    if let Err(e) = std::fs::write(&file, state.to_string()) {
+        return e.to_string();
+    }
+    let mut cmd = std::process::Command::new(&bin.path);
+    cmd.args(std::env::args_os().skip(1)).env(RESUME, &file);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.exec().to_string()
+    }
+    #[cfg(not(unix))]
+    {
+        match cmd.status() {
+            Ok(status) => std::process::exit(status.code().unwrap_or(0)),
+            Err(e) => e.to_string(),
+        }
+    }
+}
+
+/// What a server that handed over left for this one, if it did.
+fn resumed() -> Option<(Option<String>, String)> {
+    let file = std::env::var_os(RESUME)?;
+    let text = std::fs::read_to_string(&file).ok();
+    let _ = std::fs::remove_file(&file);
+    let j: Json = serde_json::from_str(&text?).ok()?;
+    Some((
+        j["client"].as_str().map(str::to_owned),
+        j["pending"].as_str().unwrap_or("").to_owned(),
+    ))
+}
+
+/// Answers one line (a message or a batch).
+fn answer(server: &mut Server, line: &str) -> Option<Json> {
+    match serde_json::from_str::<Json>(line) {
+        Ok(Json::Array(batch)) => {
+            let replies: Vec<Json> = batch.iter().filter_map(|m| handle(server, m)).collect();
+            (!replies.is_empty()).then(|| Json::Array(replies))
+        }
+        Ok(msg) => handle(server, &msg),
+        Err(e) => Some(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": e.to_string() } })),
+    }
+}
+
+/// Serves MCP on stdin and stdout until stdin closes. Before each request it
+/// looks whether its binary was replaced (the game's update button,
+/// update_server, a reinstall), and if so hands over to the new one, which
+/// answers that request: the agent keeps its connection.
 pub fn serve() {
     let mut server = Server::new();
+    let resume = resumed();
+    if let Some((Some(client), _)) = &resume {
+        server.set_client(client);
+    }
     server.keep_linked();
     server.fetch_docs();
-    let stdin = std::io::stdin();
+    let bin = Binary::now();
+    if let (Some(b), Some(dir)) = (&bin, crate::net::hstudio_mcp_update::studio_home()) {
+        crate::net::hstudio_mcp_update::note_installed(&dir, &b.path, VERSION);
+    }
     let mut out = std::io::stdout();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
+    let mut send = |reply: Json| {
+        let _ = writeln!(out, "{reply}");
+        let _ = out.flush();
+    };
+    if let Some((_, pending)) = resume {
+        // A new binary: its tools may have changed.
+        send(json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" }));
+        for line in pending.lines().filter(|l| !l.trim().is_empty()) {
+            if let Some(reply) = answer(&mut server, line) {
+                send(reply);
+            }
+        }
+    }
+    // Reads bigger than stdin's own buffer pass it by, so all that was read
+    // and not answered is in this one's.
+    let mut input = BufReader::with_capacity(1 << 16, std::io::stdin());
+    loop {
+        let mut line = String::new();
+        match input.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
         if line.trim().is_empty() {
             continue;
         }
-        let reply = match serde_json::from_str::<Json>(&line) {
-            Ok(Json::Array(batch)) => {
-                let replies: Vec<Json> = batch.iter().filter_map(|m| handle(&mut server, m)).collect();
-                (!replies.is_empty()).then(|| Json::Array(replies))
-            }
-            Ok(msg) => handle(&mut server, &msg),
-            Err(e) => {
-                Some(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": e.to_string() } }))
-            }
-        };
-        if let Some(reply) = reply {
-            let _ = writeln!(out, "{reply}");
-            let _ = out.flush();
+        if let Some(b) = bin.as_ref().filter(|b| b.replaced()) {
+            let pending = format!("{line}{}", String::from_utf8_lossy(input.buffer()));
+            let why = hand_over(b, server.client_name(), &pending);
+            eprintln!("horizon-studio-mcp: a new binary is in place but it couldn't take over ({why}); serving on");
+        }
+        if let Some(reply) = answer(&mut server, &line) {
+            send(reply);
         }
     }
 }

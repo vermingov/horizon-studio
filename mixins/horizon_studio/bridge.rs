@@ -1177,6 +1177,7 @@ pub(super) fn settings(buttons: &mut Vec<String>) {
     } else {
         "Copy AI setup prompt".into()
     });
+    buttons.push(horizon_client::net::hstudio_mcp_update::label());
 }
 
 pub(super) fn settings_click(game: &mut Game<'_>, button: usize) {
@@ -1210,6 +1211,8 @@ pub(super) fn settings_click(game: &mut Game<'_>, button: usize) {
                 super::hstudio_link::set_enabled(&st.s.dir, !on);
             });
         }
+        // The MCP server: updated in place; running ones switch at their next call.
+        8 => horizon_client::net::hstudio_mcp_update::click(),
         _ => {}
     }
 }

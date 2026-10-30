@@ -33,6 +33,8 @@ pub mod game {
 }
 
 pub mod net {
+    #[path = "../../mixins/horizon_studio/mcp_update.rs"]
+    pub mod hstudio_mcp_update;
     #[path = "../../mixins/horizon_studio/via.rs"]
     pub mod hstudio_via;
 }
