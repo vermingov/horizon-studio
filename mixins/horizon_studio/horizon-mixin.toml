@@ -324,6 +324,18 @@ bindings = [
   { name = "reader", ty = "&mut ConnReader", value = "&mut *self" },
 ]
 
+# Sent packets: a pong the network thread already sent for the game is
+# dropped, so the server gets each once, in order.
+[[injection]]
+id = "via-pong"
+kind = "HEAD"
+cancellable = true
+target = "horizon_protocol::connection::ConnWriter::send"
+helper = "via_pong.rs"
+bindings = [
+  { name = "body", ty = "&[u8]", value = "body" },
+]
+
 # A join (or a transfer) notes the account it is made as.
 [[injection]]
 id = "via-session"

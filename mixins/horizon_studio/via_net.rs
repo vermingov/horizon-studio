@@ -238,27 +238,125 @@ pub fn stalled(now: Instant) -> bool {
 /// How to send a packet body on the game's server connection (true: sent).
 pub fn set_pong(f: impl Fn(&[u8]) -> bool + Send + Sync + 'static) {
     *PONG.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
+    forget_pings();
 }
 
 /// The game has no server connection.
 pub fn clear_pong() {
     *PONG.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    forget_pings();
 }
 
-/// A play packet the network thread read: when it is a ping (`ping`, its
-/// id) and the game is stalled, it is answered with a pong (`pong`) here and
-/// dropped (true). Otherwise it goes on to the game (false).
-pub fn answer_ping(id: i32, payload: &[u8], ping: i32, pong: i32) -> bool {
-    if id != ping || payload.len() != 4 || !stalled(Instant::now()) {
-        return false;
-    }
-    let Some(send) = PONG.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+/// The pings the network thread handed the game, in order: those it has
+/// not answered yet, and of those, the ones the network thread answered for
+/// it since (their pongs, when the game sends them, are dropped). The server
+/// sees every pong once, in the order of its pings: anticheats kick a player
+/// whose pongs skip one ("Ping skipped").
+#[derive(Default)]
+struct Pings {
+    waiting: std::collections::VecDeque<i32>,
+    answered: std::collections::VecDeque<i32>,
+}
+
+static PINGS: Mutex<Pings> = Mutex::new(Pings {
+    waiting: std::collections::VecDeque::new(),
+    answered: std::collections::VecDeque::new(),
+});
+
+/// The most kept of each, should the game not answer.
+const MAX_PINGS: usize = 4096;
+
+thread_local! {
+    /// This thread sends the network thread's own pongs.
+    static ANSWERING: Cell<bool> = const { Cell::new(false) };
+}
+
+fn pings() -> std::sync::MutexGuard<'static, Pings> {
+    PINGS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A new connection: no pings yet.
+fn forget_pings() {
+    let mut p = pings();
+    p.waiting.clear();
+    p.answered.clear();
+}
+
+fn pong_body(pong: i32, n: i32) -> Vec<u8> {
+    let mut body = Vec::with_capacity(9);
+    varint(&mut body, pong);
+    body.extend_from_slice(&n.to_be_bytes());
+    body
+}
+
+/// A play packet the network thread read. A ping (`ping`, its id) goes on
+/// to the game (false) while it draws frames, noted as waiting for its pong.
+/// Once the game is stalled, the pings still waiting are answered here first,
+/// oldest first, then this one, which is dropped (true). `pong` is the pong's
+/// id.
+pub fn on_ping(id: i32, payload: &[u8], ping: i32, pong: i32) -> bool {
+    let Ok(n) = <[u8; 4]>::try_from(payload).map(i32::from_be_bytes) else {
         return false;
     };
-    let mut body = Vec::with_capacity(5 + payload.len());
-    varint(&mut body, pong);
-    body.extend_from_slice(payload);
-    send(&body)
+    if id != ping {
+        return false;
+    }
+    let send = PONG.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let Some(send) = send.filter(|_| stalled(Instant::now())) else {
+        let mut p = pings();
+        if p.waiting.len() >= MAX_PINGS {
+            p.waiting.pop_front();
+        }
+        p.waiting.push_back(n);
+        return false;
+    };
+    // Noted as answered before they are sent, so that a pong the game sends
+    // for one of them meanwhile is dropped; sent with the lock let go, as the
+    // game's thread takes it while it holds the connection's.
+    let earlier: Vec<i32> = {
+        let mut p = pings();
+        let earlier: Vec<i32> = p.waiting.drain(..).collect();
+        p.answered.extend(&earlier);
+        while p.answered.len() > MAX_PINGS {
+            p.answered.pop_front();
+        }
+        earlier
+    };
+    ANSWERING.with(|a| a.set(true));
+    for e in earlier.iter().chain([&n]) {
+        send(&pong_body(pong, *e));
+    }
+    ANSWERING.with(|a| a.set(false));
+    true
+}
+
+/// A packet body about to be sent: true when it is a pong (`pong`, its id)
+/// the network thread has sent already, which is dropped. A pong the game
+/// sends itself is no longer waiting.
+pub fn drop_pong(body: &[u8], pong: i32) -> bool {
+    if ANSWERING.with(Cell::get) {
+        return false;
+    }
+    let mut r = Reader { data: body, at: 0 };
+    if r.varint() != Some(pong) {
+        return false;
+    }
+    let Some(n) = body
+        .get(r.at..r.at + 4)
+        .and_then(|b| <[u8; 4]>::try_from(b).ok())
+        .map(i32::from_be_bytes)
+    else {
+        return false;
+    };
+    let mut p = pings();
+    if let Some(i) = p.answered.iter().position(|&a| a == n) {
+        p.answered.remove(i);
+        return true;
+    }
+    if let Some(i) = p.waiting.iter().position(|&w| w == n) {
+        p.waiting.remove(i);
+    }
+    false
 }
 
 /// Whether this thread is in the read that answers pings: its own reads

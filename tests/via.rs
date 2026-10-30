@@ -296,33 +296,48 @@ fn the_viahorizon_mod_comes_installed_and_picks_versions() {
 }
 
 #[test]
-fn pings_are_answered_on_the_network_thread_once_frames_stop() {
+fn pings_are_answered_on_the_network_thread_once_frames_stop_and_in_order() {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+    let (ping, pong) = (62, 45);
+    let p = |n: i32| n.to_be_bytes();
+    let body = |n: i32| [vec![45u8], n.to_be_bytes().to_vec()].concat();
+    // The connection: every body goes through drop_pong first, as the
+    // game's ConnWriter::send does.
     let sent = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-    let ping = [0, 0, 0, 7];
     let log = sent.clone();
-    wire::set_pong(move |body| {
-        log.lock().unwrap().push(body.to_vec());
+    let write = move |b: &[u8]| {
+        if !wire::drop_pong(b, pong) {
+            log.lock().unwrap().push(b.to_vec());
+        }
         true
-    });
-    // While frames come, the game answers its pings.
+    };
+    wire::set_pong(write.clone());
+    // While frames come, pings go to the game.
     wire::frame_at(Instant::now());
-    assert!(!wire::answer_ping(62, &ping, 62, 45));
-    // No frame for 2 seconds: the ping is answered here and dropped.
+    assert!(!wire::on_ping(ping, &p(1), ping, pong));
+    assert!(!wire::on_ping(ping, &p(2), ping, pong));
+    assert!(sent.lock().unwrap().is_empty());
+    // The game stalls: the two it owes go first, then the new one.
     wire::frame_at(Instant::now() - Duration::from_secs(2));
-    assert!(wire::answer_ping(62, &ping, 62, 45));
-    assert_eq!(sent.lock().unwrap().as_slice(), &[vec![45, 0, 0, 0, 7]]);
-    // Other packets go on to the game, and so do pings with no connection
-    // to answer on, or whose answer could not be sent.
-    assert!(!wire::answer_ping(61, &ping, 62, 45));
-    assert!(!wire::answer_ping(62, &[7], 62, 45));
+    assert!(wire::on_ping(ping, &p(3), ping, pong));
+    assert_eq!(*sent.lock().unwrap(), vec![body(1), body(2), body(3)]);
+    // Back, the game answers the ones it was handed: those are not sent again.
+    wire::frame_at(Instant::now());
+    write(&body(1));
+    write(&body(2));
+    assert_eq!(sent.lock().unwrap().len(), 3);
+    // New pings are the game's again, and its pongs go out.
+    assert!(!wire::on_ping(ping, &p(4), ping, pong));
+    write(&body(4));
+    assert_eq!(sent.lock().unwrap().last(), Some(&body(4)));
+    // Other packets, and pings with no connection to answer on, go on to the game.
+    assert!(!wire::on_ping(61, &p(5), ping, pong));
+    assert!(!wire::on_ping(ping, &[7], ping, pong));
+    assert!(!wire::drop_pong(&[46, 0, 0, 0, 1], pong));
     wire::clear_pong();
-    assert!(!wire::answer_ping(62, &ping, 62, 45));
-    wire::set_pong(|_| false);
-    assert!(!wire::answer_ping(62, &ping, 62, 45));
-    wire::clear_pong();
-    assert_eq!(sent.lock().unwrap().len(), 1);
+    wire::frame_at(Instant::now() - Duration::from_secs(2));
+    assert!(!wire::on_ping(ping, &p(6), ping, pong));
     // The hook's own reads pass through it.
     assert!(!wire::reading());
     {

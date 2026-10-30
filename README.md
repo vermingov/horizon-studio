@@ -566,7 +566,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `natrium_particles.rs` (`particles::natrium_particles`) | In the renderer: Horizon's particle loop, with the view test first |
 | `natrium_items.rs`, `natrium_villagers.rs`, `natrium_paths.rs` | Next to the code they speed up: item merging, villagers' item pickup, swimmers' path search |
 
-The hooks, HEAD hooks but where it says otherwise (via-address, via-srv, via-recv, via-ping and Natrium's particle, Video
+The hooks, HEAD hooks but where it says otherwise (via-address, via-srv, via-recv, via-ping, via-pong and Natrium's particle, Video
 Settings, merge, pickup and swim hooks can answer in their function's place):
 
 | Hook | Target | For |
@@ -579,7 +579,8 @@ Settings, merge, pickup and swim hooks can answer in their function's place):
 | via-address | `horizon_protocol::servers::parse_address` | on the threads that join and ping servers, an address ViaHorizon routes parses as ViaProxy's internal host (the server and version, for ViaProxy to read from the handshake) |
 | via-srv | `horizon_protocol::resolver::srv_redirect` | that host's SRV lookup answers with the local ViaProxy, so the connection goes there |
 | via-recv | `horizon_protocol::connection::Connection::recv` | during login, ViaProxy's OpenAuthMod sign-in requests are answered |
-| via-ping | `horizon_protocol::connection::ConnReader::recv` | while the game draws no frames (a minimised or covered window: on Wayland its main thread then waits to present), the server's pings are answered on the network thread, as keep-alives are, so anticheats behind ViaProxy don't time the player out |
+| via-ping | `horizon_protocol::connection::ConnReader::recv` | while the game draws no frames (a minimised or covered window: on Wayland its main thread then waits to present), the server's pings are answered on the network thread, as keep-alives are, after those the game still owes, so anticheats behind ViaProxy don't time the player out |
+| via-pong | `horizon_protocol::connection::ConnWriter::send` | a pong the network thread already sent for the game is dropped, so the server gets each once and in order (anticheats kick for a skipped one) |
 | via-menu-draw | `game::chat::Game::draw_link_prompt` | after the title screen draws: ViaHorizon's button on the multiplayer list, and its picker |
 | via-startup | `game::startup_menu::Loading::draw_menu` (a RETURN hook) | the same on the startup menu's title screen, before the game has loaded |
 | via-session, via-transfer | `net::Session::connect`, `connect_transferred` | the account the join is made as, for that sign-in |
