@@ -401,3 +401,122 @@ fn render_the_screens() {
     st.s.ui.tab = Tab::Library;
     shot(&mut st, "library-kit", |st, p| draw(st, p));
 }
+
+/// ViaHorizon's picker over a stand-in for the multiplayer screen: its
+/// header, the server list's first row and the button (in GUI pixels at a
+/// GUI scale of 2, so 4/3 dp each).
+#[test]
+#[ignore]
+fn render_the_via_picker() {
+    use horizon_studio::game::hstudio_via_picker::{Info, Key, Paint, Picker, Tone};
+    struct On<'a>(&'a mut Canvas);
+    impl Paint for On<'_> {
+        fn rect(&mut self, r: [f32; 4], radius: f32, argb: u32) {
+            self.0.rounded(r, radius, argb, false);
+        }
+        fn border(&mut self, r: [f32; 4], radius: f32, argb: u32) {
+            self.0.rounded(r, radius, argb, true);
+        }
+        fn text(&mut self, s: &str, x: f32, y: f32, size: f32, medium: bool, argb: u32) -> f32 {
+            self.0
+                .text(s, [x, y], size, if medium { Font::Medium } else { Font::Regular }, argb)
+        }
+        fn measure(&mut self, s: &str, size: f32, medium: bool) -> f32 {
+            self.0
+                .measure(s, size, if medium { Font::Medium } else { Font::Regular })
+        }
+    }
+    let ids = [
+        "auto",
+        "26.3",
+        "26.2",
+        "26.1-26.1.2",
+        "1.21.11",
+        "1.21.4",
+        "1.20.5-1.20.6",
+        "1.20.3-1.20.4",
+        "1.19.4",
+        "1.18.2",
+        "1.16.4-1.16.5",
+        "1.12.2",
+        "1.12.1",
+        "1.8.x",
+        "1.7.6-1.7.10",
+        "b1.7-b1.7.3",
+        "c0.30 CPE",
+        "Bedrock 1.26.51",
+    ];
+    let info = Info {
+        enabled: true,
+        version: "1.8.x".into(),
+        status: "Ready (ViaProxy 3.4.14, Java 21)".into(),
+        tone: Tone::Ready,
+        versions: ids
+            .iter()
+            .map(|v| {
+                (
+                    (*v).into(),
+                    if *v == "auto" {
+                        "Auto detect".into()
+                    } else {
+                        (*v).into()
+                    },
+                )
+            })
+            .collect(),
+    };
+    let k = 4.0 / 3.0;
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/preview");
+    std::fs::create_dir_all(&out).unwrap();
+    let screen = |c: &mut Canvas| {
+        c.rounded([0.0, 0.0, W, H], 0.0, 0x8C00_0000, false);
+        c.rounded([0.0, 0.0, W, 33.0 * k], 0.0, 0x6600_0000, false);
+        let tw = c.measure("Play Multiplayer", 12.0, Font::Regular);
+        c.text(
+            "Play Multiplayer",
+            [(W - tw) / 2.0, 7.0 * k],
+            12.0,
+            Font::Regular,
+            0xFFFF_FFFF,
+        );
+        let b = [W - (112.0 + 6.0) * k, 6.0 * k, 112.0 * k, 20.0 * k];
+        c.rounded(b, 0.0, 0xFF6F_6F6F, false);
+        c.rounded(b, 0.0, 0xFF00_0000, true);
+        c.rounded([b[0] + 22.0, b[1] + 11.0, 4.0, 4.0], 0.0, 0xFF45_C27A, false);
+        c.text(
+            "Via: 1.8.x",
+            [b[0] + 30.0, b[1] + 4.0],
+            12.0,
+            Font::Regular,
+            0xFFFF_FFFF,
+        );
+        c.text(
+            "Horizon Official",
+            [W / 2.0 - 140.0, 45.0 * k],
+            12.0,
+            Font::Regular,
+            0xFFFF_FFFF,
+        );
+    };
+    let mut button = Canvas::new();
+    screen(&mut button);
+    button.save(&out.join("via-button.png"));
+    let mut c = Canvas::new();
+    screen(&mut c);
+    let mut picker = Picker::default();
+    picker.show(0.0, &info);
+    picker.point((W / 2.0, 330.0));
+    for i in 0..40 {
+        picker.draw(&mut On(&mut Canvas::new()), &info, W, H, f64::from(i) * 0.05);
+    }
+    picker.draw(&mut On(&mut c), &info, W, H, 2.5);
+    c.save(&out.join("via-picker.png"));
+    let mut c = Canvas::new();
+    screen(&mut c);
+    picker.key(3.0, Key::Text("1.1".into()), &info);
+    for i in 0..10 {
+        picker.draw(&mut On(&mut Canvas::new()), &info, W, H, 3.0 + f64::from(i) * 0.05);
+    }
+    picker.draw(&mut On(&mut c), &info, W, H, 3.6);
+    c.save(&out.join("via-picker-search.png"));
+}

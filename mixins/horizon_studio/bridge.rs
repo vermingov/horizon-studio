@@ -456,7 +456,7 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
     // ViaHorizon runs from the title screen on, while the studio is on.
     let on = game.native_on(ID);
     if on {
-        via::configure(game.native_data_dir(ID).join("viahorizon"));
+        via::configure(via_dir());
     }
     via::set_active(on);
     let now = Instant::now();
@@ -668,6 +668,10 @@ pub(super) fn window_input(event: &mut WindowEvent) {
         });
         return;
     }
+    // ViaHorizon's button and picker on the multiplayer screen.
+    if super::hstudio_via_menu::input(event) {
+        return;
+    }
     if let WindowEvent::ModifiersChanged(m) = event {
         let m = m.state();
         // AltGr arrives as Control and Alt together: it types, it is no shortcut.
@@ -796,6 +800,42 @@ pub(super) fn listed() -> super::native_hooks::NativeMod {
         description: super::hstudio::DESCRIPTION.into(),
         keys: vec![["open".into(), "Open Horizon Studio".into(), OPEN_KEY.into()]],
     }
+}
+
+/// ViaHorizon's folder, beside the studio's (`native_data_dir`), known
+/// before the game is (the startup menu).
+fn via_dir() -> PathBuf {
+    Game::options_path()
+        .with_file_name(horizon_client::mod_list::DIR)
+        .join(".horizon-mod-data")
+        .join(ID)
+        .join("viahorizon")
+}
+
+/// After the game's title screen draws: ViaHorizon's button on the
+/// multiplayer list.
+pub(super) fn via_menu(game: &Game<'_>, batch: &mut HudBatch) {
+    if !game.native_window() || !game.native_on(ID) {
+        return;
+    }
+    super::hstudio_via_menu::draw(&game.gui.atlas, batch, game.title.as_ref(), game.cursor);
+}
+
+/// The same in the startup menu, before the game exists (ViaHorizon starts
+/// there, so its downloads begin at once).
+pub(super) fn via_startup(
+    atlas: &horizon_client::hud::HudAtlas,
+    batch: &mut HudBatch,
+    title: Option<&horizon_client::title::Title>,
+    cursor: (f32, f32),
+    studio_on: bool,
+) {
+    if !studio_on {
+        return;
+    }
+    via::configure(via_dir());
+    via::set_active(true);
+    super::hstudio_via_menu::draw(atlas, batch, title, cursor);
 }
 
 fn via_info() -> ViaInfo {

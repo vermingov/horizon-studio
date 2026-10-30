@@ -30,7 +30,7 @@ native Horizon mod that adds:
 |---|---|
 | ![The editor](docs/screenshots/editor.png) | ![The library](docs/screenshots/library.png) |
 | ![A mod's error](docs/screenshots/library-error.png) | ![A script's screen](docs/screenshots/screen.png) |
-| ![A screen made with the UI Kit library](docs/screenshots/kit.png) | |
+| ![A screen made with the UI Kit library](docs/screenshots/kit.png) | ![ViaHorizon's version picker](docs/screenshots/via-picker.png) |
 
 The studio draws with Horizon's own design system: Geist and Geist Mono, rounded plates, the dark palette, and its
 motion (screens fade and rise in, the tab indicator slides, rows arrive one after another, hovers fade). The pictures
@@ -92,9 +92,11 @@ ViaHorizon joins servers of other versions as ViaFabricPlus does, with
 to 26.3, and Bedrock (experimental, as in ViaProxy). It is on from the start, set to **Auto detect** (ViaProxy asks
 the server its version).
 
-- **Choose the version:** Options → Mods → Horizon Studio, from the title screen: *ViaHorizon: On/Off*, *Join servers
-  as* (each click the next version), *Previous version*, *Auto detect the version*, and its state. In a world, `/via`
-  opens a searchable list, and `/via 1.8.x` picks one directly. The choice applies from the next join.
+- **Choose the version** with the button in the top right corner of the multiplayer screen (*Via: 1.8.x*, with a dot
+  that is green when ViaProxy is ready): it opens the picker, with ViaHorizon's switch, its state, a search field
+  (type `1.12`, `beta`, `bedrock`) and every version; click one, or use the arrow keys and Enter. In a world, `/via`
+  opens the same list, and `/via 1.8.x` picks one directly. Options → Mods → Horizon Studio has the switch and
+  the version too. The choice applies from the next join.
 - **Then join as usual**, from the server list or Direct Connection, with the server's own address. The server list
   pings through ViaProxy too when a version is chosen, so it shows those servers as joinable.
 - **Online-mode servers** sign in with the account you play with: ViaProxy asks the game (with the
@@ -396,9 +398,10 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `paint.rs` (`ui_theme::hstudio_paint`) | In the game's library: Horizon's design system's shapes and fonts, for the studio and `gfx.*` |
 | `via.rs` (`net::hstudio_via`) | In the game's library: ViaHorizon's settings, Java, the downloads, ViaProxy's process, which joins it routes |
 | `via_auth.rs` (`net::hstudio_via_auth`) | ViaHorizon's sign-in with the account a join is made as |
+| `via_picker.rs`, `via_menu.rs` (`hstudio_via_picker`, `hstudio_via_menu`) | The multiplayer screen's button and the version picker (drawn with the design system's shapes and fonts) |
 | `via_net.rs` (`horizon_protocol::hstudio_via_net`) | In the protocol crate: ViaProxy's internal host, the redirect, OpenAuthMod's answers |
 
-The hooks, all HEAD hooks (via-address, via-srv and via-recv can answer in their function's place):
+The hooks, HEAD hooks but for via-startup (via-address, via-srv and via-recv can answer in their function's place):
 
 | Hook | Target | For |
 |---|---|---|
@@ -410,6 +413,8 @@ The hooks, all HEAD hooks (via-address, via-srv and via-recv can answer in their
 | via-address | `horizon_protocol::servers::parse_address` | on the threads that join and ping servers, an address ViaHorizon routes parses as ViaProxy's internal host (the server and version, for ViaProxy to read from the handshake) |
 | via-srv | `horizon_protocol::resolver::srv_redirect` | that host's SRV lookup answers with the local ViaProxy, so the connection goes there |
 | via-recv | `horizon_protocol::connection::Connection::recv` | during login, ViaProxy's OpenAuthMod sign-in requests are answered |
+| via-menu-draw | `game::chat::Game::draw_link_prompt` | after the title screen draws: ViaHorizon's button on the multiplayer list, and its picker |
+| via-startup | `game::startup_menu::Loading::draw_menu` (a RETURN hook) | the same on the startup menu's title screen, before the game has loaded |
 | via-session, via-transfer | `net::Session::connect`, `connect_transferred` | the account the join is made as, for that sign-in |
 | hud, key, command, zoom, list, settings, click | Horizon's [native hook points](https://github.com/horizon-rust/horizon/blob/main/crates/horizon-client/src/game/native_hooks.rs) | the HUD, keys, commands, `view.zoom`, the Options → Mods row and page |
 

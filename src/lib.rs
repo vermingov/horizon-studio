@@ -18,6 +18,8 @@ pub mod game {
     pub mod hstudio_lualib;
     #[path = "../../mixins/horizon_studio/ui.rs"]
     pub mod hstudio_ui;
+    #[path = "../../mixins/horizon_studio/via_picker.rs"]
+    pub mod hstudio_via_picker;
 }
 
 pub mod net {

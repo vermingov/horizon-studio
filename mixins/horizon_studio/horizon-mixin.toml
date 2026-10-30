@@ -50,6 +50,18 @@ name = "hstudio_examples"
 source = "examples.rs"
 
 [[module]]
+id = "via-picker"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_via_picker"
+source = "via_picker.rs"
+
+[[module]]
+id = "via-menu"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_via_menu"
+source = "via_menu.rs"
+
+[[module]]
 id = "bridge"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_bridge"
@@ -268,4 +280,27 @@ helper = "via_transfer.rs"
 bindings = [
   { name = "auth", ty = "&Option<Arc<AuthSession>>", value = "&auth" },
   { name = "lang", ty = "&Arc<Language>", value = "&lang" },
+]
+
+# ViaHorizon's button on the multiplayer screen: drawn after the game's title
+# screen (draw_link_prompt comes next each frame) and the startup menu's.
+[[injection]]
+id = "via-menu-draw"
+kind = "HEAD"
+target = "horizon_client::game::chat::Game<'_>::draw_link_prompt"
+helper = "via_menu_draw.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+  { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
+]
+
+[[injection]]
+id = "via-startup"
+kind = "RETURN"
+target = "horizon_client::game::startup_menu::Loading::draw_menu"
+helper = "via_startup.rs"
+bindings = [
+  { name = "value", ty = "()", value = "$value" },
+  { name = "loading", ty = "&mut super::Loading", value = "&mut *self" },
+  { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
 ]
