@@ -12,6 +12,8 @@ pub mod game {
     pub mod hstudio_agent;
     #[path = "../../mixins/horizon_studio/assist.rs"]
     pub mod hstudio_assist;
+    #[path = "../../mixins/horizon_studio/crypt.rs"]
+    pub mod hstudio_crypt;
     #[path = "../../mixins/horizon_studio/examples.rs"]
     pub mod hstudio_examples;
     #[path = "../../mixins/horizon_studio/link.rs"]
