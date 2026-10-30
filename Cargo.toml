@@ -22,6 +22,8 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 sha2 = "0.10.9"
+# The game has it too (sha1 0.10): the WebSocket handshake.
+sha1 = "0.10"
 # The game has it (png 0.18): textures from script mods' PNG files.
 png = "0.18"
 # The game's protocol crate, as far as ViaHorizon uses it: its added module.
