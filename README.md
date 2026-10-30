@@ -53,11 +53,11 @@ retired), so a mod with code is a [native mod](https://github.com/horizon-rust/h
 that the launcher compiles into the game, once. You don't install Rust or type commands: the launcher brings its own
 and does it.
 
-On Linux or macOS, one line downloads it and has the launcher build it (close the launcher first; on macOS use
-`"/Applications/Horizon.app/Contents/MacOS/horizon-launcher"` for `horizon-launcher`):
+On Linux or macOS, one line downloads it and has the launcher build it, and the same line updates it (close the
+launcher first; on macOS use `"/Applications/Horizon.app/Contents/MacOS/horizon-launcher"` for `horizon-launcher`):
 
 ```sh
-mkdir -p ~/.cache/horizon-studio && curl -fsSL https://github.com/vermingov/horizon-studio/archive/refs/heads/main.tar.gz | tar -xz -C ~/.cache/horizon-studio && horizon-launcher native-build ~/.cache/horizon-studio/horizon-studio-main/mixins/horizon_studio --trust-native-code
+rm -rf ~/.cache/horizon-studio/horizon-studio-main && mkdir -p ~/.cache/horizon-studio && curl -fsSL https://github.com/vermingov/horizon-studio/archive/refs/heads/main.tar.gz | tar -xz -C ~/.cache/horizon-studio && horizon-launcher native-build ~/.cache/horizon-studio/horizon-studio-main/mixins/horizon_studio --trust-native-code
 ```
 
 Then play the **Native mods** instance. Or, by hand:
