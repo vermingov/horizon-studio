@@ -67,6 +67,11 @@ pub const TOPICS: &[Topic] = &[
         summary: "model.*, player.part, player.pose, player.camera and draw.item: body parts, their axes, pixels, display contexts and first person.",
     },
     Topic {
+        id: "meshes",
+        title: "Textures, meshes and model files",
+        summary: "Real 3D models: textures (PNG files, base64, painted pixels), meshes (triangles, boxes with skin UV, .obj and Blockbench .bbmodel files), draw.mesh, meshes on body parts.",
+    },
+    Topic {
         id: "input",
         title: "Keys and the mouse",
         summary: "Key and mouse button names, on(\"key\"), keys.down, keys.mapping and its mapping names, and keys on script screens.",
@@ -140,6 +145,7 @@ fn topic_text(id: &str) -> &'static str {
         "gfx" => GFX,
         "world" => WORLD,
         "models" => MODELS,
+        "meshes" => MESHES,
         "input" => INPUT,
         "storage" => STORAGE,
         "libraries" => LIBRARIES,
@@ -788,7 +794,7 @@ end)
 "##;
 
 const MODELS: &str = r##"
-`model.attach(part, spec)` puts an item, or coloured boxes, on a body part of the player (or of another entity) so that it follows the part as it moves and animates, every frame, until removed. `draw.item` draws an item model at a fixed place for one frame.
+`model.attach(part, spec)` puts an item, coloured boxes or a textured mesh (topic `meshes`) on a body part of the player (or of another entity) so that it follows the part as it moves and animates, every frame, until removed. `draw.item` draws an item model at a fixed place for one frame.
 
 ## Body parts
 
@@ -818,7 +824,7 @@ In first person the game does not draw the player's own body, so the player's at
 
 ## Limits
 
-64 attachments per mod, 256 boxes each; boxes count toward the frame's 16384 world quads (6 each). Ids come from one counter for the whole studio: an id is never reused in a session.
+64 attachments per mod, 256 boxes each; boxes count toward the frame's 16384 world quads (6 each), a mesh's triangles 1 each. Ids come from one counter for the whole studio: an id is never reused in a session.
 
 ```lua
 -- A pumpkin hat, a sword in the right hand and a red cape.
@@ -834,6 +840,52 @@ command("hat", function()
   return on and "Hat off" or "Hat on"
 end)
 ```
+"##;
+
+const MESHES: &str = r##"
+Real 3D models: triangles with a texture, drawn in the world (`draw.mesh`) or on a body part (`model.attach{mesh = id}`), lit by the world where they are. Every mod keeps its own textures and meshes, by id, until it reloads (or `texture.free`, `mesh.free`).
+
+## Textures
+
+A texture is RGBA pixels, at most 512 a side, `x` and `y` from 0 at the top left. Make one:
+
+- `texture.load("skin.png")`: a PNG file in this folder mod (`mods/<id>/skin.png`; any folder under it).
+- `texture.decode(data)`: a PNG as base64 text (what an agent writes into a Lua file), a `data:image/png;base64,...` URL, or the raw bytes.
+- `texture.create(w, h[, color])`, then `texture.set`, `texture.fill` and `texture.paint` (rows of characters and a palette: pixel art as text).
+
+Colours are what `hud.rect` takes: `"#rgb"`, `"#rrggbb"`, `"#aarrggbb"`, `color(r, g, b[, a])`, or a number `0xAARRGGBB` (a number without its alpha byte, `0xff0000`, is transparent: write `0xffff0000`).
+
+The game keeps textures in its interface atlas: a texture shows from the frame after it is first drawn, and after a change (`set`, `fill`, `paint`) the next frame still shows the old pixels. All mods' textures together are at most 1048576 pixels.
+
+## Meshes
+
+A mesh is triangles in pixels, 16 to a block, each corner with texture coordinates `u`, `v` from 0 to 1 across the texture from its top left. Its origin is where `draw.mesh` puts it or the body part's pivot. Meshes face `+z`: `draw.mesh` at a yaw (as `player.look()` gives it) faces that way, and on a body part a mesh's x, y and z are the part's left, up and forward. At yaw 0, then, x is east, y is up and z is south.
+
+Make one:
+
+- `mesh.new{vertices = ..., faces = ...}`: corners and faces (triangles, or polygons split into triangles), `uvs` for texture coordinates.
+- `mesh.new{boxes = ...}`: boxes, each textured with Minecraft's box UV (`uv = {u, v}`: the layout of a skin's head, body and limbs, front facing +z) or with a rectangle per face (`faces = {north = {u1, v1, u2, v2}, ...}` in texture pixels; north is -z, south +z, east +x, west -x, up, down).
+- `mesh.load(file)`, `mesh.parse(text, format)`: a Wavefront `.obj` (in blocks: times 16 unless `scale` says otherwise; `v`, `vt` and `f` lines) or a Blockbench `.bbmodel` (cubes, meshes, groups with their pivots and turns, and its embedded textures, which become this mod's). Blockbench models face north; they are turned half round to face +z unless `flip = false`.
+
+Each triangle drawn counts 1 toward the frame's 16384 world shapes, shared by all mods. A mesh has at most 65536 triangles; a mod, 256 meshes and 256 textures.
+
+## Drawing
+
+```lua
+local skin = texture.create(64, 64, "#3b7dd8")
+texture.fill(skin, 8, 8, 8, 8, "#f1c27d")          -- the head's front
+local head = mesh.new({ texture = skin, boxes = {
+  { from = { -4, 0, -4 }, to = { 4, 8, 4 }, uv = { 0, 0 } },
+} })
+on("world", function()
+  local x, y, z = player.pos()
+  local yaw = player.look()
+  if x then draw.mesh(head, x + 2, y, z, { yaw = yaw }) end
+end)
+command("hat", function() model.attach("head", { mesh = head, offset = { 0, 8, 0 } }) end)
+```
+
+Tests: `expect_mesh` (at least N triangles drawn in a step; `false` for none).
 "##;
 
 const INPUT: &str = r##"
@@ -1528,6 +1580,11 @@ Every number below is in the runtime's source.
 | What | Limit |
 | --- | --- |
 | World quads (`MAX_WORLD_QUADS`) | 16384 |
+| A texture's side (`hstudio_meshes::MAX_SIDE`) | 512 pixels |
+| Every mod's textures together (`MAX_TEXELS`) | 1048576 pixels (a 1024x1024) |
+| A mod's textures / meshes (`MAX_TEXTURES`, `MAX_MESHES`) | 256 / 256 |
+| A mesh's triangles (`MAX_TRIANGLES`) | 65536 |
+| A model file read by `texture.load` / `mesh.load` | 16 MB |
 | Through-wall lines and labels (`MAX_OVERLAY`) | 4096 |
 | Particles (`MAX_PARTICLES`) | 512 (1 to 64 per `world.particle`) |
 | Sounds (`MAX_SOUNDS`) | 32 |
@@ -1601,6 +1658,12 @@ Errors have the form `<file>:<line>: <message>`; in a handler the event's name c
 | `this mod stores too many keys (256)` | over 256 keys | keep one table under one key |
 | `too many handlers (256)` / `too many timers (256)` | registering in a loop or on every tick | register once at load; cancel timers |
 | `a mod attaches at most 64 models` | `model.attach` in a loop | reuse ids with `model.set` |
+| `texture.load reads files of a folder mod (mods/<id>/main.lua); a one-file mod can use texture.decode or texture.create` | `texture.load`/`mesh.load` in a one-file mod | make it a folder mod, or use `texture.decode`, `texture.create` + `texture.paint`, `mesh.parse`, `mesh.new` |
+| `texture.load: no file 'x.png' in the mod's folder` / `is not a path inside the mod's folder` | a wrong or escaping path | paths are relative to the mod's folder, no `..` |
+| `a texture is 1 to 512 pixels a side (this one 600x600)` | a big image | scale it down |
+| `the mods' textures are at most 1048576 pixels in all (a 1024x1024)` | many or big textures, often made again on every load | `texture.free` the ones not used; make them once |
+| `draw.mesh: this mod has no mesh 3` | an id from another mod, a freed mesh, or a typo | meshes belong to the mod that made them |
+| `mesh.parse: line 12: index 9 is not one of the 8 so far` | a broken .obj | fix the file's f line |
 | `model.attach: give an item or boxes` | a spec with neither | add `item` or `boxes` |
 | `bad argument #1 to 'attach' (a body part expected: root, head, body, ...)` | an unknown part | a player part name |
 | `too much drawn in the world this frame` / `too much drawn through walls this frame` | over 16384 quads / 4096 overlay items | draw less, or only what is near |
@@ -2766,6 +2829,362 @@ end)
 ```
 "##
     ),
+    // ------------------------------------------------------------- meshes
+    e!(
+        "draw.mesh",
+        "meshes",
+        r##"
+`draw.mesh(id, x, y, z[, opts])`
+
+Draws a mesh of this mod's at a place, for this frame, textured and lit by the world there. Its origin goes to `x`, `y`, `z` and it faces +z at yaw 0 (see the topic `meshes`).
+
+- `id` (number): a mesh of this mod's.
+- `x`, `y`, `z` (numbers): where its origin goes, in blocks.
+- `opts` (table, optional):
+  - `yaw`, `pitch`, `roll` (degrees, default 0): `yaw` as `player.look()` gives it (90 faces west, as the player does), positive `pitch` tilts its front down.
+  - `scale`: a number or `{x, y, z}` (default 1; the mesh is in pixels, 16 to a block).
+  - `color`: tints every triangle (multiplied with its colour and texture; default white).
+  - `texture` (number): a texture of this mod's for every triangle, instead of the mesh's own.
+  - `glow = true`: full bright instead of lit by the world's light at `x`, `y`, `z`.
+- Returns: nothing.
+- Where: only inside `on("world")`.
+- Errors: `draw.mesh draws only inside on("world", function() ... end)`; `draw.mesh: this mod has no mesh 3`; `draw.mesh: this mod has no texture 5`; `bad argument #5 to 'mesh' (scale is a number or {x, y, z})`; `too much drawn in the world this frame` (each triangle counts 1 of 16384).
+
+In tests: `expect_mesh`.
+
+```lua
+local cube = mesh.new({ boxes = { { from = { -8, 0, -8 }, to = { 8, 16, 8 }, color = "#c0392b" } } })
+local spin = 0
+on("frame", function(dt) spin = (spin + dt * 45) % 360 end)
+on("world", function()
+  draw.mesh(cube, 0.5, 70, 0.5, { yaw = spin, scale = 0.5, glow = true })
+end)
+```
+"##
+    ),
+    e!(
+        "draw.triangle",
+        "meshes",
+        r##"
+`draw.triangle(x1, y1, z1, x2, y2, z2, x3, y3, z3[, color])`
+
+A filled triangle in the world for this frame, full bright and seen from both sides.
+
+- The nine numbers: its corners, in blocks.
+- `color` (default opaque white): any colour form (`"#rrggbb"`, `0xAARRGGBB`...).
+- Returns: nothing.
+- Where: only inside `on("world")`.
+- Errors: `draw.triangle draws only inside on("world", function() ... end)`; `too much drawn in the world this frame` (it counts 1 of 16384).
+
+```lua
+on("world", function()
+  draw.triangle(0, 70, 0, 2, 70, 0, 1, 72, 0, "#80ffd700")
+end)
+```
+"##
+    ),
+    e!(
+        "texture.load",
+        "meshes",
+        r##"
+`texture.load(file)`
+
+Reads a PNG file of this folder mod as a texture.
+
+- `file` (string): a path inside the mod's folder, `"skin.png"`, `"textures/cape.png"` (no `..`, at most 16 MB).
+- Returns: the texture's id, its width and height.
+- Where: anywhere; only in a folder mod (`mods/<id>/main.lua`).
+- Errors: `texture.load reads files of a folder mod (mods/<id>/main.lua); a one-file mod can use texture.decode or texture.create`; `texture.load: 'x' is not a path inside the mod's folder`; `texture.load: no file 'x.png' in the mod's folder`; `texture.load: 'x.png': not a PNG image (...)`; `texture.load: a texture is 1 to 512 pixels a side (this one 600x600)`; `texture.load: the mods' textures are at most 1048576 pixels in all (a 1024x1024); texture.free drops one`; `texture.load: a mod has at most 256 textures (texture.free drops one)`.
+
+```lua
+local cape, w, h = texture.load("textures/cape.png")
+print("cape " .. w .. "x" .. h)
+```
+"##
+    ),
+    e!(
+        "texture.decode",
+        "meshes",
+        r##"
+`texture.decode(data)`
+
+A texture from a PNG given in the code: base64 text (standard or URL-safe, padding and line breaks optional), a `data:image/png;base64,...` URL, or the PNG's raw bytes. How an agent ships an image: it writes the base64 into the Lua file.
+
+- `data` (string).
+- Returns: the texture's id, its width and height.
+- Where: anywhere.
+- Errors: `texture.decode: not base64 (it has '*')`; `texture.decode: not a PNG image (...)`; the size and count limits of `texture.load`.
+
+```lua
+-- a 1x1 white PNG
+local white = texture.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=")
+```
+"##
+    ),
+    e!(
+        "texture.create",
+        "meshes",
+        r##"
+`texture.create(w, h[, color])`
+
+A new texture of `w` x `h` pixels, every one `color` (transparent without one), to paint with `texture.set`, `texture.fill` and `texture.paint`.
+
+- `w`, `h` (numbers): 1 to 512.
+- `color`: any colour form.
+- Returns: the texture's id.
+- Where: anywhere.
+- Errors: `texture.create: a texture is 1 to 512 pixels a side (this one 0x4)`; the count and total limits of `texture.load`.
+
+```lua
+local t = texture.create(16, 16, "#2ecc71")
+texture.fill(t, 0, 0, 16, 4, "#27ae60")
+```
+"##
+    ),
+    e!(
+        "texture.set",
+        "meshes",
+        r##"
+`texture.set(id, x, y, color)`
+
+Sets one pixel. Outside the texture nothing happens.
+
+- `id` (number): a texture of this mod's.
+- `x`, `y` (numbers): from 0 at the top left (rounded down).
+- `color`: any colour form; `"#00000000"` is transparent.
+- Returns: nothing.
+- Where: anywhere. A changed texture is uploaded again: the next frame still shows the old pixels.
+- Errors: `texture.set: this mod has no texture 4`.
+
+```lua
+local t = texture.create(8, 8)
+for i = 0, 7 do texture.set(t, i, i, "#ffffff") end
+```
+"##
+    ),
+    e!(
+        "texture.get",
+        "meshes",
+        r##"
+`texture.get(id, x, y)`
+
+A pixel's colour.
+
+- `id` (number), `x`, `y` (numbers from 0).
+- Returns: `0xAARRGGBB` as a number, or nil outside the texture.
+- Where: anywhere.
+- Errors: `texture.get: this mod has no texture 4`.
+
+```lua
+local t = texture.create(2, 2, "#ff0000")
+print(string.format("%x", texture.get(t, 1, 1)))   -- ffff0000
+```
+"##
+    ),
+    e!(
+        "texture.fill",
+        "meshes",
+        r##"
+`texture.fill(id, x, y, w, h, color)`
+
+Fills a rectangle of pixels (the part inside the texture).
+
+- `id` (number), `x`, `y` (its top left, from 0), `w`, `h` (its size), `color`.
+- Returns: nothing.
+- Where: anywhere.
+- Errors: `texture.fill: this mod has no texture 4`.
+
+```lua
+local flag = texture.create(9, 6, "#ffffff")
+texture.fill(flag, 0, 0, 9, 3, "#0055a4")
+```
+"##
+    ),
+    e!(
+        "texture.paint",
+        "meshes",
+        r##"
+`texture.paint(id, rows, palette[, x, y])`
+
+Pixel art as text: each character of each row is looked up in `palette` and that pixel set to its colour. A character the palette lacks (or maps to `false`) leaves its pixel as it was.
+
+- `id` (number).
+- `rows` (list of strings): the top row first.
+- `palette` (table): one-character keys to colours, `{x = "#c0392b", o = "#ffffff", ["."] = false}`.
+- `x`, `y` (numbers, default 0): where the first row's first character goes.
+- Returns: nothing.
+- Where: anywhere.
+- Errors: `texture.paint: this mod has no texture 4`; `bad argument #3 to 'color' (...)` for a palette colour it can't read.
+
+```lua
+local heart = texture.create(7, 6)
+texture.paint(heart, {
+  ".xx.xx.",
+  "xxxxxxx",
+  "xxxxxxx",
+  ".xxxxx.",
+  "..xxx..",
+  "...x...",
+}, { x = "#e0115f" })
+```
+"##
+    ),
+    e!(
+        "texture.size",
+        "meshes",
+        r##"
+`texture.size(id)`
+
+- Returns: the texture's width and height.
+- Where: anywhere.
+- Errors: `texture.size: this mod has no texture 4`.
+
+```lua
+local t = texture.create(32, 16)
+local w, h = texture.size(t)
+```
+"##
+    ),
+    e!(
+        "texture.free",
+        "meshes",
+        r##"
+`texture.free(id)`
+
+Drops a texture (and its pixels' share of the 1048576 all mods may keep). Meshes that used it draw those triangles in plain colour.
+
+- Returns: true if there was one.
+- Where: anywhere.
+
+```lua
+local t = texture.create(4, 4)
+print(texture.free(t), texture.free(t))   -- true false
+```
+"##
+    ),
+    e!(
+        "mesh.load",
+        "meshes",
+        r##"
+`mesh.load(file[, opts])`
+
+Reads a model file of this folder mod as a mesh, by its extension: a Wavefront `.obj` or a Blockbench `.bbmodel`.
+
+- `file` (string): a path inside the mod's folder (no `..`, at most 16 MB).
+- `opts` (table, optional):
+  - `scale` (.obj, default 16): pixels per unit of the file (16: the file is in blocks).
+  - `texture` (number): a texture of this mod's for the .obj's triangles, and for .bbmodel faces whose texture is not embedded.
+  - `color`: tints every triangle.
+  - `flip = false` (.bbmodel): keep Blockbench's north-facing front instead of turning it to face +z.
+- .obj: `v`, `vt` (texture coordinates, counted up from the bottom as the format does) and `f` lines (polygons, negative indices too); other lines are skipped.
+- .bbmodel: cubes (with inflate, rotation about their origin, per-face UV or box UV, face rotation), mesh elements, outliner groups (their pivots and turns), hidden elements skipped; textures embedded in the file become this mod's (see `mesh.info`). A face with no texture is left out.
+- Returns: the mesh's id.
+- Where: anywhere; only in a folder mod.
+- Errors: `mesh.load reads files of a folder mod (mods/<id>/main.lua); a one-file mod can use mesh.parse or mesh.new`; `mesh.load: no file 'm.obj' in the mod's folder`; `mesh.load: 'stl' is not a format it reads: obj or bbmodel`; `mesh.load: line 12: index 9 is not one of the 8 so far`; `mesh.load: the .obj has no faces (f lines)`; `mesh.load: not a .bbmodel (JSON: ...)`; `mesh.load: elements[3]: a cube needs from and to`; `mesh.load: a mesh has at most 65536 triangles`; `mesh.load: a mod has at most 256 meshes (mesh.free drops one)`.
+
+```lua
+local statue = mesh.load("models/statue.bbmodel")
+local rock = mesh.load("models/rock.obj", { texture = texture.load("textures/rock.png") })
+```
+"##
+    ),
+    e!(
+        "mesh.parse",
+        "meshes",
+        r##"
+`mesh.parse(text, format[, opts])`
+
+A mesh from a model file's text, for a one-file mod or a model an agent writes into the code: `format` is `"obj"` or `"bbmodel"`, `opts` as `mesh.load`'s.
+
+- Returns: the mesh's id.
+- Where: anywhere.
+- Errors: as `mesh.load`'s, named `mesh.parse`.
+
+```lua
+local pyramid = mesh.parse([[
+v -1 0 -1
+v 1 0 -1
+v 1 0 1
+v -1 0 1
+v 0 1.5 0
+f 1 2 5
+f 2 3 5
+f 3 4 5
+f 4 1 5
+f 4 3 2 1
+]], "obj", { color = "#f4c430" })
+```
+"##
+    ),
+    e!(
+        "mesh.new",
+        "meshes",
+        r##"
+`mesh.new(spec)`
+
+A mesh built in Lua, in pixels (16 to a block), from corners and faces, from boxes, or both.
+
+- `spec` (table):
+  - `vertices`: a list of `{x, y, z}`.
+  - `uvs`: a list of `{u, v}` (0 to 1 from the texture's top left); a face corner without its own takes its vertex's.
+  - `faces`: a list of faces, each `{a, b, c, ...}` (vertex numbers from 1; more than three corners are split into triangles around the first) or `{v = {a, b, c, d}, uv = {1, 2, 3, 4}, color = ...}`.
+  - `boxes`: a list of `{from = {x, y, z}, to = {x, y, z}, color = ..., uv = {u, v}}` textured with Minecraft's box UV (a skin's layout at `u`, `v` in texture pixels: for a box `w` x `h` x `d` the right side, front, left side and back side by side below the top and bottom; the front faces +z), or `faces = {north = {u1, v1, u2, v2}, south = ..., east = ..., west = ..., up = ..., down = ...}` (texture pixels; faces left out are not drawn). Without either, a box is plain colour.
+  - `texture` (number): a texture of this mod's for all of it.
+  - `color`: the colour of faces and boxes without their own (default white; it tints the texture).
+- Returns: the mesh's id.
+- Where: anywhere.
+- Errors: `mesh.new: give faces (with vertices) or boxes`; `mesh.new: vertices[2] is {x, y, z}`; `mesh.new: faces[1] is {a, b, c} or {v = {...}, uv = {...}} (vertex numbers from 1)`; `mesh.new: boxes[1]: needs from and to, each {x, y, z} in pixels`; `mesh.new: this mod has no texture 3`; `mesh.new: a mod has at most 256 meshes (mesh.free drops one)`.
+
+```lua
+local skin = texture.create(64, 64, "#888888")
+local steve_ish = mesh.new({
+  texture = skin,
+  boxes = {
+    { from = { -4, 24, -4 }, to = { 4, 32, 4 }, uv = { 0, 0 } },      -- head
+    { from = { -4, 12, -2 }, to = { 4, 24, 2 }, uv = { 16, 16 } },    -- body
+  },
+})
+local sail = mesh.new({
+  vertices = { { 0, 0, 0 }, { 0, 32, 0 }, { 0, 0, 24 } },
+  faces = { { 1, 2, 3 } },
+  color = "#ecf0f1",
+})
+```
+"##
+    ),
+    e!(
+        "mesh.info",
+        "meshes",
+        r##"
+`mesh.info(id)`
+
+- Returns: `{triangles, min = {x, y, z}, max = {x, y, z}, textures = {ids}}` (its size in pixels, and the textures it uses: for a .bbmodel, the ones that came with it), or nil when this mod has no such mesh.
+- Where: anywhere.
+
+```lua
+local m = mesh.new({ boxes = { { from = { 0, 0, 0 }, to = { 4, 8, 2 } } } })
+local i = mesh.info(m)
+print(i.triangles, i.max[2])   -- 12 8
+```
+"##
+    ),
+    e!(
+        "mesh.free",
+        "meshes",
+        r##"
+`mesh.free(id)`
+
+Drops a mesh; attachments that used it draw nothing more of it.
+
+- Returns: true if there was one.
+- Where: anywhere.
+
+```lua
+local m = mesh.new({ boxes = { { from = { 0, 0, 0 }, to = { 1, 1, 1 } } } })
+mesh.free(m)
+```
+"##
+    ),
     // ------------------------------------------------------------- sound
     e!(
         "sound.play",
@@ -2910,9 +3329,10 @@ end)
 Attaches a model to a body part of the player (or of another entity) that follows it as it moves and animates, drawn with the world every frame until removed or the mod reloads. See the topic `models` for parts, axes and units.
 
 - `part` (string): `root`, `head`, `body`, `right_arm`, `left_arm`, `right_leg`, `left_leg`, `hat`, `jacket`, `right_sleeve`, `left_sleeve`, `right_pants`, `left_pants`; for another entity, a part name of its model.
-- `spec` (table), at least one of `item` and `boxes`:
+- `spec` (table), at least one of `item`, `boxes` and `mesh`:
   - `item` (string): an item or block id (`"minecraft:carved_pumpkin"`; `minecraft:` added when missing).
   - `boxes` (list, at most 256): `{from = {x, y, z}, to = {x, y, z}, color = ...}` in model pixels from the part's pivot, x to its right, y up, z forward (`color` default opaque white).
+  - `mesh` (number): a mesh of this mod's (`mesh.new`, `mesh.load`, `mesh.parse`), textured; its x, y and z are the part's left, up and forward in pixels (see the topic `meshes`); `false` removes it.
   - `display`: how the item shows: `"head"`, `"hand"`, `"left_hand"`, `"fixed"`, `"ground"`, `"gui"` (default: `"head"` on head and hat, `"hand"` on the right arm, `"left_hand"` on the left arm, else `"fixed"`).
   - `offset = {right, up, forward}` in pixels; `rotation = {pitch, yaw, roll}` in degrees; `scale` a number or `{x, y, z}` (each number at most 4096 either way; lists or `{x =, y =, z =}`).
   - `glow = true`: full bright instead of lit by the world.
@@ -2921,7 +3341,7 @@ Attaches a model to a body part of the player (or of another entity) that follow
   - `target`: `"player"` (default) or an entity id from `world.entities`.
 - Returns: the model's id (a number), for `model.set` and `model.remove`.
 - Where: anywhere.
-- Errors: `bad argument #1 to 'attach' (a body part expected: root, head, body, ...)`; `model.attach: give an item or boxes`; `model.attach: item is an item id such as "minecraft:diamond_sword"`; `model.attach: display is one of head, hand, left_hand, fixed, ground, gui`; `model.attach: boxes[1] needs from and to, each {x, y, z} in pixels`; `model.attach: at most 256 boxes`; `model.attach: offset is {x, y, z}`; `model.attach: scale is out of range`; `model.attach: glow is true or false`; `model.attach: target is "player" or an entity id (world.entities gives them)`; `a mod attaches at most 64 models`.
+- Errors: `bad argument #1 to 'attach' (a body part expected: root, head, body, ...)`; `model.attach: give an item, boxes or a mesh`; `model.attach: this mod has no mesh 7`; `model.attach: mesh is a mesh id (mesh.new, mesh.load...) or false for none`; `model.attach: item is an item id such as "minecraft:diamond_sword"`; `model.attach: display is one of head, hand, left_hand, fixed, ground, gui`; `model.attach: boxes[1] needs from and to, each {x, y, z} in pixels`; `model.attach: at most 256 boxes`; `model.attach: offset is {x, y, z}`; `model.attach: scale is out of range`; `model.attach: glow is true or false`; `model.attach: target is "player" or an entity id (world.entities gives them)`; `a mod attaches at most 64 models`.
 
 In tests: `expect_item` (items drawn).
 

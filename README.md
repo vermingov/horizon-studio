@@ -16,6 +16,9 @@ native Horizon mod that adds:
 - **Themes, and a window of its own.** Seven palettes, an accent of your choice, any size, full screen or a
   Windows 10 style window you drag and size, and four styles after the script executors of old Roblox days
   (Synapse X, ProtoSmasher, its classic look and RC7), each in its own draggable window.
+- **Real 3D models.** Textured meshes in the world and on the body: textures from PNG files, base64 or painted
+  pixel by pixel, meshes from triangles, from boxes with a skin's UV layout, or from Wavefront `.obj` and Blockbench
+  `.bbmodel` files.
 - **3D drawing, sounds, particles and screens.** Scripts draw lines, boxes, beams and labels in the world, play
   sounds, spawn particles, and open screens of their own with buttons, toggles, sliders and text fields.
 - **ViaHorizon: join servers of any version.** Like ViaFabricPlus for Fabric: every join goes through
@@ -341,7 +344,14 @@ The Library's **New mod** writes a file like this to start from.
 | `draw.beam(x, z[, color[, width[, y1[, y2]]]])` | A vertical beam (from y -64 to 320 unless given), like a waypoint's. |
 | `draw.text(x, y, z, text[, color[, distance]])` | A label at a place, seen through walls; `distance` = `true` adds how far it is. |
 | `draw.item(id, x, y, z[, opts])` | An item (or block) as a 3D model at a place, lit by the world; `opts`: `yaw`, `pitch`, `roll` (degrees), `scale`, `display` (`"fixed"`, `"ground"`, `"gui"`, `"head"`, `"hand"`), `glow`. |
-| `model.attach(part, spec)` | A model that follows a body part as it moves and animates, drawn every frame until removed (or the mod reloads); returns its id. `part`: `root`, `head`, `body`, `right_arm`, `left_arm`, `right_leg`, `left_leg` (or `hat`, `jacket`, the sleeves and pants). `spec`: `item` (worn on the head or held in a hand where the game puts them) and/or `boxes = {{from = {x, y, z}, to = {x, y, z}, color = "#rrggbb"}, ...}`, in pixels from the part's pivot (x to its right, y up, z forward); `offset`, `rotation = {pitch, yaw, roll}`, `scale`, `display`, `glow`, `first_person` (shown in first person too; the body isn't), `visible`, `target` (an entity id instead of the player). See the Outfit example. |
+| `model.attach(part, spec)` | A model that follows a body part as it moves and animates, drawn every frame until removed (or the mod reloads); returns its id. `part`: `root`, `head`, `body`, `right_arm`, `left_arm`, `right_leg`, `left_leg` (or `hat`, `jacket`, the sleeves and pants). `spec`: `item` (worn on the head or held in a hand where the game puts them) and/or `boxes = {{from = {x, y, z}, to = {x, y, z}, color = "#rrggbb"}, ...}`, in pixels from the part's pivot (x to its right, y up, z forward); `mesh` (a textured mesh, below); `offset`, `rotation = {pitch, yaw, roll}`, `scale`, `display`, `glow`, `first_person` (shown in first person too; the body isn't), `visible`, `target` (an entity id instead of the player). See the Outfit example. |
+| `texture.load(file)`, `texture.decode(data)`, `texture.create(w, h[, color])` | A texture (at most 512 pixels a side): a PNG file of a folder mod, a PNG as base64 text (or bytes), or a blank one; returns its id (and size). |
+| `texture.set(id, x, y, color)`, `texture.get(id, x, y)`, `texture.fill(id, x, y, w, h, color)`, `texture.paint(id, rows, palette[, x, y])`, `texture.size(id)`, `texture.free(id)` | Pixels, `x`, `y` from 0 at the top left; `paint` sets them from rows of characters looked up in a palette (pixel art as text). |
+| `mesh.new(spec)` | A mesh in pixels (16 to a block), facing +z: `vertices`, `uvs` and `faces` (triangles or polygons), and/or `boxes` textured with a skin's box UV (`uv = {u, v}`) or a rectangle per face; `texture`, `color`. |
+| `mesh.load(file[, opts])`, `mesh.parse(text, format[, opts])` | A mesh from a Wavefront `.obj` (in blocks; `scale`, `texture`, `color`) or a Blockbench `.bbmodel` (cubes, meshes, groups and its embedded textures; turned to face +z unless `flip = false`), from a folder mod's file or from text. |
+| `mesh.info(id)`, `mesh.free(id)` | A mesh's triangles, size and textures; dropping it. |
+| `draw.mesh(id, x, y, z[, opts])` | A mesh at a place for this frame (inside `on("world")`), lit by the world: `yaw` (as `player.look()` gives it), `pitch`, `roll`, `scale`, `color` (a tint), `texture`, `glow`. Each triangle counts toward the frame's 16384 shapes. |
+| `draw.triangle(x1, y1, z1, x2, y2, z2, x3, y3, z3[, color])` | A filled triangle in the world. |
 | `model.set(id, spec)`, `model.remove(id)`, `model.clear()`, `model.list()` | Change the fields given (`item = false`, `boxes = false` remove them); remove one; remove all; this mod's models. |
 | `sound.play(id[, volume[, pitch]])`, `sound.at(id, x, y, z[, volume[, pitch]])` | A sound event (`"entity.experience_orb.pickup"`, `"minecraft:block.bell.use"`): for you, or from a place. |
 | `world.particle(id, x, y, z[, dx, dy, dz[, count[, color]]])` | Particles (`"flame"`, `"heart"`, `"note"`, `"dust"` with a color...): `dx dy dz` is their speed, `count` up to 64 scattered around the point. Particles that need a block or an item aren't offered. |
@@ -502,6 +512,7 @@ The Library installs these; their source is in [`examples/`](examples).
 | Selection box | `draw.box` and a size label between two corners (`/pos1`, `/pos2`), `sound.play` |
 | Playground | a screen with a toggle, a slider, a button and a text field; `world.particle`, `sound.at` |
 | Outfit | `model.attach`: a hat, a crown, a cape, a sword, a halo and an orbiting shard that follow your body (`/outfit hat`, F5 to see) |
+| Statue | Real 3D models: a figure textured with a skin painted from text, a crystal read from `.obj` text, one spinning beside you and one worn (`/statue`, `/statue crystal`, `/statue wear`) |
 | UI Kit | a library mod: `gfx.*`, a canvas screen, `export` (installed with the studio) |
 | ViaHorizon | the ViaHorizon screen: `via.*`, a searchable list made with the UI Kit (`/via`, installed with the studio) |
 | UI Kit demo | `import("uikit")`: tabs, toggles, a slider, a text field, a list and a HUD card (`/kitdemo`) |
@@ -535,6 +546,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `lualib.rs` (`hstudio_lualib`) | The standard library, Lua patterns, `string.format` |
 | `studio.rs` (`hstudio`) | Script mods, hot reloading, events, timers, the API, the console |
 | `ui.rs` (`hstudio_ui`) | The screen: console, editor, library, docs, settings; input, the window's moving and sizing |
+| `meshes.rs` (`hstudio_meshes`) | Textures and meshes: PNG and base64, `.obj` and `.bbmodel`, box UV, drawing them as textured triangles |
 | `look.rs` (`hstudio_look`) | How the screen draws: the studio's layout, Settings, the Windows 10 window, script screens |
 | `theme.rs` (`hstudio_theme`) | The themes' palettes, and the look chosen in Settings (`look.txt`) |
 | `skins.rs` (`hstudio_skins`) | The executor styles' layouts |

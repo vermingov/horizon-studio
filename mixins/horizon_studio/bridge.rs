@@ -5,7 +5,8 @@
 // command can reach the game's own command path) do nothing.
 
 use super::hstudio::{
-    Camera, Corner, Font, GameApi, ID, NAME, OPEN_KEY, PartFrame, PlayerInfo, PlayerPose, Reply, Studio, VERSION, ViaInfo,
+    Camera, Corner, Font, GameApi, ID, NAME, OPEN_KEY, PartFrame, PlayerInfo, PlayerPose, Reply, Studio, TexRef, VERSION,
+    ViaInfo, WorldTri,
 };
 use horizon_client::net::hstudio_via as via;
 use super::hstudio_ui::{Input, Key, Mods, UiResult, draw, draw_screen, handle, handle_screen};
@@ -425,6 +426,67 @@ impl GameApi for Host<'_, '_> {
                     color,
                     light,
                     normal: [0; 4],
+                    glint_uv: [0.0, 0.0],
+                });
+            }
+        }
+    }
+    fn world_mesh(&mut self, tris: &[WorldTri], texture: Option<TexRef<'_>>, light_at: Option<[f64; 3]>) {
+        let game = match &self.game {
+            GameRef::Mut(g) => &**g,
+            GameRef::Shared(g) => *g,
+        };
+        let rect = match texture {
+            None => {
+                let w = game.gui.atlas.font.white();
+                let (u, v) = ((w.u0 + w.u1) / 2.0, (w.v0 + w.v1) / 2.0);
+                [u, v, u, v]
+            }
+            Some(t) => match paint::image(&game.gui.atlas, t.key, t.version, t.w, t.h, t.rgba) {
+                Some((r, false)) => {
+                    // A hundredth of a texel in from its edges, so no neighbour shows.
+                    let (du, dv) = ((r[2] - r[0]) / t.w as f32 * 0.01, (r[3] - r[1]) / t.h as f32 * 0.01);
+                    [r[0] + du, r[1] + dv, r[2] - du, r[3] - dv]
+                }
+                // Put in the atlas just now: drawn from the next frame, once its pixels are there.
+                _ => return,
+            },
+        };
+        let light = light_at.map_or(240 | (240 << 8), |p| {
+            horizon_client::block_entity_render::vertex_light(game.world.light(
+                p[0].floor() as i32,
+                p[1].floor() as i32,
+                p[2].floor() as i32,
+            ))
+        });
+        let Some((out, cam)) = self.world.as_mut() else {
+            return;
+        };
+        for t in tris {
+            let len = (t.normal[0] * t.normal[0] + t.normal[1] * t.normal[1] + t.normal[2] * t.normal[2])
+                .sqrt()
+                .max(1e-9);
+            let n = |i: usize| (t.normal[i] / len * 127.0) as i8;
+            let [a, r, g, b] = t.argb.to_be_bytes();
+            let color = u32::from_le_bytes([r, g, b, a]);
+            // A triangle as a quad whose last corner is its third.
+            for k in [0, 1, 2, 2] {
+                let p = t.p[k];
+                let [u, v] = t.uv[k];
+                out.push(Vertex {
+                    pos: [
+                        (p[0] - cam.pos[0]) as f32,
+                        (p[1] - cam.pos[1]) as f32,
+                        (p[2] - cam.pos[2]) as f32,
+                    ],
+                    uv: [
+                        rect[0] + (rect[2] - rect[0]) * u.clamp(0.0, 1.0),
+                        rect[1] + (rect[3] - rect[1]) * v.clamp(0.0, 1.0),
+                    ],
+                    layer: 0,
+                    color,
+                    light,
+                    normal: [n(0), n(1), n(2), -127],
                     glint_uv: [0.0, 0.0],
                 });
             }

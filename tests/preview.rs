@@ -573,3 +573,110 @@ fn render_the_themes() {
     st.s.ui.tab = Tab::Console;
     shot(&mut st, "window-small", |st, p| draw(st, p));
 }
+
+/// The Statue example's meshes, drawn by a small rasterizer (nearest
+/// texels, a depth buffer, an orthographic camera turned `yaw` degrees
+/// round them): textures and box UV as the game would map them.
+#[test]
+#[ignore]
+fn render_the_statue_meshes() {
+    use horizon_studio::game::hstudio_meshes::{Mesh, Store};
+    use horizon_studio::headless::{Run, Source};
+    fn render(store: &Store, mesh: &Mesh, yaw: f32, name: &str) {
+        const S: usize = 320;
+        let (lo, hi) = mesh.bounds();
+        let size = (0..3).map(|i| hi[i] - lo[i]).fold(0.0f32, f32::max) * 1.25;
+        let c = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0];
+        let (sn, cs) = yaw.to_radians().sin_cos();
+        // Looking from +z toward -z, turned about y: screen x is east at yaw 0.
+        let project = |p: [f32; 3]| {
+            let (x, z) = (p[0] - c[0], p[2] - c[2]);
+            let (rx, rz) = (x * cs - z * sn, x * sn + z * cs);
+            [
+                (rx / size + 0.5) * S as f32,
+                ((c[1] - p[1]) / size + 0.5) * S as f32,
+                rz,
+            ]
+        };
+        let mut px = vec![[40u8, 44, 52]; S * S];
+        let mut depth = vec![f32::MIN; S * S];
+        for t in &mesh.tris {
+            let q = t.p.map(project);
+            let tex = t.tex.and_then(|id| store.textures.get(&id));
+            let (x0, x1) = (
+                q.iter().map(|v| v[0]).fold(f32::MAX, f32::min),
+                q.iter().map(|v| v[0]).fold(f32::MIN, f32::max),
+            );
+            let (y0, y1) = (
+                q.iter().map(|v| v[1]).fold(f32::MAX, f32::min),
+                q.iter().map(|v| v[1]).fold(f32::MIN, f32::max),
+            );
+            let area = (q[1][0] - q[0][0]) * (q[2][1] - q[0][1]) - (q[2][0] - q[0][0]) * (q[1][1] - q[0][1]);
+            if area.abs() < 1e-6 {
+                continue;
+            }
+            for y in (y0.max(0.0) as usize)..(y1.ceil().min(S as f32) as usize) {
+                for x in (x0.max(0.0) as usize)..(x1.ceil().min(S as f32) as usize) {
+                    let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+                    let w1 = ((fx - q[0][0]) * (q[2][1] - q[0][1]) - (q[2][0] - q[0][0]) * (fy - q[0][1])) / area;
+                    let w2 = ((q[1][0] - q[0][0]) * (fy - q[0][1]) - (fx - q[0][0]) * (q[1][1] - q[0][1])) / area;
+                    let w0 = 1.0 - w1 - w2;
+                    if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                        continue;
+                    }
+                    let z = w0 * q[0][2] + w1 * q[1][2] + w2 * q[2][2];
+                    if z <= depth[y * S + x] {
+                        continue;
+                    }
+                    let u = w0 * t.uv[0][0] + w1 * t.uv[1][0] + w2 * t.uv[2][0];
+                    let v = w0 * t.uv[0][1] + w1 * t.uv[1][1] + w2 * t.uv[2][1];
+                    let mut rgba = [
+                        (t.argb >> 16) as u8,
+                        (t.argb >> 8) as u8,
+                        t.argb as u8,
+                        (t.argb >> 24) as u8,
+                    ];
+                    if let Some(tx) = tex {
+                        let (ix, iy) = (
+                            ((u * tx.w as f32) as u32).min(tx.w - 1),
+                            ((v * tx.h as f32) as u32).min(tx.h - 1),
+                        );
+                        let i = ((iy * tx.w + ix) * 4) as usize;
+                        let s = &tx.rgba[i..i + 4];
+                        rgba = [
+                            (u32::from(s[0]) * u32::from(rgba[0]) / 255) as u8,
+                            (u32::from(s[1]) * u32::from(rgba[1]) / 255) as u8,
+                            (u32::from(s[2]) * u32::from(rgba[2]) / 255) as u8,
+                            s[3],
+                        ];
+                    }
+                    if rgba[3] < 128 {
+                        continue;
+                    }
+                    depth[y * S + x] = z;
+                    px[y * S + x] = [rgba[0], rgba[1], rgba[2]];
+                }
+            }
+        }
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/preview");
+        std::fs::create_dir_all(&out).unwrap();
+        let file = std::fs::File::create(out.join(format!("{name}.png"))).unwrap();
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), S as u32, S as u32);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&px.concat()).unwrap();
+    }
+    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/statue.lua")).unwrap();
+    let mut r = Run::new(&Source::Files {
+        id: "statue".into(),
+        files: vec![("statue.lua".into(), src)],
+        libraries: None,
+    })
+    .unwrap();
+    r.frames(2);
+    let store = r.studio.s.mods[0].meshes.clone();
+    let meshes: Vec<Mesh> = store.meshes.values().cloned().collect();
+    render(&store, &meshes[0], 0.0, "statue-front");
+    render(&store, &meshes[0], -35.0, "statue-turned");
+    render(&store, &meshes[1], -30.0, "statue-crystal");
+}

@@ -50,6 +50,9 @@ pub struct HeadlessGame {
     pub world_quads: usize,
     /// Items drawn as models: (id, where, display).
     pub items: Vec<(String, [f64; 3], String)>,
+    /// Meshes drawn (draw.mesh, model.attach with a mesh): their triangles,
+    /// the texture's size if they had one, a corner of the first.
+    pub meshes: Vec<MeshDrawn>,
     /// "first", "third_back" or "third_front".
     pub camera_mode: String,
     /// The player's pose ("standing", "crouching"...).
@@ -91,6 +94,7 @@ impl HeadlessGame {
             particles: Vec::new(),
             world_quads: 0,
             items: Vec::new(),
+            meshes: Vec::new(),
             camera_mode: "third_back".into(),
             pose: "standing".into(),
             routed: 0,
@@ -299,6 +303,16 @@ impl GameApi for HeadlessGame {
     fn world_quad_lit(&mut self, _corners: [[f64; 3]; 4], _argb: u32, _normal: [f64; 3], _light_at: Option<[f64; 3]>) {
         self.world_quads += 1;
     }
+    fn world_mesh(
+        &mut self,
+        tris: &[crate::game::hstudio::WorldTri],
+        texture: Option<crate::game::hstudio::TexRef<'_>>,
+        _light_at: Option<[f64; 3]>,
+    ) {
+        self.world_quads += tris.len();
+        let first = tris.first().map_or([0.0; 3], |t| t.p[0]);
+        self.meshes.push((tris.len(), texture.map(|t| (t.w, t.h)), first));
+    }
 }
 
 /// A sound or particle id as the game takes it (`flame` is `minecraft:flame`);
@@ -481,6 +495,9 @@ impl Run {
             Source::Files { id, files, libraries } => (id.clone(), files.clone(), libraries.clone()),
         };
         write_mod(&mods, &id, &files)?;
+        if let Some(from) = &from {
+            copy_assets(&from.join(&id), &mods.join(&id));
+        }
         let mut queue = imports_of(&files);
         let mut done: BTreeSet<String> = BTreeSet::from([id.clone()]);
         while let Some(lib) = queue.pop() {
@@ -496,6 +513,9 @@ impl Run {
             if let Some(lib_files) = lib_files {
                 queue.extend(imports_of(&lib_files));
                 write_mod(&mods, &lib, &lib_files)?;
+                if let Some(from) = &from {
+                    copy_assets(&from.join(&lib), &mods.join(&lib));
+                }
             }
         }
         let mut run = Run {
@@ -657,6 +677,7 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
         let (chat_mark, sent_mark) = (run.game.chats.len(), run.game.sent.len());
         let (sound_mark, particle_mark) = (run.game.sounds.len(), run.game.particles.len());
         let item_mark = run.game.items.len();
+        let mesh_mark = run.game.meshes.len();
         let mut failures: Vec<String> = Vec::new();
         let mut drawn: BTreeSet<String> = BTreeSet::new();
         let mut output: Vec<String> = Vec::new();
@@ -832,6 +853,20 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
                 failures.push(format!("no sound like '{want}' (played: {sounds:?})"));
             }
         }
+        let triangles: usize = run.game.meshes[mesh_mark..].iter().map(|m| m.0).sum();
+        let textured = run.game.meshes[mesh_mark..].iter().filter(|m| m.1.is_some()).count();
+        if let Some(want) = step.get("expect_mesh") {
+            let least = want.as_u64().unwrap_or(1) as usize;
+            if want != &Json::Bool(false) && triangles < least.max(1) {
+                failures.push(format!(
+                    "{triangles} mesh triangles drawn, wanted at least {}",
+                    least.max(1)
+                ));
+            }
+            if want == &Json::Bool(false) && triangles > 0 {
+                failures.push(format!("{triangles} mesh triangles drawn, wanted none"));
+            }
+        }
         for want in texts(step.get("expect_item")) {
             if !items.iter().any(|s| s.contains(&want)) {
                 failures.push(format!("no item model like '{want}' drawn (drawn: {items:?})"));
@@ -883,6 +918,7 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
         put("sounds", sounds);
         put("particles", particles);
         put("items", items);
+        report["meshes"] = json!({ "triangles": triangles, "textured_draws": textured });
         reports.push(report);
         if frames_left == 0 {
             reports.push(json!({ "ok": false, "failures": ["the test ran out of frames (10 minutes of game time)"] }));
@@ -900,6 +936,42 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
     })
 }
 
+/// A folder mod's other files (images, models: what `read_mod` leaves out
+/// as not text), copied beside the text written for a run: three folders
+/// deep, 16 MB a file, 64 MB in all.
+fn copy_assets(from: &Path, to: &Path) {
+    if !from.join("main.lua").is_file() {
+        return;
+    }
+    let mut total = 0u64;
+    let mut stack = vec![(from.to_path_buf(), 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() && depth < 3 {
+                stack.push((p, depth + 1));
+                continue;
+            }
+            let len = p.metadata().map_or(u64::MAX, |m| m.len());
+            let Ok(rel) = p.strip_prefix(from) else { continue };
+            let dest = to.join(rel);
+            if !p.is_file() || dest.exists() || len > 16 << 20 || total + len > 64 << 20 {
+                continue;
+            }
+            total += len;
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::copy(&p, &dest);
+        }
+    }
+}
+
+/// A mesh drawn: its triangles, its texture's size if it had one, a corner
+/// of its first triangle.
+pub type MeshDrawn = (usize, Option<(u32, u32)>, [f64; 3]);
+
 /// How to write test steps, for the MCP tools' descriptions.
 pub const STEPS_HELP: &str = "Each step is an object with one action and any expectations. Actions: \
 {\"frames\": N} or {\"seconds\": S} run the game (20 ticks a second); {\"command\": \"/name args\"} runs a chat command \
@@ -914,6 +986,7 @@ clicks text on the open script screen; {\"type\": \"text\"} types into it; {\"re
 (headless). \
 Expectations (strings or lists of them, matched as substrings): expect_chat, expect_no_chat, expect_output (the lua \
 step's printed values), expect_log, expect_sent, expect_drawn (text drawn on the HUD or screen during the step), \
-expect_sound, expect_particle, expect_item (item models drawn: model.attach, draw.item); expect_state {\"id\": \"running\"|\"failed\"|\"off\"}; expect_screen true/false; \
+expect_sound, expect_particle, expect_item (item models drawn: model.attach, draw.item); expect_mesh N \
+(at least N mesh triangles drawn: draw.mesh, model.attach with a mesh; true: any; false: none); expect_state {\"id\": \"running\"|\"failed\"|\"off\"}; expect_screen true/false; \
 expect_error true or \"text\" (otherwise any error logged during a step fails it). A step of expectations alone \
 checks the state as it is.";

@@ -121,7 +121,7 @@ fn bad_specs_say_what_is_wrong() {
             "model.attach('tail', { item = 'stick' })",
             "a body part expected: root, head",
         ),
-        ("model.attach('head', {})", "give an item or boxes"),
+        ("model.attach('head', {})", "give an item, boxes or a mesh"),
         (
             "model.attach('head', { item = 'stick', display = 'hat' })",
             "display is one of head, hand",

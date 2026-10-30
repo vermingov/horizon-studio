@@ -14,6 +14,7 @@
 
 use super::hstudio::{GameApi, PartFrame, add, color_arg, scale as scaled};
 use super::hstudio_lua::{Lua, Table, Throw, Value, bad_arg};
+use super::hstudio_meshes::Store;
 
 /// Attachments one mod may have, and boxes in one.
 pub const MAX_MODELS: usize = 64;
@@ -59,6 +60,9 @@ pub struct Attachment {
     /// on an arm, else "fixed").
     pub display: Option<String>,
     pub boxes: Vec<Cuboid>,
+    /// A mesh of its mod's (`mesh.*`), its x, y and z the part's left, up
+    /// and forward in pixels.
+    pub mesh: Option<u32>,
     pub offset: [f64; 3],
     pub rotation: [f64; 3],
     pub scale: [f64; 3],
@@ -78,6 +82,7 @@ impl Attachment {
             item: None,
             display: None,
             boxes: Vec::new(),
+            mesh: None,
             offset: [0.0; 3],
             rotation: [0.0; 3],
             scale: [1.0; 3],
@@ -224,6 +229,14 @@ pub fn apply_spec(lua: &Lua, a: &mut Attachment, spec: &Table, fname: &str) -> R
     } else if matches!(boxes, Value::Bool(false)) {
         a.boxes.clear();
     }
+    match field("mesh") {
+        Value::Nil => {}
+        Value::Bool(false) => a.mesh = None,
+        v => match v.to_num() {
+            Some(n) if n >= 1.0 && n.fract() == 0.0 => a.mesh = Some(n as u32),
+            _ => return Err(err("mesh is a mesh id (mesh.new, mesh.load...) or false for none")),
+        },
+    }
     for (k, slot, all) in [("offset", 0, false), ("rotation", 1, false), ("scale", 2, true)] {
         let v = field(k);
         if v.is_nil() {
@@ -335,12 +348,25 @@ fn axes(f: &PartFrame) -> M3 {
     [f.left, f.up, f.forward]
 }
 
-/// Draws one attachment at its part's frame; `budget` is the world quads left.
-pub fn draw(game: &mut dyn GameApi, f: &PartFrame, a: &Attachment, budget: &mut usize) {
+/// Draws one attachment at its part's frame, its mesh from its mod's
+/// `meshes`; `budget` is the world quads left.
+pub fn draw(game: &mut dyn GameApi, f: &PartFrame, a: &Attachment, meshes: &Store, budget: &mut usize) {
     let r = rotation(a.rotation);
     let world = |v_luf_px: [f64; 3]| add(f.origin, scaled(mul(&axes(f), v_luf_px), 1.0 / 16.0));
     let light = (!a.glow).then_some(f.origin);
     let off = luf(a.offset);
+    if let Some(mesh) = a.mesh.and_then(|id| meshes.meshes.get(&id)) {
+        // A mesh's x, y and z are already the part's left, up and forward.
+        let place = |p: [f32; 3]| {
+            let v = [
+                f64::from(p[0]) * a.scale[0],
+                f64::from(p[1]) * a.scale[1],
+                f64::from(p[2]) * a.scale[2],
+            ];
+            world(add(mul(&r, v), off))
+        };
+        super::hstudio_meshes::draw(game, meshes, mesh, place, 0xFFFF_FFFF, None, light, budget);
+    }
     for b in &a.boxes {
         if *budget < 6 {
             return;

@@ -321,6 +321,36 @@ pub trait GameApi {
         let _ = (normal, light_at);
         self.world_quad(corners, argb);
     }
+    /// Triangles in the world, textured with `texture` (None: plain colour),
+    /// shaded by their normals and lit at `light_at` (full bright without one).
+    fn world_mesh(&mut self, tris: &[WorldTri], texture: Option<TexRef<'_>>, light_at: Option<[f64; 3]>) {
+        let _ = texture;
+        for t in tris {
+            self.world_quad_lit([t.p[0], t.p[1], t.p[2], t.p[2]], t.argb, t.normal, light_at);
+        }
+    }
+}
+
+/// A triangle in the world: its corners, their texture coordinates (0 to 1
+/// across the texture from its top left), its colour (which tints the
+/// texture, 0xAARRGGBB) and its normal.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorldTri {
+    pub p: [[f64; 3]; 3],
+    pub uv: [[f32; 2]; 3],
+    pub argb: u32,
+    pub normal: [f64; 3],
+}
+
+/// A texture to draw with: RGBA pixels, row by row from the top left, its
+/// name (`key`) and how many times its pixels changed (`version`).
+#[derive(Clone, Copy, Debug)]
+pub struct TexRef<'a> {
+    pub key: u32,
+    pub version: u32,
+    pub w: u32,
+    pub h: u32,
+    pub rgba: &'a [u8],
 }
 
 /// ViaHorizon's state, for `via.*`.
@@ -562,6 +592,8 @@ pub struct ScriptMod {
     pub reloads: u32,
     /// Models attached to bodies (`model.attach`).
     pub models: Vec<super::hstudio_models::Attachment>,
+    /// Its textures and meshes (`texture.*`, `mesh.*`).
+    pub meshes: super::hstudio_meshes::Store,
 }
 
 impl ScriptMod {
@@ -591,6 +623,7 @@ impl ScriptMod {
             cost_ms: 0.0,
             reloads: 0,
             models: Vec::new(),
+            meshes: super::hstudio_meshes::Store::default(),
         }
     }
     /// Drops everything it made: back to not running.
@@ -606,6 +639,7 @@ impl ScriptMod {
         self.pending.clear();
         self.ready.clear();
         self.models.clear();
+        self.meshes.clear();
     }
     pub fn running(&self) -> bool {
         self.state == ModState::Running
@@ -1721,7 +1755,7 @@ impl Studio {
                     continue;
                 }
                 if let Some(f) = game.part_frame(a.target, &a.part) {
-                    super::hstudio_models::draw(game, &f, a, &mut budget);
+                    super::hstudio_models::draw(game, &f, a, &m.meshes, &mut budget);
                 }
             }
         }
@@ -2755,7 +2789,7 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "model",
         "attach",
         170,
-        "model.attach(part, spec): attach a model to a body part of the player (or of spec.target, an entity id) that follows it as it moves and animates; returns its id. part: root, head, body, right_arm, left_arm, right_leg, left_leg (or hat, jacket, sleeves, pants). spec: {item = \"minecraft:carved_pumpkin\"} an item (blocks too), worn on the head or held in a hand where the game puts them; {boxes = {{from = {x, y, z}, to = {x, y, z}, color = \"#rrggbb\"}, ...}} coloured boxes; offset = {right, up, forward} in pixels (1/16 block), rotation = {pitch, yaw, roll} in degrees, scale = n or {x, y, z}, display = \"head\"|\"hand\"|\"left_hand\"|\"fixed\"|\"ground\"|\"gui\", glow = true (full bright), first_person = true (shown in first person too), visible = false",
+        "model.attach(part, spec): attach a model to a body part of the player (or of spec.target, an entity id) that follows it as it moves and animates; returns its id. part: root, head, body, right_arm, left_arm, right_leg, left_leg (or hat, jacket, sleeves, pants). spec: {item = \"minecraft:carved_pumpkin\"} an item (blocks too), worn on the head or held in a hand where the game puts them; {boxes = {{from = {x, y, z}, to = {x, y, z}, color = \"#rrggbb\"}, ...}} coloured boxes; mesh = id a textured mesh (mesh.*, its x, y, z the part's left, up, forward); offset = {right, up, forward} in pixels (1/16 block), rotation = {pitch, yaw, roll} in degrees, scale = n or {x, y, z}, display = \"head\"|\"hand\"|\"left_hand\"|\"fixed\"|\"ground\"|\"gui\", glow = true (full bright), first_person = true (shown in first person too), visible = false",
     ),
     (
         "model",
@@ -2804,6 +2838,97 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "item",
         116,
         "draw.item(id, x, y, z[, opts]): an item (or block) as a 3D model at a place (inside on(\"world\")); opts: {yaw, pitch, roll (degrees), scale, display = \"fixed\"|\"ground\"|\"gui\"|\"head\"|\"hand\"|\"left_hand\", glow = true}",
+    ),
+    (
+        "draw",
+        "mesh",
+        117,
+        "draw.mesh(id, x, y, z[, opts]): a mesh (mesh.*) at a place, lit by the world there (inside on(\"world\")); it faces +z at yaw 0, as player.look() gives yaws; opts: {yaw, pitch, roll (degrees), scale = n or {x, y, z}, color (tints it), texture = id (instead of its own), glow = true}",
+    ),
+    (
+        "draw",
+        "triangle",
+        118,
+        "draw.triangle(x1, y1, z1, x2, y2, z2, x3, y3, z3[, color]): a filled triangle in the world (inside on(\"world\"))",
+    ),
+    (
+        "texture",
+        "load",
+        180,
+        "texture.load(file): a PNG file of this folder mod (\"textures/cape.png\") as a texture; returns its id, width, height",
+    ),
+    (
+        "texture",
+        "decode",
+        181,
+        "texture.decode(data): a texture from a PNG as base64 text (a data: URL too) or as raw bytes; returns its id, width, height",
+    ),
+    (
+        "texture",
+        "create",
+        182,
+        "texture.create(w, h[, color]): a new texture of w x h pixels (at most 512 a side), all color (transparent without one); returns its id",
+    ),
+    (
+        "texture",
+        "set",
+        183,
+        "texture.set(id, x, y, color): one pixel, x and y from 0 at the top left",
+    ),
+    (
+        "texture",
+        "get",
+        184,
+        "texture.get(id, x, y): a pixel's colour as 0xAARRGGBB, or nil outside it",
+    ),
+    (
+        "texture",
+        "fill",
+        185,
+        "texture.fill(id, x, y, w, h, color): a rectangle of pixels",
+    ),
+    (
+        "texture",
+        "paint",
+        186,
+        "texture.paint(id, rows, palette[, x, y]): pixels from rows of characters, each looked up in palette ({[\"#\"] = \"#c0392b\", ...}; a character it lacks is left as it was), from x, y (0, 0)",
+    ),
+    ("texture", "size", 187, "texture.size(id): its width and height"),
+    (
+        "texture",
+        "free",
+        188,
+        "texture.free(id): drops a texture; true if there was one",
+    ),
+    (
+        "mesh",
+        "load",
+        190,
+        "mesh.load(file[, opts]): a model file of this folder mod as a mesh: Wavefront .obj (opts.scale, default 16: the file is in blocks; opts.texture, opts.color) or Blockbench .bbmodel (its textures come with it; opts.flip = false keeps Blockbench's north-facing front); returns its id",
+    ),
+    (
+        "mesh",
+        "parse",
+        191,
+        "mesh.parse(text, format[, opts]): a mesh from a model file's text: format \"obj\" or \"bbmodel\", opts as mesh.load's; returns its id",
+    ),
+    (
+        "mesh",
+        "new",
+        192,
+        "mesh.new(spec): a mesh from Lua, in pixels: {vertices = {{x, y, z}, ...}, uvs = {{u, v}, ...} (0 to 1 from the top left), faces = {{1, 2, 3}, {v = {1, 2, 3, 4}, uv = {1, 2, 3, 4}, color = c}, ...}, boxes = {{from = {x, y, z}, to = {x, y, z}, uv = {u, v} (a skin's box layout) or faces = {north = {u1, v1, u2, v2}, ...}, color = c}, ...}, texture = id, color = c}; returns its id",
+    ),
+    (
+        "mesh",
+        "info",
+        193,
+        "mesh.info(id): {triangles, min = {x, y, z}, max = {x, y, z}, textures = {ids}} in pixels, or nil",
+    ),
+    (
+        "mesh",
+        "free",
+        194,
+        "mesh.free(id): drops a mesh; true if there was one",
     ),
 ];
 
@@ -3067,6 +3192,546 @@ impl Ctx<'_> {
         Ok(Vec::new())
     }
 
+    /// `draw.mesh(id, x, y, z[, opts])`.
+    fn draw_mesh(&mut self, lua: &Lua, args: &[Value]) -> Res {
+        if self.phase != Phase::World {
+            return Err(lua.rt_error("draw.mesh draws only inside on(\"world\", function() ... end)"));
+        }
+        let id = check_num(lua, args, 0, "mesh")? as u32;
+        let at = [
+            check_num(lua, args, 1, "mesh")?,
+            check_num(lua, args, 2, "mesh")?,
+            check_num(lua, args, 3, "mesh")?,
+        ];
+        let (mut rot, mut scale, mut argb, mut texture, mut glow) = ([0.0; 3], [1.0; 3], 0xFFFF_FFFF, None, false);
+        if let Some(Value::Table(o)) = args.get(4) {
+            let o = o.borrow();
+            let num = |k: &str| o.get_str(k).to_num().unwrap_or(0.0);
+            // As player.look() turns: yaw 90 faces west.
+            rot = [num("pitch"), -num("yaw"), num("roll")];
+            scale = match o.get_str("scale") {
+                Value::Nil => [1.0; 3],
+                Value::Table(t) => {
+                    let t = t.borrow();
+                    let n = |i: f64| t.get(&Value::Num(i)).to_num().unwrap_or(1.0);
+                    [n(1.0), n(2.0), n(3.0)]
+                }
+                v => {
+                    [v.to_num()
+                        .ok_or_else(|| bad_arg(lua, 4, "mesh", "scale is a number or {x, y, z}"))?;
+                        3]
+                }
+            };
+            let c = o.get_str("color");
+            if !c.is_nil() {
+                argb = color_arg(lua, &[c], 0, 0xFFFF_FFFF)?;
+            }
+            let t = o.get_str("texture");
+            if !t.is_nil() {
+                let tid =
+                    t.to_num()
+                        .ok_or_else(|| bad_arg(lua, 4, "mesh", "texture is a texture id"))? as u32;
+                if !self.me().meshes.textures.contains_key(&tid) {
+                    return Err(lua.rt_error(format!("draw.mesh: this mod has no texture {tid}")));
+                }
+                texture = Some(Some(tid));
+            }
+            glow = o.get_str("glow").truthy();
+        }
+        let mut budget = MAX_WORLD_QUADS.saturating_sub(self.s.world_quads);
+        let before = budget;
+        let me = self.s.owner_mod(self.owner);
+        let Some(mesh) = me.meshes.meshes.get(&id) else {
+            return Err(lua.rt_error(format!("draw.mesh: this mod has no mesh {id}")));
+        };
+        let r = super::hstudio_models::rotation(rot);
+        let place = |p: [f32; 3]| {
+            let v = [
+                f64::from(p[0]) * scale[0],
+                f64::from(p[1]) * scale[1],
+                f64::from(p[2]) * scale[2],
+            ];
+            let w = [
+                r[0][0] * v[0] + r[1][0] * v[1] + r[2][0] * v[2],
+                r[0][1] * v[0] + r[1][1] * v[1] + r[2][1] * v[2],
+                r[0][2] * v[0] + r[1][2] * v[1] + r[2][2] * v[2],
+            ];
+            [at[0] + w[0] / 16.0, at[1] + w[1] / 16.0, at[2] + w[2] / 16.0]
+        };
+        let light = (!glow).then_some(at);
+        let whole = super::hstudio_meshes::draw(
+            &mut *self.game,
+            &me.meshes,
+            mesh,
+            place,
+            argb,
+            texture,
+            light,
+            &mut budget,
+        );
+        self.s.world_quads += before - budget;
+        if !whole {
+            return Err(lua.rt_error("too much drawn in the world this frame"));
+        }
+        Ok(Vec::new())
+    }
+    /// `draw.triangle(x1, y1, z1, x2, y2, z2, x3, y3, z3[, color])`.
+    fn draw_triangle(&mut self, lua: &Lua, args: &[Value]) -> Res {
+        if self.phase != Phase::World {
+            return Err(lua.rt_error("draw.triangle draws only inside on(\"world\", function() ... end)"));
+        }
+        let mut p = [[0.0; 3]; 3];
+        for (i, c) in p.iter_mut().flatten().enumerate() {
+            *c = check_num(lua, args, i, "triangle")?;
+        }
+        let argb = color_arg(lua, args, 9, 0xFFFF_FFFF)?;
+        if self.s.world_quads >= MAX_WORLD_QUADS {
+            return Err(lua.rt_error("too much drawn in the world this frame"));
+        }
+        self.s.world_quads += 1;
+        self.game.world_quad([p[0], p[1], p[2], p[2]], argb);
+        Ok(Vec::new())
+    }
+
+    /// A folder mod's file, for texture.load and mesh.load.
+    fn asset(&mut self, lua: &Lua, file: &str, fname: &str) -> Result<Vec<u8>, Throw> {
+        let Some(folder) = self.me().folder.clone() else {
+            return Err(lua.rt_error(format!(
+                "{fname} reads files of a folder mod (mods/<id>/main.lua); a one-file mod can use {}",
+                if fname.starts_with("texture") {
+                    "texture.decode or texture.create"
+                } else {
+                    "mesh.parse or mesh.new"
+                }
+            )));
+        };
+        let rel = std::path::Path::new(file);
+        let plain = rel.components().all(|c| matches!(c, std::path::Component::Normal(_)));
+        if file.is_empty() || !plain {
+            return Err(lua.rt_error(format!("{fname}: '{file}' is not a path inside the mod's folder")));
+        }
+        let path = folder.join(rel);
+        let len = std::fs::metadata(&path)
+            .map_err(|_| lua.rt_error(format!("{fname}: no file '{file}' in the mod's folder")))?
+            .len();
+        if len > 16 << 20 {
+            return Err(lua.rt_error(format!("{fname}: '{file}' is over 16 MB")));
+        }
+        std::fs::read(&path).map_err(|e| lua.rt_error(format!("{fname}: can't read '{file}': {e}")))
+    }
+
+    /// Keeps a texture, if every mod's textures together still fit.
+    fn keep_texture(&mut self, lua: &Lua, t: super::hstudio_meshes::Texture, fname: &str) -> Result<u32, Throw> {
+        use super::hstudio_meshes::MAX_TEXELS;
+        let used: usize = self
+            .s
+            .mods
+            .iter()
+            .chain(std::iter::once(&self.s.console_mod))
+            .map(|m| m.meshes.texels())
+            .sum();
+        if used + t.texels() > MAX_TEXELS {
+            return Err(lua.rt_error(format!(
+                "{fname}: the mods' textures are at most {MAX_TEXELS} pixels in all (a 1024x1024); texture.free drops one"
+            )));
+        }
+        self.s
+            .owner_mod(self.owner)
+            .meshes
+            .add_texture(t)
+            .map_err(|e| lua.rt_error(format!("{fname}: {e}")))
+    }
+
+    /// `texture.*`.
+    fn texture(&mut self, lua: &Lua, id: u32, args: &[Value]) -> Res {
+        use super::hstudio_meshes::{Texture, decode_png, texture_from};
+        let name = [
+            "load", "decode", "create", "set", "get", "fill", "paint", "size", "free",
+        ][(id - 180) as usize];
+        let fname = format!("texture.{name}");
+        let made = |t: &Texture, n: u32| {
+            vec![
+                Value::Num(f64::from(n)),
+                Value::Num(f64::from(t.w)),
+                Value::Num(f64::from(t.h)),
+            ]
+        };
+        match id {
+            180 => {
+                let file = check_text(lua, args, 0, name)?;
+                let bytes = self.asset(lua, &file, &fname)?;
+                let t = decode_png(&bytes).map_err(|e| lua.rt_error(format!("{fname}: '{file}': {e}")))?;
+                let out = made(&t, 0);
+                let n = self.keep_texture(lua, t, &fname)?;
+                Ok([vec![Value::Num(f64::from(n))], out[1..].to_vec()].concat())
+            }
+            181 => {
+                let data = check_str(lua, args, 0, name)?;
+                let t = texture_from(&data).map_err(|e| lua.rt_error(format!("{fname}: {e}")))?;
+                let out = made(&t, 0);
+                let n = self.keep_texture(lua, t, &fname)?;
+                Ok([vec![Value::Num(f64::from(n))], out[1..].to_vec()].concat())
+            }
+            182 => {
+                let w = check_num(lua, args, 0, name)?;
+                let h = check_num(lua, args, 1, name)?;
+                let argb = color_arg(lua, args, 2, 0)?;
+                let t = Texture::new(w.max(0.0) as u32, h.max(0.0) as u32, argb)
+                    .map_err(|e| lua.rt_error(format!("{fname}: {e}")))?;
+                let n = self.keep_texture(lua, t, &fname)?;
+                Ok(vec![Value::Num(f64::from(n))])
+            }
+            188 => {
+                let n = check_num(lua, args, 0, name)? as u32;
+                Ok(vec![Value::Bool(self.me().meshes.textures.remove(&n).is_some())])
+            }
+            _ => {
+                let n = check_num(lua, args, 0, name)? as u32;
+                // Arguments read before the texture is borrowed.
+                let ints = |from: usize, count: usize| -> Result<Vec<i64>, Throw> {
+                    (from..from + count)
+                        .map(|i| check_num(lua, args, i, name).map(|v| v.floor() as i64))
+                        .collect()
+                };
+                let pre = match id {
+                    183 => Some((ints(1, 2)?, color_arg(lua, args, 3, 0)?)),
+                    185 => Some((ints(1, 4)?, color_arg(lua, args, 5, 0)?)),
+                    _ => None,
+                };
+                let paint = if id == 186 {
+                    let rows: Vec<String> = check_table(lua, args, 1, name)?
+                        .borrow()
+                        .list()
+                        .iter()
+                        .map(|v| v.as_text().unwrap_or_default())
+                        .collect();
+                    let palette = check_table(lua, args, 2, name)?;
+                    let mut colors = HashMap::new();
+                    for row in &rows {
+                        for c in row.chars() {
+                            if colors.contains_key(&c) {
+                                continue;
+                            }
+                            let v = palette.borrow().get(&Value::str(&c.to_string()));
+                            let col = match v {
+                                Value::Nil | Value::Bool(false) => None,
+                                v => Some(color_arg(lua, &[v], 0, 0)?),
+                            };
+                            colors.insert(c, col);
+                        }
+                    }
+                    let at = (
+                        opt_num(lua, args, 3, name, 0.0)? as i64,
+                        opt_num(lua, args, 4, name, 0.0)? as i64,
+                    );
+                    Some((rows, colors, at))
+                } else {
+                    None
+                };
+                let t = self
+                    .me()
+                    .meshes
+                    .textures
+                    .get_mut(&n)
+                    .ok_or_else(|| lua.rt_error(format!("{fname}: this mod has no texture {n}")))?;
+                let inside = |x: i64, y: i64| (x >= 0 && y >= 0).then_some((x as u32, y as u32));
+                match id {
+                    183 => {
+                        let (xy, argb) = pre.unwrap_or_default();
+                        if let Some((x, y)) = inside(xy[0], xy[1])
+                            && t.set(x, y, argb)
+                        {
+                            t.touched();
+                        }
+                        Ok(Vec::new())
+                    }
+                    184 => {
+                        let x = check_num(lua, args, 1, name)?.floor() as i64;
+                        let y = check_num(lua, args, 2, name)?.floor() as i64;
+                        Ok(vec![
+                            inside(x, y)
+                                .and_then(|(x, y)| t.get(x, y))
+                                .map_or(Value::Nil, |c| Value::Num(f64::from(c))),
+                        ])
+                    }
+                    185 => {
+                        let (r, argb) = pre.unwrap_or_default();
+                        let (x0, y0) = (r[0].max(0), r[1].max(0));
+                        let (x1, y1) = ((r[0] + r[2]).min(i64::from(t.w)), (r[1] + r[3]).min(i64::from(t.h)));
+                        for y in y0..y1 {
+                            for x in x0..x1 {
+                                t.set(x as u32, y as u32, argb);
+                            }
+                        }
+                        t.touched();
+                        Ok(Vec::new())
+                    }
+                    186 => {
+                        let (rows, colors, (ox, oy)) = paint.unwrap_or_default();
+                        for (dy, row) in rows.iter().enumerate() {
+                            for (dx, c) in row.chars().enumerate() {
+                                if let (Some(Some(col)), Some((x, y))) =
+                                    (colors.get(&c), inside(ox + dx as i64, oy + dy as i64))
+                                {
+                                    t.set(x, y, *col);
+                                }
+                            }
+                        }
+                        t.touched();
+                        Ok(Vec::new())
+                    }
+                    _ => Ok(vec![Value::Num(f64::from(t.w)), Value::Num(f64::from(t.h))]),
+                }
+            }
+        }
+    }
+
+    /// `mesh.*`.
+    fn mesh(&mut self, lua: &Lua, id: u32, args: &[Value]) -> Res {
+        let name = ["load", "parse", "new", "info", "free"][(id - 190) as usize];
+        let fname = format!("mesh.{name}");
+        let err = |e: String| lua.rt_error(format!("{fname}: {e}"));
+        match id {
+            190 | 191 => {
+                let (text, format, opts) = if id == 190 {
+                    let file = check_text(lua, args, 0, name)?;
+                    let bytes = self.asset(lua, &file, &fname)?;
+                    let format = std::path::Path::new(&file)
+                        .extension()
+                        .map(|e| e.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    (String::from_utf8_lossy(&bytes).into_owned(), format, args.get(1))
+                } else {
+                    (
+                        check_text(lua, args, 0, name)?,
+                        check_text(lua, args, 1, name)?.to_lowercase(),
+                        args.get(2),
+                    )
+                };
+                let opt = |k: &str| match opts {
+                    Some(Value::Table(t)) => t.borrow().get_str(k),
+                    _ => Value::Nil,
+                };
+                let argb = match opt("color") {
+                    Value::Nil => 0xFFFF_FFFF,
+                    c => color_arg(lua, &[c], 0, 0xFFFF_FFFF)?,
+                };
+                let texture = match opt("texture") {
+                    Value::Nil => None,
+                    v => {
+                        let t = v.to_num().ok_or_else(|| err("texture is a texture id".into()))? as u32;
+                        if !self.me().meshes.textures.contains_key(&t) {
+                            return Err(err(format!("this mod has no texture {t}")));
+                        }
+                        Some(t)
+                    }
+                };
+                let mesh = match format.as_str() {
+                    "obj" => {
+                        let scale = opt("scale").to_num().unwrap_or(16.0) as f32;
+                        super::hstudio_meshes::parse_obj(&text, scale, argb, texture).map_err(err)?
+                    }
+                    "bbmodel" => {
+                        let flip = !matches!(opt("flip"), Value::Bool(false));
+                        let imported = super::hstudio_meshes::parse_bbmodel(&text, flip).map_err(err)?;
+                        // Its textures become this mod's; the triangles take their ids.
+                        let mut ids = Vec::new();
+                        for t in imported.textures {
+                            ids.push(match t {
+                                Some(t) => Some(self.keep_texture(lua, t, &fname)?),
+                                None => None,
+                            });
+                        }
+                        let mut mesh = imported.mesh;
+                        for t in &mut mesh.tris {
+                            t.tex = t.tex.and_then(|i| ids.get(i as usize).copied().flatten()).or(texture);
+                            t.argb = argb;
+                        }
+                        mesh
+                    }
+                    other => return Err(err(format!("'{other}' is not a format it reads: obj or bbmodel"))),
+                };
+                let n = self.me().meshes.add_mesh(mesh).map_err(err)?;
+                Ok(vec![Value::Num(f64::from(n))])
+            }
+            192 => {
+                let spec = check_table(lua, args, 0, name)?;
+                let mesh = self.mesh_from(lua, &spec.borrow(), &fname)?;
+                let n = self.me().meshes.add_mesh(mesh).map_err(err)?;
+                Ok(vec![Value::Num(f64::from(n))])
+            }
+            193 => {
+                let n = check_num(lua, args, 0, name)? as u32;
+                let Some(m) = self.me().meshes.meshes.get(&n) else {
+                    return Ok(vec![Value::Nil]);
+                };
+                let (lo, hi) = m.bounds();
+                let v =
+                    |p: [f32; 3]| Value::table(Table::from_list(p.iter().map(|c| Value::Num(f64::from(*c))).collect()));
+                let mut tex: Vec<u32> = m.tris.iter().filter_map(|t| t.tex).collect();
+                tex.sort_unstable();
+                tex.dedup();
+                let mut t = Table::new();
+                t.set_str("triangles", Value::Num(m.tris.len() as f64));
+                t.set_str("min", v(lo));
+                t.set_str("max", v(hi));
+                t.set_str(
+                    "textures",
+                    Value::table(Table::from_list(
+                        tex.into_iter().map(|i| Value::Num(f64::from(i))).collect(),
+                    )),
+                );
+                Ok(vec![Value::table(t)])
+            }
+            _ => {
+                let n = check_num(lua, args, 0, name)? as u32;
+                Ok(vec![Value::Bool(self.me().meshes.meshes.remove(&n).is_some())])
+            }
+        }
+    }
+
+    /// `mesh.new`'s spec as a mesh.
+    fn mesh_from(&mut self, lua: &Lua, spec: &Table, fname: &str) -> Result<super::hstudio_meshes::Mesh, Throw> {
+        use super::hstudio_meshes::{FACES, Mesh, Tri, add_box, box_uv};
+        let err = |e: &str| lua.rt_error(format!("{fname}: {e}"));
+        let color =
+            |v: Value, d: u32| -> Result<u32, Throw> { if v.is_nil() { Ok(d) } else { color_arg(lua, &[v], 0, d) } };
+        let argb = color(spec.get_str("color"), 0xFFFF_FFFF)?;
+        let texture = match spec.get_str("texture") {
+            Value::Nil => None,
+            v => {
+                let t = v.to_num().ok_or_else(|| err("texture is a texture id"))? as u32;
+                if !self.me().meshes.textures.contains_key(&t) {
+                    return Err(err(&format!("this mod has no texture {t}")));
+                }
+                Some(t)
+            }
+        };
+        let size = texture
+            .and_then(|t| self.me().meshes.textures.get(&t))
+            .map_or([16.0, 16.0], |t| [t.w as f32, t.h as f32]);
+        let nums = |v: &Value, n: usize| -> Option<Vec<f32>> {
+            let Value::Table(t) = v else { return None };
+            let list = t.borrow().list();
+            (list.len() >= n).then(|| list.iter().take(n).map(|x| x.to_num().unwrap_or(0.0) as f32).collect())
+        };
+        let mut mesh = Mesh::default();
+        let verts: Vec<[f32; 3]> = match spec.get_str("vertices") {
+            Value::Nil => Vec::new(),
+            Value::Table(t) => t
+                .borrow()
+                .list()
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    nums(v, 3)
+                        .map(|p| [p[0], p[1], p[2]])
+                        .ok_or_else(|| err(&format!("vertices[{}] is {{x, y, z}}", i + 1)))
+                })
+                .collect::<Result<_, _>>()?,
+            _ => return Err(err("vertices is a list of {x, y, z}")),
+        };
+        let uvs: Vec<[f32; 2]> = match spec.get_str("uvs") {
+            Value::Table(t) => t
+                .borrow()
+                .list()
+                .iter()
+                .map(|v| nums(v, 2).map_or([0.0, 0.0], |p| [p[0], p[1]]))
+                .collect(),
+            _ => Vec::new(),
+        };
+        if let Value::Table(faces) = spec.get_str("faces") {
+            for (i, f) in faces.borrow().list().iter().enumerate() {
+                let bad = || {
+                    err(&format!(
+                        "faces[{}] is {{a, b, c}} or {{v = {{...}}, uv = {{...}}}} (vertex numbers from 1)",
+                        i + 1
+                    ))
+                };
+                let Value::Table(ft) = f else { return Err(bad()) };
+                let ft = ft.borrow();
+                let (vs, us, c) = match ft.get_str("v") {
+                    Value::Nil => (ft.list(), Vec::new(), argb),
+                    Value::Table(v) => {
+                        let us = match ft.get_str("uv") {
+                            Value::Table(u) => u.borrow().list(),
+                            _ => Vec::new(),
+                        };
+                        (v.borrow().list(), us, color(ft.get_str("color"), argb)?)
+                    }
+                    _ => return Err(bad()),
+                };
+                let index = |v: &Value, len: usize| -> Option<usize> {
+                    let n = v.to_num()?;
+                    (n >= 1.0 && n as usize <= len && n.fract() == 0.0).then(|| n as usize - 1)
+                };
+                let corners: Vec<([f32; 3], [f32; 2])> = vs
+                    .iter()
+                    .enumerate()
+                    .map(|(k, v)| {
+                        let p = verts[index(v, verts.len()).ok_or_else(bad)?];
+                        // Each corner's uv: given, else the vertex's own.
+                        let uv = match us.get(k) {
+                            Some(u) => uvs
+                                .get(index(u, uvs.len()).ok_or_else(bad)?)
+                                .copied()
+                                .unwrap_or([0.0; 2]),
+                            None => index(v, uvs.len())
+                                .and_then(|j| uvs.get(j).copied())
+                                .unwrap_or([0.0; 2]),
+                        };
+                        Ok((p, uv))
+                    })
+                    .collect::<Result<_, Throw>>()?;
+                if corners.len() < 3 {
+                    return Err(bad());
+                }
+                for k in 1..corners.len() - 1 {
+                    let (a, b, d) = (corners[0], corners[k], corners[k + 1]);
+                    if mesh.tris.len() >= super::hstudio_meshes::MAX_TRIANGLES {
+                        return Err(err("too many triangles"));
+                    }
+                    mesh.tris.push(Tri {
+                        p: [a.0, b.0, d.0],
+                        uv: [a.1, b.1, d.1],
+                        argb: c,
+                        tex: texture,
+                    });
+                }
+            }
+        }
+        if let Value::Table(boxes) = spec.get_str("boxes") {
+            for (i, b) in boxes.borrow().list().iter().enumerate() {
+                let bad = |what: &str| err(&format!("boxes[{}]: {what}", i + 1));
+                let Value::Table(bt) = b else {
+                    return Err(bad("a box is {from = {x, y, z}, to = {x, y, z}, ...}"));
+                };
+                let bt = bt.borrow();
+                let (Some(from), Some(to)) = (nums(&bt.get_str("from"), 3), nums(&bt.get_str("to"), 3)) else {
+                    return Err(bad("needs from and to, each {x, y, z} in pixels"));
+                };
+                let lo = [from[0].min(to[0]), from[1].min(to[1]), from[2].min(to[2])];
+                let hi = [from[0].max(to[0]), from[1].max(to[1]), from[2].max(to[2])];
+                let c = color(bt.get_str("color"), argb)?;
+                let dims = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+                let at = nums(&bt.get_str("uv"), 2);
+                let faces = bt.get_str("faces");
+                let rect_of = |dir: &str| -> Option<([f32; 4], i32)> {
+                    if let Value::Table(f) = &faces {
+                        return nums(&f.borrow().get_str(dir), 4).map(|r| ([r[0], r[1], r[2], r[3]], 0));
+                    }
+                    Some((at.as_ref().map_or([0.0; 4], |a| box_uv(dir, a[0], a[1], dims, true)), 0))
+                };
+                let _ = FACES;
+                add_box(&mut mesh, lo, hi, c, texture, size, rect_of).map_err(|e| bad(&e))?;
+            }
+        }
+        if mesh.tris.is_empty() {
+            return Err(err("give faces (with vertices) or boxes"));
+        }
+        Ok(mesh)
+    }
+
     /// `model.*`: this mod's attached models.
     fn model(&mut self, lua: &Lua, id: u32, args: &[Value]) -> Res {
         use super::hstudio_models::{Attachment, MAX_MODELS, apply_spec, check_part, target_of};
@@ -3083,8 +3748,13 @@ impl Ctx<'_> {
                 self.s.next_model += 1;
                 let mut a = Attachment::new(self.s.next_model, &part);
                 apply_spec(lua, &mut a, &spec.borrow(), "model.attach")?;
-                if a.item.is_none() && a.boxes.is_empty() {
-                    return Err(lua.rt_error("model.attach: give an item or boxes"));
+                if let Some(m) = a.mesh
+                    && !self.me().meshes.meshes.contains_key(&m)
+                {
+                    return Err(lua.rt_error(format!("model.attach: this mod has no mesh {m}")));
+                }
+                if a.item.is_none() && a.boxes.is_empty() && a.mesh.is_none() {
+                    return Err(lua.rt_error("model.attach: give an item, boxes or a mesh"));
                 }
                 let n = a.id;
                 self.s.owner_mod(self.owner).models.push(a);
@@ -3127,6 +3797,9 @@ impl Ctx<'_> {
                             t.set_str("item", Value::str(item));
                         }
                         t.set_str("boxes", Value::Num(a.boxes.len() as f64));
+                        if let Some(mesh) = a.mesh {
+                            t.set_str("mesh", Value::Num(f64::from(mesh)));
+                        }
                         t.set_str(
                             "target",
                             a.target.map_or(Value::str("player"), |id| Value::Num(f64::from(id))),
@@ -3775,7 +4448,11 @@ impl Host for Ctx<'_> {
             }
             110..=115 => self.draw(lua, id, &args),
             116 => self.draw_item(lua, &args),
+            117 => self.draw_mesh(lua, &args),
+            118 => self.draw_triangle(lua, &args),
             170..=174 => self.model(lua, id, &args),
+            180..=188 => self.texture(lua, id, &args),
+            190..=194 => self.mesh(lua, id, &args),
             175 => Ok(vec![match self.game.pose() {
                 None => Value::Nil,
                 Some(p) => {

@@ -4,7 +4,7 @@
 // Geist Mono text at the screen's own resolution, laid out in dp (the
 // launcher's logical pixels). Colours are the HUD's (`0xAABBGGRR`).
 
-use super::{Cached, Face, Key, Ui, with_cache};
+use super::{Cached, Face, Key, Rect, Ui, with_cache};
 use crate::hud::{HudAtlas, HudBatch};
 use ab_glyph::{Font as _, FontRef, PxScale, ScaleFont as _};
 
@@ -71,6 +71,68 @@ pub fn measure(atlas: &HudAtlas, batch: &mut HudBatch, font: Font, size: f32, s:
 /// Hands the glyphs rasterized this frame to the batch's atlas uploads.
 pub fn flush(atlas: &HudAtlas, batch: &mut HudBatch) {
     ui(atlas, batch).finish();
+}
+
+thread_local! {
+    /// The version of each script image's pixels in the atlas, by key.
+    static VERSIONS: std::cell::RefCell<std::collections::HashMap<u32, u32>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// A script mod's image (RGBA, row by row) in the atlas's run-time region,
+/// beside the toolkit's glyphs: its uv rectangle `[u0, v0, u1, v1]`, and
+/// whether it went there just now (its pixels reach the GPU with this
+/// frame's HUD, after the world has drawn). `key` names the image and
+/// `version` its pixels: new ones go to the same place, and show from the
+/// next frame. When glyphs fill the region it is emptied, and the image goes
+/// there again the next time it is drawn.
+pub fn image(atlas: &HudAtlas, key: u32, version: u32, w: u32, h: u32, rgba: &[u8]) -> Option<([f32; 4], bool)> {
+    if w == 0 || h == 0 || rgba.len() != (w * h * 4) as usize {
+        return None;
+    }
+    // A key no glyph has: Geist's glyph ids stay below 0x4000, and Mono's
+    // carry 0x8000.
+    let k = Key::Glyph(Face::Regular, 0x4000 | (key & 0x3FFF) as u16, (key >> 14) as u16);
+    let (aw, ah) = (atlas.width as f32, atlas.height as f32);
+    let patch = |x: u32, y: u32| crate::font::Patch {
+        x,
+        y,
+        width: w,
+        height: h,
+        rgba: rgba.to_vec(),
+    };
+    with_cache(atlas, |c| {
+        if let Some(r) = c.entries.get(&k).and_then(|hit| hit.rect) {
+            if VERSIONS.with(|v| v.borrow_mut().insert(key, version)) != Some(version) {
+                c.pending.push(patch((r.u0 * aw).round() as u32, (r.v0 * ah).round() as u32));
+            }
+            return Some(([r.u0, r.v0, r.u1, r.v1], false));
+        }
+        let (x, y, region) = c.place(atlas, w, h)?;
+        let (ax, ay) = (
+            (region.u0 * aw).round() as u32 + x,
+            (region.v0 * ah).round() as u32 + y,
+        );
+        c.pending.push(patch(ax, ay));
+        VERSIONS.with(|v| v.borrow_mut().insert(key, version));
+        let rect = Rect {
+            u0: ax as f32 / aw,
+            v0: ay as f32 / ah,
+            u1: (ax + w) as f32 / aw,
+            v1: (ay + h) as f32 / ah,
+            w,
+            h,
+        };
+        c.entries.insert(
+            k,
+            Cached {
+                rect: Some(rect),
+                left: 0.0,
+                top: 0.0,
+            },
+        );
+        Some(([rect.u0, rect.v0, rect.u1, rect.v1], true))
+    })
 }
 
 fn mono_scale(font: &FontRef<'static>, px: f32) -> PxScale {

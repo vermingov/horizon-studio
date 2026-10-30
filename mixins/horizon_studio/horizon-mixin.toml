@@ -80,6 +80,12 @@ name = "hstudio_natrium"
 source = "natrium.rs"
 
 [[module]]
+id = "meshes"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_meshes"
+source = "meshes.rs"
+
+[[module]]
 id = "models"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_models"

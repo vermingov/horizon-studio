@@ -22,10 +22,11 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 sha2 = "0.10.9"
+# The game has it (png 0.18): textures from script mods' PNG files.
+png = "0.18"
 # The game's protocol crate, as far as ViaHorizon uses it: its added module.
 horizon-protocol = { path = "tests/shim/horizon-protocol" }
 
 [dev-dependencies]
 # The preview test (tests/preview.rs): Horizon's fonts, rasterized as the game does, into PNG files.
 ab_glyph = "0.2.32"
-png = "0.18"
