@@ -4,8 +4,8 @@
 // the network or other processes.
 
 use super::hstudio_lua::{
-    Host, Lua, MAX_STRING, Native, Res, Str, Table, TableRef, Throw, Value, arg, bad_arg, check_func, check_int,
-    check_num, check_str, check_table, fmt_g, fmt_num, opt_int, opt_num, opt_str, str_to_num,
+    Host, Lua, MAX_STRING, Native, Res, Resume, Str, Table, TableRef, Thread, Throw, Value, arg, bad_arg, check_func,
+    check_int, check_num, check_str, check_table, fmt_g, fmt_num, opt_int, opt_num, opt_str, str_to_num,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -16,7 +16,7 @@ pub fn new_env(lua: &mut Lua) -> TableRef {
     let env = Rc::new(RefCell::new(Table::new()));
     {
         let mut g = env.borrow_mut();
-        let base: [(&str, super::hstudio_lua::Builtin); 22] = [
+        let base: [(&str, super::hstudio_lua::Builtin); 20] = [
             ("print", print),
             ("type", type_),
             ("tostring", tostring),
@@ -33,8 +33,6 @@ pub fn new_env(lua: &mut Lua) -> TableRef {
             ("getmetatable", getmetatable),
             ("error", error),
             ("assert", assert),
-            ("pcall", pcall),
-            ("xpcall", xpcall),
             ("unpack", unpack),
             ("dump", dump),
             ("inspect", dump),
@@ -43,6 +41,8 @@ pub fn new_env(lua: &mut Lua) -> TableRef {
         for (name, f) in base {
             g.set_str(name, Native::builtin(name, f));
         }
+        g.set_str("pcall", Native::pcall("pcall", false));
+        g.set_str("xpcall", Native::pcall("xpcall", true));
         g.set_str(
             "load",
             Native::with_state("load", load, vec![Value::Table(env.clone())]),
@@ -54,6 +54,7 @@ pub fn new_env(lua: &mut Lua) -> TableRef {
         g.set_str("table", Value::Table(table_lib()));
         g.set_str("os", Value::Table(os_lib()));
         g.set_str("utf8", Value::Table(utf8_lib()));
+        g.set_str("coroutine", Value::Table(coroutine_lib()));
     }
     if lua.string_lib.is_none()
         && let Value::Table(s) = env.borrow().get_str("string")
@@ -231,6 +232,7 @@ fn setmetatable(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -
     if protected {
         return Err(lua.rt_error("cannot change a protected metatable"));
     }
+    readonly(lua, &t)?;
     t.borrow_mut().meta = mt;
     one(args[0].clone())
 }
@@ -268,41 +270,6 @@ fn assert(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res 
     match args.get(1) {
         Some(m) if !m.is_nil() => Err(Throw::Error(m.clone(), lua.traceback())),
         _ => Err(lua.rt_error("assertion failed!")),
-    }
-}
-
-fn pcall(lua: &mut Lua, h: &mut dyn Host, _: &Native, mut args: Vec<Value>) -> Res {
-    if args.is_empty() {
-        return Err(bad_arg(lua, 0, "pcall", "value expected"));
-    }
-    let f = args.remove(0);
-    match lua.call(h, &f, args) {
-        Ok(mut r) => {
-            r.insert(0, Value::Bool(true));
-            Ok(r)
-        }
-        Err(Throw::Error(v, _)) => Ok(vec![Value::Bool(false), v]),
-        Err(fatal) => Err(fatal),
-    }
-}
-
-fn xpcall(lua: &mut Lua, h: &mut dyn Host, _: &Native, mut args: Vec<Value>) -> Res {
-    if args.len() < 2 {
-        return Err(bad_arg(lua, 1, "xpcall", "value expected"));
-    }
-    let f = args.remove(0);
-    let handler = args.remove(0);
-    match lua.call(h, &f, args) {
-        Ok(mut r) => {
-            r.insert(0, Value::Bool(true));
-            Ok(r)
-        }
-        Err(Throw::Error(v, _)) => {
-            let mut r = lua.call(h, &handler, vec![v])?;
-            r.insert(0, Value::Bool(false));
-            Ok(r)
-        }
-        Err(fatal) => Err(fatal),
     }
 }
 
@@ -1617,6 +1584,14 @@ fn t_move(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res 
     one(Value::Table(a2))
 }
 
+/// Writes to a frozen table fail.
+fn readonly(lua: &Lua, t: &TableRef) -> Result<(), Throw> {
+    if t.borrow().is_readonly() {
+        return Err(lua.rt_error("attempt to modify a readonly table"));
+    }
+    Ok(())
+}
+
 fn t_insert(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
     let t = check_table(lua, &args, 0, "insert")?;
     let n = t.borrow().len();
@@ -1632,12 +1607,16 @@ fn t_insert(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Re
         }
         _ => return Err(lua.rt_error("wrong number of arguments to 'insert'")),
     };
-    r.map_err(|_| Throw::Fatal("table is too large".into()))?;
+    r.map_err(|e| match e {
+        "table is too large" => Throw::Fatal(e.into()),
+        e => lua.rt_error(e),
+    })?;
     Ok(Vec::new())
 }
 
 fn t_remove(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
     let t = check_table(lua, &args, 0, "remove")?;
+    readonly(lua, &t)?;
     let n = t.borrow().len();
     let pos = opt_int(lua, &args, 1, "remove", n as i64)?;
     if args.len() > 1 && n + 1 != pos as usize && (pos < 1 || pos as usize > n) && !(n == 0 && pos == 0) {
@@ -1694,6 +1673,7 @@ fn t_pack(_: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
 
 fn t_sort(lua: &mut Lua, h: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
     let t = check_table(lua, &args, 0, "sort")?;
+    readonly(lua, &t)?;
     let cmp = match args.get(1) {
         None | Some(Value::Nil) => None,
         Some(_) => Some(check_func(lua, &args, 1, "sort")?),
@@ -1741,6 +1721,110 @@ fn merge_sort(lua: &mut Lua, h: &mut dyn Host, mut src: Vec<Value>, cmp: Option<
         width *= 2;
     }
     Ok(src)
+}
+
+// ----------------------------------------------------------------- coroutine
+
+fn coroutine_lib() -> TableRef {
+    lib(&[
+        ("create", co_create),
+        ("resume", co_resume),
+        ("yield", co_yield),
+        ("status", co_status),
+        ("wrap", co_wrap),
+        ("isyieldable", co_isyieldable),
+        ("running", co_running),
+        ("close", co_close),
+    ])
+}
+
+fn check_thread(lua: &Lua, args: &[Value], i: usize, fname: &str) -> Result<Rc<Thread>, Throw> {
+    match args.get(i) {
+        Some(Value::Thread(t)) => Ok(t.clone()),
+        _ => Err(bad_arg(lua, i, fname, "coroutine expected")),
+    }
+}
+
+fn check_function(lua: &Lua, args: &[Value], fname: &str) -> Result<Value, Throw> {
+    match args.first() {
+        Some(f) if f.is_callable() => Ok(f.clone()),
+        other => {
+            let got = other.map_or("no value", Value::type_name);
+            Err(bad_arg(lua, 0, fname, &format!("function expected, got {got}")))
+        }
+    }
+}
+
+fn co_create(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let f = check_function(lua, &args, "create")?;
+    one(Value::Thread(lua.new_thread(f)))
+}
+
+fn co_resume(lua: &mut Lua, h: &mut dyn Host, _: &Native, mut args: Vec<Value>) -> Res {
+    let co = check_thread(lua, &args, 0, "resume")?;
+    args.remove(0);
+    match lua.resume(h, &co, args) {
+        Resume::Done(mut v) | Resume::Yielded(mut v) => {
+            v.insert(0, Value::Bool(true));
+            Ok(v)
+        }
+        Resume::Error(Throw::Error(e, _)) => Ok(vec![Value::Bool(false), e]),
+        Resume::Error(fatal) => Err(fatal),
+    }
+}
+
+fn co_yield(_: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    Err(Throw::Yield(args))
+}
+
+fn co_status(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let co = check_thread(lua, &args, 0, "status")?;
+    one(Value::str(co.status().name()))
+}
+
+fn co_wrap(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let f = check_function(lua, &args, "wrap")?;
+    let co = lua.new_thread(f);
+    one(Native::with_state("wrap", wrap_step, vec![Value::Thread(co)]))
+}
+
+/// A `coroutine.wrap` function: resumes its coroutine; an error goes on
+/// with where it was called from in front, as in Lua.
+fn wrap_step(lua: &mut Lua, h: &mut dyn Host, me: &Native, args: Vec<Value>) -> Res {
+    let co = match me.state.borrow().first() {
+        Some(Value::Thread(t)) => t.clone(),
+        _ => return Err(lua.rt_error("cannot resume dead coroutine")),
+    };
+    match lua.resume(h, &co, args) {
+        Resume::Done(v) | Resume::Yielded(v) => Ok(v),
+        Resume::Error(Throw::Error(Value::Str(s), tb)) => {
+            let msg = match lua.position(1) {
+                Some(at) => format!("{at} {}", String::from_utf8_lossy(&s)),
+                None => String::from_utf8_lossy(&s).into_owned(),
+            };
+            Err(Throw::Error(Value::str(&msg), tb))
+        }
+        Resume::Error(e) => Err(e),
+    }
+}
+
+fn co_isyieldable(lua: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {
+    one(Value::Bool(lua.is_yieldable()))
+}
+
+fn co_running(lua: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {
+    let t = lua.current_thread();
+    let main = t.is_main();
+    Ok(vec![Value::Thread(t), Value::Bool(main)])
+}
+
+fn co_close(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let co = check_thread(lua, &args, 0, "close")?;
+    match lua.close_thread(&co) {
+        Ok(None) => one(Value::Bool(true)),
+        Ok(Some(e)) => Ok(vec![Value::Bool(false), e]),
+        Err(msg) => Err(lua.rt_error(msg)),
+    }
 }
 
 // ----------------------------------------------------------------- os

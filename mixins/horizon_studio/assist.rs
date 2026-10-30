@@ -411,6 +411,46 @@ pub const STDLIB: &[(&str, &str, &str)] = &[
         "A pattern that matches one UTF-8 character: \"[\\0-\\x7F\\xC2-\\xFD][\\x80-\\xBF]*\"",
     ),
     (
+        "coroutine.create",
+        "coroutine.create(f)",
+        "A new coroutine that will run f, suspended until the first coroutine.resume",
+    ),
+    (
+        "coroutine.resume",
+        "coroutine.resume(co, ...)",
+        "Runs co until it yields or ends: returns true and the values it yielded or returned, or false and the e...",
+    ),
+    (
+        "coroutine.yield",
+        "coroutine.yield(...)",
+        "Suspends the running coroutine: its coroutine.resume returns true and these values, and the next resum...",
+    ),
+    (
+        "coroutine.status",
+        "coroutine.status(co)",
+        "\"suspended\" (not started, or yielded), \"running\", \"normal\" (it resumed another, which runs) or \"dead\"",
+    ),
+    (
+        "coroutine.wrap",
+        "coroutine.wrap(f)",
+        "A function that resumes a new coroutine running f each time it is called, returning what it yields or ...",
+    ),
+    (
+        "coroutine.isyieldable",
+        "coroutine.isyieldable()",
+        "Whether the running code can yield: inside a coroutine, and not inside a function a built-in called back",
+    ),
+    (
+        "coroutine.running",
+        "coroutine.running()",
+        "The running coroutine, and true when it is the main one (outside any coroutine)",
+    ),
+    (
+        "coroutine.close",
+        "coroutine.close(co)",
+        "Ends a suspended or dead coroutine for good (Lua 5.4's): returns true, or false and the error when it ...",
+    ),
+    (
         "os.clock",
         "os.clock()",
         "Seconds since the studio's interpreter started, by the wall clock (not CPU time as in real Lua)",

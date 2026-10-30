@@ -2313,6 +2313,7 @@ pub fn lua_to_json(v: &Value, depth: usize) -> Result<serde_json::Value, String>
             }
         }
         Value::Func(_) | Value::Native(_) => return Err("functions have no JSON form".into()),
+        Value::Thread(_) | Value::Userdata(_) => return Err(format!("a {} has no JSON form", v.type_name())),
     })
 }
 
@@ -2386,6 +2387,7 @@ pub fn serialize(v: &Value, depth: usize, out: &mut String) -> Result<(), String
             out.push('}');
         }
         Value::Func(_) | Value::Native(_) => return Err("functions cannot be stored".into()),
+        Value::Thread(_) | Value::Userdata(_) => return Err(format!("a {} cannot be stored", v.type_name())),
     }
     Ok(())
 }

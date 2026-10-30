@@ -63,8 +63,8 @@ Once the `horizon-studio` tools are available:
    default (Options → Mods → Horizon Studio → AI link (MCP)). Everything but live testing works without it.
 2. Call `docs` with no arguments: it lists the reference's topics. Read `start`, then the topics your mod needs
    (`events`, `screens`, `world`, `models`, `recipes`...); `docs` with `name` gives one function, event or widget in
-   full, and `search` finds anything by words. Everything about the API, the Lua it runs (Lua 5.3 without coroutines
-   and goto), libraries, limits, errors and the test step format is there: nothing needs looking up elsewhere.
+   full, and `search` finds anything by words. Everything about the API, the Lua it runs (Lua 5.3 without
+   goto), libraries, limits, errors and the test step format is there: nothing needs looking up elsewhere.
 3. Make a small mod to prove it works, and tell the user what you did. For example, a `/hello` command:
 
    - `write_mod` with `{"id": "hello", "files": {"hello.lua": "command('hello', function(rest) return 'Hello, ' .. (rest ~= '' and rest or 'world') .. '!' end, 'says hello')"}}`

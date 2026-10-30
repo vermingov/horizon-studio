@@ -905,6 +905,10 @@ fn lua_snippets() {
         for line in &host.printed {
             out.push_str(&format!("print: {line}\n"));
         }
+        // How deep recursion gets before "stack overflow" depends on the
+        // build (natives calling back into Lua use the game's stack), so
+        // the steps it took are not compared then.
+        let mut deep = false;
         match r {
             Ok(vals) => {
                 let vals: Vec<String> = vals.iter().map(|v| inspect(v, 3)).collect();
@@ -916,9 +920,12 @@ fn lua_snippets() {
                 if !e.traceback().is_empty() {
                     out.push_str(&format!("traceback:\n{}\n", e.traceback()));
                 }
+                deep = e.message().contains("stack overflow");
             }
         }
-        out.push_str(&format!("steps left: {}\n", lua.steps));
+        if !deep {
+            out.push_str(&format!("steps left: {}\n", lua.steps));
+        }
     }
     check("snippets", &scrub(&out)).unwrap();
 }
