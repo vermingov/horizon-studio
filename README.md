@@ -15,6 +15,10 @@ native Horizon mod that adds:
 - **Docs.** The whole script API, in the game.
 - **3D drawing, sounds, particles and screens.** Scripts draw lines, boxes, beams and labels in the world, play
   sounds, spawn particles, and open screens of their own with buttons, toggles, sliders and text fields.
+- **ViaHorizon: join servers of any version.** Like ViaFabricPlus for Fabric: every join goes through
+  [ViaProxy](https://github.com/ViaVersion/ViaProxy), which ViaHorizon downloads and runs beside the game, so you can
+  play on 1.8, 1.12.2, 1.20 or Beta servers with Horizon's 26.3. You type the server's real address; pick the version
+  in Options → Mods → Horizon Studio (or `/via` in game), or leave it on Auto detect.
 - **Libraries and modules.** A mod can export functions for other mods to `import`: a UI library, a pathfinder, a
   shared config. Libraries load first, and mods using one reload with it. Mods send each other events, and
   `gfx.*` draws in Horizon's own style (rounded shapes, the Geist fonts) so a UI library can be written in Lua. The
@@ -80,6 +84,37 @@ In a world, press **F8** (or type `/studio`). Escape or F8 closes it. The world 
 
 Ctrl+1 to Ctrl+4 switch tabs. In chat: `/studio` opens it, `/studio reload` reloads every script mod, and
 `/lua <code>` runs code and prints the result in chat.
+
+## ViaHorizon
+
+ViaHorizon joins servers of other versions as ViaFabricPlus does, with
+[ViaProxy](https://github.com/ViaVersion/ViaProxy) doing the translating: Classic, Alpha, Beta, every release from 1.0
+to 26.3, and Bedrock (experimental, as in ViaProxy). It is on from the start, set to **Auto detect** (ViaProxy asks
+the server its version).
+
+- **Choose the version:** Options → Mods → Horizon Studio, from the title screen: *ViaHorizon: On/Off*, *Join servers
+  as* (each click the next version), *Previous version*, *Auto detect the version*, and its state. In a world, `/via`
+  opens a searchable list, and `/via 1.8.x` picks one directly. The choice applies from the next join.
+- **Then join as usual**, from the server list or Direct Connection, with the server's own address. The server list
+  pings through ViaProxy too when a version is chosen, so it shows those servers as joinable.
+- **Online-mode servers** sign in with the account you play with: ViaProxy asks the game (with the
+  [OpenAuthMod](https://github.com/ViaVersionAddons/ViaProxyOpenAuthMod) protocol) and the game joins the server's
+  session itself, as for any server. Your account's token never leaves the game, and nothing is set up in ViaProxy.
+- **The first time**, ViaHorizon downloads ViaProxy 3.4.14 (49 MB, from ViaVersion's Maven repository) and its
+  OpenAuthMod plugin (from GitHub), both checked against pinned SHA-256 checksums. ViaProxy needs Java 17 or newer:
+  ViaHorizon uses `JAVA_HOME`, the `java` on your PATH, the runtime the Minecraft launcher installed, or a JDK in the
+  usual places; with none of these, it downloads Eclipse Temurin 21 (about 50 MB, from Adoptium, checksum verified).
+  Everything goes in `horizon-mods/.horizon-mod-data/horizon_studio/viahorizon/`.
+- **ViaProxy listens on 127.0.0.1 only**, on a free port, and stops with the game: a small watcher (a shell loop, or
+  PowerShell on Windows) ends it when the game's process is gone, even after a crash. It starts when the game does,
+  about 3 seconds after Java is ready, so the first join doesn't wait.
+- **When it can't start** (no Java and no download), joins with Auto detect go straight to the server; with a
+  version chosen, the join says why. The state line on the settings page says what it is doing, and a click retries.
+  `/vialog` prints ViaProxy's last lines to the Studio console.
+
+What ViaProxy translates is the protocol: blocks, items, entities, chat, the world. It does not turn Horizon's 26.3
+movement and combat into an old version's, as ViaFabricPlus's emulation does inside a Fabric client, so on a 1.8
+PvP server you move and hit as in 26.3, which some anticheats notice. Joining as 26.3 skips ViaProxy.
 
 ## Write a script mod
 
@@ -182,6 +217,8 @@ The Library's **New mod** writes a file like this to start from.
 | `gfx.rect(x, y, w, h[, color[, radius]])`, `gfx.border(x, y, w, h[, color[, radius]])` | A rounded rectangle; a 1 dp rounded outline. In dp, Horizon's logical pixels, inside `on("hud")` or a screen's `draw`. |
 | `gfx.text(x, y, text[, color[, size[, font]]])` | Geist text, `font` `"regular"`, `"medium"` or `"mono"`, `size` in dp (14); `y` is the top of its line, 1.45 × `size` tall. Returns its width. |
 | `gfx.measure(text[, size[, font]])`, `gfx.size()` | A text's width in dp; the screen's size in dp. |
+| `via.status()`, `via.versions()` | ViaHorizon: `{enabled, version, label, text, ready}`; the versions it joins as, newest first, `{id, label}`. |
+| `via.enable(on)`, `via.version(id)`, `via.log()` | Join through ViaProxy or straight; the version from the next join (`"1.8.x"`, `"auto"`...); ViaProxy's last lines. |
 | `gfx.mouse()` | While the mod's screen shows: the pointer's x and y in dp, whether the left and right buttons are held. |
 
 The agent commands are those of Horizon's `horizon-ctl` ([agent control](https://github.com/horizon-rust/horizon/blob/main/docs/agent-control.md)),
@@ -322,6 +359,7 @@ The Library installs these; their source is in [`examples/`](examples).
 | Selection box | `draw.box` and a size label between two corners (`/pos1`, `/pos2`), `sound.play` |
 | Playground | a screen with a toggle, a slider, a button and a text field; `world.particle`, `sound.at` |
 | UI Kit | a library mod: `gfx.*`, a canvas screen, `export` (installed with the studio) |
+| ViaHorizon | the ViaHorizon screen: `via.*`, a searchable list made with the UI Kit (`/via`, installed with the studio) |
 | UI Kit demo | `import("uikit")`: tabs, toggles, a slider, a text field, a list and a HUD card (`/kitdemo`) |
 
 ## Safety
@@ -336,10 +374,16 @@ changes options.
 That is protection against mistakes and runaway scripts. Treat a script from someone else like any program that can
 play the game as you: it can run commands and act as your player.
 
+ViaHorizon, part of the studio's native code rather than a script, downloads and runs programs: ViaProxy (GPL-3.0,
+by the ViaVersion team) and its OpenAuthMod plugin, at pinned versions with pinned checksums, and a Java runtime
+from Adoptium when there is none (checked against Adoptium's checksum). They are downloaded from their publishers,
+not shipped here. ViaProxy runs as you, listening only on the loopback. Turn ViaHorizon off in Options → Mods →
+Horizon Studio to join servers directly and keep ViaProxy from starting.
+
 ## How it hooks into Horizon
 
-The bundle is `mixins/horizon_studio/`: `horizon-mixin.toml`, six modules added to the game's `game.rs`, and one
-small helper per hook.
+The bundle is `mixins/horizon_studio/`: `horizon-mixin.toml`, the studio's modules added to the game's `game.rs`,
+ViaHorizon's to its network code, and one small helper per hook.
 
 | Module | What it is |
 |---|---|
@@ -349,8 +393,12 @@ small helper per hook.
 | `ui.rs` (`hstudio_ui`) | The screen: console, editor, library, docs; input |
 | `examples.rs` (`hstudio_examples`) | The bundled examples, generated from `examples/` |
 | `bridge.rs` (`hstudio_bridge`) | The only module that knows Horizon's `Game`: the hooks and the game's side of the API |
+| `paint.rs` (`ui_theme::hstudio_paint`) | In the game's library: Horizon's design system's shapes and fonts, for the studio and `gfx.*` |
+| `via.rs` (`net::hstudio_via`) | In the game's library: ViaHorizon's settings, Java, the downloads, ViaProxy's process, which joins it routes |
+| `via_auth.rs` (`net::hstudio_via_auth`) | ViaHorizon's sign-in with the account a join is made as |
+| `via_net.rs` (`horizon_protocol::hstudio_via_net`) | In the protocol crate: ViaProxy's internal host, the redirect, OpenAuthMod's answers |
 
-The hooks, all HEAD hooks:
+The hooks, all HEAD hooks (via-address, via-srv and via-recv can answer in their function's place):
 
 | Hook | Target | For |
 |---|---|---|
@@ -359,9 +407,13 @@ The hooks, all HEAD hooks:
 | overlay | `game::remote::remote_hud` | the studio's screen and the scripts' screens, drawn last |
 | world | `game::end::end_geometry` | each frame in a world, with its camera: `draw.*` shapes go into the entity geometry, depth tested |
 | chat | `game::remote::chat_line` | `on("chat")` |
+| via-address | `horizon_protocol::servers::parse_address` | on the threads that join and ping servers, an address ViaHorizon routes parses as ViaProxy's internal host (the server and version, for ViaProxy to read from the handshake) |
+| via-srv | `horizon_protocol::resolver::srv_redirect` | that host's SRV lookup answers with the local ViaProxy, so the connection goes there |
+| via-recv | `horizon_protocol::connection::Connection::recv` | during login, ViaProxy's OpenAuthMod sign-in requests are answered |
+| via-session, via-transfer | `net::Session::connect`, `connect_transferred` | the account the join is made as, for that sign-in |
 | hud, key, command, zoom, list, settings, click | Horizon's [native hook points](https://github.com/horizon-rust/horizon/blob/main/crates/horizon-client/src/game/native_hooks.rs) | the HUD, keys, commands, `view.zoom`, the Options → Mods row and page |
 
-The first five go beyond the stable hook points, so the bundle pins one Horizon commit (a Nightly's,
+The first five, and ViaHorizon's, go beyond the stable hook points, so the bundle pins one Horizon commit (a Nightly's,
 `compatibility.json`): the launcher builds it on that commit. Their bodies are free of macros, which the launcher's
 horizon-mixins (`0d6b103`) requires of a hooked function. The studio opens over the game's chat screen, which frees
 the pointer and keeps the world running while it takes the keyboard.
@@ -371,8 +423,8 @@ Moving to a new Nightly: change `horizon_revision` in `horizon-mixin.toml` and `
 
 ## Develop
 
-Everything but `bridge.rs` builds and tests without the game: `src/lib.rs` mounts the modules at the paths they
-have in the game.
+Everything but `bridge.rs` and `via_auth.rs` builds and tests without the game: `src/lib.rs` mounts the modules at
+the paths they have in the game (`tests/shim/horizon-protocol` stands in for the protocol crate ViaHorizon adds to).
 
 ```sh
 cargo test                           # the interpreter, the runtime and the screen, on a fake game
@@ -380,7 +432,14 @@ python3 tools/gen_examples.py        # after editing examples/*.lua
 python3 tools/studio.py check        # apply on the pinned Horizon and cargo check the game
 python3 tools/studio.py build        # build the modded game (fast profile); prints its path
 python3 tools/studio.py package      # target/horizon_studio-<version>.hnmod
+python3 tools/via_e2e.py             # ViaHorizon end to end (after check): see below
 ```
+
+`tools/via_e2e.py` builds `tools/via_probe.rs` inside the staged game and joins two fake 1.8 servers
+(`tools/fake_server_1_8.py`, offline and online mode) through the real ViaProxy, as 1.8.x and with Auto detect,
+using the game's own network code: the server list's ping, the join up to the configuration's end, the online
+server's encryption with ViaProxy's sign-in request answered, and the refusal without an account. It needs Java
+17+ (or downloads it) and Python's `cryptography`.
 
 `check` and `build` need Horizon's build requirements (on Linux, `libasound2-dev libudev-dev`). They download the
 pinned Horizon from GitHub, or export it from a checkout with `--horizon PATH`, and build horizon-mixins once at its
@@ -392,7 +451,8 @@ The built game needs resources prepared from your own Minecraft 26.3, as Horizon
 ## Status
 
 0.1.0. The interpreter, the runtime and the screen's logic are covered by tests on a fake game, and the bundle
-applies to the pinned Horizon and the modded game compiles. It has not been played in a running game yet: the
-drawing, layout and input are untested on screen, so expect rough edges there.
+applies to the pinned Horizon and the modded game compiles. ViaHorizon's joins run end to end, through the game's
+network code and the real ViaProxy, against fake 1.8 servers. It has not been played in a running game yet: the
+drawing, layout and input are untested on screen, and ViaHorizon hasn't met a real server, so expect rough edges.
 
 License: MIT.

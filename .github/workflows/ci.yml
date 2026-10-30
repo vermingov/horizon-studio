@@ -38,3 +38,22 @@ jobs:
         with:
           name: hnmod
           path: target/*.hnmod
+
+  # ViaHorizon end to end: the modded game's network code joins two fake 1.8
+  # servers (offline and online mode) through the real ViaProxy, which
+  # ViaHorizon downloads (checksums checked) and runs itself.
+  viahorizon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev python3-cryptography
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target/horizon-mixins
+            target/game
+          key: via-${{ hashFiles('compatibility.json') }}
+      - run: python3 tools/studio.py check
+      - run: python3 tools/via_e2e.py --data "$RUNNER_TEMP/viahorizon"

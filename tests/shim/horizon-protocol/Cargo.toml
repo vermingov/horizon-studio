@@ -1,0 +1,11 @@
+# A stand-in for the game's horizon-protocol crate, with only what
+# horizon-mixins adds to it (hstudio_via_net), so ViaHorizon's manager
+# (via.rs, which uses it by that path) builds and tests here.
+[package]
+name = "horizon-protocol"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "lib.rs"

@@ -1084,6 +1084,8 @@ fn docs() -> Vec<Doc> {
         Doc::Heading("Libraries".into()),
         Doc::Para("A mod can be a library for others: it calls export(table), or its main file returns a table, and other mods take it with local kit = import(\"uikit\"). Libraries load first; when one reloads, the mods that use it reload too. A library's functions run as the mod that calls them, so what they draw, register or store belongs to that mod. Mods talk to each other with emit(\"name:event\", ...) and on(\"name:event\", fn), and json.encode and json.decode turn tables into text and back.".into()),
         Doc::Para("The bundled uikit is such a library, in plain Lua on gfx.* and canvas screens: open it in the Editor to see how it is made, or to make your own.".into()),
+        Doc::Heading("ViaHorizon".into()),
+        Doc::Para("Joins go through ViaProxy, which runs beside the game and translates Horizon's 26.3 to the server's version, as ViaFabricPlus does: Classic to 26.3, and Bedrock (experimental). /via chooses the version (or Auto detect), and so does Options > Mods > Horizon Studio from the title screen. Online-mode servers sign in with your own account. via.* gives scripts the same controls; /vialog prints ViaProxy's last lines.".into()),
         Doc::Heading("Console".into()),
         Doc::Para("Type Lua and press Enter: it runs at once in the game, and an expression's value is shown. /lua <code> does the same from chat. What the console registers (on, command...) lasts until clear().".into()),
         Doc::Heading("The language".into()),

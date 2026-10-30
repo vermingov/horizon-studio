@@ -191,3 +191,81 @@ bindings = [
   { name = "mod_id", ty = "&str", value = "mod_id" },
   { name = "button", ty = "usize", value = "button" },
 ]
+
+# ViaHorizon: every join goes through ViaProxy (beside the game), which
+# translates to the version chosen. In the protocol crate: where a routed
+# join connects, and OpenAuthMod's sign-in answers; in the game's net: the
+# manager (public, for the studio) and the account's sign-in.
+[[module]]
+id = "via-net"
+file = "crates/horizon-protocol/src/lib.rs"
+name = "hstudio_via_net"
+source = "via_net.rs"
+visibility = "pub"
+
+[[module]]
+id = "via"
+file = "crates/horizon-client/src/net.rs"
+name = "hstudio_via"
+source = "via.rs"
+visibility = "pub"
+
+[[module]]
+id = "via-auth"
+file = "crates/horizon-client/src/net.rs"
+name = "hstudio_via_auth"
+source = "via_auth.rs"
+
+# Joins and the server list's pings: a routed address parses as ViaProxy's
+# internal host, whose SRV lookup points at ViaProxy.
+[[injection]]
+id = "via-address"
+kind = "HEAD"
+cancellable = true
+target = "horizon_protocol::servers::parse_address"
+helper = "via_address.rs"
+bindings = [
+  { name = "text", ty = "&str", value = "text" },
+]
+
+[[injection]]
+id = "via-srv"
+kind = "HEAD"
+cancellable = true
+target = "horizon_protocol::resolver::srv_redirect"
+helper = "via_srv.rs"
+bindings = [
+  { name = "name", ty = "&str", value = "name" },
+]
+
+# Login packets: OpenAuthMod's join requests are answered.
+[[injection]]
+id = "via-recv"
+kind = "HEAD"
+cancellable = true
+target = "horizon_protocol::connection::Connection::recv"
+helper = "via_recv.rs"
+bindings = [
+  { name = "conn", ty = "&mut Connection", value = "&mut *self" },
+]
+
+# A join (or a transfer) notes the account it is made as.
+[[injection]]
+id = "via-session"
+kind = "HEAD"
+target = "horizon_client::net::Session::connect"
+helper = "via_session.rs"
+bindings = [
+  { name = "auth", ty = "&Option<Arc<AuthSession>>", value = "&auth" },
+  { name = "lang", ty = "&Arc<Language>", value = "&lang" },
+]
+
+[[injection]]
+id = "via-transfer"
+kind = "HEAD"
+target = "horizon_client::net::Session::connect_transferred"
+helper = "via_transfer.rs"
+bindings = [
+  { name = "auth", ty = "&Option<Arc<AuthSession>>", value = "&auth" },
+  { name = "lang", ty = "&Arc<Language>", value = "&lang" },
+]

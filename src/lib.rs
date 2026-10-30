@@ -2,6 +2,8 @@
 // them inside the game (`crate::game::<name>`), so they build and test on
 // their own. hstudio_bridge is the one module that needs the game; it is
 // checked by `python3 tools/studio.py check` against the pinned Horizon.
+// ViaHorizon's manager goes into the game's library (`horizon_client::net`)
+// and its protocol side into horizon-protocol (tests/shim stands in).
 
 pub mod game {
     #[path = "../../mixins/horizon_studio/studio.rs"]
@@ -16,4 +18,9 @@ pub mod game {
     pub mod hstudio_lualib;
     #[path = "../../mixins/horizon_studio/ui.rs"]
     pub mod hstudio_ui;
+}
+
+pub mod net {
+    #[path = "../../mixins/horizon_studio/via.rs"]
+    pub mod hstudio_via;
 }

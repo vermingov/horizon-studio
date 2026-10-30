@@ -278,6 +278,31 @@ pub trait GameApi {
     /// `at`; returns its width.
     fn dp_text(&mut self, text: &str, at: [f32; 2], size: f32, font: Font, argb: u32) -> f32;
     fn dp_measure(&mut self, text: &str, size: f32, font: Font) -> f32;
+    /// ViaHorizon: whether joins go through ViaProxy, as which version, and
+    /// what it is doing.
+    fn via(&self) -> ViaInfo {
+        ViaInfo::default()
+    }
+    /// Turns ViaHorizon on or off, or chooses the version joins go as.
+    fn via_set(&mut self, enabled: Option<bool>, version: Option<&str>) -> Result<(), String> {
+        let _ = (enabled, version);
+        Err("ViaHorizon isn't available here".into())
+    }
+}
+
+/// ViaHorizon's state, for `via.*`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ViaInfo {
+    pub enabled: bool,
+    /// ViaProxy's name for it ("1.8.x", "auto").
+    pub version: String,
+    /// What it is doing ("Ready (ViaProxy 3.4.14, Java 21)").
+    pub status: String,
+    pub ready: bool,
+    /// Every version, newest first: (id, label).
+    pub versions: Vec<(String, String)>,
+    /// ViaProxy's last lines.
+    pub log: Vec<String>,
 }
 
 /// Horizon's fonts: Geist and Geist Mono.
@@ -376,7 +401,7 @@ pub enum Overlay {
 }
 
 /// Bundled mods every studio gets once: libraries others build on.
-pub const PREINSTALLED: &[&str] = &["uikit"];
+pub const PREINSTALLED: &[&str] = &["uikit", "viahorizon"];
 
 /// The most 3D quads, through-wall shapes, particles and sounds per frame.
 pub const MAX_WORLD_QUADS: usize = 16384;
@@ -2509,6 +2534,36 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "gfx.mouse(): x, y in dp, left held, right held, while this mod's screen shows; nil otherwise",
     ),
     (
+        "via",
+        "status",
+        160,
+        "via.status(): ViaHorizon's state: {enabled, version, label, text, ready}; joins go through ViaProxy as that version",
+    ),
+    (
+        "via",
+        "versions",
+        161,
+        "via.versions(): the versions it can join as, newest first: {{id = \"1.8.x\", label = \"1.8.x\"}, ...}; \"auto\" asks the server",
+    ),
+    (
+        "via",
+        "enable",
+        162,
+        "via.enable(on): join servers through ViaProxy (true) or straight (false)",
+    ),
+    (
+        "via",
+        "version",
+        163,
+        "via.version(id): the version joins go as from the next join (\"1.8.x\", \"1.12.2\", \"auto\"...)",
+    ),
+    (
+        "via",
+        "log",
+        164,
+        "via.log(): ViaProxy's last lines, for when a join fails",
+    ),
+    (
         "json",
         "encode",
         140,
@@ -3329,6 +3384,48 @@ impl Host for Ctx<'_> {
                     Value::Bool(l),
                     Value::Bool(r),
                 ])
+            }
+            160 => {
+                let v = self.game.via();
+                let label = v
+                    .versions
+                    .iter()
+                    .find(|(id, _)| *id == v.version)
+                    .map_or(v.version.clone(), |(_, l)| l.clone());
+                let mut t = Table::default();
+                t.set_str("enabled", Value::Bool(v.enabled));
+                t.set_str("version", Value::str(&v.version));
+                t.set_str("label", Value::str(&label));
+                t.set_str("text", Value::str(&v.status));
+                t.set_str("ready", Value::Bool(v.ready));
+                Ok(vec![Value::table(t)])
+            }
+            161 => {
+                let mut list = Table::default();
+                for (i, (id, label)) in self.game.via().versions.iter().enumerate() {
+                    let mut t = Table::default();
+                    t.set_str("id", Value::str(id));
+                    t.set_str("label", Value::str(label));
+                    let _ = list.set(Value::Num(i as f64 + 1.0), Value::table(t));
+                }
+                Ok(vec![Value::table(list)])
+            }
+            162 => {
+                let on = arg(&args, 0).truthy();
+                self.game.via_set(Some(on), None).map_err(|e| lua.rt_error(e))?;
+                none()
+            }
+            163 => {
+                let id = check_text(lua, &args, 0, "version")?;
+                self.game.via_set(None, Some(&id)).map_err(|e| lua.rt_error(e))?;
+                none()
+            }
+            164 => {
+                let mut list = Table::default();
+                for (i, line) in self.game.via().log.iter().rev().take(40).rev().enumerate() {
+                    let _ = list.set(Value::Num(i as f64 + 1.0), Value::str(line));
+                }
+                Ok(vec![Value::table(list)])
             }
             140 => {
                 let j = lua_to_json(&arg(&args, 0), 0).map_err(|e| lua.rt_error(e))?;

@@ -172,7 +172,10 @@ fn console_helpers() {
     let out = console(&mut st, &mut game, "help('player.pos')");
     assert_eq!(out, vec!["player.pos(): x, y, z (nil outside a world)"]);
     let out = console(&mut st, &mut game, "mods()");
-    assert_eq!(out, vec!["{ hello = \"running\", uikit = \"running\" }"]);
+    assert_eq!(
+        out,
+        vec!["{ hello = \"running\", uikit = \"running\", viahorizon = \"running\" }"]
+    );
     console(&mut st, &mut game, "new('My Thing')");
     assert!(game.mods_dir().join("my_thing.lua").is_file());
     assert_eq!(st.s.editor.title, "my_thing.lua");
@@ -504,8 +507,8 @@ fn every_example_loads_and_runs() {
         .insert("find-block".into(), serde_json::json!({"count": 0, "nearest": []}));
     let mut st = studio(&mut game);
     for (i, ex) in EXAMPLES.iter().enumerate() {
-        // hello and uikit come with a first start.
-        if ex.id != "hello" && ex.id != "uikit" {
+        // hello, uikit and viahorizon come with a first start.
+        if !["hello", "uikit", "viahorizon"].contains(&ex.id) {
             st.install_example(&mut game, i).unwrap();
         }
     }

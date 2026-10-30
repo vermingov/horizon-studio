@@ -2,7 +2,7 @@
 // answers its questions from plain fields.
 #![allow(dead_code)]
 
-use horizon_studio::game::hstudio::{Camera, Corner, Font, GameApi, PlayerInfo, Reply, Studio};
+use horizon_studio::game::hstudio::{Camera, Corner, Font, GameApi, PlayerInfo, Reply, Studio, ViaInfo};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,6 +30,8 @@ pub struct FakeGame {
     pub quads: Vec<([[f32; 2]; 4], u32)>,
     pub sounds: Vec<(String, Option<[f64; 3]>, f32, f32)>,
     pub particles: Vec<Particle>,
+    /// ViaHorizon, as the bridge reports it (the real one is the game's).
+    pub via: ViaInfo,
 }
 
 /// A particle spawned: its id, place, speed and colour.
@@ -84,6 +86,26 @@ impl FakeGame {
             quads: Vec::new(),
             sounds: Vec::new(),
             particles: Vec::new(),
+            via: ViaInfo {
+                enabled: true,
+                version: "auto".into(),
+                status: "Ready (ViaProxy 3.4.14, Java 21)".into(),
+                ready: true,
+                versions: ["auto", "26.3", "1.21.4", "1.12.2", "1.8.x"]
+                    .iter()
+                    .map(|v| {
+                        (
+                            (*v).into(),
+                            if *v == "auto" {
+                                "Auto detect".into()
+                            } else {
+                                (*v).into()
+                            },
+                        )
+                    })
+                    .collect(),
+                log: vec!["[ViaProxy] Binding proxy server to 127.0.0.1:41234".into()],
+            },
         }
     }
     pub fn mods_dir(&self) -> PathBuf {
@@ -201,6 +223,21 @@ impl GameApi for FakeGame {
     }
     fn dp_measure(&mut self, text: &str, _size: f32, _font: Font) -> f32 {
         6.0 * text.chars().count() as f32
+    }
+    fn via(&self) -> ViaInfo {
+        self.via.clone()
+    }
+    fn via_set(&mut self, enabled: Option<bool>, version: Option<&str>) -> Result<(), String> {
+        if let Some(v) = version {
+            if !self.via.versions.iter().any(|(id, _)| id == v) {
+                return Err(format!("ViaProxy has no version {v}"));
+            }
+            self.via.version = v.into();
+        }
+        if let Some(on) = enabled {
+            self.via.enabled = on;
+        }
+        Ok(())
     }
     fn open_folder(&mut self, path: &std::path::Path) {
         self.opened.push(path.to_path_buf());

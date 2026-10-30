@@ -4,7 +4,8 @@
 // horizon-mixin.toml. Hooks that find the studio busy (a script's agent
 // command can reach the game's own command path) do nothing.
 
-use super::hstudio::{Camera, Corner, Font, GameApi, ID, NAME, OPEN_KEY, PlayerInfo, Reply, Studio, VERSION};
+use super::hstudio::{Camera, Corner, Font, GameApi, ID, NAME, OPEN_KEY, PlayerInfo, Reply, Studio, VERSION, ViaInfo};
+use horizon_client::net::hstudio_via as via;
 use super::hstudio_ui::{Input, Key, Mods, UiResult, draw, draw_screen, handle, handle_screen};
 use super::{Game, Screen};
 use horizon_client::clipboard::Clipboard as _;
@@ -315,6 +316,18 @@ impl GameApi for Host<'_, '_> {
             None => 7.0 * text.chars().count() as f32 * size / 13.0,
         }
     }
+    fn via(&self) -> ViaInfo {
+        via_info()
+    }
+    fn via_set(&mut self, enabled: Option<bool>, version: Option<&str>) -> Result<(), String> {
+        if let Some(v) = version {
+            via::set_version(v)?;
+        }
+        if let Some(on) = enabled {
+            via::set_enabled(on);
+        }
+        Ok(())
+    }
     fn camera(&self) -> Option<Camera> {
         if let Some((_, cam)) = &self.world {
             return Some(*cam);
@@ -440,6 +453,12 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
     if !game.native_window() {
         return;
     }
+    // ViaHorizon runs from the title screen on, while the studio is on.
+    let on = game.native_on(ID);
+    if on {
+        via::configure(game.native_data_dir(ID).join("viahorizon"));
+    }
+    via::set_active(on);
     let now = Instant::now();
     let dt = LAST_FRAME
         .with(|l| l.replace(Some(now)))
@@ -779,18 +798,52 @@ pub(super) fn listed() -> super::native_hooks::NativeMod {
     }
 }
 
+fn via_info() -> ViaInfo {
+    let settings = via::settings();
+    ViaInfo {
+        enabled: settings.enabled,
+        version: settings.version,
+        status: via::status_text(),
+        ready: matches!(via::status(), via::Status::Ready(_)),
+        versions: via::VERSIONS.iter().map(|v| ((*v).to_owned(), via::label(v))).collect(),
+        log: via::log(),
+    }
+}
+
+/// Options > Mods > Horizon Studio: ViaHorizon's switch, the version joins
+/// go as (from the title screen), its state, and reloading the scripts.
 pub(super) fn settings(buttons: &mut Vec<String>) {
+    let v = via::settings();
+    buttons.push(format!("ViaHorizon: {}", if v.enabled { "On" } else { "Off" }));
+    buttons.push(format!("Join servers as: {}", via::label(&v.version)));
+    buttons.push("Previous version".into());
+    buttons.push("Auto detect the version".into());
+    buttons.push(via::status_text());
     let running = with(|st| st.s.mods.iter().filter(|m| m.running()).count()).unwrap_or(0);
     buttons.push(format!("Reload script mods ({running} running)"));
 }
 
 pub(super) fn settings_click(game: &mut Game<'_>, button: usize) {
-    if button != 0 {
-        return;
+    match button {
+        0 => via::set_enabled(!via::settings().enabled),
+        1 => {
+            let _ = via::set_version(via::step_version(1));
+        }
+        2 => {
+            let _ = via::set_version(via::step_version(-1));
+        }
+        3 => {
+            let _ = via::set_version(via::AUTO);
+        }
+        // Its state: after a failure, a click tries again.
+        4 => via::ensure(),
+        5 => {
+            with(|st| {
+                let mut host = Host::new(game);
+                st.start(&mut host);
+                st.reload_all(&mut host);
+            });
+        }
+        _ => {}
     }
-    with(|st| {
-        let mut host = Host::new(game);
-        st.start(&mut host);
-        st.reload_all(&mut host);
-    });
 }
