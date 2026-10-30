@@ -371,4 +371,33 @@ fn render_the_screens() {
         draw_screen(st, p);
         let _ = Input::Wheel(0.0);
     });
+    st.close_screen(&mut game);
+    // The UI Kit draws its own animations: let them run their course.
+    let i = horizon_studio::game::hstudio_examples::EXAMPLES
+        .iter()
+        .position(|e| e.id == "uikit_demo")
+        .unwrap();
+    st.install_example(&mut game, i).unwrap();
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.command("kitdemo"));
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.accept_screen());
+    st.s.ui.library_sel = st.s.mods.iter().position(|m| m.id == "uikit").unwrap();
+    shot(&mut st, "kit", |st, p| {
+        for _ in 0..40 {
+            st.s.now += 0.05;
+            let mut warm = Preview {
+                game: FakeGame::new("kit-warm"),
+                canvas: Canvas::new(),
+            };
+            warm.game.dir = st.s.dir.clone();
+            draw_screen(st, &mut warm);
+            std::mem::forget(warm.game);
+        }
+        draw_screen(st, p);
+    });
+    st.close_screen(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Library;
+    shot(&mut st, "library-kit", |st, p| draw(st, p));
 }

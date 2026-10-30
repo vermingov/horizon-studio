@@ -921,17 +921,21 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         .collect::<Vec<_>>()
         .join("  ·  ");
     let description = m.description.clone();
+    let library = m.exports.is_some();
+    let uses = m.imports.join(", ");
+    let used_by =
+        st.s.mods
+            .iter()
+            .filter(|o| o.imports.contains(&m.id))
+            .map(|o| o.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
     let running = m.running();
     let enabled = m.enabled;
     let stats = format!(
         "{:.2} ms a call  ·  {} handlers  ·  reloaded {}x",
         m.cost_ms,
-        m.handlers.tick.len()
-            + m.handlers.frame.len()
-            + m.handlers.hud.len()
-            + m.handlers.world.len()
-            + m.handlers.key.len()
-            + m.handlers.chat.len(),
+        m.handlers.count(),
         m.reloads
     );
     let commands: Vec<(String, String)> = m.commands.iter().map(|c| (c.name.clone(), c.help.clone())).collect();
@@ -950,11 +954,25 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     p.rect([dx, dy, chip_w, 24.0], 12.0, fade(c, 0.16));
     p.rect([dx + 10.0, dy + 9.0, 6.0, 6.0], 3.0, c);
     p.text(label, dx + 22.0, top(dy + 12.0, 12.0), 12.0, Font::Medium, c);
+    let mut chips_w = chip_w;
+    if library {
+        let lw = p.measure("Library", 12.0, Font::Medium) + 20.0;
+        p.rect([dx + chips_w + 8.0, dy, lw, 24.0], 12.0, fade(ACCENT, 0.16));
+        p.text(
+            "Library",
+            dx + chips_w + 18.0,
+            top(dy + 12.0, 12.0),
+            12.0,
+            Font::Medium,
+            ACCENT,
+        );
+        chips_w += lw + 8.0;
+    }
     if running {
-        let stats = p.fit(&stats, dw - chip_w - 12.0, 11.0, Font::Mono);
+        let stats = p.fit(&stats, dw - chips_w - 12.0, 11.0, Font::Mono);
         p.text(
             &stats,
-            dx + chip_w + 12.0,
+            dx + chips_w + 12.0,
             top(dy + 12.0, 11.0),
             11.0,
             Font::Mono,
@@ -965,6 +983,14 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     for l in p.wrap(&description, dw, 14.0, Font::Regular).iter().take(4) {
         p.text(l, dx, dy, 14.0, Font::Regular, INK_SOFT);
         dy += 22.0;
+    }
+    for (what, ids) in [("Uses", &uses), ("Used by", &used_by)] {
+        if !ids.is_empty() {
+            let lw = p.text(what, dx, dy, 12.0, Font::Medium, MUTED);
+            let ids = p.fit(ids, dw - lw - 8.0, 12.0, Font::Mono);
+            p.text(&ids, dx + lw + 8.0, dy, 12.0, Font::Mono, INK_SOFT);
+            dy += 20.0;
+        }
     }
     dy += 8.0;
     let mut bx = dx;
@@ -1055,6 +1081,9 @@ fn docs() -> Vec<Doc> {
         Doc::Heading("Script mods".into()),
         Doc::Para("A script mod is a Lua file in horizon-mods/.horizon-mod-data/horizon_studio/mods/: name.lua, or a folder with main.lua and other files to require. The file runs when the mod loads; what it registers with on(), command() and every() then runs in the game. Save it, in the Editor or any other editor, and it reloads at once. A mod that fails stops alone: the Library shows the error and its line.".into()),
         Doc::Para("Drop a .lua file, a mod folder or a .zip on the game window to install it. Lines -- name:, -- version:, -- author: and -- description: at the top name it in the Library.".into()),
+        Doc::Heading("Libraries".into()),
+        Doc::Para("A mod can be a library for others: it calls export(table), or its main file returns a table, and other mods take it with local kit = import(\"uikit\"). Libraries load first; when one reloads, the mods that use it reload too. A library's functions run as the mod that calls them, so what they draw, register or store belongs to that mod. Mods talk to each other with emit(\"name:event\", ...) and on(\"name:event\", fn), and json.encode and json.decode turn tables into text and back.".into()),
+        Doc::Para("The bundled uikit is such a library, in plain Lua on gfx.* and canvas screens: open it in the Editor to see how it is made, or to make your own.".into()),
         Doc::Heading("Console".into()),
         Doc::Para("Type Lua and press Enter: it runs at once in the game, and an expression's value is shown. /lua <code> does the same from chat. What the console registers (on, command...) lasts until clear().".into()),
         Doc::Heading("The language".into()),
@@ -1229,6 +1258,8 @@ pub fn draw_screen(st: &mut Studio, game: &mut dyn GameApi) {
     let (alpha, rise) = presence(&st.s.ui, now);
     let ws = widgets(&table);
     let title = field_text(&table, "title");
+    // A canvas draws itself, in dp; the studio adds only the dimmed backdrop.
+    let canvas = field(&table, "canvas").truthy();
     let mut rows = Vec::new();
     {
         let mut p = P {
@@ -1236,9 +1267,11 @@ pub fn draw_screen(st: &mut Studio, game: &mut dyn GameApi) {
             alpha,
             dy: 0.0,
         };
-        p.rect([0.0, 0.0, w, h], 0.0, fade(PAGE, 0.6));
+        if !matches!(field(&table, "backdrop"), super::hstudio_lua::Value::Bool(false)) {
+            p.rect([0.0, 0.0, w, h], 0.0, fade(PAGE, 0.6));
+        }
         p.dy = rise;
-        if title.is_some() || !ws.is_empty() {
+        if !canvas && (title.is_some() || !ws.is_empty()) {
             let pw = (field_num(&table, "width", 340.0) as f32).clamp(200.0, (w - 32.0).max(200.0));
             let inner = pw - 48.0;
             let heights: Vec<f32> = ws.iter().map(|wt| row_height(&mut p, wt, inner)).collect();
@@ -1379,7 +1412,11 @@ pub fn draw_screen(st: &mut Studio, game: &mut dyn GameApi) {
     }
     let f = field(&table, "draw");
     if f.is_callable() {
-        let (gw, gh) = (w / k.max(0.01), h / k.max(0.01));
+        let (gw, gh) = if canvas {
+            (w, h)
+        } else {
+            (w / k.max(0.01), h / k.max(0.01))
+        };
         st.screen_call(
             game,
             &f,

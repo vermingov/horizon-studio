@@ -127,6 +127,8 @@ pub struct Ui {
     pub naming: Option<LineEdit>,
     /// The pointer, in dp.
     pub mouse: (f32, f32),
+    /// Whether the left and right buttons are held (over a script screen).
+    pub buttons: [bool; 2],
     dragging: bool,
     pub(crate) hits: Vec<([f32; 4], Action)>,
     pub(crate) view: Option<EditorView>,
@@ -775,6 +777,14 @@ fn is_api_global(word: &str) -> bool {
             | "agent"
             | "storage"
             | "mod"
+            | "gfx"
+            | "json"
+            | "ui"
+            | "draw"
+            | "sound"
+            | "export"
+            | "import"
+            | "emit"
             | "print"
             | "string"
             | "math"
@@ -1498,19 +1508,45 @@ pub fn handle_screen(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> U
     };
     let table = sc.table.clone();
     let ws = widgets(&table);
+    // Canvas screens get dp, the rest GUI pixels (as hud.* draws).
+    let unit = if field(&table, "canvas").truthy() {
+        1.0
+    } else {
+        st.s.ui.dp_factor()
+    };
     match input {
         Input::Mouse(x, y) => {
             let k = st.s.ui.dp_factor();
             let (x, y) = (x * k, y * k);
+            if st.s.ui.mouse == (x, y) {
+                return UiResult::Used;
+            }
             st.s.ui.mouse = (x, y);
             if let Some(i) = st.s.screen.as_ref().and_then(|sc| sc.drag) {
                 slide(st, game, i, x);
             }
+            let f = field(&table, "move");
+            if f.is_callable() {
+                let at = vec![Value::Num(f64::from(x / unit)), Value::Num(f64::from(y / unit))];
+                st.screen_call(game, &f, at, false);
+            }
         }
         Input::Button { left, down } => {
+            st.s.ui.buttons[usize::from(!left)] = down;
             if !down {
                 if let Some(sc) = &mut st.s.screen {
                     sc.drag = None;
+                }
+                let f = field(&table, "release");
+                if f.is_callable() {
+                    let (x, y) = st.s.ui.mouse;
+                    let button = if left { "left" } else { "right" };
+                    let at = vec![
+                        Value::Num(f64::from(x / unit)),
+                        Value::Num(f64::from(y / unit)),
+                        Value::str(button),
+                    ];
+                    st.screen_call(game, &f, at, false);
                 }
                 return UiResult::Used;
             }
@@ -1552,14 +1588,12 @@ pub fn handle_screen(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> U
                     }
                     let f = field(&table, "click");
                     let button = if left { "left" } else { "right" };
-                    // Scripts draw and click in GUI pixels, as hud.* does.
-                    let k = st.s.ui.dp_factor();
                     st.screen_call(
                         game,
                         &f,
                         vec![
-                            Value::Num(f64::from(at.0 / k)),
-                            Value::Num(f64::from(at.1 / k)),
+                            Value::Num(f64::from(at.0 / unit)),
+                            Value::Num(f64::from(at.1 / unit)),
                             Value::str(button),
                         ],
                         false,

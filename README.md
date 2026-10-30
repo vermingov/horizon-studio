@@ -15,6 +15,10 @@ native Horizon mod that adds:
 - **Docs.** The whole script API, in the game.
 - **3D drawing, sounds, particles and screens.** Scripts draw lines, boxes, beams and labels in the world, play
   sounds, spawn particles, and open screens of their own with buttons, toggles, sliders and text fields.
+- **Libraries and modules.** A mod can export functions for other mods to `import`: a UI library, a pathfinder, a
+  shared config. Libraries load first, and mods using one reload with it. Mods send each other events, and
+  `gfx.*` draws in Horizon's own style (rounded shapes, the Geist fonts) so a UI library can be written in Lua. The
+  bundled **UI Kit** is one, installed with the studio.
 
 ![The console](docs/screenshots/console.png)
 
@@ -22,6 +26,7 @@ native Horizon mod that adds:
 |---|---|
 | ![The editor](docs/screenshots/editor.png) | ![The library](docs/screenshots/library.png) |
 | ![A mod's error](docs/screenshots/library-error.png) | ![A script's screen](docs/screenshots/screen.png) |
+| ![A screen made with the UI Kit library](docs/screenshots/kit.png) | |
 
 The studio draws with Horizon's own design system: Geist and Geist Mono, rounded plates, the dark palette, and its
 motion (screens fade and rise in, the tab indicator slides, rows arrive one after another, hovers fade). The pictures
@@ -125,6 +130,7 @@ The Library's **New mod** writes a file like this to start from.
 | `key` | a key or mouse button goes down or up | `"key.keyboard.r"`, `"key.mouse.left"`; `true` when down |
 | `chat` | a chat line arrives from the server | its text |
 | `unload` | before the mod reloads or turns off | |
+| `"name:event"` | another mod (or this one) called `emit("name:event", ...)`, the next frame | what it passed |
 
 ### API
 
@@ -169,6 +175,14 @@ The Library's **New mod** writes a file like this to start from.
 | `agent.stop()` | Cancels the running action and lets go of the keys. |
 | `storage.get(key)`, `storage.set(key, value)` | Values the mod keeps between sessions: `nil`, booleans, numbers, strings and tables of them. |
 | `mod.info()` | The mod's id, name, version, author and reload count. |
+| `export(value)` | What the mod offers other mods. A main file that `return`s a table exports it too. See [Libraries](#libraries). |
+| `import(id)` | Another mod's exports. It loads before this mod, and this mod reloads when it does. |
+| `emit(event, ...)` | Calls every mod's `on(event, fn)` handlers next frame, with these values; `event` has a `:` (`"mymod:changed"`). |
+| `json.encode(value[, pretty])`, `json.decode(text)` | Tables to JSON text and back; `decode` returns `nil` and the error for bad JSON. |
+| `gfx.rect(x, y, w, h[, color[, radius]])`, `gfx.border(x, y, w, h[, color[, radius]])` | A rounded rectangle; a 1 dp rounded outline. In dp, Horizon's logical pixels, inside `on("hud")` or a screen's `draw`. |
+| `gfx.text(x, y, text[, color[, size[, font]]])` | Geist text, `font` `"regular"`, `"medium"` or `"mono"`, `size` in dp (14); `y` is the top of its line, 1.45 × `size` tall. Returns its width. |
+| `gfx.measure(text[, size[, font]])`, `gfx.size()` | A text's width in dp; the screen's size in dp. |
+| `gfx.mouse()` | While the mod's screen shows: the pointer's x and y in dp, whether the left and right buttons are held. |
 
 The agent commands are those of Horizon's `horizon-ctl` ([agent control](https://github.com/horizon-rust/horizon/blob/main/docs/agent-control.md)),
 limited to reading the world and acting as the player: nothing that saves, quits or changes options.
@@ -188,6 +202,7 @@ changes the screen:
 | `draw(w, h)` | Called each frame after the panel: draw anything with `hud.text`, `hud.rect`... A screen with neither `title` nor `widgets` is yours alone to draw. |
 | `click(x, y, button)`, `key(key, down)`, `text(t)`, `wheel(steps)` | Input outside the widgets (`button` is `"left"` or `"right"`; `key` is `"enter"`, `"left"`, `"a"`...). |
 | `close()` | Called when the screen closes. |
+| `canvas` | `true`: the screen is yours to draw, in dp with `gfx.*`. `draw(w, h)` gets the size in dp, and the pointer calls come in dp too, with `move(x, y)` and `release(x, y, button)` added. `backdrop = false` drops the dimmed backdrop. |
 
 | Widget | Fields | Calls |
 |---|---|---|
@@ -210,6 +225,70 @@ command("settings", function()
   })
 end)
 ```
+
+### Libraries
+
+A library is a mod like any other that exports something. Other mods `import` it by id:
+
+```lua
+-- mods/greeter.lua
+local M = {}
+function M.greet(name) return "Hello, " .. name end
+return M            -- or export(M)
+```
+
+```lua
+-- mods/my_mod.lua
+local greeter = import("greeter")
+command("hi", function(args) return greeter.greet(args) end)
+```
+
+- The studio reads which mods a file imports and loads libraries first. When a library reloads, fails or turns
+  off, the mods that import it reload with it: they never hold stale functions, and a broken library stops them
+  with its reason. Fix it and they start again.
+- A library's functions run as the mod that calls them: what they draw, register with `on` or `command`, keep in
+  `storage` or show on a screen belongs to that mod. A library keeps its own state between calls (its locals), so
+  it can be a shared service: a registry, an event bus, a cache.
+- Mods talk without importing each other with `emit("name:event", ...)` and `on("name:event", fn)`.
+- Folder mods can still split themselves into files with `require`; `import` is between mods.
+
+#### The UI Kit
+
+`uikit` comes installed: a library, in plain Lua, of animated screens in the studio's style, made with `gfx.*`
+and a canvas screen. Open it in the Editor to see how it works, change its `theme`, or copy it to start your own.
+
+```lua
+local kit = import("uikit")
+local loud, volume, name = false, 5, ""
+
+local win = kit.window({ title = "My tool", subtitle = "Made with the UI Kit", width = 400 }, function(ui)
+  loud = ui.toggle("Loud", loud)
+  volume = ui.slider("Volume", volume, 0, 10, { step = 1 })
+  name = ui.input("Name", name, { placeholder = "Steve" })
+  ui.row(2)
+  if ui.button("Say it", { primary = true }) then chat.show("Hello, " .. name) end
+  if ui.button("Close") then ui.close() end
+end)
+
+command("tool", function() win:open() end)
+```
+
+The build function runs every frame the window shows. Each widget draws itself and returns its new value, so the
+state stays in your own variables.
+
+| Function | What it does |
+|---|---|
+| `kit.window(spec, build)` | A window: `spec` has `title`, `subtitle`, `width`, `accent` (`"#rrggbb"`), `sounds` (`false` for quiet) and `close()`. Returns `win` with `win:open()`, `win:close()`, `win:toggle()`, `win:is_open()`. Its header drags it. |
+| `ui.heading(text)`, `ui.text(text[, opts])`, `ui.muted(text)` | Text, wrapped to the width; `opts` has `size`, `color`, `font`. |
+| `ui.button(label[, opts])` | `true` when clicked; `opts.primary`, `opts.danger`, `opts.height`. |
+| `ui.toggle(label, value)` | A switch; returns the value. |
+| `ui.slider(label, value, min, max[, opts])` | Drag or scroll; `opts.step`, `opts.format`. Returns the value. |
+| `ui.input(label, value[, opts])` | A text field; returns the text and `true` when Enter was pressed. `opts.placeholder`, `opts.max`. |
+| `ui.tabs(names, current)`, `ui.list(items, selected[, opts])` | A segmented control; a scrolling list (`opts.rows`). Both return the chosen index. |
+| `ui.progress(fraction)`, `ui.separator()`, `ui.space([h])`, `ui.row(n)` | A bar; a line; a gap; the next `n` widgets side by side. |
+| `ui.close()`, `ui.width()`, `ui.dt()` | Close with the exit animation; the content width; seconds since the last frame. |
+| `kit.card(x, y, lines[, opts])` | A HUD card, inside `on("hud")`; negative `x` or `y` count from the right or bottom. `opts`: `title`, `width`, `size`. |
+| `kit.theme`, `kit.rgb`, `kit.mix`, `kit.paint`, `kit.fit`, `kit.wrap`, `kit.ease` | Its palette and helpers, for widgets of your own. |
 
 ### The language
 
@@ -242,6 +321,8 @@ The Library installs these; their source is in [`examples/`](examples).
 | Waypoints | `draw.beam`, `draw.text` and `draw.block` through walls, and a menu screen (`/wp`) |
 | Selection box | `draw.box` and a size label between two corners (`/pos1`, `/pos2`), `sound.play` |
 | Playground | a screen with a toggle, a slider, a button and a text field; `world.particle`, `sound.at` |
+| UI Kit | a library mod: `gfx.*`, a canvas screen, `export` (installed with the studio) |
+| UI Kit demo | `import("uikit")`: tabs, toggles, a slider, a text field, a list and a HUD card (`/kitdemo`) |
 
 ## Safety
 

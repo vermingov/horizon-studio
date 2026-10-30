@@ -375,6 +375,9 @@ pub enum Overlay {
     },
 }
 
+/// Bundled mods every studio gets once: libraries others build on.
+pub const PREINSTALLED: &[&str] = &["uikit"];
+
 /// The most 3D quads, through-wall shapes, particles and sounds per frame.
 pub const MAX_WORLD_QUADS: usize = 16384;
 pub const MAX_OVERLAY: usize = 4096;
@@ -400,6 +403,8 @@ pub struct Handlers {
     pub key: Vec<Value>,
     pub chat: Vec<Value>,
     pub unload: Vec<Value>,
+    /// Events mods send each other (`emit`): names with a `:` in them.
+    pub custom: HashMap<String, Vec<Value>>,
 }
 
 impl Handlers {
@@ -412,10 +417,11 @@ impl Handlers {
             "key" => &mut self.key,
             "chat" => &mut self.chat,
             "unload" => &mut self.unload,
+            custom if custom.contains(':') && custom.len() <= 64 => self.custom.entry(custom.to_owned()).or_default(),
             _ => return None,
         })
     }
-    fn count(&self) -> usize {
+    pub fn count(&self) -> usize {
         self.tick.len()
             + self.frame.len()
             + self.hud.len()
@@ -423,6 +429,7 @@ impl Handlers {
             + self.key.len()
             + self.chat.len()
             + self.unload.len()
+            + self.custom.values().map(Vec::len).sum::<usize>()
     }
 }
 
@@ -442,6 +449,10 @@ pub struct Command {
 pub struct ScriptMod {
     /// From the file or folder name: `[a-z0-9_-]`.
     pub id: String,
+    /// What it offers other mods (`export`, or the table its main file returns).
+    pub exports: Option<Value>,
+    /// The libraries it imported, by id.
+    pub imports: Vec<String>,
     pub name: String,
     pub version: String,
     pub author: String,
@@ -474,6 +485,8 @@ impl ScriptMod {
     fn new(id: &str, main: PathBuf, folder: Option<PathBuf>) -> ScriptMod {
         ScriptMod {
             id: id.to_owned(),
+            exports: None,
+            imports: Vec::new(),
             name: id.to_owned(),
             version: String::new(),
             author: String::new(),
@@ -499,6 +512,7 @@ impl ScriptMod {
     /// Drops everything it made: back to not running.
     fn clear(&mut self) {
         self.env = None;
+        self.exports = None;
         self.handlers = Handlers::default();
         self.commands.clear();
         self.timers.clear();
@@ -610,11 +624,15 @@ pub struct State {
     pub held: HashSet<String>,
     pub toast: Option<(String, f64)>,
     pub disabled: HashSet<String>,
+    /// Bundled libraries installed once already (deleting one keeps it gone).
+    pub seen: HashSet<String>,
     send_tokens: f64,
     next_timer: u32,
     queued_keys: Vec<(String, bool)>,
     queued_commands: Vec<String>,
     queued_chat: Vec<String>,
+    /// Events mods sent (`emit`), for their handlers next frame.
+    queued_events: Vec<(String, Vec<Value>)>,
     /// What console functions asked for, done after their call.
     requests: Vec<Request>,
     /// The script screen showing, and one a script asked to open.
@@ -716,11 +734,13 @@ impl Studio {
                 held: HashSet::new(),
                 toast: None,
                 disabled: HashSet::new(),
+                seen: HashSet::new(),
                 send_tokens: SEND_BURST,
                 next_timer: 1,
                 queued_keys: Vec::new(),
                 queued_commands: Vec::new(),
                 queued_chat: Vec::new(),
+                queued_events: Vec::new(),
                 requests: Vec::new(),
                 screen: None,
                 screen_request: None,
@@ -754,11 +774,30 @@ impl Studio {
             for line in text.lines() {
                 if let Some(id) = line.strip_prefix("off:") {
                     self.s.disabled.insert(id.trim().to_owned());
+                } else if let Some(id) = line.strip_prefix("seen:") {
+                    self.s.seen.insert(id.trim().to_owned());
                 }
             }
         }
         if let Ok(text) = std::fs::read_to_string(self.s.dir.join("history.txt")) {
             self.s.history = text.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect();
+        }
+        // Bundled libraries come with the studio, once.
+        let mut fresh = false;
+        for id in PREINSTALLED {
+            if self.s.seen.insert((*id).to_owned()) {
+                fresh = true;
+                let taken = mods.join(format!("{id}.lua")).exists() || mods.join(id).exists();
+                if let Some(ex) = EXAMPLES.iter().find(|e| e.id == *id)
+                    && !taken
+                {
+                    let _ = std::fs::create_dir_all(&mods);
+                    let _ = std::fs::write(mods.join(format!("{id}.lua")), ex.source);
+                }
+            }
+        }
+        if fresh {
+            self.save_settings();
         }
         let scratch = self.s.dir.join("scratch.lua");
         if !scratch.exists() {
@@ -775,7 +814,10 @@ impl Studio {
     fn save_settings(&self) {
         let mut ids: Vec<&String> = self.s.disabled.iter().collect();
         ids.sort();
-        let text: String = ids.iter().map(|id| format!("off:{id}\n")).collect();
+        let mut text: String = ids.iter().map(|id| format!("off:{id}\n")).collect();
+        let mut seen: Vec<&String> = self.s.seen.iter().collect();
+        seen.sort();
+        text.extend(seen.iter().map(|id| format!("seen:{id}\n")));
         let _ = std::fs::create_dir_all(&self.s.dir);
         let _ = std::fs::write(self.s.dir.join("studio.txt"), text);
     }
@@ -861,10 +903,12 @@ impl Studio {
         self.s.next_scan = self.s.now + SCAN_SECONDS;
         let found = self.discover();
         // Removed: unload, then drop (from the end, so indices hold).
+        let mut removed = Vec::new();
         for i in (0..self.s.mods.len()).rev() {
             if !found.iter().any(|f| f.0 == self.s.mods[i].id) {
                 self.unload(game, i);
                 let m = self.s.mods.remove(i);
+                removed.push(m.id.clone());
                 let shift = |o: &mut Owner| {
                     if let Owner::Mod(j) = o
                         && *j > i
@@ -882,6 +926,16 @@ impl Studio {
                 self.s.ui.library_sel = self.s.ui.library_sel.min(self.s.mods.len().saturating_sub(1));
             }
         }
+        if self
+            .s
+            .mods
+            .iter()
+            .any(|m| m.imports.iter().any(|d| removed.contains(d)))
+        {
+            self.reload_users(game, removed);
+        }
+        let mut fresh = Vec::new();
+        let mut changed = Vec::new();
         for (id, main, folder) in found {
             match self.s.mods.iter().position(|m| m.id == id) {
                 Some(i) => {
@@ -890,15 +944,7 @@ impl Studio {
                         self.s.mods[i].main = main;
                         self.s.mods[i].folder = folder;
                         if self.s.mods[i].enabled {
-                            self.s.mods[i].reloads += 1;
-                            let t = Instant::now();
-                            self.load(game, i);
-                            if self.s.mods[i].running() {
-                                let ms = t.elapsed().as_secs_f64() * 1000.0;
-                                let msg = format!("Reloaded {} ({ms:.1} ms)", self.s.mods[i].id);
-                                self.s.log(LogKind::Info, &msg);
-                                self.s.toast(msg);
-                            }
+                            changed.push(i);
                         } else {
                             self.s.mods[i].stamp = stamp;
                             self.read_meta(i);
@@ -911,12 +957,38 @@ impl Studio {
                     self.s.mods.push(m);
                     let i = self.s.mods.len() - 1;
                     if self.s.mods[i].enabled {
-                        self.load(game, i);
+                        fresh.push(i);
                     } else {
                         self.s.mods[i].stamp = Self::stamp(&self.s.mods[i].main, self.s.mods[i].folder.as_deref());
                         self.read_meta(i);
                     }
                 }
+            }
+        }
+        // Libraries load before the mods that import them.
+        for i in self.load_order(&fresh) {
+            self.load(game, i);
+        }
+        // Mods that were waiting for one of these.
+        let fresh_ids: Vec<String> = fresh.iter().map(|&i| self.s.mods[i].id.clone()).collect();
+        if !fresh_ids.is_empty()
+            && self
+                .s
+                .mods
+                .iter()
+                .any(|m| m.imports.iter().any(|d| fresh_ids.contains(d)))
+        {
+            self.reload_users(game, fresh_ids);
+        }
+        for i in self.load_order(&changed) {
+            self.s.mods[i].reloads += 1;
+            let t = Instant::now();
+            self.load_and_dependents(game, i);
+            if self.s.mods[i].running() {
+                let ms = t.elapsed().as_secs_f64() * 1000.0;
+                let msg = format!("Reloaded {} ({ms:.1} ms)", self.s.mods[i].id);
+                self.s.log(LogKind::Info, &msg);
+                self.s.toast(msg);
             }
         }
     }
@@ -952,6 +1024,8 @@ impl Studio {
             }
         }
         self.s.mods[i].clear();
+        // A failed mod keeps its imports, to retry when they change.
+        self.s.mods[i].imports.clear();
         self.s.mods[i].state = ModState::Off;
         self.drop_screens(Owner::Mod(i));
     }
@@ -991,9 +1065,93 @@ impl Studio {
             }
         };
         self.s.mods[i].state = ModState::Running;
-        if let Err(e) = self.call(game, Owner::Mod(i), &f, Vec::new(), LOAD_STEPS) {
-            self.fail(game, Owner::Mod(i), e.message(), e.traceback().to_owned());
+        match self.call(game, Owner::Mod(i), &f, Vec::new(), LOAD_STEPS) {
+            Ok(vals) => {
+                // A main file that returns a table offers it, as a module does.
+                if self.s.mods[i].exports.is_none()
+                    && let Some(v @ Value::Table(_)) = vals.into_iter().next()
+                {
+                    self.s.mods[i].exports = Some(v);
+                }
+            }
+            Err(e) => self.fail(game, Owner::Mod(i), e.message(), e.traceback().to_owned()),
         }
+    }
+
+    /// Loads mod `i`, then reloads the mods that use it (they hold its old
+    /// exports), and theirs in turn.
+    pub fn load_and_dependents(&mut self, game: &mut dyn GameApi, i: usize) {
+        self.load(game, i);
+        self.reload_users(game, vec![self.s.mods[i].id.clone()]);
+    }
+
+    /// Reloads the mods that import any of `libs`, and the mods that import
+    /// those: they hold old exports (or failed for want of them).
+    fn reload_users(&mut self, game: &mut dyn GameApi, libs: Vec<String>) {
+        let mut done = libs.clone();
+        let mut queue = libs;
+        while let Some(lib) = queue.pop() {
+            let users: Vec<usize> = (0..self.s.mods.len())
+                .filter(|&j| {
+                    let m = &self.s.mods[j];
+                    m.enabled && m.imports.contains(&lib) && !done.contains(&m.id)
+                })
+                .collect();
+            for j in users {
+                done.push(self.s.mods[j].id.clone());
+                queue.push(self.s.mods[j].id.clone());
+                self.load(game, j);
+                self.s
+                    .log(LogKind::Info, format!("Reloaded {} (it uses {lib})", self.s.mods[j].id));
+            }
+        }
+    }
+
+    /// The order to load mods in: each after the libraries its files name
+    /// in `import("...")`, as far as that can be read.
+    fn load_order(&self, ids: &[usize]) -> Vec<usize> {
+        let deps: Vec<Vec<String>> = ids
+            .iter()
+            .map(|&i| {
+                let m = &self.s.mods[i];
+                let mut files = vec![m.main.clone()];
+                if let Some(dir) = &m.folder {
+                    files.extend(Self::stamp(&m.main, Some(dir)).into_iter().map(|s| s.0));
+                }
+                files.dedup();
+                files
+                    .iter()
+                    .filter_map(|f| std::fs::read_to_string(f).ok())
+                    .flat_map(|src| static_imports(&src))
+                    .filter(|d| *d != m.id)
+                    .collect()
+            })
+            .collect();
+        let mut order = Vec::new();
+        let mut placed = vec![false; ids.len()];
+        // Each pass places those whose libraries are placed (or not among these).
+        loop {
+            let mut progress = false;
+            for k in 0..ids.len() {
+                if placed[k] {
+                    continue;
+                }
+                let waiting = deps[k]
+                    .iter()
+                    .any(|d| (0..ids.len()).any(|j| !placed[j] && j != k && self.s.mods[ids[j]].id == *d));
+                if !waiting {
+                    placed[k] = true;
+                    order.push(ids[k]);
+                    progress = true;
+                }
+            }
+            if !progress {
+                break;
+            }
+        }
+        // A cycle: the rest in their own order (their imports will say so).
+        order.extend((0..ids.len()).filter(|&k| !placed[k]).map(|k| ids[k]));
+        order
     }
 
     /// Stops a failed mod (or reports a console error).
@@ -1090,19 +1248,19 @@ impl Studio {
         self.s.mods[i].enabled = on;
         if on {
             self.s.disabled.remove(&id);
-            self.load(game, i);
+            self.load_and_dependents(game, i);
         } else {
-            self.s.disabled.insert(id);
+            self.s.disabled.insert(id.clone());
             self.unload(game, i);
+            self.reload_users(game, vec![id]);
         }
         self.save_settings();
     }
 
     pub fn reload_all(&mut self, game: &mut dyn GameApi) {
-        for i in 0..self.s.mods.len() {
-            if self.s.mods[i].enabled {
-                self.load(game, i);
-            }
+        let on: Vec<usize> = (0..self.s.mods.len()).filter(|&i| self.s.mods[i].enabled).collect();
+        for i in self.load_order(&on) {
+            self.load(game, i);
         }
         self.scan(game);
         let n = self.s.mods.iter().filter(|m| m.running()).count();
@@ -1298,7 +1456,7 @@ impl Studio {
         for owner in owners {
             let list = {
                 let m = self.s.owner_mod(owner);
-                if !m.running() {
+                if !m.running() || (event.contains(':') && !m.handlers.custom.contains_key(event)) {
                     continue;
                 }
                 match m.handlers.list(event) {
@@ -1345,6 +1503,9 @@ impl Studio {
                 self.s.held.remove(&key);
             }
             self.dispatch(game, "key", &[Value::str(&key), Value::Bool(down)], Phase::Normal);
+        }
+        for (name, args) in std::mem::take(&mut self.s.queued_events) {
+            self.dispatch(game, &name, &args, Phase::Normal);
         }
         for line in std::mem::take(&mut self.s.queued_chat) {
             self.dispatch(game, "chat", &[Value::str(&line)], Phase::Normal);
@@ -1905,6 +2066,94 @@ fn read_zip(path: &Path, stem: &str) -> Result<(String, ZipMod), String> {
     Err("that zip is not a script mod: it needs a main.lua, or a single .lua file".into())
 }
 
+/// gfx's optional size (6 to 96 dp, 14 by default) and font name.
+fn font_args(lua: &Lua, args: &[Value], i: usize, fname: &str) -> Result<(f32, Font), Throw> {
+    let size = opt_num(lua, args, i, fname, 14.0)?;
+    let size = if size.is_finite() {
+        size.clamp(6.0, 96.0) as f32
+    } else {
+        14.0
+    };
+    let font = match opt_str(lua, args, i + 1, fname)?.map(|s| text_of(&s)).as_deref() {
+        None | Some("regular") => Font::Regular,
+        Some("medium" | "bold") => Font::Medium,
+        Some("mono") => Font::Mono,
+        Some(_) => {
+            return Err(bad_arg(
+                lua,
+                i + 1,
+                fname,
+                "\"regular\", \"medium\" or \"mono\" expected",
+            ));
+        }
+    };
+    Ok((size, font))
+}
+
+/// The libraries a Lua file names in `import("...")` calls.
+pub fn static_imports(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = src;
+    while let Some(at) = rest.find("import") {
+        let before = rest[..at].chars().next_back();
+        rest = &rest[at + 6..];
+        if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':') {
+            continue;
+        }
+        let t = rest.trim_start();
+        let t = t.strip_prefix('(').map_or(t, str::trim_start);
+        let Some(q) = t.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+            continue;
+        };
+        let body = &t[1..];
+        if let Some(end) = body.find(q) {
+            let name = &body[..end];
+            if !name.is_empty()
+                && name.len() <= 48
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                && !out.iter().any(|o| o == name)
+            {
+                out.push(name.to_owned());
+            }
+        }
+    }
+    out
+}
+
+/// A value as JSON: tables with keys 1..n are arrays, others objects.
+pub fn lua_to_json(v: &Value, depth: usize) -> Result<serde_json::Value, String> {
+    if depth > 64 {
+        return Err("tables nested too deep for JSON (or a cycle)".into());
+    }
+    Ok(match v {
+        Value::Nil => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Num(n) if n.fract() == 0.0 && n.abs() < 9.0e15 => serde_json::Value::from(*n as i64),
+        Value::Num(n) => serde_json::Number::from_f64(*n).map_or(serde_json::Value::Null, serde_json::Value::Number),
+        Value::Str(s) => serde_json::Value::String(String::from_utf8_lossy(s).into_owned()),
+        Value::Table(t) => {
+            let t = t.borrow();
+            let entries = t.entries();
+            let n = t.len();
+            if n > 0 && entries.len() == n {
+                serde_json::Value::Array(
+                    t.list()
+                        .iter()
+                        .map(|x| lua_to_json(x, depth + 1))
+                        .collect::<Result<_, _>>()?,
+                )
+            } else {
+                let mut map = serde_json::Map::new();
+                for (k, val) in entries {
+                    map.insert(k.plain_text(), lua_to_json(&val, depth + 1)?);
+                }
+                serde_json::Value::Object(map)
+            }
+        }
+        Value::Func(_) | Value::Native(_) => return Err("functions have no JSON form".into()),
+    })
+}
+
 /// The line number in `chunk:12: message`.
 pub fn error_line(msg: &str) -> Option<usize> {
     let mut parts = msg.splitn(3, ':');
@@ -2018,7 +2267,7 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "",
         "on",
         1,
-        "on(event, fn): run fn on \"tick\" (20 a second), \"frame\"(dt), \"hud\"(w, h), \"world\" (as the world draws: draw.*), \"key\"(key, down), \"chat\"(text) or \"unload\"",
+        "on(event, fn): run fn on \"tick\" (20 a second), \"frame\"(dt), \"hud\"(w, h), \"world\" (as the world draws: draw.*), \"key\"(key, down), \"chat\"(text), \"unload\", or a \"mymod:name\" event another mod emits",
     ),
     (
         "",
@@ -2206,6 +2455,72 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "mod.info(): this mod's id, name, version and folder name",
     ),
     (
+        "",
+        "export",
+        8,
+        "export(value): what this mod offers other mods, which get it with import(id); a main file that returns a table exports it too",
+    ),
+    (
+        "",
+        "import",
+        9,
+        "import(id): another mod's exports (a library's functions, a UI kit...); it loads first, and its users reload when it does",
+    ),
+    (
+        "",
+        "emit",
+        12,
+        "emit(event, ...): call every mod's on(event, fn) handlers next frame; the name has a ':' in it (\"mymod:changed\")",
+    ),
+    (
+        "gfx",
+        "size",
+        150,
+        "gfx.size(): the screen in dp, Horizon's logical pixels, which gfx.* draws in",
+    ),
+    (
+        "gfx",
+        "rect",
+        151,
+        "gfx.rect(x, y, w, h[, color[, radius]]): a rounded rectangle, in dp (inside on(\"hud\") or a screen's draw)",
+    ),
+    (
+        "gfx",
+        "border",
+        152,
+        "gfx.border(x, y, w, h[, color[, radius]]): a 1 dp rounded outline",
+    ),
+    (
+        "gfx",
+        "text",
+        153,
+        "gfx.text(x, y, text[, color[, size[, font]]]): Geist text (font \"regular\", \"medium\" or \"mono\"), y its line's top; returns its width",
+    ),
+    (
+        "gfx",
+        "measure",
+        154,
+        "gfx.measure(text[, size[, font]]): text's width in dp; a line is 1.45 x size tall",
+    ),
+    (
+        "gfx",
+        "mouse",
+        155,
+        "gfx.mouse(): x, y in dp, left held, right held, while this mod's screen shows; nil otherwise",
+    ),
+    (
+        "json",
+        "encode",
+        140,
+        "json.encode(value[, pretty]): a value as JSON text",
+    ),
+    (
+        "json",
+        "decode",
+        141,
+        "json.decode(text): JSON text as a value (objects and arrays become tables), or nil and the error",
+    ),
+    (
         "world",
         "particle",
         44,
@@ -2263,7 +2578,7 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "ui",
         "open",
         130,
-        "ui.open(screen): show a screen: {title, width, widgets = {...}, draw(w, h), click(x, y, button), key(key, down), text(t), close()}",
+        "ui.open(screen): show a screen: {title, width, widgets = {...}, draw(w, h), click(x, y, button), key(key, down), text(t), close()}; canvas = true draws it all yourself with gfx.* in dp, and adds move(x, y), release(x, y, button) and wheel(steps)",
     ),
     ("ui", "close", 131, "ui.close(): close this mod's screen"),
     ("ui", "is_open", 132, "ui.is_open(): whether this mod's screen shows"),
@@ -2589,7 +2904,9 @@ impl Host for Ctx<'_> {
                             lua,
                             0,
                             "on",
-                            &format!("unknown event '{event}' (tick, frame, hud, key, chat, unload)"),
+                            &format!(
+                                "unknown event '{event}' (tick, frame, hud, world, key, chat, unload, or one of \"mymod:name\" for emit)"
+                            ),
                         ));
                     }
                 }
@@ -2896,6 +3213,139 @@ impl Host for Ctx<'_> {
                 t.set_str("reloads", Value::Num(f64::from(m.reloads)));
                 Ok(vec![Value::table(t)])
             }
+            8 => {
+                let v = arg(&args, 0);
+                self.me().exports = (!v.is_nil()).then_some(v);
+                none()
+            }
+            9 => {
+                let want = check_text(lua, &args, 0, "import")?;
+                // Kept even if it fails, so this mod retries when `want` appears.
+                if let Owner::Mod(i) = self.owner
+                    && !self.s.mods[i].imports.contains(&want)
+                    && self.s.mods[i].imports.len() < 64
+                {
+                    self.s.mods[i].imports.push(want.clone());
+                }
+                let Some(j) = self.s.mods.iter().position(|m| m.id == want) else {
+                    return Err(lua.rt_error(format!("no mod '{want}' to import")));
+                };
+                if Owner::Mod(j) == self.owner {
+                    return Err(lua.rt_error("a mod cannot import itself"));
+                }
+                let lib = &self.s.mods[j];
+                let exports = match &lib.state {
+                    ModState::Running => lib.exports.clone(),
+                    ModState::Failed(msg, _) => {
+                        return Err(lua.rt_error(format!("library '{want}' failed: {msg}")));
+                    }
+                    ModState::Off if !lib.enabled => {
+                        return Err(lua.rt_error(format!("library '{want}' is turned off")));
+                    }
+                    ModState::Off => {
+                        return Err(lua.rt_error(format!(
+                            "library '{want}' isn't loaded yet (do they import each other?)"
+                        )));
+                    }
+                };
+                let Some(exports) = exports else {
+                    return Err(lua.rt_error(format!(
+                        "'{want}' exports nothing: it needs export(...) or to return a table"
+                    )));
+                };
+                Ok(vec![exports])
+            }
+            12 => {
+                let name = check_text(lua, &args, 0, "emit")?;
+                if !name.contains(':') || name.len() > 64 {
+                    return Err(bad_arg(
+                        lua,
+                        0,
+                        "emit",
+                        "an event name with a ':' expected (\"mymod:changed\")",
+                    ));
+                }
+                if self.s.queued_events.len() >= 1024 {
+                    return Err(lua.rt_error("too many events waiting (1024)"));
+                }
+                self.s
+                    .queued_events
+                    .push((name, args.into_iter().skip(1).take(16).collect()));
+                none()
+            }
+            150 => {
+                let (w, h, _) = self.game.dp();
+                Ok(vec![Value::Num(f64::from(w)), Value::Num(f64::from(h))])
+            }
+            151 | 152 => {
+                let name = if id == 151 { "rect" } else { "border" };
+                self.drawing(lua, name)?;
+                let mut r = [0f32; 4];
+                for (i, v) in r.iter_mut().enumerate() {
+                    *v = check_num(lua, &args, i, name)? as f32;
+                }
+                let color = color_arg(lua, &args, 4, 0xFFFF_FFFF)?;
+                let radius = (opt_num(lua, &args, 5, name, 0.0)? as f32).clamp(0.0, r[2].min(r[3]).max(0.0) / 2.0);
+                if r.iter().all(|v| v.is_finite()) && r[2] > 0.0 && r[3] > 0.0 {
+                    if id == 151 {
+                        self.game.dp_rect(r, radius, color);
+                    } else {
+                        self.game.dp_border(r, radius, color);
+                    }
+                }
+                none()
+            }
+            153 => {
+                self.drawing(lua, "text")?;
+                let x = check_num(lua, &args, 0, "text")? as f32;
+                let y = check_num(lua, &args, 1, "text")? as f32;
+                let mut text = lua.tostring(self, &arg(&args, 2))?;
+                text.truncate(1024);
+                let color = color_arg(lua, &args, 3, 0xFFFF_FFFF)?;
+                let (size, font) = font_args(lua, &args, 4, "text")?;
+                let w = if x.is_finite() && y.is_finite() {
+                    self.game.dp_text(&text, [x, y], size, font, color)
+                } else {
+                    0.0
+                };
+                Ok(vec![Value::Num(f64::from(w))])
+            }
+            154 => {
+                let mut text = lua.tostring(self, &arg(&args, 0))?;
+                text.truncate(1024);
+                let (size, font) = font_args(lua, &args, 1, "measure")?;
+                Ok(vec![Value::Num(f64::from(self.game.dp_measure(&text, size, font)))])
+            }
+            155 => {
+                let me = self.owner;
+                if !self.s.screen.as_ref().is_some_and(|sc| sc.owner == me) {
+                    return Ok(vec![Value::Nil]);
+                }
+                let (x, y) = self.s.ui.mouse;
+                let [l, r] = self.s.ui.buttons;
+                Ok(vec![
+                    Value::Num(f64::from(x)),
+                    Value::Num(f64::from(y)),
+                    Value::Bool(l),
+                    Value::Bool(r),
+                ])
+            }
+            140 => {
+                let j = lua_to_json(&arg(&args, 0), 0).map_err(|e| lua.rt_error(e))?;
+                let text = if args.get(1).is_some_and(Value::truthy) {
+                    serde_json::to_string_pretty(&j)
+                } else {
+                    serde_json::to_string(&j)
+                };
+                Ok(vec![Value::str(&text.unwrap_or_default())])
+            }
+            141 => {
+                let text = check_text(lua, &args, 0, "decode")?;
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(j) => Ok(vec![json_to_lua(&j)]),
+                    Err(e) => Ok(vec![Value::Nil, Value::str(&e.to_string())]),
+                }
+            }
             44 => {
                 self.not_drawing(lua, "world.particle")?;
                 let id = check_text(lua, &args, 0, "particle")?;
@@ -2936,7 +3386,10 @@ impl Host for Ctx<'_> {
             110..=115 => self.draw(lua, id, &args),
             120 | 121 => {
                 let name = if id == 120 { "play" } else { "at" };
-                self.not_drawing(lua, &format!("sound.{name}"))?;
+                // A screen's draw may click (UI libraries draw and react at once).
+                if self.phase != Phase::Screen {
+                    self.not_drawing(lua, &format!("sound.{name}"))?;
+                }
                 if self.s.sounds >= MAX_SOUNDS {
                     return Err(lua.rt_error("too many sounds this frame (32)"));
                 }
