@@ -41,3 +41,31 @@ fn switches_and_the_fog_cut() {
     n::saved_tick_work(5);
     assert_eq!(n::counts(), (p + 3, s + 2, t + 5));
 }
+
+#[test]
+fn video_settings_reads_natriums_place_and_switches() {
+    n::set_video(None);
+    assert_eq!(n::video(), None);
+    let switches = [true, false, true, false, true];
+    n::set_video(Some((7, switches)));
+    assert_eq!(n::video(), Some((7, switches)));
+    n::set_video(Some((0, [false; 5])));
+    assert_eq!(n::video(), Some((0, [false; 5])), "Natrium first, all off, still shown");
+    n::set_video(Some((123_456, [true; 5])));
+    assert_eq!(n::video(), Some((123_456, [true; 5])));
+    n::set_video(None);
+    assert_eq!(n::video(), None);
+    // Its buttons' captions, the preset after them.
+    assert_eq!(n::CAPTIONS.len(), n::PRESET);
+    assert_eq!(n::CAPTIONS[4], "Block Face Culling");
+}
+
+#[test]
+fn counts_read_short() {
+    assert_eq!(n::short(0), "0");
+    assert_eq!(n::short(999), "999");
+    assert_eq!(n::short(1_250), "1.2k");
+    assert_eq!(n::short(3_400_000), "3.4M");
+    assert_eq!(n::short(5_600_000_000), "5.6G");
+    assert!(n::skipped().starts_with("Skipped so far: "));
+}

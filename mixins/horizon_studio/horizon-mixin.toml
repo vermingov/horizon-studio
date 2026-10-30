@@ -433,3 +433,31 @@ bindings = [
   { name = "pos", ty = "u32", value = "pos" },
   { name = "out", ty = "&mut Vec<u32>", value = "&mut *out" },
 ]
+
+# Natrium in Video Settings, as Sodium is in Java's: its section follows
+# Preferences, its buttons are its Options > Mods page's.
+[[module]]
+id = "natrium-video"
+file = "crates/horizon-client-render/src/options_ui.rs"
+name = "natrium_video"
+source = "natrium_video.rs"
+
+[[injection]]
+id = "natrium-video-rows"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client_render::options_ui::pairs"
+helper = "natrium_video_rows.rs"
+bindings = [
+  { name = "opts", ty = "&[Opt]", value = "opts" },
+]
+
+# The settings search's text, which the section follows.
+[[injection]]
+id = "natrium-video-search"
+kind = "HEAD"
+target = "horizon_client_render::options_ui::OptionsUi::page"
+helper = "natrium_video_search.rs"
+bindings = [
+  { name = "ui", ty = "&OptionsUi", value = "self" },
+]

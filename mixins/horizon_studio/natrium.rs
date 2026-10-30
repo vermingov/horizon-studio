@@ -1,9 +1,10 @@
 // Natrium: Sodium's and Lithium's ideas for Horizon. Its own row in Options >
-// Mods, with a page of switches; each frame the game's settings go to the
-// switches the patched code reads (`horizon_core::natrium`), so a change
-// applies at once, on the server thread too. Horizon already culls block
-// faces turned away from the camera (Sodium's block face culling): the page
-// says so rather than adding it twice.
+// Mods, with a page of switches, and the same switches in a section of Video
+// Settings (`natrium_video`, whose buttons are this page's); each frame the
+// game's settings go to the switches the patched code reads
+// (`horizon_core::natrium`), so a change applies at once, on the server thread
+// too. Horizon already culls block faces turned away from the camera (Sodium's
+// block face culling): Natrium's switch is Horizon's own.
 
 use super::Game;
 use super::native_hooks::NativeMod;
@@ -19,6 +20,7 @@ pub struct Settings {
     pub particles: bool,
     pub fog: bool,
     pub ticks: bool,
+    pub faces: bool,
 }
 
 impl Default for Settings {
@@ -28,15 +30,16 @@ impl Default for Settings {
             particles: true,
             fog: true,
             ticks: true,
+            faces: true,
         }
     }
 }
 
-const KEYS: [&str; 4] = ["enabled", "particles", "fog", "ticks"];
+const KEYS: [&str; 5] = ["enabled", "particles", "fog", "ticks", "faces"];
 
 impl Settings {
     fn get(&self, i: usize) -> bool {
-        [self.enabled, self.particles, self.fog, self.ticks][i]
+        [self.enabled, self.particles, self.fog, self.ticks, self.faces][i]
     }
     fn flip(&mut self, i: usize) {
         match i {
@@ -44,6 +47,7 @@ impl Settings {
             1 => self.particles = !self.particles,
             2 => self.fog = !self.fog,
             3 => self.ticks = !self.ticks,
+            4 => self.faces = !self.faces,
             _ => {}
         }
     }
@@ -81,11 +85,34 @@ fn settings(game: &Game<'_>) -> Settings {
     })
 }
 
-/// Each frame: the switches follow the settings (and Options > Mods).
-pub(super) fn sync(game: &Game<'_>) {
+thread_local! {
+    /// The block face culling Natrium last asked of the renderer.
+    static FACES: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Each frame: the switches follow the settings (and Options > Mods), and
+/// Video Settings shows them.
+pub(super) fn sync(game: &mut Game<'_>) {
     let s = settings(game);
-    let on = s.enabled && game.native_on(ID);
+    let listed = game.native_on(ID);
+    let on = s.enabled && listed;
     flags::set(on && s.particles, on && s.fog, on && s.ticks);
+    // Horizon's own block face culling (on in Horizon), off only when asked.
+    let faces = !on || s.faces;
+    let changed = FACES.replace(Some(faces)) != Some(faces);
+    if let Some(r) = game.renderer.as_mut()
+        && (changed || (!faces && r.section_sides()))
+    {
+        r.set_section_sides(faces);
+    }
+    let index = game
+        .settings
+        .mods
+        .installed
+        .iter()
+        .position(|m| m.id == ID && m.native.is_some());
+    let switches = [s.enabled, s.particles, s.fog, s.ticks, s.faces];
+    flags::set_video(index.filter(|_| listed).map(|i| (i, switches)));
 }
 
 pub(super) fn listed() -> NativeMod {
@@ -106,41 +133,23 @@ fn on_off(on: bool) -> &'static str {
 /// Natrium's page: its switches, the preset, and what it skipped.
 pub(super) fn page(game: &Game<'_>, buttons: &mut Vec<String>) {
     let s = settings(game);
-    buttons.push(format!("Natrium: {}", on_off(s.enabled)));
-    buttons.push(format!("Particle culling: {}", on_off(s.particles)));
-    buttons.push(format!("Fog culling: {}", on_off(s.fog)));
-    buttons.push(format!("Faster ticks: {}", on_off(s.ticks)));
-    buttons.push("Apply Natrium's graphics preset".into());
-    let faces = game.renderer.as_ref().is_some_and(|r| r.section_sides());
-    buttons.push(format!("Block face culling: built into Horizon ({})", on_off(faces)));
-    let (p, sec, t) = flags::counts();
-    buttons.push(format!(
-        "Skipped so far: {} particles, {} sections, {} tick lookups",
-        short(p),
-        short(sec),
-        short(t)
-    ));
-}
-
-pub fn short(n: u64) -> String {
-    match n {
-        0..1_000 => n.to_string(),
-        1_000..1_000_000 => format!("{:.1}k", n as f64 / 1e3),
-        1_000_000..1_000_000_000 => format!("{:.1}M", n as f64 / 1e6),
-        _ => format!("{:.1}G", n as f64 / 1e9),
+    for (i, caption) in flags::CAPTIONS.iter().enumerate() {
+        buttons.push(format!("{caption}: {}", on_off(s.get(i))));
     }
+    buttons.push(flags::PRESET_LABEL.into());
+    buttons.push(flags::skipped());
 }
 
 pub(super) fn click(game: &mut Game<'_>, button: usize) {
     let mut s = settings(game);
     match button {
-        0..=3 => {
+        0..=4 => {
             s.flip(button);
             save(game, &s);
             CACHE.with(|c| c.set(Some(s)));
             sync(game);
         }
-        4 => preset(game),
+        flags::PRESET => preset(game),
         _ => {}
     }
 }
@@ -148,9 +157,11 @@ pub(super) fn click(game: &mut Game<'_>, button: usize) {
 /// Horizon's own settings, set as its descriptions advise for frame time:
 /// entity culling on (off by default), cave culling on, and at most 16
 /// sections and 4 MiB of mesh data uploaded a frame ("lower is smoother
-/// while loading"). Saved with the game's settings.
+/// while loading"). Saved with the game's settings; the graphics preset
+/// reads Custom after it, as after any such change.
 fn preset(game: &mut Game<'_>) {
     let g = &mut game.settings.horizon;
+    g.preset = horizon_client::graphics::Preset::Custom;
     g.entity_culling = true;
     g.cave_culling = true;
     if g.chunk_updates == 0 || g.chunk_updates > 16 {

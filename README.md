@@ -25,7 +25,8 @@ native Horizon mod that adds:
   bundled **UI Kit** is one, installed with the studio.
 - **Natrium: Sodium's and Lithium's ideas for Horizon.** A second native mod in the same bundle: particles off
   screen and terrain hidden in thick fog aren't drawn, the server's ticks skip work that changes nothing, and a
-  graphics preset sets Horizon's own options for frame time. It draws and ticks the same as without it.
+  graphics preset sets Horizon's own options for frame time. It draws and ticks the same as without it, and its
+  options are in Video Settings, as Sodium's are in Java's.
 
 ![The console](docs/screenshots/console.png)
 
@@ -124,8 +125,13 @@ PvP server you move and hit as in 26.3, which some anticheats notice. Joining as
 ## Natrium
 
 Natrium does for Horizon what Sodium and Lithium do for Java Minecraft: the same picture and the same game, with
-less work a frame and a tick. It comes with Horizon Studio, has its own row in Options → Mods, and is on from the
-start. Its page has a switch for each part, the preset, and what it has skipped so far.
+less work a frame and a tick. It comes with Horizon Studio and is on from the start.
+
+As Sodium's options are in Java's video settings, Natrium's are in **Options → Video Settings**: a Natrium section
+after Preferences, with its switches as the page's own buttons (Natrium, Particle Culling, Fog Culling, Block Face
+Culling, Faster Ticks), Apply Natrium Preset, and what it has skipped so far. The settings search finds them too
+(type `culling`). The same switches are on its page in Options → Mods; turning Natrium off there removes the
+section.
 
 - **Particle culling.** Horizon builds every particle's quad each frame, behind the camera too (up to 16,384).
   Natrium tests each one against the frame's view first: those outside it cost nothing. Those in view are built
@@ -142,10 +148,10 @@ start. Its page has a switch for each part, the preset, and what it has skipped 
   Entity Culling on (it is off by default), Cave Culling on, and at most 16 chunk updates and 4 MiB of uploads a
   frame, which keeps frames even while chunks load. It changes nothing else and saves with your options.
 - **Block face culling** (Sodium's skipping of faces turned away from the camera) is already in Horizon and on by
-  default, so Natrium doesn't add it twice; its page shows its state.
+  default, so Natrium doesn't add it twice: its switch is Horizon's own, as Sodium's Use Block Face Culling is.
+  Leave it on; off draws every face, for comparisons.
 
-Each part checks its own switch at the moment it runs, so turning one off in Options → Mods takes effect on the next
-frame or tick. To see what it gains on your machine, compare the FPS counter (F3) with Natrium on and off.
+Each part checks its own switch at the moment it runs, so turning one off takes effect on the next frame or tick. To see what it gains on your machine, compare the FPS counter (F3) with Natrium on and off.
 
 ## Write a script mod
 
@@ -430,12 +436,13 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `via_picker.rs`, `via_menu.rs` (`hstudio_via_picker`, `hstudio_via_menu`) | The multiplayer screen's button and the version picker (drawn with the design system's shapes and fonts) |
 | `via_net.rs` (`horizon_protocol::hstudio_via_net`) | In the protocol crate: ViaProxy's internal host, the redirect, OpenAuthMod's answers |
 | `natrium.rs` (`hstudio_natrium`) | Natrium's settings, its Options → Mods row and page, the preset |
+| `natrium_video.rs` (`options_ui::natrium_video`) | Natrium's section of Video Settings, whose buttons are its page's |
 | `natrium_flags.rs` (`horizon_core::natrium`) | In the core crate, which the renderer and the server both read: Natrium's switches and counts |
 | `natrium_particles.rs` (`particles::natrium_particles`) | In the renderer: Horizon's particle loop, with the view test first |
 | `natrium_items.rs`, `natrium_villagers.rs`, `natrium_paths.rs` | Next to the code they speed up: item merging, villagers' item pickup, swimmers' path search |
 
-The hooks, HEAD hooks but where it says otherwise (via-address, via-srv, via-recv and Natrium's particle, merge,
-pickup and swim hooks can answer in their function's place):
+The hooks, HEAD hooks but where it says otherwise (via-address, via-srv, via-recv and Natrium's particle, Video
+Settings, merge, pickup and swim hooks can answer in their function's place):
 
 | Hook | Target | For |
 |---|---|---|
@@ -454,6 +461,8 @@ pickup and swim hooks can answer in their function's place):
 | natrium-particles-render | `horizon_client_render::particles::ParticleEngine::render` | Natrium's particle loop in its place, while particle culling is on |
 | natrium-frame | `horizon_client_render::gfx::Renderer::render` | this frame's fog, and whether it hides what is past it |
 | natrium-fog | `horizon_client_render::gfx::resident::in_frustum` (RETURN) | a section wholly past that fog counts as out of view |
+| natrium-video-rows | `horizon_client_render::options_ui::pairs` | after Video Settings' Preferences, Natrium's section |
+| natrium-video-search | `horizon_client_render::options_ui::OptionsUi::page` | the settings search's text, which the section follows |
 | natrium-merge, natrium-pickups, natrium-swim | `entities::merge_with_neighbours`, `game::villagers::Game::villager_pickups`, `mobs::path::Finder::swim_neighbors` | Natrium's versions in their place, while faster ticks are on |
 | hud, key, command, zoom, list, settings, click | Horizon's [native hook points](https://github.com/horizon-rust/horizon/blob/main/crates/horizon-client/src/game/native_hooks.rs) | the HUD, keys, commands, `view.zoom`, the Options → Mods row and page |
 
@@ -499,6 +508,6 @@ applies to the pinned Horizon and the modded game compiles. ViaHorizon's joins r
 network code and the real ViaProxy, against fake 1.8 servers. It has not been played in a running game yet: the
 drawing, layout and input are untested on screen, and ViaHorizon hasn't met a real server, so expect rough edges.
 Natrium's particle loop and item merging are checked against Horizon's own (the same vertices, the same items, tick
-after tick, in the staged game); what it gains in frames and ticks has not been measured on a real machine yet.
+after tick, in the staged game), and so is its Video Settings section (its rows, search and clicks); what it gains in frames and ticks has not been measured on a real machine yet.
 
 License: MIT.
