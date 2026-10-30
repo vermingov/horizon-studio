@@ -618,23 +618,69 @@ pub fn suggest(before: &str, lines: &[String], console: bool) -> Option<(usize, 
             ));
         }
     };
+    let mut start = word_start;
     match sep {
-        Some('.') | Some(':') => {
-            // The table before the '.': what is in it.
+        Some(sep @ ('.' | ':')) => {
+            // What is before the '.' or ':': a library, a table of the
+            // file's (`a` or `a.b`), a string, or a call's result.
             let owner_end = word_start - 1;
-            let owner_start = before[..owner_end].rfind(|c: char| !is_word(c)).map_or(0, |i| i + 1);
-            let owner = &before[owner_start..owner_end];
-            if sep == Some(':') {
-                // A string's methods.
-                for (n, sig, d) in STDLIB.iter().filter(|(n, ..)| n.starts_with("string.")) {
-                    let m = &n["string.".len()..];
-                    push(m, &sig.replacen("string.", ":", 1), d, Kind::Function, &mut items);
+            let owner_start = before[..owner_end]
+                .rfind(|c: char| !is_word(c) && c != '.')
+                .map_or(0, |i| i + 1);
+            let owner = before[owner_start..owner_end].trim_matches('.');
+            let library: Vec<(String, String, String)> = names(console)
+                .into_iter()
+                .filter(|(n, ..)| n.strip_prefix(owner).is_some_and(|r| r.starts_with('.')) && !owner.is_empty())
+                .collect();
+            let mine = if owner.is_empty() {
+                Vec::new()
+            } else {
+                file_members(lines, owner)
+            };
+            if sep == ':' && !library.is_empty() {
+                // `player:` means `player.`: the library's functions, the
+                // ':' made a '.' as they are taken.
+                start = owner_end;
+                for (n, sig, d) in &library {
+                    let member = &n[owner.len() + 1..];
+                    if score(member, typed).is_some_and(|_| member != typed) {
+                        let kind = if sig.contains('(') { Kind::Function } else { Kind::Value };
+                        items.push((
+                            score(member, typed).unwrap_or(0) + 5,
+                            Suggestion {
+                                label: member.to_owned(),
+                                insert: format!(".{member}"),
+                                detail: sig.clone(),
+                                doc: d.clone(),
+                                kind,
+                            },
+                        ));
+                    }
                 }
             } else {
-                for (n, sig, d) in names(console) {
-                    if let Some(member) = n.strip_prefix(owner).and_then(|r| r.strip_prefix('.')) {
-                        let kind = if sig.contains('(') { Kind::Function } else { Kind::Value };
-                        push(member, &sig, &d, kind, &mut items);
+                for (n, sig, d) in &library {
+                    let kind = if sig.contains('(') { Kind::Function } else { Kind::Value };
+                    push(&n[owner.len() + 1..], sig, d, kind, &mut items);
+                }
+                // The file's own: its methods after ':', all of it after '.'.
+                for (name, func) in &mine {
+                    if sep == ':' && !func {
+                        continue;
+                    }
+                    let (detail, kind) = if *func {
+                        (format!("{owner}{sep}{name}(...)"), Kind::Function)
+                    } else {
+                        (format!("{owner}.{name}"), Kind::Value)
+                    };
+                    push(name, &detail, "in this file", kind, &mut items);
+                }
+                // A string's methods: after one, or after what the file
+                // doesn't say anything about.
+                let methods = mine.iter().any(|(_, f)| *f);
+                if sep == ':' && (stringy(lines, &before[..owner_end], owner) || !methods) {
+                    for (n, sig, d) in STDLIB.iter().filter(|(n, ..)| n.starts_with("string.")) {
+                        let m = &n["string.".len()..];
+                        push(m, &sig.replacen("string.", ":", 1), d, Kind::Function, &mut items);
                     }
                 }
             }
@@ -667,7 +713,140 @@ pub fn suggest(before: &str, lines: &[String], console: bool) -> Option<(usize, 
     items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.label.cmp(&b.1.label)));
     items.dedup_by(|a, b| a.1.label == b.1.label);
     items.truncate(50);
-    Some((word_start, items.into_iter().map(|x| x.1).collect()))
+    Some((start, items.into_iter().map(|x| x.1).collect()))
+}
+
+/// Whether `word` is at `at` in `line` as a whole name (not part of a
+/// longer one, nor a field of another table: `x.obj` isn't `obj`).
+fn whole_at(line: &str, at: usize, word: &str) -> bool {
+    let b = line.as_bytes();
+    let before_ok = at == 0 || !(is_word(b[at - 1] as char) || b[at - 1] == b'.' || b[at - 1] == b':');
+    let end = at + word.len();
+    before_ok && (end >= b.len() || !is_word(b[end] as char))
+}
+
+/// What the file puts in the table `owner` ("obj", "a.b"), as (name,
+/// whether it is a function): `function owner:m(`, `function owner.f(`,
+/// `owner.x = ...`, `owner:m(...)` calls, and the fields of a
+/// `owner = { ... }` constructor.
+fn file_members(lines: &[String], owner: &str) -> Vec<(String, bool)> {
+    let mut out: Vec<(String, bool)> = Vec::new();
+    let add = |name: &str, func: bool, out: &mut Vec<(String, bool)>| {
+        if name.is_empty() || name.starts_with(|c: char| c.is_ascii_digit()) || KEYWORDS.contains(&name) {
+            return;
+        }
+        match out.iter_mut().find(|(n, _)| n == name) {
+            Some(e) => e.1 |= func,
+            None => out.push((name.to_owned(), func)),
+        }
+    };
+    let text: Vec<String> = lines.iter().map(|l| strip_strings(l)).collect();
+    for (row, line) in text.iter().enumerate() {
+        for (at, _) in line.match_indices(owner) {
+            if !whole_at(line, at, owner) {
+                continue;
+            }
+            let rest = &line[at + owner.len()..];
+            let rest_t = rest.trim_start();
+            if let Some(after) = rest_t.strip_prefix('.').or_else(|| rest_t.strip_prefix(':')) {
+                let name: String = after.chars().take_while(|c| is_word(*c)).collect();
+                if name.is_empty() {
+                    continue;
+                }
+                let tail = after[name.len()..].trim_start();
+                let defined = line[..at].trim_end().ends_with("function");
+                let func = defined
+                    || tail.starts_with('(')
+                    || (tail.starts_with('=')
+                        && !tail.starts_with("==")
+                        && tail[1..].trim_start().starts_with("function"));
+                // A deeper field (`owner.a.b`) is `a`'s, still `owner`'s member.
+                add(&name, func && !tail.starts_with('.'), &mut out);
+            } else if let Some(rhs) = rest_t.strip_prefix('=').filter(|r| !r.starts_with('='))
+                && rhs.trim_start().starts_with('{')
+            {
+                // A constructor: its fields at the first depth.
+                let open = line.len() - rhs.trim_start().len();
+                constructor_fields(&text, row, open, &mut out, &add);
+            }
+        }
+    }
+    out
+}
+
+/// The fields `name = value` at the first depth of the constructor whose
+/// `{` is at (`row`, `col`) of the stripped `text`.
+fn constructor_fields(
+    text: &[String],
+    row: usize,
+    col: usize,
+    out: &mut Vec<(String, bool)>,
+    add: &impl Fn(&str, bool, &mut Vec<(String, bool)>),
+) {
+    let mut depth = 0i32;
+    for (r, line) in text.iter().enumerate().skip(row) {
+        let from = if r == row { col } else { 0 };
+        let b = line.as_bytes();
+        let mut i = from;
+        while i < b.len() {
+            match b[i] {
+                b'{' | b'(' | b'[' => depth += 1,
+                b'}' | b')' | b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return;
+                    }
+                }
+                c if depth == 1 && is_word(c as char) && (i == 0 || !is_word(b[i - 1] as char)) => {
+                    let name: String = line[i..].chars().take_while(|c| is_word(*c)).collect();
+                    let tail = line[i + name.len()..].trim_start();
+                    let prev = line[from..i].trim_end();
+                    let field_start =
+                        prev.ends_with('{') || prev.ends_with(',') || prev.ends_with(';') || prev.is_empty();
+                    if field_start && tail.starts_with('=') && !tail.starts_with("==") {
+                        add(&name, tail[1..].trim_start().starts_with("function"), out);
+                    }
+                    i += name.len();
+                    continue;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        if r > row + 2000 {
+            return;
+        }
+    }
+}
+
+/// Whether what is before a ':' (`before`, ending at it; `owner` its name)
+/// is a string: a literal, or a name the file sets to one.
+fn stringy(lines: &[String], before: &str, owner: &str) -> bool {
+    let b = before.trim_end();
+    if b.ends_with('"') || b.ends_with('\'') || b.ends_with("]]") || b.ends_with("\")") || b.ends_with("')") {
+        return true;
+    }
+    if owner.is_empty() {
+        return false;
+    }
+    lines.iter().any(|line| {
+        line.match_indices(owner).any(|(at, _)| {
+            if !whole_at(line, at, owner) {
+                return false;
+            }
+            let rest = line[at + owner.len()..].trim_start();
+            let Some(rhs) = rest.strip_prefix('=').filter(|r| !r.starts_with('=')) else {
+                return false;
+            };
+            let rhs = rhs.trim_start();
+            rhs.starts_with('"')
+                || rhs.starts_with('\'')
+                || rhs.starts_with("[[")
+                || rhs.starts_with("tostring(")
+                || rhs.starts_with("string.")
+                || rhs.contains("..")
+        })
+    })
 }
 
 /// Whether the end of `before` is in a string or a comment (a line's own:

@@ -1570,6 +1570,8 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
 /// word starts, the line's top and its height; `typed` what of it is typed.
 fn draw_suggest(st: &mut Studio, p: &mut P, [wx, ly, lh]: [f32; 3], typed: &str, above: bool, dt: f32) {
     use super::hstudio_assist::Kind;
+    // (`player:po` becomes `player.pos`: the ':' is part of what is replaced.)
+    let typed = typed.trim_start_matches([':', '.']);
     let now = st.s.now;
     let (sw, sh) = st.s.ui.screen;
     let Some(sg) = st.s.ui.suggest.as_mut() else { return };

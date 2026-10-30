@@ -80,3 +80,54 @@ fn the_standard_library_matches_the_reference() {
         .collect();
     assert_eq!(ours, documented);
 }
+
+#[test]
+fn after_a_colon_the_receivers_own_methods() {
+    // A library's functions: the ':' becomes the '.' they are called with.
+    let (start, s) = suggest("x = player:po", &[], false).unwrap();
+    assert_eq!(start, "x = player".len(), "from the ':'");
+    assert_eq!(s[0].label, "pos");
+    assert_eq!(s[0].insert, ".pos");
+    assert!(!s.iter().any(|x| x.label == "upper"), "no string methods");
+    // A table of the file's: its methods, not a string's.
+    let file = [
+        "local Car = {}",
+        "function Car:drive(speed) end",
+        "function Car.new() return setmetatable({}, Car) end",
+        "Car.wheels = 4",
+    ];
+    let got = labels("Car:", &file, false);
+    assert!(
+        got.contains(&"drive".to_owned()) && got.contains(&"new".to_owned()),
+        "{got:?}"
+    );
+    assert!(
+        !got.contains(&"upper".to_owned()) && !got.contains(&"wheels".to_owned()),
+        "{got:?}"
+    );
+    assert_eq!(labels("Car.wh", &file, false), ["wheels"]);
+    // A constructor's fields, and methods called on it elsewhere.
+    let file = [
+        "local cfg = {",
+        "  speed = 1, name = \"x\",",
+        "  go = function(self) end,",
+        "  nested = { inner = 2 },",
+        "}",
+        "cfg:jump()",
+    ];
+    let got = labels("cfg.", &file, false);
+    for want in ["speed", "name", "go", "nested", "jump"] {
+        assert!(got.contains(&want.to_owned()), "{want} in {got:?}");
+    }
+    assert!(!got.contains(&"inner".to_owned()), "{got:?}");
+    assert_eq!(labels("cfg:j", &file, false), ["jump"]);
+    // A string, by its literal or what the file sets the name to.
+    assert_eq!(labels("(\"hi\"):up", &[], false)[0], "upper");
+    let got = labels("s:", &["local s = \"hello\""], false);
+    assert!(
+        got.contains(&"upper".to_owned()) && got.contains(&"sub".to_owned()),
+        "{got:?}"
+    );
+    // A name the file says nothing about may well be a string.
+    assert_eq!(labels("name:up", &[], false)[0], "upper");
+}

@@ -786,7 +786,12 @@ fn suggestions_open_as_you_type_and_tab_takes_one() {
     assert!(st.s.ui.open);
     // Ctrl+Space opens them where nothing would.
     handle(&mut st, &mut game, key(Key::Char(' '), CTRL));
-    assert!(st.s.ui.suggest.is_some());
+    assert!(st.s.ui.suggest.is_some()); // A library's function after ':' is called with a '.'.
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    st.s.editor.set_text("");
+    type_text(&mut st, &mut game, "player:po");
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert_eq!(st.s.editor.text(), "player.pos()");
 }
 
 #[test]
