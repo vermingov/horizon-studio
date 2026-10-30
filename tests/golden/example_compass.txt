@@ -1,0 +1,153 @@
+frame 1
+  fill [150.0, 20.0, 180.0, 12.0] 80000000
+  fill [165.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [180.0, 25.0, 1.0, 3.0] a0ffffff
+  text "SE" [189.0, 22.0] ffffff true
+  fill [210.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [225.0, 25.0, 1.0, 3.0] a0ffffff
+  text "S" [237.0, 22.0] ffffff true
+  fill [255.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [270.0, 25.0, 1.0, 3.0] a0ffffff
+  text "SW" [279.0, 22.0] ffffff true
+  fill [300.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [315.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [240.0, 19.0, 1.0, 14.0] ff9a86ff
+  log Info Horizon Studio 0.4.0. Type Lua and press Enter; help() lists the API.
+frame 2
+  fill [150.0, 20.0, 180.0, 12.0] 80000000
+  fill [165.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [180.0, 25.0, 1.0, 3.0] a0ffffff
+  text "SE" [189.0, 22.0] ffffff true
+  fill [210.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [225.0, 25.0, 1.0, 3.0] a0ffffff
+  text "S" [237.0, 22.0] ffffff true
+  fill [255.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [270.0, 25.0, 1.0, 3.0] a0ffffff
+  text "SW" [279.0, 22.0] ffffff true
+  fill [300.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [315.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [240.0, 19.0, 1.0, 14.0] ff9a86ff
+  (the same for 28 more frames)
+lua mods()
+  log Input > mods()
+  log Output { compass = "running" }
+> chat line <Alex> hi there
+> block 1 64 1 = minecraft:stone
+frame 31
+  fill [150.0, 20.0, 180.0, 12.0] 80000000
+  fill [165.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [180.0, 25.0, 1.0, 3.0] a0ffffff
+  text "SE" [189.0, 22.0] ffffff true
+  fill [210.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [225.0, 25.0, 1.0, 3.0] a0ffffff
+  text "S" [237.0, 22.0] ffffff true
+  fill [255.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [270.0, 25.0, 1.0, 3.0] a0ffffff
+  text "SW" [279.0, 22.0] ffffff true
+  fill [300.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [315.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [240.0, 19.0, 1.0, 14.0] ff9a86ff
+  (the same for 1 more frames)
+> player to 0.5 64 0.5 yaw 45
+frame 33
+  fill [150.0, 20.0, 180.0, 12.0] 80000000
+  fill [165.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [180.0, 25.0, 1.0, 3.0] a0ffffff
+  text "S" [192.0, 22.0] ffffff true
+  fill [210.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [225.0, 25.0, 1.0, 3.0] a0ffffff
+  text "SW" [234.0, 22.0] ffffff true
+  fill [255.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [270.0, 25.0, 1.0, 3.0] a0ffffff
+  text "W" [282.0, 22.0] ffffff true
+  fill [300.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [315.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [240.0, 19.0, 1.0, 14.0] ff9a86ff
+  (the same for 1 more frames)
+> player to 0.5 64 0.5 yaw -170
+frame 35
+  fill [150.0, 20.0, 180.0, 12.0] 80000000
+  fill [170.0, 25.0, 1.0, 3.0] a0ffffff
+  text "NW" [179.0, 22.0] ffffff true
+  fill [200.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [215.0, 25.0, 1.0, 3.0] a0ffffff
+  text "N" [227.0, 22.0] ff7a68 true
+  fill [245.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [260.0, 25.0, 1.0, 3.0] a0ffffff
+  text "NE" [269.0, 22.0] ffffff true
+  fill [290.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [305.0, 25.0, 1.0, 3.0] a0ffffff
+  text "E" [317.0, 22.0] ffffff true
+  fill [240.0, 19.0, 1.0, 14.0] ff9a86ff
+  (the same for 6 more frames)
+> player to -12.25 70 33.5 yaw 135
+> camera first
+frame 42
+  fill [150.0, 20.0, 180.0, 12.0] 80000000
+  fill [165.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [180.0, 25.0, 1.0, 3.0] a0ffffff
+  text "W" [192.0, 22.0] ffffff true
+  fill [210.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [225.0, 25.0, 1.0, 3.0] a0ffffff
+  text "NW" [234.0, 22.0] ffffff true
+  fill [255.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [270.0, 25.0, 1.0, 3.0] a0ffffff
+  text "N" [282.0, 22.0] ff7a68 true
+  fill [300.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [315.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [240.0, 19.0, 1.0, 14.0] ff9a86ff
+  (the same for 7 more frames)
+> health 5 food 4
+> time 14000
+frame 50
+  fill [150.0, 20.0, 180.0, 12.0] 80000000
+  fill [165.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [180.0, 25.0, 1.0, 3.0] a0ffffff
+  text "W" [192.0, 22.0] ffffff true
+  fill [210.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [225.0, 25.0, 1.0, 3.0] a0ffffff
+  text "NW" [234.0, 22.0] ffffff true
+  fill [255.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [270.0, 25.0, 1.0, 3.0] a0ffffff
+  text "N" [282.0, 22.0] ff7a68 true
+  fill [300.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [315.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [240.0, 19.0, 1.0, 14.0] ff9a86ff
+  (the same for 24 more frames)
+> reload
+  log Info Reloaded all: 1 running
+frame 75
+  fill [150.0, 20.0, 180.0, 12.0] 80000000
+  fill [165.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [180.0, 25.0, 1.0, 3.0] a0ffffff
+  text "W" [192.0, 22.0] ffffff true
+  fill [210.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [225.0, 25.0, 1.0, 3.0] a0ffffff
+  text "NW" [234.0, 22.0] ffffff true
+  fill [255.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [270.0, 25.0, 1.0, 3.0] a0ffffff
+  text "N" [282.0, 22.0] ff7a68 true
+  fill [300.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [315.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [240.0, 19.0, 1.0, 14.0] ff9a86ff
+  (the same for 9 more frames)
+> enabled false
+frame 85
+  (the same for 2 more frames)
+> enabled true
+frame 88
+  fill [150.0, 20.0, 180.0, 12.0] 80000000
+  fill [165.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [180.0, 25.0, 1.0, 3.0] a0ffffff
+  text "W" [192.0, 22.0] ffffff true
+  fill [210.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [225.0, 25.0, 1.0, 3.0] a0ffffff
+  text "NW" [234.0, 22.0] ffffff true
+  fill [255.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [270.0, 25.0, 1.0, 3.0] a0ffffff
+  text "N" [282.0, 22.0] ff7a68 true
+  fill [300.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [315.0, 25.0, 1.0, 3.0] a0ffffff
+  fill [240.0, 19.0, 1.0, 14.0] ff9a86ff
+  (the same for 9 more frames)
+mod compass Running "Compass"

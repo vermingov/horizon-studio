@@ -1,0 +1,320 @@
+frame 1
+  log Info Horizon Studio 0.4.0. Type Lua and press Enter; help() lists the API.
+frame 2
+  (the same for 28 more frames)
+lua mods()
+  log Input > mods()
+  log Output { uikit = "running" }
+> chat line <Alex> hi there
+> block 1 64 1 = minecraft:stone
+frame 31
+  (the same for 1 more frames)
+lua ui = import('uikit') return type(ui), type(ui.window)
+  log Input > ui = import('uikit') return type(ui), type(ui.window)
+  log Output "table", "function"
+lua local kit = import('uikit') local w = kit.window({title = 'T', width = 200}, function(ui) ui.text('hi') if ui.button('Go') then print('went') end end) w:open()
+  log Input > local kit = import('uikit') local w = kit.window({title = 'T', width = 200}, function(ui) ui.text('hi') if ui.button('Go') then print('went') end end) w:open()
+frame 33
+  dp_rect [378.0, 177.0, 204.0, 202.0] 20 09000000
+  dp_rect [376.0, 180.0, 208.0, 204.0] 22 09000000
+  dp_rect [374.0, 183.0, 212.0, 206.0] 24 09000000
+  dp_rect [372.0, 186.0, 216.0, 208.0] 26 09000000
+  dp_rect [380.0, 174.0, 200.0, 200.0] 18 8016181f
+  dp_border [380.0, 174.0, 200.0, 200.0] 18 802a2c36
+  dp_text "×" [553.05, 191.0] 18 Regular 808b8f9c
+  dp_text "T" [402.0, 192.0] 18 Medium 80ecedf3
+  dp_text "hi" [402.0, 232.0] 14 Regular 80c5c7d1
+  dp_rect [402.0, 262.0, 156.0, 36.0] 18 8020222c
+  dp_text "Go" [472.0, 271.0] 13 Medium 80ecedf3
+frame 34
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 6b0d0e13
+  dp_rect [378.0, 193.0, 204.0, 165.97504] 20 0e000000
+  dp_rect [376.0, 196.0, 208.0, 167.97504] 22 0e000000
+  dp_rect [374.0, 199.0, 212.0, 169.97504] 24 0e000000
+  dp_rect [372.0, 202.0, 216.0, 171.97504] 26 0e000000
+  dp_rect [380.0, 190.0, 200.0, 163.97504] 18 cc16181f
+  dp_border [380.0, 190.0, 200.0, 163.97504] 18 cc2a2c36
+  dp_text "×" [553.05, 207.0] 18 Regular cc8b8f9c
+  dp_text "T" [402.0, 208.0] 18 Medium ccecedf3
+  dp_text "hi" [402.0, 248.0] 14 Regular ccc5c7d1
+  dp_rect [402.0, 278.0, 156.0, 36.0] 18 cc20222c
+  dp_text "Go" [472.0, 287.0] 13 Medium ccecedf3
+frame 35
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 8f0d0e13
+  dp_rect [378.0, 197.0, 204.0, 153.98337] 20 11000000
+  dp_rect [376.0, 200.0, 208.0, 155.98337] 22 11000000
+  dp_rect [374.0, 203.0, 212.0, 157.98337] 24 11000000
+  dp_rect [372.0, 206.0, 216.0, 159.98337] 26 11000000
+  dp_rect [380.0, 194.0, 200.0, 151.98337] 18 f216181f
+  dp_border [380.0, 194.0, 200.0, 151.98337] 18 f22a2c36
+  dp_text "×" [553.05, 211.0] 18 Regular f28b8f9c
+  dp_text "T" [402.0, 212.0] 18 Medium f2ecedf3
+  dp_text "hi" [402.0, 252.0] 14 Regular f2c5c7d1
+  dp_rect [402.0, 282.0, 156.0, 36.0] 18 f220222c
+  dp_text "Go" [472.0, 291.0] 13 Medium f2ecedf3
+> click Go at 239.575 149.5
+frame 36
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 970d0e13
+  dp_rect [378.0, 199.0, 204.0, 149.99168] 20 12000000
+  dp_rect [376.0, 202.0, 208.0, 151.99168] 22 12000000
+  dp_rect [374.0, 205.0, 212.0, 153.99168] 24 12000000
+  dp_rect [372.0, 208.0, 216.0, 155.99168] 26 12000000
+  dp_rect [380.0, 196.0, 200.0, 147.99168] 18 fe16181f
+  dp_border [380.0, 196.0, 200.0, 147.99168] 18 fe2a2c36
+  dp_text "×" [553.05, 213.0] 18 Regular fe8b8f9c
+  dp_text "T" [402.0, 214.0] 18 Medium feecedf3
+  dp_text "hi" [402.0, 254.0] 14 Regular fec5c7d1
+  sound minecraft:ui.button.click None 0.25 1.4 -> Ok(())
+  dp_rect [402.0, 284.0, 156.0, 36.0] 18 fe262934
+  dp_text "Go" [472.0, 293.0] 13 Medium feecedf3
+  log Output went
+frame 37
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 199.0, 204.0, 148.66298] 20 12000000
+  dp_rect [376.0, 202.0, 208.0, 150.66298] 22 12000000
+  dp_rect [374.0, 205.0, 212.0, 152.66298] 24 12000000
+  dp_rect [372.0, 208.0, 216.0, 154.66298] 26 12000000
+  dp_rect [380.0, 196.0, 200.0, 146.66298] 18 ff16181f
+  dp_border [380.0, 196.0, 200.0, 146.66298] 18 ff2a2c36
+  dp_text "×" [553.05, 213.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 214.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 254.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 284.0, 156.0, 36.0] 18 ff292c38
+  dp_text "Go" [472.0, 293.0] 13 Medium ffecedf3
+frame 38
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 199.0, 204.0, 148.22069] 20 12000000
+  dp_rect [376.0, 202.0, 208.0, 150.22069] 22 12000000
+  dp_rect [374.0, 205.0, 212.0, 152.22069] 24 12000000
+  dp_rect [372.0, 208.0, 216.0, 154.22069] 26 12000000
+  dp_rect [380.0, 196.0, 200.0, 146.22069] 18 ff16181f
+  dp_border [380.0, 196.0, 200.0, 146.22069] 18 ff2a2c36
+  dp_text "×" [553.05, 213.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 214.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 254.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 284.0, 156.0, 36.0] 18 ff2a2d39
+  dp_text "Go" [472.0, 293.0] 13 Medium ffecedf3
+frame 39
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 199.0, 204.0, 148.07346] 20 12000000
+  dp_rect [376.0, 202.0, 208.0, 150.07346] 22 12000000
+  dp_rect [374.0, 205.0, 212.0, 152.07346] 24 12000000
+  dp_rect [372.0, 208.0, 216.0, 154.07346] 26 12000000
+  dp_rect [380.0, 196.0, 200.0, 146.07346] 18 ff16181f
+  dp_border [380.0, 196.0, 200.0, 146.07346] 18 ff2a2c36
+  dp_text "×" [553.05, 213.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 214.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 254.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 284.0, 156.0, 36.0] 18 ff2a2d39
+  dp_text "Go" [472.0, 293.0] 13 Medium ffecedf3
+frame 40
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 199.0, 204.0, 148.02446] 20 12000000
+  dp_rect [376.0, 202.0, 208.0, 150.02446] 22 12000000
+  dp_rect [374.0, 205.0, 212.0, 152.02446] 24 12000000
+  dp_rect [372.0, 208.0, 216.0, 154.02446] 26 12000000
+  dp_rect [380.0, 196.0, 200.0, 146.02446] 18 ff16181f
+  dp_border [380.0, 196.0, 200.0, 146.02446] 18 ff2a2c36
+  dp_text "×" [553.05, 213.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 214.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 254.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 284.0, 156.0, 36.0] 18 ff2a2d39
+  dp_text "Go" [472.0, 293.0] 13 Medium ffecedf3
+frame 41
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 199.0, 204.0, 148.00813] 20 12000000
+  dp_rect [376.0, 202.0, 208.0, 150.00813] 22 12000000
+  dp_rect [374.0, 205.0, 212.0, 152.00813] 24 12000000
+  dp_rect [372.0, 208.0, 216.0, 154.00813] 26 12000000
+  dp_rect [380.0, 196.0, 200.0, 146.00813] 18 ff16181f
+  dp_border [380.0, 196.0, 200.0, 146.00813] 18 ff2a2c36
+  dp_text "×" [553.05, 213.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 214.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 254.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 284.0, 156.0, 36.0] 18 ff2a2d39
+  dp_text "Go" [472.0, 293.0] 13 Medium ffecedf3
+frame 42
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 199.0, 204.0, 148.00272] 20 12000000
+  dp_rect [376.0, 202.0, 208.0, 150.00272] 22 12000000
+  dp_rect [374.0, 205.0, 212.0, 152.00272] 24 12000000
+  dp_rect [372.0, 208.0, 216.0, 154.00272] 26 12000000
+  dp_rect [380.0, 196.0, 200.0, 146.00272] 18 ff16181f
+  dp_border [380.0, 196.0, 200.0, 146.00272] 18 ff2a2c36
+  dp_text "×" [553.05, 213.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 214.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 254.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 284.0, 156.0, 36.0] 18 ff2a2d39
+  dp_text "Go" [472.0, 293.0] 13 Medium ffecedf3
+frame 43
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 199.0, 204.0, 148.0009] 20 12000000
+  dp_rect [376.0, 202.0, 208.0, 150.0009] 22 12000000
+  dp_rect [374.0, 205.0, 212.0, 152.0009] 24 12000000
+  dp_rect [372.0, 208.0, 216.0, 154.0009] 26 12000000
+  dp_rect [380.0, 196.0, 200.0, 146.0009] 18 ff16181f
+  dp_border [380.0, 196.0, 200.0, 146.0009] 18 ff2a2c36
+  dp_text "×" [553.05, 213.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 214.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 254.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 284.0, 156.0, 36.0] 18 ff2a2d39
+  dp_text "Go" [472.0, 293.0] 13 Medium ffecedf3
+> player to -12.25 70 33.5 yaw 135
+> camera first
+frame 44
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 199.0, 204.0, 148.0003] 20 12000000
+  dp_rect [376.0, 202.0, 208.0, 150.0003] 22 12000000
+  dp_rect [374.0, 205.0, 212.0, 152.0003] 24 12000000
+  dp_rect [372.0, 208.0, 216.0, 154.0003] 26 12000000
+  dp_rect [380.0, 196.0, 200.0, 146.0003] 18 ff16181f
+  dp_border [380.0, 196.0, 200.0, 146.0003] 18 ff2a2c36
+  dp_text "×" [553.05, 213.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 214.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 254.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 284.0, 156.0, 36.0] 18 ff2a2d39
+  dp_text "Go" [472.0, 293.0] 13 Medium ffecedf3
+frame 45
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 199.0, 204.0, 148.0001] 20 12000000
+  dp_rect [376.0, 202.0, 208.0, 150.0001] 22 12000000
+  dp_rect [374.0, 205.0, 212.0, 152.0001] 24 12000000
+  dp_rect [372.0, 208.0, 216.0, 154.0001] 26 12000000
+  dp_rect [380.0, 196.0, 200.0, 146.0001] 18 ff16181f
+  dp_border [380.0, 196.0, 200.0, 146.0001] 18 ff2a2c36
+  dp_text "×" [553.05, 213.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 214.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 254.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 284.0, 156.0, 36.0] 18 ff2a2d39
+  dp_text "Go" [472.0, 293.0] 13 Medium ffecedf3
+frame 46
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 199.0, 204.0, 148.00003] 20 12000000
+  dp_rect [376.0, 202.0, 208.0, 150.00003] 22 12000000
+  dp_rect [374.0, 205.0, 212.0, 152.00003] 24 12000000
+  dp_rect [372.0, 208.0, 216.0, 154.00003] 26 12000000
+  dp_rect [380.0, 196.0, 200.0, 146.00003] 18 ff16181f
+  dp_border [380.0, 196.0, 200.0, 146.00003] 18 ff2a2c36
+  dp_text "×" [553.05, 213.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 214.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 254.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 284.0, 156.0, 36.0] 18 ff2a2d39
+  dp_text "Go" [472.0, 293.0] 13 Medium ffecedf3
+frame 47
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 199.0, 204.0, 148.00002] 20 12000000
+  dp_rect [376.0, 202.0, 208.0, 150.00002] 22 12000000
+  dp_rect [374.0, 205.0, 212.0, 152.00002] 24 12000000
+  dp_rect [372.0, 208.0, 216.0, 154.00002] 26 12000000
+  dp_rect [380.0, 196.0, 200.0, 146.00002] 18 ff16181f
+  dp_border [380.0, 196.0, 200.0, 146.00002] 18 ff2a2c36
+  dp_text "×" [553.05, 213.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 214.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 254.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 284.0, 156.0, 36.0] 18 ff2a2d39
+  dp_text "Go" [472.0, 293.0] 13 Medium ffecedf3
+frame 48
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 199.0, 204.0, 148.0] 20 12000000
+  dp_rect [376.0, 202.0, 208.0, 150.0] 22 12000000
+  dp_rect [374.0, 205.0, 212.0, 152.0] 24 12000000
+  dp_rect [372.0, 208.0, 216.0, 154.0] 26 12000000
+  dp_rect [380.0, 196.0, 200.0, 146.0] 18 ff16181f
+  dp_border [380.0, 196.0, 200.0, 146.0] 18 ff2a2c36
+  dp_text "×" [553.05, 213.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 214.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 254.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 284.0, 156.0, 36.0] 18 ff2a2d39
+  dp_text "Go" [472.0, 293.0] 13 Medium ffecedf3
+  (the same for 3 more frames)
+> health 5 food 4
+> time 14000
+frame 52
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 199.0, 204.0, 148.0] 20 12000000
+  dp_rect [376.0, 202.0, 208.0, 150.0] 22 12000000
+  dp_rect [374.0, 205.0, 212.0, 152.0] 24 12000000
+  dp_rect [372.0, 208.0, 216.0, 154.0] 26 12000000
+  dp_rect [380.0, 196.0, 200.0, 146.0] 18 ff16181f
+  dp_border [380.0, 196.0, 200.0, 146.0] 18 ff2a2c36
+  dp_text "×" [553.05, 213.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 214.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 254.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 284.0, 156.0, 36.0] 18 ff2a2d39
+  dp_text "Go" [472.0, 293.0] 13 Medium ffecedf3
+  (the same for 12 more frames)
+frame 65
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 200.0, 204.0, 148.0] 20 12000000
+  dp_rect [376.0, 203.0, 208.0, 150.0] 22 12000000
+  dp_rect [374.0, 206.0, 212.0, 152.0] 24 12000000
+  dp_rect [372.0, 209.0, 216.0, 154.0] 26 12000000
+  dp_rect [380.0, 197.0, 200.0, 146.0] 18 ff16181f
+  dp_border [380.0, 197.0, 200.0, 146.0] 18 ff2a2c36
+  dp_text "×" [553.05, 214.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 215.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 255.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 285.0, 156.0, 36.0] 18 ff2a2d39
+  dp_text "Go" [472.0, 294.0] 13 Medium ffecedf3
+  (the same for 5 more frames)
+frame 71
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 200.0, 204.0, 148.0] 20 12000000
+  dp_rect [376.0, 203.0, 208.0, 150.0] 22 12000000
+  dp_rect [374.0, 206.0, 212.0, 152.0] 24 12000000
+  dp_rect [372.0, 209.0, 216.0, 154.0] 26 12000000
+  dp_rect [380.0, 197.0, 200.0, 146.0] 18 ff16181f
+  dp_border [380.0, 197.0, 200.0, 146.0] 18 ff2a2c36
+  dp_text "×" [553.05, 214.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 215.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 255.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 285.0, 156.0, 36.0] 18 ff2b2e3a
+  dp_text "Go" [472.0, 294.0] 13 Medium ffecedf3
+  (the same for 5 more frames)
+> reload
+  log Info Reloaded all: 1 running
+frame 77
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 200.0, 204.0, 148.0] 20 12000000
+  dp_rect [376.0, 203.0, 208.0, 150.0] 22 12000000
+  dp_rect [374.0, 206.0, 212.0, 152.0] 24 12000000
+  dp_rect [372.0, 209.0, 216.0, 154.0] 26 12000000
+  dp_rect [380.0, 197.0, 200.0, 146.0] 18 ff16181f
+  dp_border [380.0, 197.0, 200.0, 146.0] 18 ff2a2c36
+  dp_text "×" [553.05, 214.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 215.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 255.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 285.0, 156.0, 36.0] 18 ff2b2e3a
+  dp_text "Go" [472.0, 294.0] 13 Medium ffecedf3
+  (the same for 9 more frames)
+> enabled false
+frame 87
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 200.0, 204.0, 148.0] 20 12000000
+  dp_rect [376.0, 203.0, 208.0, 150.0] 22 12000000
+  dp_rect [374.0, 206.0, 212.0, 152.0] 24 12000000
+  dp_rect [372.0, 209.0, 216.0, 154.0] 26 12000000
+  dp_rect [380.0, 197.0, 200.0, 146.0] 18 ff16181f
+  dp_border [380.0, 197.0, 200.0, 146.0] 18 ff2a2c36
+  dp_text "×" [553.05, 214.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 215.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 255.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 285.0, 156.0, 36.0] 18 ff2b2e3a
+  dp_text "Go" [472.0, 294.0] 13 Medium ffecedf3
+  (the same for 2 more frames)
+> enabled true
+frame 90
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [378.0, 200.0, 204.0, 148.0] 20 12000000
+  dp_rect [376.0, 203.0, 208.0, 150.0] 22 12000000
+  dp_rect [374.0, 206.0, 212.0, 152.0] 24 12000000
+  dp_rect [372.0, 209.0, 216.0, 154.0] 26 12000000
+  dp_rect [380.0, 197.0, 200.0, 146.0] 18 ff16181f
+  dp_border [380.0, 197.0, 200.0, 146.0] 18 ff2a2c36
+  dp_text "×" [553.05, 214.0] 18 Regular ff8b8f9c
+  dp_text "T" [402.0, 215.0] 18 Medium ffecedf3
+  dp_text "hi" [402.0, 255.0] 14 Regular ffc5c7d1
+  dp_rect [402.0, 285.0, 156.0, 36.0] 18 ff2b2e3a
+  dp_text "Go" [472.0, 294.0] 13 Medium ffecedf3
+  (the same for 9 more frames)
+mod uikit Running "UI Kit"

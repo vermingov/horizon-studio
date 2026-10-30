@@ -1,0 +1,636 @@
+frame 1
+  log Info Horizon Studio 0.4.0. Type Lua and press Enter; help() lists the API.
+frame 2
+  (the same for 28 more frames)
+lua mods()
+  log Input > mods()
+  log Output { uikit = "running", viahorizon = "running" }
+> chat line <Alex> hi there
+> block 1 64 1 = minecraft:stone
+frame 31
+  (the same for 1 more frames)
+> command /via 1.8.x (taken: true)
+> command /via 9.9 (taken: true)
+frame 33
+  via_set None Some("1.8.x")
+  chat ViaHorizon joins as 1.8.x from the next join
+  via_set None Some("9.9")
+  chat ViaProxy has no version 9.9
+> command /vialog (taken: true)
+frame 34
+  chat ViaProxy's last lines are in the Studio console (F8)
+  log Output [viahorizon] [ViaProxy] Binding proxy server to 127.0.0.1:41234
+> command /via (taken: true)
+frame 35
+  dp_rect [248.0, 181.0, 464.0, 202.0] 20 00000000
+  dp_rect [246.0, 184.0, 468.0, 204.0] 22 00000000
+  dp_rect [244.0, 187.0, 472.0, 206.0] 24 00000000
+  dp_rect [242.0, 190.0, 476.0, 208.0] 26 00000000
+  dp_rect [250.0, 178.0, 460.0, 200.0] 18 0016181f
+  dp_border [250.0, 178.0, 460.0, 200.0] 18 002a2c36
+  dp_text "×" [683.05, 195.0] 18 Regular 008b8f9c
+  dp_text "ViaHorizon" [272.0, 196.0] 18 Medium 00ecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 222.0] 12 Regular 008b8f9c
+  dp_text "Join servers through ViaProxy" [272.0, 260.0] 14 Regular 00ecedf3
+  dp_rect [648.0, 259.0, 40.0, 22.0] 11 009a86ff
+  dp_rect [669.0, 262.0, 16.0, 16.0] 8 00ecedf3
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 298.0] 12 Regular 008b8f9c
+  dp_text "Server version: 1.8.x" [272.0, 329.0] 12 Regular 008b8f9c
+  dp_rect [272.0, 351.0, 416.0, 36.0] 10 000d0e13
+  dp_border [272.0, 351.0, 416.0, 36.0] 10 002a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 359.0] 14 Regular 008b8f9c
+  dp_rect [272.0, 397.0, 416.0, 212.0] 12 000d0e13
+  dp_border [272.0, 397.0, 416.0, 212.0] 12 002a2c36
+  dp_rect [276.0, 537.0, 408.0, 34.0] 8 0026233d
+  dp_text "Auto detect" [286.0, 408.0] 14 Regular 00ecedf3
+  dp_text "26.3" [286.0, 442.0] 14 Regular 00ecedf3
+  dp_text "1.21.4" [286.0, 476.0] 14 Regular 00ecedf3
+  dp_text "1.12.2" [286.0, 510.0] 14 Regular 00ecedf3
+  dp_text "1.8.x" [286.0, 544.0] 14 Regular 00b0a0ff
+  dp_text "b1.7.3" [286.0, 578.0] 14 Regular 00ecedf3
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 619.0] 12 Regular 008b8f9c
+  dp_text "the server its version." [272.0, 637.0] 12 Regular 008b8f9c
+  dp_rect [272.0, 668.0, 203.0, 36.0] 18 0020222c
+  dp_text "Auto detect" [334.0, 677.0] 13 Medium 00ecedf3
+  dp_rect [485.0, 668.0, 203.0, 36.0] 18 009a86ff
+  dp_text "Done" [572.0, 677.0] 13 Medium 000d0e13
+frame 36
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 6b0d0e13
+  dp_rect [248.0, 60.0, 464.0, 434.16086] 20 09000000
+  dp_rect [246.0, 63.0, 468.0, 436.16086] 22 09000000
+  dp_rect [244.0, 66.0, 472.0, 438.16086] 24 09000000
+  dp_rect [242.0, 69.0, 476.0, 440.16086] 26 09000000
+  dp_rect [250.0, 57.0, 460.0, 432.16086] 18 8016181f
+  dp_border [250.0, 57.0, 460.0, 432.16086] 18 802a2c36
+  dp_text "×" [683.05, 74.0] 18 Regular 808b8f9c
+  dp_text "ViaHorizon" [272.0, 75.0] 18 Medium 80ecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 101.0] 12 Regular 808b8f9c
+  dp_text "Join servers through ViaProxy" [272.0, 139.0] 14 Regular 80ecedf3
+  dp_rect [648.0, 138.0, 40.0, 22.0] 11 809a86ff
+  dp_rect [669.0, 141.0, 16.0, 16.0] 8 80ecedf3
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 177.0] 12 Regular 808b8f9c
+  dp_text "Server version: 1.8.x" [272.0, 208.0] 12 Regular 808b8f9c
+  dp_rect [272.0, 230.0, 416.0, 36.0] 10 800d0e13
+  dp_border [272.0, 230.0, 416.0, 36.0] 10 802a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 238.0] 14 Regular 808b8f9c
+  dp_rect [272.0, 276.0, 416.0, 212.0] 12 800d0e13
+  dp_border [272.0, 276.0, 416.0, 212.0] 12 802a2c36
+  dp_rect [276.0, 456.2774, 408.0, 34.0] 8 8026233d
+  dp_text "Auto detect" [286.0, 287.0] 14 Regular 80ecedf3
+  dp_text "26.3" [286.0, 321.0] 14 Regular 80ecedf3
+  dp_text "1.21.4" [286.0, 355.0] 14 Regular 80ecedf3
+  dp_text "1.12.2" [286.0, 389.0] 14 Regular 80ecedf3
+  dp_text "1.8.x" [286.0, 423.0] 14 Regular 80b0a0ff
+  dp_text "b1.7.3" [286.0, 457.0] 14 Regular 80ecedf3
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 498.0] 12 Regular 808b8f9c
+  dp_text "the server its version." [272.0, 516.0] 12 Regular 808b8f9c
+  dp_rect [272.0, 547.0, 203.0, 36.0] 18 8020222c
+  dp_text "Auto detect" [334.0, 556.0] 13 Medium 80ecedf3
+  dp_rect [485.0, 547.0, 203.0, 36.0] 18 809a86ff
+  dp_text "Done" [572.0, 556.0] 13 Medium 800d0e13
+frame 37
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 8f0d0e13
+  dp_rect [248.0, 21.0, 464.0, 510.0] 20 0e000000
+  dp_rect [246.0, 24.0, 468.0, 512.0] 22 0e000000
+  dp_rect [244.0, 27.0, 472.0, 514.0] 24 0e000000
+  dp_rect [242.0, 30.0, 476.0, 516.0] 26 0e000000
+  dp_rect [250.0, 18.0, 460.0, 508.0] 18 cc16181f
+  dp_border [250.0, 18.0, 460.0, 508.0] 18 cc2a2c36
+  dp_text "×" [683.05, 35.0] 18 Regular cc8b8f9c
+  dp_text "ViaHorizon" [272.0, 36.0] 18 Medium ccecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 62.0] 12 Regular cc8b8f9c
+  dp_text "Join servers through ViaProxy" [272.0, 100.0] 14 Regular ccecedf3
+  dp_rect [648.0, 99.0, 40.0, 22.0] 11 cc9a86ff
+  dp_rect [669.0, 102.0, 16.0, 16.0] 8 ccecedf3
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 138.0] 12 Regular cc8b8f9c
+  dp_text "Server version: 1.8.x" [272.0, 169.0] 12 Regular cc8b8f9c
+  dp_rect [272.0, 191.0, 416.0, 36.0] 10 cc0d0e13
+  dp_border [272.0, 191.0, 416.0, 36.0] 10 cc2a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 199.0] 14 Regular cc8b8f9c
+  dp_rect [272.0, 237.0, 416.0, 212.0] 12 cc0d0e13
+  dp_border [272.0, 237.0, 416.0, 212.0] 12 cc2a2c36
+  dp_rect [276.0, 403.38916, 408.0, 34.0] 8 cc26233d
+  dp_text "Auto detect" [286.0, 248.0] 14 Regular ccecedf3
+  dp_text "26.3" [286.0, 282.0] 14 Regular ccecedf3
+  dp_text "1.21.4" [286.0, 316.0] 14 Regular ccecedf3
+  dp_text "1.12.2" [286.0, 350.0] 14 Regular ccecedf3
+  dp_text "1.8.x" [286.0, 384.0] 14 Regular ccb0a0ff
+  dp_text "b1.7.3" [286.0, 418.0] 14 Regular ccecedf3
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 459.0] 12 Regular cc8b8f9c
+  dp_text "the server its version." [272.0, 477.0] 12 Regular cc8b8f9c
+  dp_rect [272.0, 508.0, 203.0, 36.0] 18 cc20222c
+  dp_text "Auto detect" [334.0, 517.0] 13 Medium ccecedf3
+  dp_rect [485.0, 508.0, 203.0, 36.0] 18 cc9a86ff
+  dp_text "Done" [572.0, 517.0] 13 Medium cc0d0e13
+> click 1.12.2 at 154.55 179
+frame 38
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 970d0e13
+  dp_rect [248.0, 19.0, 464.0, 510.0] 20 11000000
+  dp_rect [246.0, 22.0, 468.0, 512.0] 22 11000000
+  dp_rect [244.0, 25.0, 472.0, 514.0] 24 11000000
+  dp_rect [242.0, 28.0, 476.0, 516.0] 26 11000000
+  dp_rect [250.0, 16.0, 460.0, 508.0] 18 f216181f
+  dp_border [250.0, 16.0, 460.0, 508.0] 18 f22a2c36
+  dp_text "×" [683.05, 33.0] 18 Regular f28b8f9c
+  dp_text "ViaHorizon" [272.0, 34.0] 18 Medium f2ecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 60.0] 12 Regular f28b8f9c
+  dp_text "Join servers through ViaProxy" [272.0, 98.0] 14 Regular f2ecedf3
+  dp_rect [648.0, 97.0, 40.0, 22.0] 11 f29a86ff
+  dp_rect [669.0, 100.0, 16.0, 16.0] 8 f2ecedf3
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 136.0] 12 Regular f28b8f9c
+  dp_text "Server version: 1.8.x" [272.0, 167.0] 12 Regular f28b8f9c
+  dp_rect [272.0, 189.0, 416.0, 36.0] 10 f20d0e13
+  dp_border [272.0, 189.0, 416.0, 36.0] 10 f22a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 197.0] 14 Regular f28b8f9c
+  dp_rect [272.0, 235.0, 416.0, 212.0] 12 f20d0e13
+  dp_border [272.0, 235.0, 416.0, 212.0] 12 f22a2c36
+  dp_rect [276.0, 384.44992, 408.0, 34.0] 8 f226233d
+  dp_text "Auto detect" [286.0, 246.0] 14 Regular f2ecedf3
+  dp_text "26.3" [286.0, 280.0] 14 Regular f2ecedf3
+  dp_text "1.21.4" [286.0, 314.0] 14 Regular f2ecedf3
+  sound minecraft:ui.button.click None 0.25 1.4 -> Ok(())
+  dp_text "1.12.2" [286.0, 348.0] 14 Regular f2b0a0ff
+  dp_text "1.8.x" [286.0, 382.0] 14 Regular f2ecedf3
+  dp_text "b1.7.3" [286.0, 416.0] 14 Regular f2ecedf3
+  via_set None Some("1.12.2")
+  chat [ViaHorizon] ViaHorizon joins as 1.12.2 from the next join
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 457.0] 12 Regular f28b8f9c
+  dp_text "the server its version." [272.0, 475.0] 12 Regular f28b8f9c
+  dp_rect [272.0, 506.0, 203.0, 36.0] 18 f220222c
+  dp_text "Auto detect" [334.0, 515.0] 13 Medium f2ecedf3
+  dp_rect [485.0, 506.0, 203.0, 36.0] 18 f29a86ff
+  dp_text "Done" [572.0, 515.0] 13 Medium f20d0e13
+frame 39
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [248.0, 19.0, 464.0, 510.0] 20 12000000
+  dp_rect [246.0, 22.0, 468.0, 512.0] 22 12000000
+  dp_rect [244.0, 25.0, 472.0, 514.0] 24 12000000
+  dp_rect [242.0, 28.0, 476.0, 516.0] 26 12000000
+  dp_rect [250.0, 16.0, 460.0, 508.0] 18 fe16181f
+  dp_border [250.0, 16.0, 460.0, 508.0] 18 fe2a2c36
+  dp_text "×" [683.05, 33.0] 18 Regular fe8b8f9c
+  dp_text "ViaHorizon" [272.0, 34.0] 18 Medium feecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 60.0] 12 Regular fe8b8f9c
+  dp_text "Join servers through ViaProxy" [272.0, 98.0] 14 Regular feecedf3
+  dp_rect [648.0, 97.0, 40.0, 22.0] 11 fe9a86ff
+  dp_rect [669.0, 100.0, 16.0, 16.0] 8 feecedf3
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 136.0] 12 Regular fe8b8f9c
+  dp_text "Server version: 1.12.2" [272.0, 167.0] 12 Regular fe8b8f9c
+  dp_rect [272.0, 189.0, 416.0, 36.0] 10 fe0d0e13
+  dp_border [272.0, 189.0, 416.0, 36.0] 10 fe2a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 197.0] 14 Regular fe8b8f9c
+  dp_rect [272.0, 235.0, 416.0, 212.0] 12 fe0d0e13
+  dp_border [272.0, 235.0, 416.0, 212.0] 12 fe2a2c36
+  dp_rect [276.0, 355.46323, 408.0, 34.0] 8 fe26233d
+  dp_text "Auto detect" [286.0, 246.0] 14 Regular feecedf3
+  dp_text "26.3" [286.0, 280.0] 14 Regular feecedf3
+  dp_text "1.21.4" [286.0, 314.0] 14 Regular feecedf3
+  dp_text "1.12.2" [286.0, 348.0] 14 Regular feb0a0ff
+  dp_text "1.8.x" [286.0, 382.0] 14 Regular feecedf3
+  dp_text "b1.7.3" [286.0, 416.0] 14 Regular feecedf3
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 457.0] 12 Regular fe8b8f9c
+  dp_text "the server its version." [272.0, 475.0] 12 Regular fe8b8f9c
+  dp_rect [272.0, 506.0, 203.0, 36.0] 18 fe20222c
+  dp_text "Auto detect" [334.0, 515.0] 13 Medium feecedf3
+  dp_rect [485.0, 506.0, 203.0, 36.0] 18 fe9a86ff
+  dp_text "Done" [572.0, 515.0] 13 Medium fe0d0e13
+> click Join servers through ViaProxy at 156 53
+frame 40
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [248.0, 19.0, 464.0, 510.0] 20 12000000
+  dp_rect [246.0, 22.0, 468.0, 512.0] 22 12000000
+  dp_rect [244.0, 25.0, 472.0, 514.0] 24 12000000
+  dp_rect [242.0, 28.0, 476.0, 516.0] 26 12000000
+  dp_rect [250.0, 16.0, 460.0, 508.0] 18 ff16181f
+  dp_border [250.0, 16.0, 460.0, 508.0] 18 ff2a2c36
+  dp_text "×" [683.05, 33.0] 18 Regular ff8b8f9c
+  dp_text "ViaHorizon" [272.0, 34.0] 18 Medium ffecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 60.0] 12 Regular ff8b8f9c
+  sound minecraft:ui.button.click None 0.25 1.4 -> Ok(())
+  dp_rect [262.0, 90.0, 436.0, 36.0] 10 08ecedf3
+  dp_text "Join servers through ViaProxy" [272.0, 98.0] 14 Regular ffecedf3
+  dp_rect [648.0, 97.0, 40.0, 22.0] 11 ff5c5592
+  dp_rect [659.08795, 100.0, 16.0, 16.0] 8 ffd6d8e0
+  via_set Some(false) None
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 136.0] 12 Regular ff8b8f9c
+  dp_text "Server version: 1.12.2" [272.0, 167.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 189.0, 416.0, 36.0] 10 ff0d0e13
+  dp_border [272.0, 189.0, 416.0, 36.0] 10 ff2a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 197.0] 14 Regular ff8b8f9c
+  dp_rect [272.0, 235.0, 416.0, 212.0] 12 ff0d0e13
+  dp_border [272.0, 235.0, 416.0, 212.0] 12 ff2a2c36
+  dp_rect [276.0, 345.8144, 408.0, 34.0] 8 ff26233d
+  dp_text "Auto detect" [286.0, 246.0] 14 Regular ffecedf3
+  dp_text "26.3" [286.0, 280.0] 14 Regular ffecedf3
+  dp_text "1.21.4" [286.0, 314.0] 14 Regular ffecedf3
+  dp_text "1.12.2" [286.0, 348.0] 14 Regular ffb0a0ff
+  dp_text "1.8.x" [286.0, 382.0] 14 Regular ffecedf3
+  dp_text "b1.7.3" [286.0, 416.0] 14 Regular ffecedf3
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 457.0] 12 Regular ff8b8f9c
+  dp_text "the server its version." [272.0, 475.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 506.0, 203.0, 36.0] 18 ff20222c
+  dp_text "Auto detect" [334.0, 515.0] 13 Medium ffecedf3
+  dp_rect [485.0, 506.0, 203.0, 36.0] 18 ff9a86ff
+  dp_text "Done" [572.0, 515.0] 13 Medium ff0d0e13
+frame 41
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [248.0, 19.0, 464.0, 510.0] 20 12000000
+  dp_rect [246.0, 22.0, 468.0, 512.0] 22 12000000
+  dp_rect [244.0, 25.0, 472.0, 514.0] 24 12000000
+  dp_rect [242.0, 28.0, 476.0, 516.0] 26 12000000
+  dp_rect [250.0, 16.0, 460.0, 508.0] 18 ff16181f
+  dp_border [250.0, 16.0, 460.0, 508.0] 18 ff2a2c36
+  dp_text "×" [683.05, 33.0] 18 Regular ff8b8f9c
+  dp_text "ViaHorizon" [272.0, 34.0] 18 Medium ffecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 60.0] 12 Regular ff8b8f9c
+  dp_rect [262.0, 90.0, 436.0, 36.0] 10 0becedf3
+  dp_text "Join servers through ViaProxy" [272.0, 98.0] 14 Regular ffecedf3
+  dp_rect [648.0, 97.0, 40.0, 22.0] 11 ff413f61
+  dp_rect [654.63416, 100.0, 16.0, 16.0] 8 ffccced7
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 136.0] 12 Regular ff8b8f9c
+  dp_text "Server version: 1.12.2" [272.0, 167.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 189.0, 416.0, 36.0] 10 ff0d0e13
+  dp_border [272.0, 189.0, 416.0, 36.0] 10 ff2a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 197.0] 14 Regular ff8b8f9c
+  dp_rect [272.0, 235.0, 416.0, 212.0] 12 ff0d0e13
+  dp_border [272.0, 235.0, 416.0, 212.0] 12 ff2a2c36
+  dp_rect [276.0, 342.60257, 408.0, 34.0] 8 ff26233d
+  dp_text "Auto detect" [286.0, 246.0] 14 Regular ffecedf3
+  dp_text "26.3" [286.0, 280.0] 14 Regular ffecedf3
+  dp_text "1.21.4" [286.0, 314.0] 14 Regular ffecedf3
+  dp_text "1.12.2" [286.0, 348.0] 14 Regular ffb0a0ff
+  dp_text "1.8.x" [286.0, 382.0] 14 Regular ffecedf3
+  dp_text "b1.7.3" [286.0, 416.0] 14 Regular ffecedf3
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 457.0] 12 Regular ff8b8f9c
+  dp_text "the server its version." [272.0, 475.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 506.0, 203.0, 36.0] 18 ff20222c
+  dp_text "Auto detect" [334.0, 515.0] 13 Medium ffecedf3
+  dp_rect [485.0, 506.0, 203.0, 36.0] 18 ff9a86ff
+  dp_text "Done" [572.0, 515.0] 13 Medium ff0d0e13
+> click Server version at 156 87.5
+> type 1.2
+frame 42
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [248.0, 19.0, 464.0, 510.0] 20 12000000
+  dp_rect [246.0, 22.0, 468.0, 512.0] 22 12000000
+  dp_rect [244.0, 25.0, 472.0, 514.0] 24 12000000
+  dp_rect [242.0, 28.0, 476.0, 516.0] 26 12000000
+  dp_rect [250.0, 16.0, 460.0, 508.0] 18 ff16181f
+  dp_border [250.0, 16.0, 460.0, 508.0] 18 ff2a2c36
+  dp_text "×" [683.05, 33.0] 18 Regular ff8b8f9c
+  dp_text "ViaHorizon" [272.0, 34.0] 18 Medium ffecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 60.0] 12 Regular ff8b8f9c
+  dp_rect [262.0, 90.0, 436.0, 36.0] 10 04ecedf3
+  dp_text "Join servers through ViaProxy" [272.0, 98.0] 14 Regular ffecedf3
+  dp_rect [648.0, 97.0, 40.0, 22.0] 11 ff35354b
+  dp_rect [652.63293, 100.0, 16.0, 16.0] 8 ffc8cad4
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 136.0] 12 Regular ff8b8f9c
+  dp_text "Server version: 1.12.2" [272.0, 167.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 189.0, 416.0, 36.0] 10 ff0d0e13
+  dp_border [272.0, 189.0, 416.0, 36.0] 10 ff2a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 197.0] 14 Regular ff8b8f9c
+  dp_rect [272.0, 235.0, 416.0, 212.0] 12 ff0d0e13
+  dp_border [272.0, 235.0, 416.0, 212.0] 12 ff2a2c36
+  dp_rect [276.0, 341.53345, 408.0, 34.0] 8 ff26233d
+  dp_text "Auto detect" [286.0, 246.0] 14 Regular ffecedf3
+  dp_text "26.3" [286.0, 280.0] 14 Regular ffecedf3
+  dp_text "1.21.4" [286.0, 314.0] 14 Regular ffecedf3
+  dp_text "1.12.2" [286.0, 348.0] 14 Regular ffb0a0ff
+  dp_text "1.8.x" [286.0, 382.0] 14 Regular ffecedf3
+  dp_text "b1.7.3" [286.0, 416.0] 14 Regular ffecedf3
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 457.0] 12 Regular ff8b8f9c
+  dp_text "the server its version." [272.0, 475.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 506.0, 203.0, 36.0] 18 ff20222c
+  dp_text "Auto detect" [334.0, 515.0] 13 Medium ffecedf3
+  dp_rect [485.0, 506.0, 203.0, 36.0] 18 ff9a86ff
+  dp_text "Done" [572.0, 515.0] 13 Medium ff0d0e13
+frame 43
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [248.0, 19.0, 464.0, 510.0] 20 12000000
+  dp_rect [246.0, 22.0, 468.0, 512.0] 22 12000000
+  dp_rect [244.0, 25.0, 472.0, 514.0] 24 12000000
+  dp_rect [242.0, 28.0, 476.0, 516.0] 26 12000000
+  dp_rect [250.0, 16.0, 460.0, 508.0] 18 ff16181f
+  dp_border [250.0, 16.0, 460.0, 508.0] 18 ff2a2c36
+  dp_text "×" [683.05, 33.0] 18 Regular ff8b8f9c
+  dp_text "ViaHorizon" [272.0, 34.0] 18 Medium ffecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 60.0] 12 Regular ff8b8f9c
+  dp_rect [262.0, 90.0, 436.0, 36.0] 10 01ecedf3
+  dp_text "Join servers through ViaProxy" [272.0, 98.0] 14 Regular ffecedf3
+  dp_rect [648.0, 97.0, 40.0, 22.0] 11 ff2f3142
+  dp_rect [651.7337, 100.0, 16.0, 16.0] 8 ffc6c8d2
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 136.0] 12 Regular ff8b8f9c
+  dp_text "Server version: 1.12.2" [272.0, 167.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 189.0, 416.0, 36.0] 10 ff0d0e13
+  dp_border [272.0, 189.0, 416.0, 36.0] 10 ff2a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 197.0] 14 Regular ff8b8f9c
+  dp_rect [272.0, 235.0, 416.0, 212.0] 12 ff0d0e13
+  dp_border [272.0, 235.0, 416.0, 212.0] 12 ff2a2c36
+  dp_rect [276.0, 341.17758, 408.0, 34.0] 8 ff26233d
+  dp_text "Auto detect" [286.0, 246.0] 14 Regular ffecedf3
+  dp_text "26.3" [286.0, 280.0] 14 Regular ffecedf3
+  dp_text "1.21.4" [286.0, 314.0] 14 Regular ffecedf3
+  dp_text "1.12.2" [286.0, 348.0] 14 Regular ffb0a0ff
+  dp_text "1.8.x" [286.0, 382.0] 14 Regular ffecedf3
+  dp_text "b1.7.3" [286.0, 416.0] 14 Regular ffecedf3
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 457.0] 12 Regular ff8b8f9c
+  dp_text "the server its version." [272.0, 475.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 506.0, 203.0, 36.0] 18 ff20222c
+  dp_text "Auto detect" [334.0, 515.0] 13 Medium ffecedf3
+  dp_rect [485.0, 506.0, 203.0, 36.0] 18 ff9a86ff
+  dp_text "Done" [572.0, 515.0] 13 Medium ff0d0e13
+frame 44
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [248.0, 19.0, 464.0, 510.0] 20 12000000
+  dp_rect [246.0, 22.0, 468.0, 512.0] 22 12000000
+  dp_rect [244.0, 25.0, 472.0, 514.0] 24 12000000
+  dp_rect [242.0, 28.0, 476.0, 516.0] 26 12000000
+  dp_rect [250.0, 16.0, 460.0, 508.0] 18 ff16181f
+  dp_border [250.0, 16.0, 460.0, 508.0] 18 ff2a2c36
+  dp_text "×" [683.05, 33.0] 18 Regular ff8b8f9c
+  dp_text "ViaHorizon" [272.0, 34.0] 18 Medium ffecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 60.0] 12 Regular ff8b8f9c
+  dp_rect [262.0, 90.0, 436.0, 36.0] 10 01ecedf3
+  dp_text "Join servers through ViaProxy" [272.0, 98.0] 14 Regular ffecedf3
+  dp_rect [648.0, 97.0, 40.0, 22.0] 11 ff2d2f3d
+  dp_rect [651.3297, 100.0, 16.0, 16.0] 8 ffc5c7d1
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 136.0] 12 Regular ff8b8f9c
+  dp_text "Server version: 1.12.2" [272.0, 167.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 189.0, 416.0, 36.0] 10 ff0d0e13
+  dp_border [272.0, 189.0, 416.0, 36.0] 10 ff2a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 197.0] 14 Regular ff8b8f9c
+  dp_rect [272.0, 235.0, 416.0, 212.0] 12 ff0d0e13
+  dp_border [272.0, 235.0, 416.0, 212.0] 12 ff2a2c36
+  dp_rect [276.0, 341.0591, 408.0, 34.0] 8 ff26233d
+  dp_text "Auto detect" [286.0, 246.0] 14 Regular ffecedf3
+  dp_text "26.3" [286.0, 280.0] 14 Regular ffecedf3
+  dp_text "1.21.4" [286.0, 314.0] 14 Regular ffecedf3
+  dp_text "1.12.2" [286.0, 348.0] 14 Regular ffb0a0ff
+  dp_text "1.8.x" [286.0, 382.0] 14 Regular ffecedf3
+  dp_text "b1.7.3" [286.0, 416.0] 14 Regular ffecedf3
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 457.0] 12 Regular ff8b8f9c
+  dp_text "the server its version." [272.0, 475.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 506.0, 203.0, 36.0] 18 ff20222c
+  dp_text "Auto detect" [334.0, 515.0] 13 Medium ffecedf3
+  dp_rect [485.0, 506.0, 203.0, 36.0] 18 ff9a86ff
+  dp_text "Done" [572.0, 515.0] 13 Medium ff0d0e13
+> click Auto detect at 163 127
+frame 45
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [248.0, 19.0, 464.0, 510.0] 20 12000000
+  dp_rect [246.0, 22.0, 468.0, 512.0] 22 12000000
+  dp_rect [244.0, 25.0, 472.0, 514.0] 24 12000000
+  dp_rect [242.0, 28.0, 476.0, 516.0] 26 12000000
+  dp_rect [250.0, 16.0, 460.0, 508.0] 18 ff16181f
+  dp_border [250.0, 16.0, 460.0, 508.0] 18 ff2a2c36
+  dp_text "×" [683.05, 33.0] 18 Regular ff8b8f9c
+  dp_text "ViaHorizon" [272.0, 34.0] 18 Medium ffecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 60.0] 12 Regular ff8b8f9c
+  dp_rect [262.0, 90.0, 436.0, 36.0] 10 00ecedf3
+  dp_text "Join servers through ViaProxy" [272.0, 98.0] 14 Regular ffecedf3
+  dp_rect [648.0, 97.0, 40.0, 22.0] 11 ff2b2e3b
+  dp_rect [651.14813, 100.0, 16.0, 16.0] 8 ffc5c7d1
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 136.0] 12 Regular ff8b8f9c
+  dp_text "Server version: 1.12.2" [272.0, 167.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 189.0, 416.0, 36.0] 10 ff0d0e13
+  dp_border [272.0, 189.0, 416.0, 36.0] 10 ff2a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 197.0] 14 Regular ff8b8f9c
+  dp_rect [272.0, 235.0, 416.0, 212.0] 12 ff0d0e13
+  dp_border [272.0, 235.0, 416.0, 212.0] 12 ff2a2c36
+  dp_rect [276.0, 341.01968, 408.0, 34.0] 8 ff26233d
+  sound minecraft:ui.button.click None 0.25 1.4 -> Ok(())
+  dp_text "Auto detect" [286.0, 246.0] 14 Regular ffb0a0ff
+  dp_text "26.3" [286.0, 280.0] 14 Regular ffecedf3
+  dp_text "1.21.4" [286.0, 314.0] 14 Regular ffecedf3
+  dp_text "1.12.2" [286.0, 348.0] 14 Regular ffecedf3
+  dp_text "1.8.x" [286.0, 382.0] 14 Regular ffecedf3
+  dp_text "b1.7.3" [286.0, 416.0] 14 Regular ffecedf3
+  via_set None Some("auto")
+  chat [ViaHorizon] ViaHorizon joins as Auto detect from the next join
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 457.0] 12 Regular ff8b8f9c
+  dp_text "the server its version." [272.0, 475.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 506.0, 203.0, 36.0] 18 ff20222c
+  dp_text "Auto detect" [334.0, 515.0] 13 Medium ffecedf3
+  dp_rect [485.0, 506.0, 203.0, 36.0] 18 ff9a86ff
+  dp_text "Done" [572.0, 515.0] 13 Medium ff0d0e13
+frame 46
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [248.0, 19.0, 464.0, 510.0] 20 12000000
+  dp_rect [246.0, 22.0, 468.0, 512.0] 22 12000000
+  dp_rect [244.0, 25.0, 472.0, 514.0] 24 12000000
+  dp_rect [242.0, 28.0, 476.0, 516.0] 26 12000000
+  dp_rect [250.0, 16.0, 460.0, 508.0] 18 ff16181f
+  dp_border [250.0, 16.0, 460.0, 508.0] 18 ff2a2c36
+  dp_text "×" [683.05, 33.0] 18 Regular ff8b8f9c
+  dp_text "ViaHorizon" [272.0, 34.0] 18 Medium ffecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 60.0] 12 Regular ff8b8f9c
+  dp_text "Join servers through ViaProxy" [272.0, 98.0] 14 Regular ffecedf3
+  dp_rect [648.0, 97.0, 40.0, 22.0] 11 ff2b2e3a
+  dp_rect [651.0666, 100.0, 16.0, 16.0] 8 ffc5c7d1
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 136.0] 12 Regular ff8b8f9c
+  dp_text "Server version: Auto detect" [272.0, 167.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 189.0, 416.0, 36.0] 10 ff0d0e13
+  dp_border [272.0, 189.0, 416.0, 36.0] 10 ff2a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 197.0] 14 Regular ff8b8f9c
+  dp_rect [272.0, 235.0, 416.0, 212.0] 12 ff0d0e13
+  dp_border [272.0, 235.0, 416.0, 212.0] 12 ff2a2c36
+  dp_rect [276.0, 272.9594, 408.0, 34.0] 8 ff26233d
+  dp_text "Auto detect" [286.0, 246.0] 14 Regular ffb0a0ff
+  dp_text "26.3" [286.0, 280.0] 14 Regular ffecedf3
+  dp_text "1.21.4" [286.0, 314.0] 14 Regular ffecedf3
+  dp_text "1.12.2" [286.0, 348.0] 14 Regular ffecedf3
+  dp_text "1.8.x" [286.0, 382.0] 14 Regular ffecedf3
+  dp_text "b1.7.3" [286.0, 416.0] 14 Regular ffecedf3
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 457.0] 12 Regular ff8b8f9c
+  dp_text "the server its version." [272.0, 475.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 506.0, 203.0, 36.0] 18 ff20222c
+  dp_text "Auto detect" [334.0, 515.0] 13 Medium ffecedf3
+  dp_rect [485.0, 506.0, 203.0, 36.0] 18 ff9a86ff
+  dp_text "Done" [572.0, 515.0] 13 Medium ff0d0e13
+> click Done at 293.15 261.5
+frame 47
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [248.0, 19.0, 464.0, 510.0] 20 12000000
+  dp_rect [246.0, 22.0, 468.0, 512.0] 22 12000000
+  dp_rect [244.0, 25.0, 472.0, 514.0] 24 12000000
+  dp_rect [242.0, 28.0, 476.0, 516.0] 26 12000000
+  dp_rect [250.0, 16.0, 460.0, 508.0] 18 ff16181f
+  dp_border [250.0, 16.0, 460.0, 508.0] 18 ff2a2c36
+  dp_text "×" [683.05, 33.0] 18 Regular ff8b8f9c
+  dp_text "ViaHorizon" [272.0, 34.0] 18 Medium ffecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 60.0] 12 Regular ff8b8f9c
+  dp_text "Join servers through ViaProxy" [272.0, 98.0] 14 Regular ffecedf3
+  dp_rect [648.0, 97.0, 40.0, 22.0] 11 ff2b2e3a
+  dp_rect [651.0299, 100.0, 16.0, 16.0] 8 ffc5c7d1
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 136.0] 12 Regular ff8b8f9c
+  dp_text "Server version: Auto detect" [272.0, 167.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 189.0, 416.0, 36.0] 10 ff0d0e13
+  dp_border [272.0, 189.0, 416.0, 36.0] 10 ff2a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 197.0] 14 Regular ff8b8f9c
+  dp_rect [272.0, 235.0, 416.0, 212.0] 12 ff0d0e13
+  dp_border [272.0, 235.0, 416.0, 212.0] 12 ff2a2c36
+  dp_rect [276.0, 250.30411, 408.0, 34.0] 8 ff26233d
+  dp_text "Auto detect" [286.0, 246.0] 14 Regular ffb0a0ff
+  dp_text "26.3" [286.0, 280.0] 14 Regular ffecedf3
+  dp_text "1.21.4" [286.0, 314.0] 14 Regular ffecedf3
+  dp_text "1.12.2" [286.0, 348.0] 14 Regular ffecedf3
+  dp_text "1.8.x" [286.0, 382.0] 14 Regular ffecedf3
+  dp_text "b1.7.3" [286.0, 416.0] 14 Regular ffecedf3
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 457.0] 12 Regular ff8b8f9c
+  dp_text "the server its version." [272.0, 475.0] 12 Regular ff8b8f9c
+  dp_rect [272.0, 506.0, 203.0, 36.0] 18 ff20222c
+  dp_text "Auto detect" [334.0, 515.0] 13 Medium ffecedf3
+  sound minecraft:ui.button.click None 0.25 1.4 -> Ok(())
+  dp_rect [485.0, 506.0, 203.0, 36.0] 18 ffa796ff
+  dp_text "Done" [572.0, 515.0] 13 Medium ff0d0e13
+frame 48
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [248.0, 22.0, 464.0, 510.0] 20 0c000000
+  dp_rect [246.0, 25.0, 468.0, 512.0] 22 0c000000
+  dp_rect [244.0, 28.0, 472.0, 514.0] 24 0c000000
+  dp_rect [242.0, 31.0, 476.0, 516.0] 26 0c000000
+  dp_rect [250.0, 19.0, 460.0, 508.0] 18 aa16181f
+  dp_border [250.0, 19.0, 460.0, 508.0] 18 aa2a2c36
+  dp_text "×" [683.05, 36.0] 18 Regular aa8b8f9c
+  dp_text "ViaHorizon" [272.0, 37.0] 18 Medium aaecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 63.0] 12 Regular aa8b8f9c
+  dp_text "Join servers through ViaProxy" [272.0, 101.0] 14 Regular aaecedf3
+  dp_rect [648.0, 100.0, 40.0, 22.0] 11 aa2b2e3a
+  dp_rect [651.0134, 103.0, 16.0, 16.0] 8 aac5c7d1
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 139.0] 12 Regular aa8b8f9c
+  dp_text "Server version: Auto detect" [272.0, 170.0] 12 Regular aa8b8f9c
+  dp_rect [272.0, 192.0, 416.0, 36.0] 10 aa0d0e13
+  dp_border [272.0, 192.0, 416.0, 36.0] 10 aa2a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 200.0] 14 Regular aa8b8f9c
+  dp_rect [272.0, 238.0, 416.0, 212.0] 12 aa0d0e13
+  dp_border [272.0, 238.0, 416.0, 212.0] 12 aa2a2c36
+  dp_rect [276.0, 244.76419, 408.0, 34.0] 8 aa26233d
+  dp_text "Auto detect" [286.0, 249.0] 14 Regular aab0a0ff
+  dp_text "26.3" [286.0, 283.0] 14 Regular aaecedf3
+  dp_text "1.21.4" [286.0, 317.0] 14 Regular aaecedf3
+  dp_text "1.12.2" [286.0, 351.0] 14 Regular aaecedf3
+  dp_text "1.8.x" [286.0, 385.0] 14 Regular aaecedf3
+  dp_text "b1.7.3" [286.0, 419.0] 14 Regular aaecedf3
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 460.0] 12 Regular aa8b8f9c
+  dp_text "the server its version." [272.0, 478.0] 12 Regular aa8b8f9c
+  dp_rect [272.0, 509.0, 203.0, 36.0] 18 aa20222c
+  dp_text "Auto detect" [334.0, 518.0] 13 Medium aaecedf3
+  dp_rect [485.0, 509.0, 203.0, 36.0] 18 aa9f8cff
+  dp_text "Done" [572.0, 518.0] 13 Medium aa0d0e13
+frame 49
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [248.0, 24.0, 464.0, 510.0] 20 06000000
+  dp_rect [246.0, 27.0, 468.0, 512.0] 22 06000000
+  dp_rect [244.0, 30.0, 472.0, 514.0] 24 06000000
+  dp_rect [242.0, 33.0, 476.0, 516.0] 26 06000000
+  dp_rect [250.0, 21.0, 460.0, 508.0] 18 5516181f
+  dp_border [250.0, 21.0, 460.0, 508.0] 18 552a2c36
+  dp_text "×" [683.05, 38.0] 18 Regular 558b8f9c
+  dp_text "ViaHorizon" [272.0, 39.0] 18 Medium 55ecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 65.0] 12 Regular 558b8f9c
+  dp_text "Join servers through ViaProxy" [272.0, 103.0] 14 Regular 55ecedf3
+  dp_rect [648.0, 102.0, 40.0, 22.0] 11 552b2e3a
+  dp_rect [651.00604, 105.0, 16.0, 16.0] 8 55c5c7d1
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 141.0] 12 Regular 558b8f9c
+  dp_text "Server version: Auto detect" [272.0, 172.0] 12 Regular 558b8f9c
+  dp_rect [272.0, 194.0, 416.0, 36.0] 10 550d0e13
+  dp_border [272.0, 194.0, 416.0, 36.0] 10 552a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 202.0] 14 Regular 558b8f9c
+  dp_rect [272.0, 240.0, 416.0, 212.0] 12 550d0e13
+  dp_border [272.0, 240.0, 416.0, 212.0] 12 552a2c36
+  dp_rect [276.0, 244.25438, 408.0, 34.0] 8 5526233d
+  dp_text "Auto detect" [286.0, 251.0] 14 Regular 55b0a0ff
+  dp_text "26.3" [286.0, 285.0] 14 Regular 55ecedf3
+  dp_text "1.21.4" [286.0, 319.0] 14 Regular 55ecedf3
+  dp_text "1.12.2" [286.0, 353.0] 14 Regular 55ecedf3
+  dp_text "1.8.x" [286.0, 387.0] 14 Regular 55ecedf3
+  dp_text "b1.7.3" [286.0, 421.0] 14 Regular 55ecedf3
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 462.0] 12 Regular 558b8f9c
+  dp_text "the server its version." [272.0, 480.0] 12 Regular 558b8f9c
+  dp_rect [272.0, 511.0, 203.0, 36.0] 18 5520222c
+  dp_text "Auto detect" [334.0, 520.0] 13 Medium 55ecedf3
+  dp_rect [485.0, 511.0, 203.0, 36.0] 18 559b88ff
+  dp_text "Done" [572.0, 520.0] 13 Medium 550d0e13
+frame 50
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+  dp_rect [248.0, 27.0, 464.0, 510.0] 20 00000000
+  dp_rect [246.0, 30.0, 468.0, 512.0] 22 00000000
+  dp_rect [244.0, 33.0, 472.0, 514.0] 24 00000000
+  dp_rect [242.0, 36.0, 476.0, 516.0] 26 00000000
+  dp_rect [250.0, 24.0, 460.0, 508.0] 18 0016181f
+  dp_border [250.0, 24.0, 460.0, 508.0] 18 002a2c36
+  dp_text "×" [683.05, 41.0] 18 Regular 008b8f9c
+  dp_text "ViaHorizon" [272.0, 42.0] 18 Medium 00ecedf3
+  dp_text "Join servers of any version through ViaProxy" [272.0, 68.0] 12 Regular 008b8f9c
+  dp_text "Join servers through ViaProxy" [272.0, 106.0] 14 Regular 00ecedf3
+  dp_rect [648.0, 105.0, 40.0, 22.0] 11 002b2e3a
+  dp_rect [651.0027, 108.0, 16.0, 16.0] 8 00c5c7d1
+  dp_text "Ready (ViaProxy 3.4.14, Java 21)" [272.0, 144.0] 12 Regular 008b8f9c
+  dp_text "Server version: Auto detect" [272.0, 175.0] 12 Regular 008b8f9c
+  dp_rect [272.0, 197.0, 416.0, 36.0] 10 000d0e13
+  dp_border [272.0, 197.0, 416.0, 36.0] 10 002a2c36
+  dp_text "Search: 1.8, 1.12.2, beta, bedrock..." [284.0, 205.0] 14 Regular 008b8f9c
+  dp_rect [272.0, 243.0, 416.0, 212.0] 12 000d0e13
+  dp_border [272.0, 243.0, 416.0, 212.0] 12 002a2c36
+  dp_rect [276.0, 246.08606, 408.0, 34.0] 8 0026233d
+  dp_text "Auto detect" [286.0, 254.0] 14 Regular 00b0a0ff
+  dp_text "26.3" [286.0, 288.0] 14 Regular 00ecedf3
+  dp_text "1.21.4" [286.0, 322.0] 14 Regular 00ecedf3
+  dp_text "1.12.2" [286.0, 356.0] 14 Regular 00ecedf3
+  dp_text "1.8.x" [286.0, 390.0] 14 Regular 00ecedf3
+  dp_text "b1.7.3" [286.0, 424.0] 14 Regular 00ecedf3
+  dp_text "It applies the next time you join a server. Auto detect asks" [272.0, 465.0] 12 Regular 008b8f9c
+  dp_text "the server its version." [272.0, 483.0] 12 Regular 008b8f9c
+  dp_rect [272.0, 514.0, 203.0, 36.0] 18 0020222c
+  dp_text "Auto detect" [334.0, 523.0] 13 Medium 00ecedf3
+  dp_rect [485.0, 514.0, 203.0, 36.0] 18 009a86ff
+  dp_text "Done" [572.0, 523.0] 13 Medium 000d0e13
+frame 51
+  dp_rect [0.0, 0.0, 960.0, 540.0] 0 990d0e13
+frame 52
+  (the same for 1 more frames)
+> player to -12.25 70 33.5 yaw 135
+> camera first
+frame 54
+  (the same for 7 more frames)
+> health 5 food 4
+> time 14000
+frame 62
+  (the same for 24 more frames)
+> reload
+  log Info Reloaded all: 2 running
+frame 87
+  (the same for 9 more frames)
+> enabled false
+  chat [Horizon Studio] viahorizon stopped: viahorizon.lua:6: library 'uikit' is turned off (F8 for details)
+  log Error viahorizon stopped: viahorizon.lua:6: library 'uikit' is turned off
+  log Info Reloaded viahorizon (it uses uikit)
+frame 97
+  dp_rect [391.0, 15.596167, 167.55, 36.0] 18 ab16181f
+  dp_border [391.0, 15.596167, 167.55, 36.0] 18 b224262f
+  dp_rect [407.0, 30.596167, 6.0, 6.0] 3 b29a86ff
+  dp_text "viahorizon failed" [421.0, 23.596167] 13 Regular b2ecedf3
+frame 98
+  dp_rect [391.0, 17.472769, 167.55, 36.0] 18 e516181f
+  dp_border [391.0, 17.472769, 167.55, 36.0] 18 ee24262f
+  dp_rect [407.0, 32.47277, 6.0, 6.0] 3 ee9a86ff
+  dp_text "viahorizon failed" [421.0, 25.472769] 13 Regular eeecedf3
+frame 99
+  dp_rect [391.0, 17.911278, 167.55, 36.0] 18 f216181f
+  dp_border [391.0, 17.911278, 167.55, 36.0] 18 fc24262f
+  dp_rect [407.0, 32.911278, 6.0, 6.0] 3 fc9a86ff
+  dp_text "viahorizon failed" [421.0, 25.911278] 13 Regular fcecedf3
+> enabled true
+frame 100
+  dp_rect [391.0, 17.99451, 167.55, 36.0] 18 f516181f
+  dp_border [391.0, 17.99451, 167.55, 36.0] 18 ff24262f
+  dp_rect [407.0, 32.99451, 6.0, 6.0] 3 ff9a86ff
+  dp_text "viahorizon failed" [421.0, 25.99451] 13 Regular ffecedf3
+frame 101
+  dp_rect [391.0, 18.0, 167.55, 36.0] 18 f516181f
+  dp_border [391.0, 18.0, 167.55, 36.0] 18 ff24262f
+  dp_rect [407.0, 33.0, 6.0, 6.0] 3 ff9a86ff
+  dp_text "viahorizon failed" [421.0, 26.0] 13 Regular ffecedf3
+  (the same for 8 more frames)
+mod uikit Running "UI Kit"
+mod viahorizon Running "ViaHorizon"
