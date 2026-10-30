@@ -1,0 +1,41 @@
+frame 1
+  log Info Horizon Studio 0.4.0. Type Lua and press Enter; help() lists the API.
+  log Output [hello] hello loaded
+frame 2
+  (the same for 28 more frames)
+lua mods()
+  log Input > mods()
+  log Output { hello = "running" }
+> chat line <Alex> hi there
+> block 1 64 1 = minecraft:stone
+frame 31
+  (the same for 1 more frames)
+> command /hello (taken: true)
+frame 33
+  chat Hello, world!
+> command /hello Steve (taken: true)
+frame 34
+  chat Hello, Steve!
+frame 35
+  (the same for 4 more frames)
+> player to -12.25 70 33.5 yaw 135
+> camera first
+frame 40
+  (the same for 7 more frames)
+> health 5 food 4
+> time 14000
+frame 48
+  (the same for 24 more frames)
+> reload
+  log Output [hello] hello loaded
+  log Info Reloaded all: 1 running
+frame 73
+  (the same for 9 more frames)
+> enabled false
+frame 83
+  (the same for 2 more frames)
+> enabled true
+  log Output [hello] hello loaded
+frame 86
+  (the same for 9 more frames)
+mod hello Running "Hello"

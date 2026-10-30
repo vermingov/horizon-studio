@@ -1,0 +1,46 @@
+frame 1
+  log Info Horizon Studio 0.4.0. Type Lua and press Enter; help() lists the API.
+frame 2
+  place TopLeft 100 22 -> (2.0, 2.0)
+  fill [2.0, 2.0, 100.0, 22.0] 78000000
+  text "XYZ 0 / 64 / 0" [4.0, 4.0] ffffff true
+  text "Facing south (0)" [4.0, 14.0] ffffff true
+  (the same for 28 more frames)
+lua mods()
+  log Input > mods()
+  log Output { coords = "running" }
+> chat line <Alex> hi there
+> block 1 64 1 = minecraft:stone
+frame 31
+  place TopLeft 100 22 -> (2.0, 2.0)
+  fill [2.0, 2.0, 100.0, 22.0] 78000000
+  text "XYZ 0 / 64 / 0" [4.0, 4.0] ffffff true
+  text "Facing south (0)" [4.0, 14.0] ffffff true
+  (the same for 1 more frames)
+> command /coords (taken: true)
+frame 33
+  chat Coordinates hidden
+frame 34
+  (the same for 1 more frames)
+> player to 100.75 12 -3.5 yaw 270
+frame 36
+  (the same for 7 more frames)
+> player to -12.25 70 33.5 yaw 135
+> camera first
+frame 44
+  (the same for 7 more frames)
+> health 5 food 4
+> time 14000
+frame 52
+  (the same for 24 more frames)
+> reload
+  log Info Reloaded all: 1 running
+frame 77
+  (the same for 9 more frames)
+> enabled false
+frame 87
+  (the same for 2 more frames)
+> enabled true
+frame 90
+  (the same for 9 more frames)
+mod coords Running "Coordinates"

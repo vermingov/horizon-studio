@@ -529,11 +529,11 @@ Lua 5.3, interpreted by the studio itself (native mods cannot add libraries, so 
 (`__index`, `__newindex`, `__call`, the arithmetic, comparison, `__concat`, `__len`, `__tostring`, `__pairs`),
 `pcall`/`xpcall`/`error`, and the standard library: base functions, `string` (with Lua patterns, `format`,
 `gsub`, `gmatch`, and the extras `split`, `trim`, `startswith`, `endswith`), `math` (all of 5.3's, the older
-`atan2`, `pow`, `log10`, `sinh`/`cosh`/`tanh`, `frexp`/`ldexp`, and `clamp`), `table` (with `move`), `utf8`, the
+`atan2`, `pow`, `log10`, `sinh`/`cosh`/`tanh`, `frexp`/`ldexp`, and `clamp`), `table` (with `move`), `utf8`, `coroutine`, the
 bitwise operators (`& | ~ << >>` and unary `~`, on whole numbers) and `os.clock`, `os.time`, `os.date` (UTC) and
 `os.difftime`. `dump(value)` pretty-prints a value.
 
-Not there: coroutines, `goto`, integers as a separate type (numbers are 64-bit floats, printed
+Not there: `goto`, integers as a separate type (numbers are 64-bit floats, printed
 without a fraction when whole), `io`, the rest of `os`, `string.pack`. Strings are byte strings, as in Lua.
 
 ### Examples

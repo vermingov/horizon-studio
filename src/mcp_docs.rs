@@ -39,7 +39,7 @@ pub const TOPICS: &[Topic] = &[
     Topic {
         id: "language",
         title: "The Lua the studio runs",
-        summary: "Lua 5.3 without coroutines and goto: numbers (all floats), integer and float behaviour, bitwise operators, strings, tables, metatables, varargs, and what is missing.",
+        summary: "Lua 5.3 without goto: numbers (all floats), integer and float behaviour, bitwise operators, strings, tables, metatables, varargs, coroutines, and what is missing.",
     },
     Topic {
         id: "stdlib",
@@ -721,7 +721,7 @@ Strings have the `string` functions as methods: `("abc"):upper()`, `s:format(...
 
 ## Functions
 
-Closures with upvalues, varargs (`...`, `select("#", ...)`, `{...}`, `table.pack(...)`), multiple results, methods (`obj:name(...)` passes `obj` as `self`). Tail calls are ordinary calls: they count toward the limit of 200 nested calls (deep recursion raises "stack overflow"; release builds also stop at about 120 nested Lua calls to keep the game's stack safe). A chunk's own `...` are the values it was called with: a mod's main file gets none; a file loaded by `require` gets its module name.
+Closures with upvalues, varargs (`...`, `select("#", ...)`, `{...}`, `table.pack(...)`), multiple results, methods (`obj:name(...)` passes `obj` as `self`). Tail calls are ordinary calls: they count toward the limit of 200 nested Lua calls (deep recursion raises "stack overflow"). Calls back into Lua from a built-in (a metamethod, `table.sort`'s comparator, `string.gsub`'s function) also stop at about 100 deep, to keep the game's stack safe. A chunk's own `...` are the values it was called with: a mod's main file gets none; a file loaded by `require` gets its module name.
 
 ## Metatables
 
@@ -746,6 +746,17 @@ local v = Vec.new(3, 4) + Vec.new(0, 0)
 print(tostring(v), v:length()) -- (3, 4)  5
 ```
 
+## Coroutines
+
+`coroutine.create`, `resume`, `yield`, `status`, `wrap`, `isyieldable`, `running` and `close`, as in Lua 5.3 (`close` as in 5.4). A coroutine can yield anywhere in its own Lua code, inside `pcall` and `xpcall` too, but not from inside a function a built-in calls back (a metamethod, `table.sort`'s comparator): that raises "attempt to yield across a C-call boundary". An error inside a `coroutine.wrap` function comes out of the call with where it was called from in front.
+
+```lua
+local gen = coroutine.wrap(function()
+  for i = 1, 3 do coroutine.yield(i) end
+end)
+print(gen(), gen(), gen()) -- 1 2 3
+```
+
 ## Errors
 
 `error(value[, level])` raises any value; a string gets `file:line: ` in front (level 1, the default, is where `error` was called; 2 its caller; 0 adds nothing). `pcall(f, ...)` returns `true, results...` or `false, error`; `xpcall(f, handler, ...)` calls `handler(error)` and returns `false` and its results. Built-in errors are strings like `mymod.lua:3: attempt to call a nil value (global 'foo')`. An uncaught table error shows as "(error object is a table value)". Running out of steps, a too long string and a too large table cannot be caught.
@@ -756,7 +767,7 @@ Every statement, loop round and call costs one step; string and table functions 
 
 ## Not there
 
-No coroutines (no `coroutine` table), no `goto`, no `<close>`, no `_ENV`, no `io`, no `debug`, no `os` beyond `clock`, `time`, `date` and `difftime`, no `string.pack`/`unpack`/`packsize`/`dump`, no `dofile`, `loadfile` or `loadstring` (`load` takes text only), no binary chunks, no weak tables or finalizers; `collectgarbage` does nothing. `require` is the studio's own: it loads files of a folder mod (see `require`).
+No `goto`, no `<close>`, no `_ENV`, no `io`, no `debug`, no `os` beyond `clock`, `time`, `date` and `difftime`, no `string.pack`/`unpack`/`packsize`/`dump`, no `dofile`, `loadfile` or `loadstring` (`load` takes text only), no binary chunks, no weak tables or finalizers; `collectgarbage` does nothing. `require` is the studio's own: it loads files of a folder mod (see `require`).
 "##;
 
 const STDLIB: &str = r##"
@@ -768,6 +779,7 @@ Every standard function a mod (and the console) can call, as Lua 5.3 has it unle
 - `table`: `insert`, `remove`, `concat`, `sort`, `unpack`, `pack`, `move`.
 - `utf8`: `char`, `codepoint`, `len`, `offset`, `codes`, and `charpattern`.
 - `os`: `clock`, `time`, `date`, `difftime` (UTC only; no other `os` function).
+- `coroutine`: `create`, `resume`, `yield`, `status`, `wrap`, `isyieldable`, `running`, `close`.
 - `json` (`encode`, `decode`) is part of the API (see `json.encode`).
 
 Differences from Lua 5.3 that matter most:
@@ -5596,6 +5608,124 @@ A pattern that matches one UTF-8 character: `"[\0-\x7F\xC2-\xFD][\x80-\xBF]*"`.
 ```lua
 local n = 0
 for ch in ("añb"):gmatch(utf8.charpattern) do n = n + 1 end -- 3
+```
+"##
+    ),
+    // ------------------------------------------------------------- coroutine
+    e!(
+        "coroutine.create",
+        "stdlib",
+        r##"
+`coroutine.create(f)`
+
+A new coroutine that will run `f`, suspended until the first `coroutine.resume`. Its type is `"thread"`.
+
+```lua
+local co = coroutine.create(function(a) local b = coroutine.yield(a + 1) return b * 2 end)
+print(coroutine.resume(co, 1)) -- true 2
+print(coroutine.resume(co, 10)) -- true 20
+```
+"##
+    ),
+    e!(
+        "coroutine.resume",
+        "stdlib",
+        r##"
+`coroutine.resume(co, ...)`
+
+Runs `co` until it yields or ends: returns `true` and the values it yielded or returned, or `false` and the error if it failed (then it is dead). The values given are its function's arguments the first time, then what its `coroutine.yield` returns. A dead or running coroutine gives `false, "cannot resume dead coroutine"` (or `"non-suspended"`).
+
+```lua
+local co = coroutine.create(function() error("boom") end)
+print(coroutine.resume(co)) -- false  m.lua:1: boom
+```
+"##
+    ),
+    e!(
+        "coroutine.yield",
+        "stdlib",
+        r##"
+`coroutine.yield(...)`
+
+Suspends the running coroutine: its `coroutine.resume` returns `true` and these values, and the next resume's values are what `yield` returns. Works inside `pcall`; outside a coroutine, or inside a function a built-in calls back (a metamethod, `table.sort`'s comparator), it raises an error.
+
+```lua
+local co = coroutine.wrap(function() while true do print("got", coroutine.yield()) end end)
+co() co("a") co("b") -- got a, got b
+```
+"##
+    ),
+    e!(
+        "coroutine.status",
+        "stdlib",
+        r##"
+`coroutine.status(co)`
+
+`"suspended"` (not started, or yielded), `"running"` (it is the one running), `"normal"` (it resumed another, which runs) or `"dead"` (it ended or failed).
+
+```lua
+local co = coroutine.create(function() end)
+print(coroutine.status(co)) -- suspended
+coroutine.resume(co)
+print(coroutine.status(co)) -- dead
+```
+"##
+    ),
+    e!(
+        "coroutine.wrap",
+        "stdlib",
+        r##"
+`coroutine.wrap(f)`
+
+A function that resumes a new coroutine running `f` each time it is called, returning what it yields or returns. An error in it comes out of the call, with where the call was in front. Handy as an iterator.
+
+```lua
+local function range(n)
+  return coroutine.wrap(function() for i = 1, n do coroutine.yield(i) end end)
+end
+for i in range(3) do print(i) end
+```
+"##
+    ),
+    e!(
+        "coroutine.isyieldable",
+        "stdlib",
+        r##"
+`coroutine.isyieldable()`
+
+Whether the running code can yield: inside a coroutine, and not inside a function a built-in called back.
+
+```lua
+print(coroutine.isyieldable()) -- false in a mod's main file
+```
+"##
+    ),
+    e!(
+        "coroutine.running",
+        "stdlib",
+        r##"
+`coroutine.running()`
+
+The running coroutine, and `true` when it is the main one (outside any coroutine).
+
+```lua
+local co, main = coroutine.running()
+print(type(co), main) -- thread true
+```
+"##
+    ),
+    e!(
+        "coroutine.close",
+        "stdlib",
+        r##"
+`coroutine.close(co)`
+
+Ends a suspended or dead coroutine for good (Lua 5.4's): returns `true`, or `false` and the error when it had died of one. A running or normal coroutine cannot be closed.
+
+```lua
+local co = coroutine.create(function() coroutine.yield() end)
+coroutine.resume(co)
+print(coroutine.close(co), coroutine.status(co)) -- true dead
 ```
 "##
     ),

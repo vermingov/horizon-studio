@@ -1,0 +1,46 @@
+frame 1
+  log Info Horizon Studio 0.4.0. Type Lua and press Enter; help() lists the API.
+frame 2
+  (the same for 28 more frames)
+lua mods()
+  log Input > mods()
+  log Output { night_watch = "running" }
+> chat line <Alex> hi there
+> block 1 64 1 = minecraft:stone
+frame 31
+  (the same for 26 more frames)
+> health 4 food 20
+frame 58
+  (the same for 2 more frames)
+frame 61
+  chat [Night watch] Health low: 4
+frame 62
+  (the same for 20 more frames)
+> health 20 food 3
+frame 83
+  (the same for 17 more frames)
+frame 101
+  chat [Night watch] You are hungry: food 3
+frame 102
+  (the same for 10 more frames)
+> player to -12.25 70 33.5 yaw 135
+> camera first
+frame 113
+  (the same for 7 more frames)
+> health 5 food 4
+> time 14000
+frame 121
+  chat [Night watch] Health low: 5
+frame 122
+  (the same for 23 more frames)
+> reload
+  log Info Reloaded all: 1 running
+frame 146
+  (the same for 9 more frames)
+> enabled false
+frame 156
+  (the same for 2 more frames)
+> enabled true
+frame 159
+  (the same for 9 more frames)
+mod night_watch Running "Night watch"

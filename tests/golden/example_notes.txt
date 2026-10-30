@@ -1,0 +1,50 @@
+frame 1
+  log Info Horizon Studio 0.4.0. Type Lua and press Enter; help() lists the API.
+frame 2
+  (the same for 28 more frames)
+lua mods()
+  log Input > mods()
+  log Output { notes = "running" }
+> chat line <Alex> hi there
+> block 1 64 1 = minecraft:stone
+frame 31
+  (the same for 1 more frames)
+> command /notes (taken: true)
+> command /note remember this (taken: true)
+frame 33
+  chat No notes yet: /note <text>
+  chat Noted (1)
+> player to 5 70 5 yaw 0
+> command /note second note (taken: true)
+frame 34
+  chat Noted (2)
+> command /notes (taken: true)
+frame 35
+  chat [Notes] 1. remember this  (at 0 64 0, day 1)
+  chat [Notes] 2. second note  (at 5 70 5, day 1)
+> command /notes clear (taken: true)
+> command /notes (taken: true)
+frame 36
+  chat Notes cleared
+  chat No notes yet: /note <text>
+frame 37
+  (the same for 4 more frames)
+> player to -12.25 70 33.5 yaw 135
+> camera first
+frame 42
+  (the same for 7 more frames)
+> health 5 food 4
+> time 14000
+frame 50
+  (the same for 24 more frames)
+> reload
+  log Info Reloaded all: 1 running
+frame 75
+  (the same for 9 more frames)
+> enabled false
+frame 85
+  (the same for 2 more frames)
+> enabled true
+frame 88
+  (the same for 9 more frames)
+mod notes Running "Notes"

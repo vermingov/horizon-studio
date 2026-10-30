@@ -1,0 +1,62 @@
+frame 1
+  log Info Horizon Studio 0.4.0. Type Lua and press Enter; help() lists the API.
+frame 2
+  (the same for 28 more frames)
+lua mods()
+  log Input > mods()
+  log Output { ore_finder = "running" }
+> chat line <Alex> hi there
+> block 1 64 1 = minecraft:stone
+frame 31
+  (the same for 1 more frames)
+> command /ores 8 (taken: true)
+frame 33
+  agent find-block minecraft:diamond_ore 8
+  agent find-block minecraft:deepslate_diamond_ore 8
+  agent find-block minecraft:iron_ore 8
+  agent find-block minecraft:deepslate_iron_ore 8
+  agent find-block minecraft:gold_ore 8
+  agent find-block minecraft:deepslate_gold_ore 8
+  chat [Ore finder] diamond ore: 5 blocks north-east, y 60 (2 nearby)
+  chat [Ore finder] deepslate diamond ore: 5 blocks north-east, y 60 (2 nearby)
+> command /ores (taken: true)
+frame 34
+  agent find-block minecraft:diamond_ore 24
+  agent find-block minecraft:deepslate_diamond_ore 24
+  agent find-block minecraft:iron_ore 24
+  agent find-block minecraft:deepslate_iron_ore 24
+  agent find-block minecraft:gold_ore 24
+  agent find-block minecraft:deepslate_gold_ore 24
+  chat [Ore finder] diamond ore: 5 blocks north-east, y 60 (2 nearby)
+  chat [Ore finder] deepslate diamond ore: 5 blocks north-east, y 60 (2 nearby)
+> command /ores x (taken: true)
+frame 35
+  agent find-block minecraft:diamond_ore 24
+  agent find-block minecraft:deepslate_diamond_ore 24
+  agent find-block minecraft:iron_ore 24
+  agent find-block minecraft:deepslate_iron_ore 24
+  agent find-block minecraft:gold_ore 24
+  agent find-block minecraft:deepslate_gold_ore 24
+  chat [Ore finder] diamond ore: 5 blocks north-east, y 60 (2 nearby)
+  chat [Ore finder] deepslate diamond ore: 5 blocks north-east, y 60 (2 nearby)
+frame 36
+  (the same for 4 more frames)
+> player to -12.25 70 33.5 yaw 135
+> camera first
+frame 41
+  (the same for 7 more frames)
+> health 5 food 4
+> time 14000
+frame 49
+  (the same for 24 more frames)
+> reload
+  log Info Reloaded all: 1 running
+frame 74
+  (the same for 9 more frames)
+> enabled false
+frame 84
+  (the same for 2 more frames)
+> enabled true
+frame 87
+  (the same for 9 more frames)
+mod ore_finder Running "Ore finder"

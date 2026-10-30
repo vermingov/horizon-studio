@@ -1,0 +1,83 @@
+frame 1
+  log Info Horizon Studio 0.4.0. Type Lua and press Enter; help() lists the API.
+frame 2
+  (the same for 28 more frames)
+lua mods()
+  log Input > mods()
+  log Output { miner = "running" }
+> chat line <Alex> hi there
+> block 1 64 1 = minecraft:stone
+frame 31
+  (the same for 1 more frames)
+> command /mine (taken: true)
+frame 33
+  chat Usage: /mine <block> [count]
+> command /mine stone 3 (taken: true)
+frame 34
+  chat Mining 3 minecraft:stone
+  agent find-block minecraft:stone 32
+  agent goto 3 60 -4 --near 3 --timeout 30
+  agent break 3 60 -4 --timeout 15
+frame 35
+  agent find-block minecraft:stone 32
+  agent goto 3 60 -4 --near 3 --timeout 30
+frame 36
+  agent break 3 60 -4 --timeout 15
+frame 37
+  agent find-block minecraft:stone 32
+  agent goto 3 60 -4 --near 3 --timeout 30
+frame 38
+  agent break 3 60 -4 --timeout 15
+frame 39
+  chat [Miner] Mined 3 minecraft:stone
+frame 40
+  (the same for 5 more frames)
+> command /mine oak_log 2 (taken: true)
+frame 46
+  chat Mining 2 minecraft:oak_log
+  agent find-block minecraft:oak_log 32
+  agent goto 2 64 9 --near 3 --timeout 30
+  agent break 2 64 9 --timeout 15
+frame 47
+  agent find-block minecraft:oak_log 32
+  agent goto 2 64 9 --near 3 --timeout 30
+frame 48
+  agent break 2 64 9 --timeout 15
+frame 49
+  chat [Miner] Mined 2 minecraft:oak_log
+frame 50
+  (the same for 7 more frames)
+> command /mine diamond_ore 5 (taken: true)
+frame 58
+  chat Mining 5 minecraft:diamond_ore
+  agent find-block minecraft:diamond_ore 32
+  agent goto 3 60 -4 --near 3 --timeout 30
+  agent break 3 60 -4 --timeout 15
+frame 59
+  agent find-block minecraft:diamond_ore 32
+  agent goto 3 60 -4 --near 3 --timeout 30
+> command /mine stop (taken: true)
+frame 60
+  agent stop
+  chat Stopped
+frame 61
+  (the same for 6 more frames)
+> player to -12.25 70 33.5 yaw 135
+> camera first
+frame 68
+  (the same for 7 more frames)
+> health 5 food 4
+> time 14000
+frame 76
+  (the same for 24 more frames)
+> reload
+  log Info Reloaded all: 1 running
+frame 101
+  (the same for 9 more frames)
+> enabled false
+frame 111
+  (the same for 2 more frames)
+> enabled true
+frame 114
+  (the same for 9 more frames)
+mod miner Running "Miner"

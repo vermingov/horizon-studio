@@ -1,0 +1,43 @@
+frame 1
+  log Info Horizon Studio 0.4.0. Type Lua and press Enter; help() lists the API.
+frame 2
+  (the same for 28 more frames)
+lua mods()
+  log Input > mods()
+  log Output { zoom = "running" }
+> chat line <Alex> hi there
+> block 1 64 1 = minecraft:stone
+frame 31
+  (the same for 2 more frames)
+> key key.keyboard.c
+> command /zoom 3 (taken: true)
+frame 34
+  chat Zoom set to 3x
+frame 35
+> key key.keyboard.c
+> command /zoom (taken: true)
+> command /zoom 99 (taken: true)
+frame 36
+  chat Usage: /zoom <2-10> (now 3)
+  chat Usage: /zoom <2-10> (now 3)
+frame 37
+  (the same for 4 more frames)
+> player to -12.25 70 33.5 yaw 135
+> camera first
+frame 42
+  (the same for 7 more frames)
+> health 5 food 4
+> time 14000
+frame 50
+  (the same for 24 more frames)
+> reload
+  log Info Reloaded all: 1 running
+frame 75
+  (the same for 9 more frames)
+> enabled false
+frame 85
+  (the same for 2 more frames)
+> enabled true
+frame 88
+  (the same for 9 more frames)
+mod zoom Running "Zoom"

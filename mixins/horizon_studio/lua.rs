@@ -1,20 +1,27 @@
-// Horizon Studio's Lua: an interpreter for a subset of Lua 5.3 in plain Rust,
-// with no dependencies, so the bundle can add it to the game as one module.
-// Scripts get no file, network or process access: only the functions the
-// studio hands them. Each call into a script runs under a step budget and a
-// call depth limit, so an endless loop or runaway recursion stops that script
-// with an error instead of freezing the game.
+// Horizon Studio's Lua: an interpreter for Lua 5.3 in plain Rust, with no
+// dependencies, so the bundle can add it to the game as one module. A chunk
+// compiles to register bytecode (a `Proto` for each function), which a VM
+// runs with explicit call frames: a Lua function calling another pushes a
+// frame instead of recursing on the game's stack, so each coroutine has a
+// stack of its own and can stop anywhere and carry on later. Scripts get no
+// file, network or process access: only the functions the studio hands
+// them. Each call into a script runs under a step budget and a frame limit,
+// so an endless loop or runaway recursion stops that script with an error
+// instead of freezing the game.
 //
 // What is here: nil, booleans, numbers (64-bit floats, printed as integers
 // when they are whole), byte strings, tables with metatables, closures with
-// upvalues, varargs and multiple results, every statement but goto, and every
-// operator (the bitwise ones on whole numbers). The standard library is in
-// hstudio_lualib. Not here: coroutines, goto, integer subtypes, io, os beyond
-// the clock, load of binary chunks, string.pack.
+// upvalues, coroutines, userdata, varargs and multiple results, every
+// statement but goto, and every operator (the bitwise ones on whole
+// numbers). The standard library is in hstudio_lualib. Not here: goto,
+// integer subtypes, io, os beyond the clock, load of binary chunks,
+// string.pack.
 
+use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
+use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
+use std::rc::{Rc, Weak};
 
 pub type Str = Rc<[u8]>;
 pub type TableRef = Rc<RefCell<Table>>;
@@ -28,12 +35,16 @@ pub type Builtin = fn(&mut Lua, &mut dyn Host, &Native, Vec<Value>) -> Res;
 pub const MAX_STRING: usize = 4 << 20;
 /// The most entries one table can hold.
 pub const MAX_TABLE: usize = 1 << 20;
-/// Nested calls before "stack overflow".
-pub const MAX_DEPTH: usize = 200;
-/// The game's stack a script may use below where the host called it: the
-/// real guard against overflow, as frames differ between builds (Windows
-/// gives the main thread 1 MiB in all). About 120 nested Lua calls in a
-/// release build; unoptimised builds (tests) have much bigger frames.
+/// Lua frames one coroutine may have before "stack overflow", as many as
+/// Luau allows (they live on the heap, not the game's stack).
+pub const MAX_DEPTH: usize = 20_000;
+/// Natives calling back into Lua (metamethods, sort's comparator) and
+/// coroutines resuming others, nested: each of those still recurses on the
+/// game's stack.
+pub const MAX_CCALLS: usize = 200;
+/// The game's stack those nested calls may use below where the host called
+/// in (Windows gives the main thread 1 MiB in all; unoptimised builds, the
+/// tests, have much bigger frames).
 pub const STACK_LIMIT: usize = if cfg!(debug_assertions) { 1536 << 10 } else { 256 << 10 };
 /// Nested expressions and blocks the parser accepts.
 const MAX_NESTING: u32 = 80;
@@ -55,6 +66,9 @@ pub enum Value {
     Table(TableRef),
     Func(Rc<Closure>),
     Native(Rc<Native>),
+    Thread(Rc<Thread>),
+    #[allow(dead_code)]
+    Userdata(Rc<Userdata>),
 }
 
 impl Value {
@@ -84,6 +98,8 @@ impl Value {
             Value::Str(_) => "string",
             Value::Table(_) => "table",
             Value::Func(_) | Value::Native(_) => "function",
+            Value::Thread(_) => "thread",
+            Value::Userdata(_) => "userdata",
         }
     }
     #[allow(dead_code)]
@@ -122,6 +138,8 @@ impl Value {
             (Value::Table(a), Value::Table(b)) => Rc::ptr_eq(a, b),
             (Value::Func(a), Value::Func(b)) => Rc::ptr_eq(a, b),
             (Value::Native(a), Value::Native(b)) => Rc::ptr_eq(a, b),
+            (Value::Thread(a), Value::Thread(b)) => Rc::ptr_eq(a, b),
+            (Value::Userdata(a), Value::Userdata(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -135,6 +153,16 @@ impl Value {
             Value::Table(t) => format!("table: {:p}", Rc::as_ptr(t)),
             Value::Func(f) => format!("function: {:p}", Rc::as_ptr(f)),
             Value::Native(f) => format!("function: builtin '{}': {:p}", f.name, Rc::as_ptr(f)),
+            Value::Thread(t) => format!("thread: {:p}", Rc::as_ptr(t)),
+            Value::Userdata(u) => format!("userdata: {:p}", Rc::as_ptr(u)),
+        }
+    }
+    /// The metatable of a table or a userdata.
+    pub fn metatable(&self) -> Option<TableRef> {
+        match self {
+            Value::Table(t) => t.borrow().meta.clone(),
+            Value::Userdata(u) => u.meta.borrow().clone(),
+            _ => None,
         }
     }
 }
@@ -150,15 +178,14 @@ pub struct Native {
 pub enum NativeKind {
     Builtin(Builtin),
     Host(u32),
+    /// `pcall` (false) or `xpcall` (true): the VM runs these itself, so a
+    /// coroutine can yield inside them.
+    Pcall(bool),
 }
 
 impl Native {
     pub fn builtin(name: &str, f: Builtin) -> Value {
-        Value::Native(Rc::new(Native {
-            name: name.into(),
-            kind: NativeKind::Builtin(f),
-            state: RefCell::new(Vec::new()),
-        }))
+        Native::with_state(name, f, Vec::new())
     }
     pub fn with_state(name: &str, f: Builtin, state: Vec<Value>) -> Value {
         Value::Native(Rc::new(Native {
@@ -171,6 +198,14 @@ impl Native {
         Value::Native(Rc::new(Native {
             name: name.into(),
             kind: NativeKind::Host(id),
+            state: RefCell::new(Vec::new()),
+        }))
+    }
+    /// `pcall`, or `xpcall` with `handler`.
+    pub fn pcall(name: &str, handler: bool) -> Value {
+        Value::Native(Rc::new(Native {
+            name: name.into(),
+            kind: NativeKind::Pcall(handler),
             state: RefCell::new(Vec::new()),
         }))
     }
@@ -205,6 +240,10 @@ pub enum Throw {
     Error(Value, String),
     /// Out of budget or memory: stops the script, pcall or not.
     Fatal(String),
+    /// A native's way to yield its coroutine (`coroutine.yield`): the values
+    /// go to the resumer, and what the coroutine is resumed with become the
+    /// call's results. Only from a native that Lua code called directly.
+    Yield(Vec<Value>),
 }
 
 impl Throw {
@@ -217,19 +256,104 @@ impl Throw {
                 other => format!("(error object is a {} value)", other.type_name()),
             },
             Throw::Fatal(m) => m.clone(),
+            Throw::Yield(_) => "attempt to yield across a C-call boundary".into(),
         }
     }
     pub fn traceback(&self) -> &str {
         match self {
             Throw::Error(_, t) => t,
-            Throw::Fatal(_) => "",
+            Throw::Fatal(_) | Throw::Yield(_) => "",
         }
     }
 }
 
+/// A value a host makes for scripts: Rust data, a metatable (for its
+/// methods and operators) and identity by pointer.
+#[allow(dead_code)]
+pub struct Userdata {
+    pub data: RefCell<Box<dyn Any>>,
+    pub meta: RefCell<Option<TableRef>>,
+}
+
+#[allow(dead_code)]
+impl Userdata {
+    /// A userdata value holding `data`.
+    pub fn value<T: Any>(data: T, meta: Option<TableRef>) -> Value {
+        Value::Userdata(Rc::new(Userdata {
+            data: RefCell::new(Box::new(data)),
+            meta: RefCell::new(meta),
+        }))
+    }
+    /// Its metatable's `__type` (what `typeof` names it), if a string.
+    pub fn type_name(&self) -> Option<String> {
+        let mt = self.meta.borrow().clone()?;
+        let t = mt.borrow().get_str("__type");
+        t.as_text()
+    }
+}
+
+/// What a coroutine is doing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Status {
+    /// Made and not started, or yielded.
+    Suspended,
+    Running,
+    /// It resumed another, which runs.
+    Normal,
+    Dead,
+}
+
+impl Status {
+    pub fn name(self) -> &'static str {
+        match self {
+            Status::Suspended => "suspended",
+            Status::Running => "running",
+            Status::Normal => "normal",
+            Status::Dead => "dead",
+        }
+    }
+}
+
+/// A coroutine (or the main thread): its stack and frames while it is not
+/// the one running, and its status.
+pub struct Thread {
+    state: RefCell<Option<ThreadState>>,
+    status: std::cell::Cell<Status>,
+    main: bool,
+    /// The error it died of, for `coroutine.close`.
+    error: RefCell<Option<Value>>,
+}
+
+impl Thread {
+    pub fn status(&self) -> Status {
+        self.status.get()
+    }
+    #[allow(dead_code)]
+    pub fn is_dead(&self) -> bool {
+        self.status.get() == Status::Dead
+    }
+    #[allow(dead_code)]
+    pub fn is_suspended(&self) -> bool {
+        self.status.get() == Status::Suspended
+    }
+    pub fn is_main(&self) -> bool {
+        self.main
+    }
+}
+
+/// How `Lua::resume` came back.
+pub enum Resume {
+    /// The coroutine's function returned these.
+    Done(Vec<Value>),
+    /// It yielded these, and can be resumed.
+    Yielded(Vec<Value>),
+    /// It failed (and is dead), or could not be resumed.
+    Error(Throw),
+}
+
 // ----------------------------------------------------------------- tables
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 enum Key {
     Bool(bool),
     Int(i64),
@@ -256,23 +380,103 @@ fn key_of(v: &Value) -> Option<Key> {
         Value::Table(t) => Key::Ptr(Rc::as_ptr(t) as *const u8 as usize),
         Value::Func(f) => Key::Ptr(Rc::as_ptr(f) as *const u8 as usize),
         Value::Native(f) => Key::Ptr(Rc::as_ptr(f) as *const u8 as usize),
+        Value::Thread(t) => Key::Ptr(Rc::as_ptr(t) as *const u8 as usize),
+        Value::Userdata(u) => Key::Ptr(Rc::as_ptr(u) as *const u8 as usize),
     })
 }
 
+/// A quick hash for table keys (FxHash's step). Tables only need keys spread
+/// over buckets, and SipHash costs more than the rest of a lookup.
+#[derive(Default, Clone, Copy)]
+struct KeyHasher(u64);
+
+impl KeyHasher {
+    #[inline]
+    fn add(&mut self, w: u64) {
+        self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+impl Hasher for KeyHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0.rotate_left(26)
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            let mut w = [0u8; 8];
+            w.copy_from_slice(c);
+            self.add(u64::from_le_bytes(w));
+        }
+        let rest = chunks.remainder();
+        if !rest.is_empty() {
+            let mut w = 0u64;
+            for (i, b) in rest.iter().enumerate() {
+                w |= u64::from(*b) << (8 * i);
+            }
+            self.add(w);
+        }
+    }
+    #[inline]
+    fn write_u8(&mut self, i: u8) {
+        self.add(u64::from(i));
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.add(i);
+    }
+    #[inline]
+    fn write_i64(&mut self, i: i64) {
+        self.add(i as u64);
+    }
+    #[inline]
+    fn write_usize(&mut self, i: usize) {
+        self.add(i as u64);
+    }
+    #[inline]
+    fn write_isize(&mut self, i: isize) {
+        self.add(i as u64);
+    }
+}
+
+type KeyMap = HashMap<Key, usize, BuildHasherDefault<KeyHasher>>;
+
+const READONLY: &str = "attempt to modify a readonly table";
+/// Keys a table's hash part holds before it gets an index: up to this
+/// many, a lookup scans them (most tables are small objects).
+const SMALL: usize = 8;
+
 /// A table: an array part for 1..n and an insertion-ordered hash part, so
-/// `pairs` visits entries in a stable order.
+/// `pairs` visits entries in a stable order. The hash part has an index once
+/// it holds more than SMALL entries.
 #[derive(Default)]
 pub struct Table {
     arr: Vec<Value>,
     hash: Vec<(Key, Value, Value)>,
-    index: HashMap<Key, usize>,
+    index: KeyMap,
     dead: usize,
+    readonly: bool,
     pub meta: Option<TableRef>,
 }
 
 impl Table {
     pub fn new() -> Table {
         Table::default()
+    }
+    /// A table with room for `narr` items and `nhash` keys.
+    pub fn with_capacity(narr: usize, nhash: usize) -> Table {
+        Table {
+            arr: Vec::with_capacity(narr.min(1024)),
+            hash: Vec::with_capacity(nhash.min(1024)),
+            index: if nhash > SMALL {
+                KeyMap::with_capacity_and_hasher(nhash.min(1024), BuildHasherDefault::default())
+            } else {
+                KeyMap::default()
+            },
+            ..Table::default()
+        }
     }
     pub fn from_list(items: Vec<Value>) -> Table {
         let mut t = Table::new();
@@ -281,6 +485,30 @@ impl Table {
         }
         t
     }
+    /// Frozen: every write fails with "attempt to modify a readonly table"
+    /// (`table.freeze`, `setreadonly`).
+    #[allow(dead_code)]
+    pub fn set_readonly(&mut self, on: bool) {
+        self.readonly = on;
+    }
+    pub fn is_readonly(&self) -> bool {
+        self.readonly
+    }
+    /// Names the values this is the metatable of, for `typeof` (`__type`).
+    #[allow(dead_code)]
+    pub fn set_type_name(&mut self, name: &str) {
+        self.set_str("__type", Value::str(name));
+    }
+    /// Where `k` is in the hash part.
+    #[inline]
+    fn find(&self, k: &Key) -> Option<usize> {
+        if self.hash.len() > SMALL {
+            self.index.get(k).copied()
+        } else {
+            self.hash.iter().position(|e| e.0 == *k)
+        }
+    }
+    #[inline]
     fn get_key(&self, k: &Key) -> Value {
         if let Key::Int(i) = k
             && *i >= 1
@@ -288,12 +516,20 @@ impl Table {
         {
             return self.arr[*i as usize - 1].clone();
         }
-        match self.index.get(k) {
-            Some(&p) => self.hash[p].2.clone(),
+        match self.find(k) {
+            Some(p) => self.hash[p].2.clone(),
             None => Value::Nil,
         }
     }
+    #[inline]
     pub fn get(&self, k: &Value) -> Value {
+        if let Value::Num(n) = k
+            && *n >= 1.0
+            && *n <= self.arr.len() as f64
+            && n.fract() == 0.0
+        {
+            return self.arr[*n as usize - 1].clone();
+        }
         match key_of(k) {
             Some(k) => self.get_key(&k),
             None => Value::Nil,
@@ -322,6 +558,13 @@ impl Table {
             None if k.is_nil() => return Err("index is nil"),
             None => return Err("index is NaN"),
         };
+        self.store(key, k, v)
+    }
+    /// `set` with the key made already.
+    fn store(&mut self, key: Key, k: Value, v: Value) -> Result<(), &'static str> {
+        if self.readonly {
+            return Err(READONLY);
+        }
         if let Key::Int(i) = key {
             if i >= 1 && (i as usize) <= self.arr.len() {
                 self.arr[i as usize - 1] = v;
@@ -336,8 +579,8 @@ impl Table {
                 // Keys stored in the hash part while the array was shorter.
                 loop {
                     let next = Key::Int(self.arr.len() as i64 + 1);
-                    match self.index.get(&next) {
-                        Some(&p) if !self.hash[p].2.is_nil() => {
+                    match self.find(&next) {
+                        Some(p) if !self.hash[p].2.is_nil() => {
                             let moved = std::mem::take(&mut self.hash[p].2);
                             self.dead += 1;
                             self.arr.push(moved);
@@ -348,7 +591,7 @@ impl Table {
                 return Ok(());
             }
         }
-        if let Some(&p) = self.index.get(&key) {
+        if let Some(p) = self.find(&key) {
             let was_nil = self.hash[p].2.is_nil();
             match (was_nil, v.is_nil()) {
                 (false, true) => self.dead += 1,
@@ -367,12 +610,20 @@ impl Table {
         if self.dead > 32 && self.dead * 2 > self.hash.len() {
             self.compact();
         }
-        self.index.insert(key.clone(), self.hash.len());
+        let at = self.hash.len();
+        if at >= SMALL {
+            if at == SMALL {
+                for (i, e) in self.hash.iter().enumerate() {
+                    self.index.insert(e.0.clone(), i);
+                }
+            }
+            self.index.insert(key.clone(), at);
+        }
         self.hash.push((key, k, v));
         Ok(())
     }
     fn kill(&mut self, key: &Key) {
-        if let Some(&p) = self.index.get(key)
+        if let Some(p) = self.find(key)
             && !self.hash[p].2.is_nil()
         {
             self.hash[p].2 = Value::Nil;
@@ -382,8 +633,10 @@ impl Table {
     fn compact(&mut self) {
         self.hash.retain(|e| !e.2.is_nil());
         self.index.clear();
-        for (i, e) in self.hash.iter().enumerate() {
-            self.index.insert(e.0.clone(), i);
+        if self.hash.len() > SMALL {
+            for (i, e) in self.hash.iter().enumerate() {
+                self.index.insert(e.0.clone(), i);
+            }
         }
         self.dead = 0;
     }
@@ -411,7 +664,7 @@ impl Table {
                 Key::Int(i) if i >= 1 && (i as usize) <= self.arr.len() => from_arr = i as usize,
                 _ => {
                     from_arr = self.arr.len();
-                    from_hash = *self.index.get(&key).ok_or(())? + 1;
+                    from_hash = self.find(&key).ok_or(())? + 1;
                 }
             }
         }
@@ -454,6 +707,9 @@ impl Table {
     }
     /// Inserts at position `pos` (1-based), shifting the rest up.
     pub fn insert(&mut self, pos: usize, v: Value) -> Result<(), &'static str> {
+        if self.readonly {
+            return Err(READONLY);
+        }
         let n = self.len();
         if pos == n + 1 {
             return self.set(Value::Num(pos as f64), v);
@@ -469,134 +725,15 @@ impl Table {
         }
         Ok(())
     }
-    /// Removes position `pos` (1-based) of the array part, shifting the rest down.
+    /// Removes position `pos` (1-based) of the array part, shifting the rest
+    /// down (nothing, on a readonly table).
     pub fn remove(&mut self, pos: usize) -> Value {
         let n = self.len();
-        if pos == 0 || pos > n {
+        if pos == 0 || pos > n || self.readonly {
             return Value::Nil;
         }
         self.arr.truncate(n);
         self.arr.remove(pos - 1)
-    }
-}
-
-// ----------------------------------------------------------------- functions
-
-pub struct UpDesc {
-    pub name: Rc<str>,
-    pub from_local: bool,
-    pub index: usize,
-}
-
-pub struct Proto {
-    /// `function 'name'`, `function <main.lua:12>` or `main chunk`.
-    pub name: Rc<str>,
-    pub chunk: Rc<str>,
-    #[allow(dead_code)]
-    pub line: u32,
-    pub nparams: usize,
-    pub vararg: bool,
-    pub nslots: usize,
-    pub upvals: Vec<UpDesc>,
-    body: Vec<Stmt>,
-}
-
-pub struct Closure {
-    pub proto: Rc<Proto>,
-    pub upvals: Vec<Cell>,
-    pub env: TableRef,
-}
-
-struct Stmt {
-    line: u32,
-    kind: StmtKind,
-}
-
-enum StmtKind {
-    Local(Vec<usize>, Vec<Expr>),
-    LocalFunction(usize, Rc<Proto>),
-    Assign(Vec<Expr>, Vec<Expr>),
-    Call(Expr),
-    Do(Vec<Stmt>),
-    While(Expr, Vec<Stmt>),
-    Repeat(Vec<Stmt>, Expr),
-    If(Vec<(Expr, Vec<Stmt>)>, Option<Vec<Stmt>>),
-    NumFor(usize, Expr, Expr, Option<Expr>, Vec<Stmt>),
-    GenFor(Vec<usize>, Vec<Expr>, Vec<Stmt>),
-    Return(Vec<Expr>),
-    Break,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum BinOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    IDiv,
-    Mod,
-    Pow,
-    Concat,
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    BAnd,
-    BOr,
-    BXor,
-    Shl,
-    Shr,
-}
-
-#[derive(Clone, Copy)]
-enum UnOp {
-    Neg,
-    Not,
-    Len,
-    BNot,
-}
-
-enum Expr {
-    Nil,
-    True,
-    False,
-    Num(f64),
-    Str(Str),
-    Vararg,
-    Function(Rc<Proto>),
-    Local(usize, Rc<str>),
-    Upval(usize, Rc<str>),
-    Global(Str),
-    Index(Box<Expr>, Box<Expr>),
-    Call(Box<Expr>, Vec<Expr>),
-    Method(Box<Expr>, Str, Vec<Expr>),
-    Bin(BinOp, Box<Expr>, Box<Expr>),
-    And(Box<Expr>, Box<Expr>),
-    Or(Box<Expr>, Box<Expr>),
-    Un(UnOp, Box<Expr>),
-    Table(Vec<(Option<Expr>, Expr)>),
-    Paren(Box<Expr>),
-}
-
-impl Expr {
-    fn is_multi(&self) -> bool {
-        matches!(self, Expr::Call(..) | Expr::Method(..) | Expr::Vararg)
-    }
-    /// ` (global 'x')` for error messages, or "".
-    fn describe(&self) -> String {
-        match self {
-            Expr::Local(_, n) => format!(" (local '{n}')"),
-            Expr::Upval(_, n) => format!(" (upvalue '{n}')"),
-            Expr::Global(n) => format!(" (global '{}')", String::from_utf8_lossy(n)),
-            Expr::Index(_, k) => match &**k {
-                Expr::Str(s) => format!(" (field '{}')", String::from_utf8_lossy(s)),
-                _ => String::new(),
-            },
-            Expr::Str(_) | Expr::Num(_) => " (constant)".into(),
-            _ => String::new(),
-        }
     }
 }
 
@@ -977,12 +1114,193 @@ pub fn fmt_g(n: f64, prec: usize, alt: bool) -> String {
     }
 }
 
+// ----------------------------------------------------------------- syntax tree
+
+/// A local's number in its function, in declaration order.
+type VarId = usize;
+
+/// A local, as the parser saw it.
+struct VarAst {
+    name: Rc<str>,
+    /// A closure uses it.
+    captured: bool,
+    /// Assigned to after its declaration.
+    written: bool,
+}
+
+/// An upvalue as the parser resolved it: `index` is a local of the
+/// enclosing function (`from_local`) or one of its upvalues.
+pub struct UpDesc {
+    pub name: Rc<str>,
+    pub from_local: bool,
+    pub index: usize,
+}
+
+/// A function's syntax tree.
+struct FuncAst {
+    /// `function 'name'`, `function <main.lua:12>` or `main chunk`.
+    name: Rc<str>,
+    /// The name it was declared with (`local function f`, `function t.f`: f).
+    debug_name: Option<Rc<str>>,
+    line: u32,
+    nparams: usize,
+    vararg: bool,
+    /// Every local, by id; the parameters first.
+    vars: Vec<VarAst>,
+    upvals: Vec<UpDesc>,
+    body: Vec<Stmt>,
+}
+
+struct Stmt {
+    line: u32,
+    kind: StmtKind,
+}
+
+enum StmtKind {
+    Local(Vec<VarId>, Vec<Expr>),
+    LocalFunction(VarId, Box<FuncAst>),
+    /// `function name.path()`: the target and the function.
+    Function(Expr, Box<FuncAst>),
+    Assign(Vec<Expr>, Vec<Expr>),
+    Call(Expr),
+    Do(Vec<Stmt>),
+    While(Expr, Vec<Stmt>),
+    Repeat(Vec<Stmt>, Expr),
+    If(Vec<(Expr, Vec<Stmt>)>, Option<Vec<Stmt>>),
+    /// The first of four hidden locals (start, limit, step, count) and the variable.
+    NumFor {
+        base: VarId,
+        var: VarId,
+        start: Expr,
+        limit: Expr,
+        step: Option<Expr>,
+        body: Vec<Stmt>,
+    },
+    /// The first of three hidden locals (generator, state, control) and the variables.
+    GenFor {
+        base: VarId,
+        vars: Vec<VarId>,
+        exprs: Vec<Expr>,
+        body: Vec<Stmt>,
+    },
+    Return(Vec<Expr>),
+    Break,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    IDiv,
+    Mod,
+    Pow,
+    Concat,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    BAnd,
+    BOr,
+    BXor,
+    Shl,
+    Shr,
+}
+
+#[derive(Clone, Copy)]
+enum UnOp {
+    Neg,
+    Not,
+    Len,
+    BNot,
+}
+
+/// A table constructor's item: `[k] = v`, `name = v` (a record) or `v`.
+struct Item {
+    key: Option<Expr>,
+    value: Expr,
+    record: bool,
+}
+
+enum Expr {
+    Nil,
+    True,
+    False,
+    Num(f64),
+    Str(Str),
+    Vararg,
+    Function(Box<FuncAst>),
+    Local(VarId, Rc<str>),
+    Upval(usize, Rc<str>),
+    Global(Str),
+    Index(Box<Expr>, Box<Expr>),
+    Call(Box<Expr>, Vec<Expr>),
+    Method(Box<Expr>, Str, Vec<Expr>),
+    Bin(BinOp, Box<Expr>, Box<Expr>),
+    And(Box<Expr>, Box<Expr>),
+    Or(Box<Expr>, Box<Expr>),
+    Un(UnOp, Box<Expr>),
+    Table(Vec<Item>),
+    Paren(Box<Expr>),
+}
+
+impl Expr {
+    fn is_multi(&self) -> bool {
+        matches!(self, Expr::Call(..) | Expr::Method(..) | Expr::Vararg)
+    }
+    /// What error messages call it: ` (global 'x')` and the like.
+    fn desc(&self) -> Desc {
+        match self {
+            Expr::Local(_, n) => Desc::Local(n.clone()),
+            Expr::Upval(_, n) => Desc::Upval(n.clone()),
+            Expr::Global(n) => Desc::Global(n.clone()),
+            Expr::Index(_, k) => match &**k {
+                Expr::Str(s) => Desc::Field(s.clone()),
+                _ => Desc::None,
+            },
+            Expr::Str(_) | Expr::Num(_) => Desc::Constant,
+            _ => Desc::None,
+        }
+    }
+}
+
+/// An operand's name in an error message.
+#[derive(Clone, Debug, Default)]
+enum Desc {
+    #[default]
+    None,
+    Local(Rc<str>),
+    Upval(Rc<str>),
+    Global(Str),
+    Field(Str),
+    Constant,
+}
+
+impl Desc {
+    fn text(&self) -> String {
+        match self {
+            Desc::None => String::new(),
+            Desc::Local(n) => format!(" (local '{n}')"),
+            Desc::Upval(n) => format!(" (upvalue '{n}')"),
+            Desc::Global(n) => format!(" (global '{}')", String::from_utf8_lossy(n)),
+            Desc::Field(n) => format!(" (field '{}')", String::from_utf8_lossy(n)),
+            Desc::Constant => " (constant)".into(),
+        }
+    }
+    fn is_none(&self) -> bool {
+        matches!(self, Desc::None)
+    }
+}
+
 // ----------------------------------------------------------------- parser
 
 struct FuncState {
-    actives: Vec<(Rc<str>, usize)>,
+    actives: Vec<(Rc<str>, VarId)>,
+    vars: Vec<VarAst>,
     blocks: Vec<usize>,
-    nslots: usize,
     upvals: Vec<UpDesc>,
     vararg: bool,
     loops: u32,
@@ -992,8 +1310,8 @@ impl FuncState {
     fn new(vararg: bool) -> FuncState {
         FuncState {
             actives: Vec::new(),
+            vars: Vec::new(),
             blocks: Vec::new(),
-            nslots: 0,
             upvals: Vec::new(),
             vararg,
             loops: 0,
@@ -1002,7 +1320,7 @@ impl FuncState {
 }
 
 enum Var {
-    Local(usize),
+    Local(VarId),
     Up(usize),
 }
 
@@ -1015,6 +1333,10 @@ struct Parser {
     fs: Vec<FuncState>,
     depth: u32,
     stack_base: usize,
+    /// Globals the chunk assigns to (they are read with GetGlobal, not as imports).
+    written: HashSet<Str>,
+    /// The chunk names getfenv or setfenv: no imports at all.
+    fenv: bool,
 }
 
 type PResult<T> = Result<T, String>;
@@ -1101,17 +1423,21 @@ impl Parser {
         let n = fs.blocks.pop().unwrap_or(0);
         fs.actives.truncate(n);
     }
-    fn declare(&mut self, name: Rc<str>) -> usize {
+    fn declare(&mut self, name: Rc<str>) -> VarId {
         let fs = self.fs();
-        let slot = fs.actives.len();
-        fs.actives.push((name, slot));
-        fs.nslots = fs.nslots.max(slot + 1);
-        slot
+        let id = fs.vars.len();
+        fs.vars.push(VarAst {
+            name: name.clone(),
+            captured: false,
+            written: false,
+        });
+        fs.actives.push((name, id));
+        id
     }
     fn resolve(&mut self, level: usize, name: &str) -> Option<Var> {
         let fs = &self.fs[level];
-        if let Some((_, s)) = fs.actives.iter().rev().find(|(n, _)| &**n == name) {
-            return Some(Var::Local(*s));
+        if let Some((_, v)) = fs.actives.iter().rev().find(|(n, _)| &**n == name) {
+            return Some(Var::Local(*v));
         }
         if let Some(i) = fs.upvals.iter().position(|u| &*u.name == name) {
             return Some(Var::Up(i));
@@ -1120,7 +1446,10 @@ impl Parser {
             return None;
         }
         let (from_local, index) = match self.resolve(level - 1, name)? {
-            Var::Local(s) => (true, s),
+            Var::Local(v) => {
+                self.fs[level - 1].vars[v].captured = true;
+                (true, v)
+            }
             Var::Up(i) => (false, i),
         };
         let fs = &mut self.fs[level];
@@ -1136,24 +1465,55 @@ impl Parser {
         match self.resolve(top, &name) {
             Some(Var::Local(s)) => Expr::Local(s, name),
             Some(Var::Up(i)) => Expr::Upval(i, name),
-            None => Expr::Global(Rc::from(name.as_bytes())),
+            None => {
+                if &*name == "getfenv" || &*name == "setfenv" {
+                    self.fenv = true;
+                }
+                Expr::Global(Rc::from(name.as_bytes()))
+            }
+        }
+    }
+    /// An assignment's target: the local it names is no longer a constant.
+    fn written(&mut self, e: &Expr) {
+        let mut level = self.fs.len() - 1;
+        match e {
+            Expr::Local(v, _) => self.fs[level].vars[*v].written = true,
+            Expr::Upval(i, _) => {
+                let mut i = *i;
+                while level > 0 {
+                    let (from_local, index) = {
+                        let u = &self.fs[level].upvals[i];
+                        (u.from_local, u.index)
+                    };
+                    level -= 1;
+                    if from_local {
+                        self.fs[level].vars[index].written = true;
+                        return;
+                    }
+                    i = index;
+                }
+            }
+            Expr::Global(n) => {
+                self.written.insert(n.clone());
+            }
+            _ => {}
         }
     }
 
-    fn chunk(mut self) -> PResult<Proto> {
+    fn chunk(&mut self) -> PResult<FuncAst> {
         self.fs.push(FuncState::new(true));
         let body = self.block()?;
         if *self.peek() != Tok::Eof {
             return self.error("'<eof>' expected");
         }
         let fs = self.fs.pop().expect("the chunk's function");
-        Ok(Proto {
+        Ok(FuncAst {
             name: "main chunk".into(),
-            chunk: self.chunk.clone(),
+            debug_name: None,
             line: 0,
             nparams: 0,
             vararg: true,
-            nslots: fs.nslots,
+            vars: fs.vars,
             upvals: Vec::new(),
             body,
         })
@@ -1241,9 +1601,9 @@ impl Parser {
                 self.advance();
                 if self.accept("function") {
                     let name = self.name()?;
-                    let slot = self.declare(name.clone());
-                    let proto = self.body(format!("function '{name}'"), false, line)?;
-                    StmtKind::LocalFunction(slot, proto)
+                    let var = self.declare(name.clone());
+                    let f = self.body(format!("function '{name}'"), Some(name), false, line)?;
+                    StmtKind::LocalFunction(var, f)
                 } else {
                     self.local_stat()?
                 }
@@ -1293,11 +1653,22 @@ impl Parser {
             let step = if self.accept(",") { Some(self.expr()?) } else { None };
             self.expect("do", "")?;
             self.open_scope();
-            let slot = self.declare(first);
+            let base = self.declare("(for start)".into());
+            for hidden in ["(for limit)", "(for step)", "(for count)"] {
+                self.declare(hidden.into());
+            }
+            let var = self.declare(first);
             let body = self.loop_block()?;
             self.close_scope();
             self.expect_match("end", "for", line)?;
-            return Ok(StmtKind::NumFor(slot, start, limit, step, body));
+            return Ok(StmtKind::NumFor {
+                base,
+                var,
+                start,
+                limit,
+                step,
+                body,
+            });
         }
         let mut names = vec![first];
         while self.accept(",") {
@@ -1307,37 +1678,54 @@ impl Parser {
         let exprs = self.exprlist()?;
         self.expect("do", "")?;
         self.open_scope();
-        let slots = names.into_iter().map(|n| self.declare(n)).collect();
+        let base = self.declare("(for generator)".into());
+        self.declare("(for state)".into());
+        self.declare("(for control)".into());
+        let vars = names.into_iter().map(|n| self.declare(n)).collect();
         let body = self.loop_block()?;
         self.close_scope();
         self.expect_match("end", "for", line)?;
-        Ok(StmtKind::GenFor(slots, exprs, body))
+        Ok(StmtKind::GenFor {
+            base,
+            vars,
+            exprs,
+            body,
+        })
     }
     fn func_stat(&mut self, line: u32) -> PResult<StmtKind> {
         self.advance();
         let first = self.name()?;
         let mut full = first.to_string();
+        let mut last = first.clone();
         let mut target = self.var(first);
         let mut method = false;
+        let mut path = false;
         loop {
             if self.accept(".") {
                 let n = self.name()?;
                 full.push('.');
                 full.push_str(&n);
                 target = Expr::Index(Box::new(target), Box::new(Expr::Str(Rc::from(n.as_bytes()))));
+                last = n;
+                path = true;
             } else if self.accept(":") {
                 let n = self.name()?;
                 full.push(':');
                 full.push_str(&n);
                 target = Expr::Index(Box::new(target), Box::new(Expr::Str(Rc::from(n.as_bytes()))));
+                last = n;
                 method = true;
+                path = true;
                 break;
             } else {
                 break;
             }
         }
-        let proto = self.body(format!("function '{full}'"), method, line)?;
-        Ok(StmtKind::Assign(vec![target], vec![Expr::Function(proto)]))
+        if !path {
+            self.written(&target);
+        }
+        let f = self.body(format!("function '{full}'"), Some(last), method, line)?;
+        Ok(StmtKind::Function(target, f))
     }
     fn local_stat(&mut self) -> PResult<StmtKind> {
         let mut names = vec![self.name()?];
@@ -1347,8 +1735,8 @@ impl Parser {
             self.attrib()?;
         }
         let exprs = if self.accept("=") { self.exprlist()? } else { Vec::new() };
-        let slots = names.into_iter().map(|n| self.declare(n)).collect();
-        Ok(StmtKind::Local(slots, exprs))
+        let vars = names.into_iter().map(|n| self.declare(n)).collect();
+        Ok(StmtKind::Local(vars, exprs))
     }
     /// `<const>` is accepted (and not enforced); `<close>` is not supported.
     fn attrib(&mut self) -> PResult<()> {
@@ -1379,6 +1767,9 @@ impl Parser {
                     ));
                 }
             }
+            for t in &targets {
+                self.written(t);
+            }
             return Ok(StmtKind::Assign(targets, values));
         }
         if !matches!(e, Expr::Call(..) | Expr::Method(..)) {
@@ -1386,7 +1777,7 @@ impl Parser {
         }
         Ok(StmtKind::Call(e))
     }
-    fn body(&mut self, name: String, method: bool, line: u32) -> PResult<Rc<Proto>> {
+    fn body(&mut self, name: String, debug_name: Option<Rc<str>>, method: bool, line: u32) -> PResult<Box<FuncAst>> {
         self.fs.push(FuncState::new(false));
         self.open_scope();
         if method {
@@ -1417,13 +1808,13 @@ impl Parser {
         } else {
             name
         };
-        Ok(Rc::new(Proto {
+        Ok(Box::new(FuncAst {
             name: name.into(),
-            chunk: self.chunk.clone(),
+            debug_name,
             line,
             nparams,
             vararg: fs.vararg,
-            nslots: fs.nslots,
+            vars: fs.vars,
             upvals: fs.upvals,
             body,
         }))
@@ -1535,7 +1926,7 @@ impl Parser {
             Tok::Op("{") => self.table()?,
             Tok::Op("function") => {
                 self.advance();
-                Expr::Function(self.body(String::new(), false, line)?)
+                Expr::Function(self.body(String::new(), None, false, line)?)
             }
             _ => self.suffixed()?,
         })
@@ -1615,13 +2006,25 @@ impl Parser {
                 let k = self.expr()?;
                 self.expect("]", "")?;
                 self.expect("=", "")?;
-                items.push((Some(k), self.expr()?));
+                items.push(Item {
+                    key: Some(k),
+                    value: self.expr()?,
+                    record: false,
+                });
             } else if matches!(self.peek(), Tok::Name(_)) && matches!(self.peek2(), Tok::Op("=")) {
                 let n = self.name()?;
                 self.advance();
-                items.push((Some(Expr::Str(Rc::from(n.as_bytes()))), self.expr()?));
+                items.push(Item {
+                    key: Some(Expr::Str(Rc::from(n.as_bytes()))),
+                    value: self.expr()?,
+                    record: true,
+                });
             } else {
-                items.push((None, self.expr()?));
+                items.push(Item {
+                    key: None,
+                    value: self.expr()?,
+                    record: false,
+                });
             }
             if !self.accept(",") && !self.accept(";") {
                 break;
@@ -1632,36 +2035,1861 @@ impl Parser {
     }
 }
 
-// ----------------------------------------------------------------- interpreter
+// ----------------------------------------------------------------- bytecode
 
-enum Flow {
-    Normal,
-    Break,
-    Return(Vec<Value>),
+/// As many results or arguments as there are, up to the top of the stack.
+const MULTI: u16 = u16::MAX;
+/// SetList's count for "up to the top".
+const MULTI8: u8 = u8::MAX;
+/// NewCell's register for a cell that starts as nil.
+const NO_REG: u16 = u16::MAX;
+/// Positional items a table constructor stores at once.
+const LIST_BATCH: usize = 50;
+
+/// An instruction. Registers count from the frame's base; `K` is the
+/// function's constants, `U` its closure's upvalues and `C` the frame's
+/// cells (its locals that closures captured).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Op {
+    /// A statement starts on this line: one step of the budget.
+    Step(u32),
+    /// A loop goes round: one step.
+    Tick,
+    /// Steps for a table constructor's items.
+    Charge(u32),
+    Move(u16, u16),
+    LoadK(u16, u32),
+    /// A whole number small enough to need no constant.
+    LoadN(u16, i16),
+    LoadNil(u16, u16),
+    LoadBool(u16, bool),
+    GetUpval(u16, u16),
+    SetUpval(u16, u16),
+    GetCell(u16, u16),
+    SetCell(u16, u16),
+    /// C[c] = a new cell holding R[a] (nil for NO_REG).
+    NewCell(u16, u16),
+    GetGlobal(u16, u32),
+    SetGlobal(u16, u32),
+    /// R[a] = a global, or a field path from one (`string.format`).
+    GetImport(u16, u16),
+    GetTable(u16, u16, u16),
+    /// R[a] = R[b][K[c]], a string key.
+    GetField(u16, u16, u16),
+    SetTable(u16, u16, u16),
+    /// R[a][K[b]] = R[c].
+    SetField(u16, u16, u16),
+    /// R[a] = {} with room for b items and c keys.
+    NewTable(u16, u16, u16),
+    /// R[a][start + i] = R[a + 1 + i] for the next n registers: `start << 8 | n`.
+    SetList(u16, u32),
+    /// R[a + 1] = R[b]; R[a] = R[b][K[c]], a method to call.
+    Method(u16, u16, u16),
+    /// Before a method call: K[k] is its name, for `__namecall`.
+    Namecall(u16, u16),
+    /// Calls R[a] with b arguments; c results in R[a..].
+    Call(u16, u16, u16),
+    Return(u16, u16),
+    Vararg(u16, u16),
+    Closure(u16, u16),
+    Add(u16, u16, u16),
+    Sub(u16, u16, u16),
+    Mul(u16, u16, u16),
+    Div(u16, u16, u16),
+    Mod(u16, u16, u16),
+    AddK(u16, u16, u16),
+    SubK(u16, u16, u16),
+    MulK(u16, u16, u16),
+    DivK(u16, u16, u16),
+    ModK(u16, u16, u16),
+    /// The rarer operators: `//`, `^` and the bitwise ones.
+    Arith(BinOp, u16, u16, u16),
+    ArithK(BinOp, u16, u16, u16),
+    Concat(u16, u16, u16),
+    Eq(u16, u16, u16),
+    Ne(u16, u16, u16),
+    Lt(u16, u16, u16),
+    Le(u16, u16, u16),
+    EqK(u16, u16, u16),
+    NeK(u16, u16, u16),
+    Unm(u16, u16),
+    Not(u16, u16),
+    Len(u16, u16),
+    BNot(u16, u16),
+    Jmp(i32),
+    JmpIf(u16, i32),
+    JmpIfNot(u16, i32),
+    /// A numeric for's bound, made a number (0 initial, 1 limit, 2 step).
+    ForCheck(u16, u8),
+    ForPrep(u16, i32),
+    ForLoop(u16, i32),
+    TForPrep(u16),
+    TForCall(u16, u16),
+    TForLoop(u16, i32),
 }
 
-/// Gives a local its new value: a declaration makes a new variable, but its
-/// old cell can be reused when no closure kept it.
-#[inline]
-fn fresh(slot: &mut Cell, v: Value) {
-    if Rc::strong_count(slot) == 1 {
-        *slot.borrow_mut() = v;
-    } else {
-        *slot = Rc::new(RefCell::new(v));
+const _: () = assert!(std::mem::size_of::<Op>() == 8);
+
+/// A constant that is not a value of its own, as Luau's compiler makes
+/// them: a global import, a table constructor's keys, a closure it can
+/// share. They keep the constants numbered as Luau numbers them.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub enum Special {
+    /// The constants of the names, `string` then `format`.
+    Import(Box<[u32]>),
+    /// The constants of the keys.
+    Table(Box<[u32]>),
+    /// The child function.
+    Closure(u16),
+}
+
+/// A local of a compiled function: its register, its cell if a closure
+/// captured it, and the instructions it is in scope for.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct LocalVar {
+    pub name: Rc<str>,
+    pub reg: u16,
+    pub cell: Option<u16>,
+    pub start: u32,
+    pub end: u32,
+}
+
+/// A compiled function.
+#[allow(dead_code)]
+pub struct Proto {
+    /// `function 'name'`, `function <main.lua:12>` or `main chunk`.
+    pub name: Rc<str>,
+    /// The name it was declared with, as Luau's `debug.info(f, "n")` gives it.
+    pub debug_name: Option<Rc<str>>,
+    pub chunk: Rc<str>,
+    /// Where it was defined (0: a main chunk).
+    pub line: u32,
+    pub nparams: usize,
+    pub vararg: bool,
+    pub maxstack: usize,
+    pub ncells: usize,
+    pub code: Vec<Op>,
+    /// The line of each instruction.
+    pub lines: Vec<u32>,
+    /// Numbers and strings in the order the compiler met them; specials are nil.
+    pub constants: Vec<Value>,
+    pub specials: Vec<(u32, Special)>,
+    /// The functions defined in it, in order.
+    pub protos: Vec<Rc<Proto>>,
+    /// `index` is a cell of the enclosing frame (`from_local`) or one of the
+    /// enclosing closure's upvalues.
+    pub upvals: Vec<UpDesc>,
+    pub locals: Vec<LocalVar>,
+    /// GetImport's paths: constants of the names.
+    imports: Vec<Box<[u32]>>,
+    /// The constants as table keys, for string fields.
+    keys: Vec<Option<Key>>,
+    /// Names of the operands of instructions that can fail, for messages.
+    descs: Vec<(u32, [Desc; 2])>,
+}
+
+#[allow(dead_code)]
+impl Proto {
+    /// The constants as Luau numbers them: None for an import, a table
+    /// template or a shared closure.
+    pub fn constant_slots(&self) -> Vec<Option<Value>> {
+        let mut out: Vec<Option<Value>> = self.constants.iter().cloned().map(Some).collect();
+        for (i, _) in &self.specials {
+            out[*i as usize] = None;
+        }
+        out
+    }
+    fn desc(&self, pc: usize, i: usize) -> String {
+        match self.descs.binary_search_by_key(&(pc as u32), |d| d.0) {
+            Ok(at) => self.descs[at].1[i].text(),
+            Err(_) => String::new(),
+        }
+    }
+    /// The local in register `reg` at instruction `pc`.
+    fn local_at(&self, reg: usize, pc: usize) -> Option<&LocalVar> {
+        self.locals
+            .iter()
+            .rev()
+            .find(|l| l.reg as usize == reg && (l.start as usize) <= pc && pc < l.end as usize)
     }
 }
 
-struct Frame {
-    slots: Vec<Cell>,
-    closure: Rc<Closure>,
-    varargs: Vec<Value>,
+// ----------------------------------------------------------------- compiler
+
+/// Where a local lives once compiled.
+#[derive(Clone)]
+enum Loc {
+    /// Not declared yet.
+    None,
+    Reg(u16),
+    /// A closure captured it: a cell.
+    Cell(u16),
+    /// Never assigned after a constant initial value: folded into its uses.
+    Const(Value),
 }
 
+/// An upvalue as the parser numbered it, compiled.
+#[derive(Clone)]
+enum UpLoc {
+    Unresolved,
+    Index(u16),
+    Const(Value),
+}
+
+#[derive(PartialEq, Eq, Hash)]
+enum KKey {
+    Num(u64),
+    Str(Str),
+    Import(Vec<u32>),
+    Table(Vec<u32>),
+    Closure(usize),
+}
+
+/// A place a multiple assignment stores to.
 enum Place {
-    Local(usize),
-    Up(usize),
+    None,
+    Reg(u16),
+    Cell(u16),
+    Up(u16),
     Global(Str),
-    Index(Value, Value, String),
+    Field(u16, Str, Desc),
+    Table(u16, u16, Desc),
+}
+
+/// A function being compiled.
+struct Gen<'a> {
+    f: &'a FuncAst,
+    code: Vec<Op>,
+    lines: Vec<u32>,
+    consts: Vec<Value>,
+    keys: Vec<Option<Key>>,
+    kmap: HashMap<KKey, u32>,
+    specials: Vec<(u32, Special)>,
+    imports: Vec<Box<[u32]>>,
+    protos: Vec<Rc<Proto>>,
+    descs: Vec<(u32, [Desc; 2])>,
+    locals: Vec<LocalVar>,
+    /// Indices in `locals` of those in scope.
+    scope: Vec<usize>,
+    locs: Vec<Loc>,
+    /// The loop depth each local was declared at.
+    var_loops: Vec<u32>,
+    ups: Vec<UpDesc>,
+    /// Whether each upvalue lets a closure be shared (Luau's DUPCLOSURE).
+    ups_share: Vec<bool>,
+    up_locs: Vec<UpLoc>,
+    ncells: usize,
+    nactive: usize,
+    free: usize,
+    maxstack: usize,
+    line: u32,
+    loops: u32,
+    breaks: Vec<Vec<usize>>,
+}
+
+impl<'a> Gen<'a> {
+    fn new(f: &'a FuncAst) -> Gen<'a> {
+        Gen {
+            f,
+            code: Vec::new(),
+            lines: Vec::new(),
+            consts: Vec::new(),
+            keys: Vec::new(),
+            kmap: HashMap::new(),
+            specials: Vec::new(),
+            imports: Vec::new(),
+            protos: Vec::new(),
+            descs: Vec::new(),
+            locals: Vec::new(),
+            scope: Vec::new(),
+            locs: vec![Loc::None; f.vars.len()],
+            var_loops: vec![0; f.vars.len()],
+            ups: Vec::new(),
+            ups_share: Vec::new(),
+            up_locs: vec![UpLoc::Unresolved; f.upvals.len()],
+            ncells: 0,
+            nactive: 0,
+            free: 0,
+            maxstack: 0,
+            line: f.line,
+            loops: 0,
+            breaks: Vec::new(),
+        }
+    }
+    fn finish(mut self, chunk: &Rc<str>) -> Proto {
+        self.descs.sort_by_key(|d| d.0);
+        Proto {
+            name: self.f.name.clone(),
+            debug_name: self.f.debug_name.clone(),
+            chunk: chunk.clone(),
+            line: self.f.line,
+            nparams: self.f.nparams,
+            vararg: self.f.vararg,
+            maxstack: self.maxstack,
+            ncells: self.ncells,
+            code: self.code,
+            lines: self.lines,
+            constants: self.consts,
+            specials: self.specials,
+            protos: self.protos,
+            upvals: self.ups,
+            locals: self.locals,
+            imports: self.imports,
+            keys: self.keys,
+            descs: self.descs,
+        }
+    }
+}
+
+/// The compiler: the function being compiled and those it is inside.
+struct Compiler<'a> {
+    chunk: Rc<str>,
+    /// Globals the chunk assigns to.
+    written: &'a HashSet<Str>,
+    fenv: bool,
+    g: Gen<'a>,
+    outer: Vec<Gen<'a>>,
+    error: Option<String>,
+}
+
+fn compile(ast: &FuncAst, chunk: &Rc<str>, written: &HashSet<Str>, fenv: bool) -> Result<Proto, String> {
+    let mut c = Compiler {
+        chunk: chunk.clone(),
+        written,
+        fenv,
+        g: Gen::new(ast),
+        outer: Vec::new(),
+        error: None,
+    };
+    c.body();
+    match c.error {
+        Some(e) => Err(e),
+        None => Ok(c.g.finish(chunk)),
+    }
+}
+
+impl<'a> Compiler<'a> {
+    fn fail(&mut self, msg: &str) {
+        if self.error.is_none() {
+            self.error = Some(format!("{}:{}: {msg}", self.chunk, self.g.line));
+        }
+    }
+    fn r16(&mut self, r: usize) -> u16 {
+        if r >= u16::MAX as usize - 1 {
+            self.fail("function or expression needs too many registers");
+            return 0;
+        }
+        r as u16
+    }
+    fn emit(&mut self, op: Op) -> usize {
+        self.g.code.push(op);
+        self.g.lines.push(self.g.line);
+        self.g.code.len() - 1
+    }
+    fn pc(&self) -> usize {
+        self.g.code.len()
+    }
+    fn alloc(&mut self, n: usize) -> usize {
+        let r = self.g.free;
+        self.g.free += n;
+        self.g.maxstack = self.g.maxstack.max(self.g.free);
+        if self.g.free >= u16::MAX as usize - 1 {
+            self.fail("function or expression needs too many registers");
+        }
+        r
+    }
+    /// Points the jump at `at` to `target`.
+    fn patch(&mut self, at: usize, target: usize) {
+        let off = target as i64 - at as i64 - 1;
+        let Ok(off) = i32::try_from(off) else {
+            self.fail("control structure too long");
+            return;
+        };
+        self.g.code[at] = match self.g.code[at] {
+            Op::Jmp(_) => Op::Jmp(off),
+            Op::JmpIf(a, _) => Op::JmpIf(a, off),
+            Op::JmpIfNot(a, _) => Op::JmpIfNot(a, off),
+            Op::ForPrep(a, _) => Op::ForPrep(a, off),
+            Op::ForLoop(a, _) => Op::ForLoop(a, off),
+            Op::TForLoop(a, _) => Op::TForLoop(a, off),
+            other => other,
+        };
+    }
+    fn patch_here(&mut self, jumps: &[usize]) {
+        let here = self.pc();
+        for &j in jumps {
+            self.patch(j, here);
+        }
+    }
+    fn note(&mut self, pc: usize, a: Desc, b: Desc) {
+        if !a.is_none() || !b.is_none() {
+            self.g.descs.push((pc as u32, [a, b]));
+        }
+    }
+
+    // ------------------------------------------------------------- constants
+
+    fn konst(&mut self, key: KKey, v: Value, special: Option<Special>) -> u32 {
+        if let Some(&i) = self.g.kmap.get(&key) {
+            return i;
+        }
+        let i = self.g.consts.len() as u32;
+        self.g.keys.push(match &v {
+            Value::Str(_) => key_of(&v),
+            _ => None,
+        });
+        self.g.consts.push(v);
+        self.g.kmap.insert(key, i);
+        if let Some(s) = special {
+            self.g.specials.push((i, s));
+        }
+        i
+    }
+    fn k_str(&mut self, s: &Str) -> u32 {
+        self.konst(KKey::Str(s.clone()), Value::Str(s.clone()), None)
+    }
+    fn k_num(&mut self, n: f64) -> u32 {
+        self.konst(KKey::Num(n.to_bits()), Value::Num(n), None)
+    }
+    /// A constant for an operand that has 16 bits.
+    fn k16(&mut self, k: u32) -> u16 {
+        match u16::try_from(k) {
+            Ok(k) if k != u16::MAX => k,
+            _ => {
+                self.fail("function has too many constants");
+                0
+            }
+        }
+    }
+    fn load_const(&mut self, v: &Value, dest: usize) {
+        let d = self.r16(dest);
+        match v {
+            Value::Bool(b) => {
+                self.emit(Op::LoadBool(d, *b));
+            }
+            Value::Num(n)
+                if n.fract() == 0.0 && (-32768.0..=32767.0).contains(n) && !(*n == 0.0 && n.is_sign_negative()) =>
+            {
+                self.emit(Op::LoadN(d, *n as i16));
+            }
+            Value::Num(n) => {
+                let k = self.k_num(*n);
+                self.emit(Op::LoadK(d, k));
+            }
+            Value::Str(s) => {
+                let k = self.k_str(s);
+                self.emit(Op::LoadK(d, k));
+            }
+            _ => {
+                self.emit(Op::LoadNil(d, 1));
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- names
+
+    fn level(&mut self, level: usize) -> &mut Gen<'a> {
+        if level == self.outer.len() {
+            &mut self.g
+        } else {
+            &mut self.outer[level]
+        }
+    }
+    fn level_ref(&self, level: usize) -> &Gen<'a> {
+        if level == self.outer.len() {
+            &self.g
+        } else {
+            &self.outer[level]
+        }
+    }
+    /// The parser's upvalue `i` of the function being compiled.
+    fn up(&mut self, i: usize) -> UpLoc {
+        let level = self.outer.len();
+        self.resolve_up(level, i)
+    }
+    fn resolve_up(&mut self, level: usize, i: usize) -> UpLoc {
+        match &self.level_ref(level).up_locs[i] {
+            UpLoc::Unresolved => {}
+            known => return known.clone(),
+        }
+        if level == 0 {
+            return UpLoc::Const(Value::Nil);
+        }
+        let (name, from_local, index) = {
+            let d = &self.level_ref(level).f.upvals[i];
+            (d.name.clone(), d.from_local, d.index)
+        };
+        let parent = level - 1;
+        let (src, share) = if from_local {
+            let p = self.level_ref(parent);
+            let share = parent == 0 && !p.f.vars[index].written && p.var_loops[index] == 0;
+            match &p.locs[index] {
+                Loc::Const(v) => {
+                    let v = v.clone();
+                    self.level(level).up_locs[i] = UpLoc::Const(v.clone());
+                    return UpLoc::Const(v);
+                }
+                Loc::Cell(c) => (*c, share),
+                // A captured local always has a cell.
+                Loc::Reg(_) | Loc::None => (0, false),
+            }
+        } else {
+            match self.resolve_up(parent, index) {
+                UpLoc::Index(k) => (k, self.level_ref(parent).ups_share[k as usize]),
+                other => {
+                    self.level(level).up_locs[i] = other.clone();
+                    return other;
+                }
+            }
+        };
+        let g = self.level(level);
+        let k = g.ups.len() as u16;
+        g.ups.push(UpDesc {
+            name,
+            from_local,
+            index: src as usize,
+        });
+        g.ups_share.push(share);
+        g.up_locs[i] = UpLoc::Index(k);
+        UpLoc::Index(k)
+    }
+    /// What the parser's upvalue `i` at `level` holds, if a constant (without
+    /// making it an upvalue).
+    fn peek_up(&self, level: usize, i: usize) -> Option<Value> {
+        let g = self.level_ref(level);
+        match &g.up_locs[i] {
+            UpLoc::Const(v) => return Some(v.clone()),
+            UpLoc::Index(_) => return None,
+            UpLoc::Unresolved => {}
+        }
+        if level == 0 {
+            return None;
+        }
+        let d = &g.f.upvals[i];
+        if d.from_local {
+            match &self.level_ref(level - 1).locs[d.index] {
+                Loc::Const(v) => Some(v.clone()),
+                _ => None,
+            }
+        } else {
+            self.peek_up(level - 1, d.index)
+        }
+    }
+    fn can_import(&self, root: &Str) -> bool {
+        !self.fenv && !self.written.contains(root)
+    }
+    /// A global path of up to three names (`a`, `a.b`, `a.b.c`) in R[dest].
+    fn import(&mut self, names: &[&Str], dest: usize) {
+        let ids: Vec<u32> = names.iter().map(|n| self.k_str(n)).collect();
+        let before = self.g.consts.len();
+        let slot = self.konst(
+            KKey::Import(ids.clone()),
+            Value::Nil,
+            Some(Special::Import(ids.clone().into())),
+        );
+        let at = if self.g.consts.len() > before {
+            self.g.imports.push(ids.into());
+            self.g.imports.len() - 1
+        } else {
+            let found = self.g.specials.iter().find(|s| s.0 == slot).and_then(|s| match &s.1 {
+                Special::Import(want) => self.g.imports.iter().position(|i| i == want),
+                _ => None,
+            });
+            found.unwrap_or(0)
+        };
+        let d = self.r16(dest);
+        let at = self.k16(at as u32);
+        self.emit(Op::GetImport(d, at));
+    }
+
+    // ------------------------------------------------------------- folding
+
+    /// `e`'s value if the compiler knows it: literals, constant locals, and
+    /// arithmetic, comparisons and logic on those (Luau folds the same).
+    fn fold(&self, e: &Expr) -> Option<Value> {
+        Some(match e {
+            Expr::Nil => Value::Nil,
+            Expr::True => Value::Bool(true),
+            Expr::False => Value::Bool(false),
+            Expr::Num(n) => Value::Num(*n),
+            Expr::Str(s) => Value::Str(s.clone()),
+            Expr::Local(v, _) => match &self.g.locs[*v] {
+                Loc::Const(c) => c.clone(),
+                _ => return None,
+            },
+            Expr::Upval(i, _) => return self.peek_up(self.outer.len(), *i),
+            Expr::Paren(inner) => self.fold(inner)?,
+            Expr::Un(UnOp::Neg, a) => match self.fold(a)? {
+                Value::Num(n) => Value::Num(-n),
+                _ => return None,
+            },
+            Expr::Un(UnOp::Not, a) => Value::Bool(!self.fold(a)?.truthy()),
+            Expr::Un(UnOp::Len, a) => match self.fold(a)? {
+                Value::Str(s) => Value::Num(s.len() as f64),
+                _ => return None,
+            },
+            Expr::Bin(op, a, b) => {
+                let x = self.fold(a)?;
+                let y = self.fold(b)?;
+                match (op, &x, &y) {
+                    (BinOp::Eq, ..) => Value::Bool(x.raw_eq(&y)),
+                    (BinOp::Ne, ..) => Value::Bool(!x.raw_eq(&y)),
+                    (BinOp::Lt, Value::Num(p), Value::Num(q)) => Value::Bool(p < q),
+                    (BinOp::Le, Value::Num(p), Value::Num(q)) => Value::Bool(p <= q),
+                    (BinOp::Gt, Value::Num(p), Value::Num(q)) => Value::Bool(p > q),
+                    (BinOp::Ge, Value::Num(p), Value::Num(q)) => Value::Bool(p >= q),
+                    (
+                        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::IDiv | BinOp::Mod | BinOp::Pow,
+                        Value::Num(p),
+                        Value::Num(q),
+                    ) => Value::Num(arith(*op, *p, *q)),
+                    _ => return None,
+                }
+            }
+            Expr::And(a, b) => {
+                let x = self.fold(a)?;
+                if x.truthy() { self.fold(b)? } else { x }
+            }
+            Expr::Or(a, b) => {
+                let x = self.fold(a)?;
+                if x.truthy() { x } else { self.fold(b)? }
+            }
+            _ => return None,
+        })
+    }
+
+    // ------------------------------------------------------------- expressions
+
+    /// `e` in a register: a local's own, or a new temporary.
+    fn exp_any(&mut self, e: &'a Expr) -> usize {
+        if let Expr::Local(v, _) = e
+            && let Loc::Reg(r) = self.g.locs[*v]
+        {
+            return r as usize;
+        }
+        let r = self.alloc(1);
+        self.exp_to(e, r);
+        r
+    }
+    /// `e` through a new temporary into `dest`.
+    fn exp_via_temp(&mut self, e: &'a Expr, dest: usize) {
+        let save = self.g.free;
+        let t = self.alloc(1);
+        self.exp_to(e, t);
+        let (d, t) = (self.r16(dest), self.r16(t));
+        self.emit(Op::Move(d, t));
+        self.g.free = save;
+    }
+    /// `e`'s value into register `dest`.
+    fn exp_to(&mut self, e: &'a Expr, dest: usize) {
+        if let Some(v) = self.fold(e) {
+            self.load_const(&v, dest);
+            return;
+        }
+        let d = self.r16(dest);
+        // Is `dest` the newest temporary, with nothing above it?
+        let top = dest >= self.g.nactive && dest + 1 == self.g.free;
+        match e {
+            Expr::Vararg => {
+                self.emit(Op::Vararg(d, 1));
+            }
+            Expr::Function(f) => self.closure(f, dest),
+            Expr::Local(v, _) => match self.g.locs[*v].clone() {
+                Loc::Reg(r) => {
+                    if r != d {
+                        self.emit(Op::Move(d, r));
+                    }
+                }
+                Loc::Cell(c) => {
+                    self.emit(Op::GetCell(d, c));
+                }
+                Loc::Const(c) => self.load_const(&c, dest),
+                Loc::None => {
+                    self.emit(Op::LoadNil(d, 1));
+                }
+            },
+            Expr::Upval(i, _) => match self.up(*i) {
+                UpLoc::Index(u) => {
+                    self.emit(Op::GetUpval(d, u));
+                }
+                UpLoc::Const(c) => self.load_const(&c, dest),
+                UpLoc::Unresolved => {
+                    self.emit(Op::LoadNil(d, 1));
+                }
+            },
+            Expr::Global(n) => {
+                if self.can_import(n) {
+                    self.import(&[n], dest);
+                } else {
+                    let k = self.k_str(n);
+                    self.emit(Op::GetGlobal(d, k));
+                }
+            }
+            Expr::Index(o, k) => self.index(e, o, k, dest),
+            Expr::Call(..) | Expr::Method(..) => {
+                if top {
+                    self.g.free = dest;
+                    self.call(e, 1);
+                } else {
+                    let save = self.g.free;
+                    let b = self.call(e, 1);
+                    let b = self.r16(b);
+                    self.emit(Op::Move(d, b));
+                    self.g.free = save;
+                }
+            }
+            Expr::And(a, b) | Expr::Or(a, b) => {
+                if dest < self.g.nactive {
+                    return self.exp_via_temp(e, dest);
+                }
+                let and = matches!(e, Expr::And(..));
+                if let Some(x) = self.fold(a) {
+                    // The left side decides alone whether the right one runs.
+                    if x.truthy() == and {
+                        self.exp_to(b, dest);
+                    } else {
+                        self.load_const(&x, dest);
+                    }
+                    return;
+                }
+                self.exp_to(a, dest);
+                let j = if and {
+                    self.emit(Op::JmpIfNot(d, 0))
+                } else {
+                    self.emit(Op::JmpIf(d, 0))
+                };
+                self.exp_to(b, dest);
+                self.patch_here(&[j]);
+            }
+            Expr::Bin(op, a, b) => self.binary(*op, a, b, dest),
+            Expr::Un(op, a) => {
+                let save = self.g.free;
+                let r = self.exp_any(a);
+                let r = self.r16(r);
+                let pc = self.emit(match op {
+                    UnOp::Neg => Op::Unm(d, r),
+                    UnOp::Not => Op::Not(d, r),
+                    UnOp::Len => Op::Len(d, r),
+                    UnOp::BNot => Op::BNot(d, r),
+                });
+                self.note(pc, a.desc(), Desc::None);
+                self.g.free = save;
+            }
+            Expr::Table(items) => {
+                if top {
+                    self.table(items, dest);
+                } else {
+                    self.exp_via_temp(e, dest);
+                }
+            }
+            Expr::Paren(inner) => self.exp_to(inner, dest),
+            Expr::Nil | Expr::True | Expr::False | Expr::Num(_) | Expr::Str(_) => {
+                self.emit(Op::LoadNil(d, 1));
+            }
+        }
+    }
+    /// A global path (`a.b.c`, `a` a global): its names.
+    fn path(e: &'a Expr, out: &mut Vec<&'a Str>) -> bool {
+        match e {
+            Expr::Global(n) => {
+                out.push(n);
+                true
+            }
+            Expr::Index(o, k) => match &**k {
+                Expr::Str(s) if Self::path(o, out) => {
+                    out.push(s);
+                    true
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    fn index(&mut self, e: &'a Expr, o: &'a Expr, k: &'a Expr, dest: usize) {
+        let mut names = Vec::new();
+        if Self::path(e, &mut names) && names.len() <= 3 && self.can_import(names[0]) {
+            return self.import(&names, dest);
+        }
+        let save = self.g.free;
+        let ro = self.exp_any(o);
+        let (d, ro) = (self.r16(dest), self.r16(ro));
+        let pc = match self.fold(k) {
+            Some(Value::Str(s)) => {
+                let kk = self.k_str(&s);
+                let kk = self.k16(kk);
+                self.emit(Op::GetField(d, ro, kk))
+            }
+            _ => {
+                let rk = self.exp_any(k);
+                let rk = self.r16(rk);
+                self.emit(Op::GetTable(d, ro, rk))
+            }
+        };
+        self.note(pc, o.desc(), Desc::None);
+        self.g.free = save;
+    }
+    fn binary(&mut self, op: BinOp, a: &'a Expr, b: &'a Expr, dest: usize) {
+        let save = self.g.free;
+        let d = self.r16(dest);
+        let rb = self.exp_any(a);
+        let rb = self.r16(rb);
+        let pc = match op {
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::IDiv | BinOp::Pow => {
+                if let Some(Value::Num(n)) = self.fold(b) {
+                    let k = self.k_num(n);
+                    let k = self.k16(k);
+                    self.emit(match op {
+                        BinOp::Add => Op::AddK(d, rb, k),
+                        BinOp::Sub => Op::SubK(d, rb, k),
+                        BinOp::Mul => Op::MulK(d, rb, k),
+                        BinOp::Div => Op::DivK(d, rb, k),
+                        BinOp::Mod => Op::ModK(d, rb, k),
+                        _ => Op::ArithK(op, d, rb, k),
+                    })
+                } else {
+                    let rc = self.exp_any(b);
+                    let rc = self.r16(rc);
+                    self.emit(match op {
+                        BinOp::Add => Op::Add(d, rb, rc),
+                        BinOp::Sub => Op::Sub(d, rb, rc),
+                        BinOp::Mul => Op::Mul(d, rb, rc),
+                        BinOp::Div => Op::Div(d, rb, rc),
+                        BinOp::Mod => Op::Mod(d, rb, rc),
+                        _ => Op::Arith(op, d, rb, rc),
+                    })
+                }
+            }
+            BinOp::Eq | BinOp::Ne => match self.fold(b) {
+                Some(Value::Num(n)) => {
+                    let k = self.k_num(n);
+                    let k = self.k16(k);
+                    self.emit(if op == BinOp::Eq {
+                        Op::EqK(d, rb, k)
+                    } else {
+                        Op::NeK(d, rb, k)
+                    })
+                }
+                Some(Value::Str(s)) => {
+                    let k = self.k_str(&s);
+                    let k = self.k16(k);
+                    self.emit(if op == BinOp::Eq {
+                        Op::EqK(d, rb, k)
+                    } else {
+                        Op::NeK(d, rb, k)
+                    })
+                }
+                _ => {
+                    let rc = self.exp_any(b);
+                    let rc = self.r16(rc);
+                    self.emit(if op == BinOp::Eq {
+                        Op::Eq(d, rb, rc)
+                    } else {
+                        Op::Ne(d, rb, rc)
+                    })
+                }
+            },
+            _ => {
+                let rc = self.exp_any(b);
+                let rc = self.r16(rc);
+                self.emit(match op {
+                    BinOp::Concat => Op::Concat(d, rb, rc),
+                    BinOp::Lt => Op::Lt(d, rb, rc),
+                    BinOp::Le => Op::Le(d, rb, rc),
+                    // `a > b` is `b < a`, as Lua does it.
+                    BinOp::Gt => Op::Lt(d, rc, rb),
+                    BinOp::Ge => Op::Le(d, rc, rb),
+                    _ => Op::Arith(op, d, rb, rc),
+                })
+            }
+        };
+        self.note(pc, a.desc(), b.desc());
+        self.g.free = save;
+    }
+    fn table(&mut self, items: &'a [Item], dest: usize) {
+        let d = self.r16(dest);
+        let narr = items.iter().filter(|i| i.key.is_none()).count();
+        let nhash = items.len() - narr;
+        // Luau's DUPTABLE: a constructor of `name = value` records only
+        // gets a template, made of its keys.
+        if narr == 0 && (1..=32).contains(&items.len()) && items.iter().all(|i| i.record) {
+            let ids: Vec<u32> = items
+                .iter()
+                .map(|i| match &i.key {
+                    Some(Expr::Str(s)) => self.k_str(s),
+                    _ => 0,
+                })
+                .collect();
+            self.konst(KKey::Table(ids.clone()), Value::Nil, Some(Special::Table(ids.into())));
+        }
+        self.emit(Op::NewTable(
+            d,
+            narr.min(u16::MAX as usize) as u16,
+            nhash.min(u16::MAX as usize) as u16,
+        ));
+        let mut pending = 0usize;
+        let mut first = 1u32;
+        for (i, item) in items.iter().enumerate() {
+            match &item.key {
+                None if i + 1 == items.len() && item.value.is_multi() => {
+                    self.multi(&item.value);
+                    self.emit(Op::SetList(d, first << 8 | u32::from(MULTI8)));
+                    pending = 0;
+                    self.g.free = dest + 1;
+                }
+                None => {
+                    let r = self.alloc(1);
+                    self.exp_to(&item.value, r);
+                    pending += 1;
+                    if pending == LIST_BATCH {
+                        self.emit(Op::SetList(d, first << 8 | pending as u32));
+                        first += pending as u32;
+                        pending = 0;
+                        self.g.free = dest + 1;
+                    }
+                }
+                Some(k) => {
+                    if pending > 0 {
+                        self.emit(Op::SetList(d, first << 8 | pending as u32));
+                        first += pending as u32;
+                        pending = 0;
+                        self.g.free = dest + 1;
+                    }
+                    let save = self.g.free;
+                    match self.fold(k) {
+                        Some(Value::Str(s)) => {
+                            let rv = self.exp_any(&item.value);
+                            let rv = self.r16(rv);
+                            let kk = self.k_str(&s);
+                            let kk = self.k16(kk);
+                            self.emit(Op::SetField(d, kk, rv));
+                        }
+                        _ => {
+                            let rk = self.exp_any(k);
+                            let rv = self.exp_any(&item.value);
+                            let (rk, rv) = (self.r16(rk), self.r16(rv));
+                            self.emit(Op::SetTable(d, rk, rv));
+                        }
+                    }
+                    self.g.free = save;
+                }
+            }
+        }
+        if pending > 0 {
+            self.emit(Op::SetList(d, first << 8 | pending as u32));
+            self.g.free = dest + 1;
+        }
+        if first >= 1 << 24 {
+            self.fail("table constructor has too many items");
+        }
+        if !items.is_empty() {
+            self.emit(Op::Charge(items.len() as u32));
+        }
+    }
+    /// A call; its results start at the register returned (`nres` of them,
+    /// or as many as there are).
+    fn call(&mut self, e: &'a Expr, nres: u16) -> usize {
+        let base = self.alloc(1);
+        let b = self.r16(base);
+        match e {
+            Expr::Call(f, args) => {
+                self.exp_to(f, base);
+                let n = self.args(args);
+                let pc = self.emit(Op::Call(b, n, nres));
+                self.note(pc, f.desc(), Desc::None);
+            }
+            Expr::Method(o, name, args) => {
+                let ro = self.exp_any(o);
+                let ro = self.r16(ro);
+                let k = self.k_str(name);
+                let k = self.k16(k);
+                let pc = self.emit(Op::Method(b, ro, k));
+                self.note(pc, o.desc(), Desc::None);
+                self.g.free = base + 1;
+                self.alloc(1);
+                let n = self.args(args);
+                self.emit(Op::Namecall(b, k));
+                self.emit(Op::Call(b, if n == MULTI { MULTI } else { n + 1 }, nres));
+            }
+            other => self.exp_to(other, base),
+        }
+        let nres = if nres == MULTI { 0 } else { nres as usize };
+        self.g.free = base + nres;
+        self.g.maxstack = self.g.maxstack.max(base + nres);
+        base
+    }
+    /// Arguments from the next register: their count, or MULTI.
+    fn args(&mut self, args: &'a [Expr]) -> u16 {
+        for (i, a) in args.iter().enumerate() {
+            if i + 1 == args.len() && a.is_multi() {
+                self.multi(a);
+                return MULTI;
+            }
+            let r = self.alloc(1);
+            self.exp_to(a, r);
+        }
+        if args.len() >= MULTI as usize {
+            self.fail("function call has too many arguments");
+        }
+        args.len() as u16
+    }
+    /// All of a call's or `...`'s values, from the next register up.
+    fn multi(&mut self, e: &'a Expr) {
+        match e {
+            Expr::Call(..) | Expr::Method(..) => {
+                self.call(e, MULTI);
+            }
+            Expr::Vararg => {
+                let r = self.alloc(1);
+                let r = self.r16(r);
+                self.emit(Op::Vararg(r, MULTI));
+            }
+            other => {
+                let r = self.alloc(1);
+                self.exp_to(other, r);
+            }
+        }
+    }
+    /// Values into the next registers: exactly `want` of them, or all
+    /// (then the count, or MULTI).
+    fn explist(&mut self, exprs: &'a [Expr], want: Option<usize>) -> u16 {
+        let start = self.g.free;
+        let mut have = 0;
+        for (i, e) in exprs.iter().enumerate() {
+            if i + 1 == exprs.len() && e.is_multi() {
+                let Some(n) = want else {
+                    self.multi(e);
+                    return MULTI;
+                };
+                let need = n.saturating_sub(i);
+                if let Expr::Vararg = e {
+                    if need > 0 {
+                        let r = self.alloc(need);
+                        let (r, need16) = (self.r16(r), self.r16(need));
+                        self.emit(Op::Vararg(r, need16));
+                    }
+                } else {
+                    let need16 = self.r16(need);
+                    self.call(e, need16);
+                }
+                have = i + need;
+            } else {
+                let r = self.alloc(1);
+                self.exp_to(e, r);
+                have = i + 1;
+            }
+        }
+        match want {
+            None => self.r16(have),
+            Some(n) => {
+                if have < n {
+                    self.g.free = start + have;
+                    let r = self.alloc(n - have);
+                    let (r, k) = (self.r16(r), self.r16(n - have));
+                    self.emit(Op::LoadNil(r, k));
+                }
+                self.g.free = start + n;
+                self.g.maxstack = self.g.maxstack.max(self.g.free);
+                self.r16(n)
+            }
+        }
+    }
+    /// Compiles a function inside this one.
+    fn function(&mut self, f: &'a FuncAst) -> Proto {
+        let child = Gen::new(f);
+        let parent = std::mem::replace(&mut self.g, child);
+        self.outer.push(parent);
+        self.body();
+        let parent = self.outer.pop().expect("the enclosing function");
+        let child = std::mem::replace(&mut self.g, parent);
+        child.finish(&self.chunk)
+    }
+    fn closure(&mut self, f: &'a FuncAst, dest: usize) {
+        let proto = self.function(f);
+        let id = self.g.protos.len();
+        // Luau shares a closure whose upvalues cannot change (DUPCLOSURE),
+        // which takes a constant; here closures are always new, but the
+        // constant keeps the numbering.
+        let share = !self.fenv && self.closure_shares(&proto);
+        if share && id < u16::MAX as usize {
+            self.konst(KKey::Closure(id), Value::Nil, Some(Special::Closure(id as u16)));
+        }
+        self.g.protos.push(Rc::new(proto));
+        let (d, p) = (self.r16(dest), self.r16(id));
+        self.emit(Op::Closure(d, p));
+    }
+    fn closure_shares(&self, p: &Proto) -> bool {
+        p.upvals.iter().all(|u| {
+            if u.from_local {
+                // The cell of a local of this function.
+                self.g
+                    .locs
+                    .iter()
+                    .zip(&self.g.f.vars)
+                    .zip(&self.g.var_loops)
+                    .any(|((l, v), loops)| {
+                        matches!(l, Loc::Cell(c) if *c as usize == u.index)
+                            && !v.written
+                            && *loops == 0
+                            && self.outer.is_empty()
+                    })
+            } else {
+                self.g.ups_share.get(u.index).copied().unwrap_or(false)
+            }
+        })
+    }
+
+    // ------------------------------------------------------------- statements
+
+    fn body(&mut self) {
+        let f = self.g.f;
+        self.g.line = f.line;
+        for v in 0..f.nparams {
+            let r = self.alloc(1);
+            let r16 = self.r16(r);
+            let cell = if f.vars[v].captured {
+                let c = self.g.ncells as u16;
+                self.g.ncells += 1;
+                self.emit(Op::NewCell(c, r16));
+                Some(c)
+            } else {
+                None
+            };
+            self.g.locs[v] = match cell {
+                Some(c) => Loc::Cell(c),
+                None => Loc::Reg(r16),
+            };
+            self.open_local(v, r16, cell);
+        }
+        self.g.nactive = f.nparams;
+        self.block(&f.body);
+        self.emit(Op::Return(0, 0));
+        let end = self.pc() as u32;
+        for l in &mut self.g.locals {
+            l.end = l.end.min(end);
+        }
+    }
+    fn open_local(&mut self, v: VarId, reg: u16, cell: Option<u16>) {
+        let start = self.pc() as u32;
+        self.g.var_loops[v] = self.g.loops;
+        self.g.scope.push(self.g.locals.len());
+        self.g.locals.push(LocalVar {
+            name: self.g.f.vars[v].name.clone(),
+            reg,
+            cell,
+            start,
+            end: u32::MAX,
+        });
+    }
+    fn close_locals(&mut self, keep: usize) {
+        let end = self.pc() as u32;
+        while self.g.scope.len() > keep {
+            if let Some(i) = self.g.scope.pop() {
+                self.g.locals[i].end = end;
+            }
+        }
+    }
+    fn block(&mut self, stmts: &'a [Stmt]) {
+        let (nactive, scope) = (self.g.nactive, self.g.scope.len());
+        for s in stmts {
+            self.stmt(s);
+        }
+        self.close_locals(scope);
+        self.g.nactive = nactive;
+        self.g.free = nactive;
+    }
+    /// A loop's body: the breaks in it.
+    fn loop_body(&mut self, stmts: &'a [Stmt]) -> Vec<usize> {
+        self.g.breaks.push(Vec::new());
+        self.g.loops += 1;
+        self.block(stmts);
+        self.g.loops -= 1;
+        self.g.breaks.pop().unwrap_or_default()
+    }
+    /// Declares `var` in register `reg` (a cell if a closure captured it).
+    fn declare(&mut self, var: VarId, reg: usize) {
+        let r = self.r16(reg);
+        let cell = if self.g.f.vars[var].captured {
+            let c = self.g.ncells as u16;
+            self.g.ncells += 1;
+            self.emit(Op::NewCell(c, r));
+            Some(c)
+        } else {
+            None
+        };
+        self.g.locs[var] = match cell {
+            Some(c) => Loc::Cell(c),
+            None => Loc::Reg(r),
+        };
+        self.open_local(var, r, cell);
+    }
+    fn stmt(&mut self, s: &'a Stmt) {
+        self.g.line = s.line;
+        self.emit(Op::Step(s.line));
+        match &s.kind {
+            StmtKind::Local(vars, exprs) => self.local(vars, exprs),
+            StmtKind::LocalFunction(var, f) => {
+                let reg = self.alloc(1);
+                let r = self.r16(reg);
+                let cell = if self.g.f.vars[*var].captured {
+                    let c = self.g.ncells as u16;
+                    self.g.ncells += 1;
+                    self.emit(Op::NewCell(c, NO_REG));
+                    Some(c)
+                } else {
+                    None
+                };
+                self.g.locs[*var] = match cell {
+                    Some(c) => Loc::Cell(c),
+                    None => Loc::Reg(r),
+                };
+                self.open_local(*var, r, cell);
+                self.g.nactive = reg + 1;
+                self.closure(f, reg);
+                if let Some(c) = cell {
+                    self.emit(Op::SetCell(r, c));
+                }
+            }
+            StmtKind::Function(target, f) => {
+                if let Expr::Local(v, _) = target
+                    && let Loc::Reg(r) = self.g.locs[*v]
+                {
+                    self.closure(f, r as usize);
+                } else {
+                    let t = self.alloc(1);
+                    self.closure(f, t);
+                    self.store_one(target, t);
+                }
+            }
+            StmtKind::Assign(targets, values) => self.assign(targets, values),
+            StmtKind::Call(e) => {
+                self.call(e, 0);
+            }
+            StmtKind::Do(body) => self.block(body),
+            StmtKind::While(cond, body) => {
+                let top = self.pc();
+                self.emit(Op::Tick);
+                let exits = match self.fold(cond) {
+                    Some(v) if !v.truthy() => return,
+                    Some(_) => Vec::new(),
+                    None => self.jump_if_false(cond),
+                };
+                let breaks = self.loop_body(body);
+                let j = self.emit(Op::Jmp(0));
+                self.patch(j, top);
+                self.patch_here(&exits);
+                self.patch_here(&breaks);
+            }
+            StmtKind::Repeat(body, cond) => {
+                let top = self.pc();
+                let (nactive, scope) = (self.g.nactive, self.g.scope.len());
+                self.g.breaks.push(Vec::new());
+                self.g.loops += 1;
+                for s in body {
+                    self.stmt(s);
+                }
+                match self.fold(cond) {
+                    Some(v) if v.truthy() => {}
+                    Some(_) => {
+                        let j = self.emit(Op::Jmp(0));
+                        self.patch(j, top);
+                    }
+                    None => {
+                        let r = self.exp_any(cond);
+                        let r = self.r16(r);
+                        let j = self.emit(Op::JmpIfNot(r, 0));
+                        self.patch(j, top);
+                    }
+                }
+                self.g.loops -= 1;
+                let breaks = self.g.breaks.pop().unwrap_or_default();
+                self.close_locals(scope);
+                self.g.nactive = nactive;
+                self.patch_here(&breaks);
+            }
+            StmtKind::If(arms, otherwise) => {
+                let mut ends = Vec::new();
+                let mut done = false;
+                for (i, (cond, body)) in arms.iter().enumerate() {
+                    match self.fold(cond) {
+                        Some(v) if v.truthy() => {
+                            self.block(body);
+                            done = true;
+                            break;
+                        }
+                        Some(_) => {}
+                        None => {
+                            let skip = self.jump_if_false(cond);
+                            self.block(body);
+                            if i + 1 < arms.len() || otherwise.is_some() {
+                                ends.push(self.emit(Op::Jmp(0)));
+                            }
+                            self.patch_here(&skip);
+                        }
+                    }
+                }
+                if !done && let Some(b) = otherwise {
+                    self.block(b);
+                }
+                self.patch_here(&ends);
+            }
+            StmtKind::NumFor {
+                base,
+                var,
+                start,
+                limit,
+                step,
+                body,
+            } => self.num_for(*base, *var, [start, limit], step.as_ref(), body),
+            StmtKind::GenFor {
+                base,
+                vars,
+                exprs,
+                body,
+            } => self.gen_for(*base, vars, exprs, body),
+            StmtKind::Return(exprs) => self.ret(exprs),
+            StmtKind::Break => {
+                let j = self.emit(Op::Jmp(0));
+                if let Some(b) = self.g.breaks.last_mut() {
+                    b.push(j);
+                }
+            }
+        }
+        self.g.free = self.g.nactive;
+    }
+    /// Jumps (to patch) taken when `cond` is false.
+    fn jump_if_false(&mut self, cond: &'a Expr) -> Vec<usize> {
+        let save = self.g.free;
+        let r = self.exp_any(cond);
+        let r = self.r16(r);
+        self.g.free = save;
+        vec![self.emit(Op::JmpIfNot(r, 0))]
+    }
+    fn local(&mut self, vars: &'a [VarId], exprs: &'a [Expr]) {
+        let multi = exprs.last().is_some_and(Expr::is_multi);
+        let consts: Vec<Option<Value>> = vars
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                if self.g.f.vars[v].written {
+                    return None;
+                }
+                match exprs.get(i) {
+                    Some(e) if i + 1 == exprs.len() && multi => {
+                        let _ = e;
+                        None
+                    }
+                    Some(e) => self.fold(e),
+                    None if multi => None,
+                    None => Some(Value::Nil),
+                }
+            })
+            .collect();
+        // Luau leaves out a statement of constant locals: their uses get the values.
+        if exprs.len() <= vars.len() && consts.iter().all(Option::is_some) {
+            for (&v, c) in vars.iter().zip(consts) {
+                self.g.locs[v] = Loc::Const(c.unwrap_or_default());
+                self.g.var_loops[v] = self.g.loops;
+            }
+            return;
+        }
+        let base = self.g.free;
+        self.explist(exprs, Some(vars.len()));
+        for (i, (&v, c)) in vars.iter().zip(consts).enumerate() {
+            match c {
+                Some(c) => {
+                    let r = self.r16(base + i);
+                    self.open_local(v, r, None);
+                    self.g.locs[v] = Loc::Const(c);
+                }
+                None => self.declare(v, base + i),
+            }
+        }
+        self.g.nactive = base + vars.len();
+        self.g.free = self.g.nactive;
+    }
+    /// Stores register `src` into one assignment target.
+    fn store_one(&mut self, target: &'a Expr, src: usize) {
+        let s = self.r16(src);
+        match target {
+            Expr::Local(v, _) => match self.g.locs[*v].clone() {
+                Loc::Reg(r) => {
+                    self.emit(Op::Move(r, s));
+                }
+                Loc::Cell(c) => {
+                    self.emit(Op::SetCell(s, c));
+                }
+                Loc::Const(_) | Loc::None => {}
+            },
+            Expr::Upval(i, _) => {
+                if let UpLoc::Index(u) = self.up(*i) {
+                    self.emit(Op::SetUpval(s, u));
+                }
+            }
+            Expr::Global(n) => {
+                let k = self.k_str(n);
+                self.emit(Op::SetGlobal(s, k));
+            }
+            Expr::Index(o, k) => {
+                let ro = self.exp_any(o);
+                let ro = self.r16(ro);
+                let pc = match self.fold(k) {
+                    Some(Value::Str(name)) => {
+                        let kk = self.k_str(&name);
+                        let kk = self.k16(kk);
+                        self.emit(Op::SetField(ro, kk, s))
+                    }
+                    _ => {
+                        let rk = self.exp_any(k);
+                        let rk = self.r16(rk);
+                        self.emit(Op::SetTable(ro, rk, s))
+                    }
+                };
+                self.note(pc, o.desc(), Desc::None);
+            }
+            _ => {}
+        }
+    }
+    fn assign(&mut self, targets: &'a [Expr], values: &'a [Expr]) {
+        if let ([t], [v]) = (targets, values) {
+            match t {
+                Expr::Local(var, _) => match self.g.locs[*var].clone() {
+                    Loc::Reg(r) => self.exp_to(v, r as usize),
+                    Loc::Cell(c) => {
+                        let r = self.exp_any(v);
+                        let r = self.r16(r);
+                        self.emit(Op::SetCell(r, c));
+                    }
+                    Loc::Const(_) | Loc::None => {
+                        self.exp_any(v);
+                    }
+                },
+                Expr::Upval(i, _) => {
+                    let u = self.up(*i);
+                    let r = self.exp_any(v);
+                    let r = self.r16(r);
+                    if let UpLoc::Index(u) = u {
+                        self.emit(Op::SetUpval(r, u));
+                    }
+                }
+                Expr::Global(n) => {
+                    let r = self.exp_any(v);
+                    let r = self.r16(r);
+                    let k = self.k_str(n);
+                    self.emit(Op::SetGlobal(r, k));
+                }
+                Expr::Index(o, k) => {
+                    let ro = self.exp_any(o);
+                    let ro = self.r16(ro);
+                    let field = match self.fold(k) {
+                        Some(Value::Str(s)) => Err(s),
+                        _ => {
+                            let rk = self.exp_any(k);
+                            Ok(self.r16(rk))
+                        }
+                    };
+                    let rv = self.exp_any(v);
+                    let rv = self.r16(rv);
+                    let pc = match field {
+                        Err(name) => {
+                            let kk = self.k_str(&name);
+                            let kk = self.k16(kk);
+                            self.emit(Op::SetField(ro, kk, rv))
+                        }
+                        Ok(rk) => self.emit(Op::SetTable(ro, rk, rv)),
+                    };
+                    self.note(pc, o.desc(), Desc::None);
+                }
+                _ => {}
+            }
+            return;
+        }
+        // Several: the places first (copied, as later stores may change the
+        // locals they use), then the values, then the stores in order.
+        let mut places = Vec::with_capacity(targets.len());
+        for t in targets {
+            let p = match t {
+                Expr::Local(v, _) => match self.g.locs[*v] {
+                    Loc::Reg(r) => Place::Reg(r),
+                    Loc::Cell(c) => Place::Cell(c),
+                    _ => Place::None,
+                },
+                Expr::Upval(i, _) => match self.up(*i) {
+                    UpLoc::Index(u) => Place::Up(u),
+                    _ => Place::None,
+                },
+                Expr::Global(n) => Place::Global(n.clone()),
+                Expr::Index(o, k) => {
+                    let ro = self.alloc(1);
+                    self.exp_to(o, ro);
+                    let ro = self.r16(ro);
+                    match self.fold(k) {
+                        Some(Value::Str(s)) => Place::Field(ro, s, o.desc()),
+                        _ => {
+                            let rk = self.alloc(1);
+                            self.exp_to(k, rk);
+                            let rk = self.r16(rk);
+                            Place::Table(ro, rk, o.desc())
+                        }
+                    }
+                }
+                _ => Place::None,
+            };
+            places.push(p);
+        }
+        let start = self.g.free;
+        self.explist(values, Some(targets.len()));
+        for (i, p) in places.into_iter().enumerate() {
+            let s = self.r16(start + i);
+            match p {
+                Place::None => {}
+                Place::Reg(r) => {
+                    self.emit(Op::Move(r, s));
+                }
+                Place::Cell(c) => {
+                    self.emit(Op::SetCell(s, c));
+                }
+                Place::Up(u) => {
+                    self.emit(Op::SetUpval(s, u));
+                }
+                Place::Global(n) => {
+                    let k = self.k_str(&n);
+                    self.emit(Op::SetGlobal(s, k));
+                }
+                Place::Field(o, name, desc) => {
+                    let kk = self.k_str(&name);
+                    let kk = self.k16(kk);
+                    let pc = self.emit(Op::SetField(o, kk, s));
+                    self.note(pc, desc, Desc::None);
+                }
+                Place::Table(o, k, desc) => {
+                    let pc = self.emit(Op::SetTable(o, k, s));
+                    self.note(pc, desc, Desc::None);
+                }
+            }
+        }
+    }
+    fn ret(&mut self, exprs: &'a [Expr]) {
+        match exprs {
+            [] => {
+                self.emit(Op::Return(0, 0));
+            }
+            [e @ (Expr::Call(..) | Expr::Method(..))] => {
+                let b = self.call(e, MULTI);
+                let b = self.r16(b);
+                self.emit(Op::Return(b, MULTI));
+            }
+            [Expr::Local(v, _)] if matches!(self.g.locs[*v], Loc::Reg(_)) => {
+                if let Loc::Reg(r) = self.g.locs[*v] {
+                    self.emit(Op::Return(r, 1));
+                }
+            }
+            _ => {
+                let start = self.g.free;
+                let n = self.explist(exprs, None);
+                let s = self.r16(start);
+                self.emit(Op::Return(s, n));
+            }
+        }
+    }
+    fn num_for(
+        &mut self,
+        base: VarId,
+        var: VarId,
+        [start, limit]: [&'a Expr; 2],
+        step: Option<&'a Expr>,
+        body: &'a [Stmt],
+    ) {
+        let a = self.g.nactive;
+        self.g.free = a;
+        self.alloc(5);
+        let a16 = self.r16(a);
+        for (i, (e, what)) in [(Some(start), 0u8), (Some(limit), 1), (step, 2)]
+            .into_iter()
+            .enumerate()
+        {
+            match e {
+                Some(e) => {
+                    let known = matches!(self.fold(e), Some(Value::Num(_)));
+                    self.exp_to(e, a + i);
+                    if !known {
+                        let r = self.r16(a + i);
+                        self.emit(Op::ForCheck(r, what));
+                    }
+                }
+                None => self.load_const(&Value::Num(1.0), a + i),
+            }
+        }
+        let scope = self.g.scope.len();
+        for i in 0..4 {
+            let r = self.r16(a + i);
+            self.g.locs[base + i] = Loc::Reg(r);
+            self.open_local(base + i, r, None);
+        }
+        self.g.nactive = a + 5;
+        self.g.free = a + 5;
+        let prep = self.emit(Op::ForPrep(a16, 0));
+        let top = self.pc();
+        self.g.loops += 1;
+        self.declare(var, a + 4);
+        self.g.loops -= 1;
+        let breaks = self.loop_body(body);
+        let lp = self.emit(Op::ForLoop(a16, 0));
+        self.patch(lp, top);
+        self.patch_here(&[prep]);
+        self.patch_here(&breaks);
+        self.close_locals(scope);
+        self.g.nactive = a;
+    }
+    fn gen_for(&mut self, base: VarId, vars: &'a [VarId], exprs: &'a [Expr], body: &'a [Stmt]) {
+        let a = self.g.nactive;
+        self.g.free = a;
+        self.explist(exprs, Some(3));
+        let a16 = self.r16(a);
+        let scope = self.g.scope.len();
+        for i in 0..3 {
+            let r = self.r16(a + i);
+            self.g.locs[base + i] = Loc::Reg(r);
+            self.open_local(base + i, r, None);
+        }
+        self.emit(Op::TForPrep(a16));
+        let n = vars.len();
+        self.g.free = a + 3;
+        self.alloc(n.max(3));
+        self.g.nactive = a + 3 + n;
+        self.g.free = a + 3 + n;
+        let top = self.pc();
+        let n16 = self.r16(n);
+        self.emit(Op::TForCall(a16, n16));
+        let exit = self.emit(Op::TForLoop(a16, 0));
+        self.g.loops += 1;
+        for (i, &v) in vars.iter().enumerate() {
+            self.declare(v, a + 3 + i);
+        }
+        self.g.loops -= 1;
+        let breaks = self.loop_body(body);
+        let j = self.emit(Op::Jmp(0));
+        self.patch(j, top);
+        self.patch_here(&[exit]);
+        self.patch_here(&breaks);
+        self.close_locals(scope);
+        self.g.nactive = a;
+    }
+}
+
+// ----------------------------------------------------------------- closures
+
+/// A Lua function: a body behind a cell, so `hookfunction` can change
+/// what an existing closure runs and keep its identity.
+pub struct Closure {
+    body: RefCell<Rc<Body>>,
+}
+
+/// What a closure runs: its function, its upvalues and its globals.
+pub struct Body {
+    pub proto: Rc<Proto>,
+    pub upvals: Vec<Cell>,
+    pub env: TableRef,
+}
+
+#[allow(dead_code)]
+impl Closure {
+    pub fn new(proto: Rc<Proto>, upvals: Vec<Cell>, env: TableRef) -> Closure {
+        Closure::from_body(Rc::new(Body { proto, upvals, env }))
+    }
+    pub fn from_body(body: Rc<Body>) -> Closure {
+        Closure {
+            body: RefCell::new(body),
+        }
+    }
+    pub fn body(&self) -> Rc<Body> {
+        self.body.borrow().clone()
+    }
+    pub fn proto(&self) -> Rc<Proto> {
+        self.body.borrow().proto.clone()
+    }
+    pub fn env(&self) -> TableRef {
+        self.body.borrow().env.clone()
+    }
+    /// Runs `body` from now on (calls already running keep theirs); the
+    /// old body back.
+    pub fn replace_body(&self, body: Rc<Body>) -> Rc<Body> {
+        std::mem::replace(&mut *self.body.borrow_mut(), body)
+    }
+    pub fn upvalue(&self, i: usize) -> Option<Value> {
+        self.body.borrow().upvals.get(i).map(|c| c.borrow().clone())
+    }
+    pub fn set_upvalue(&self, i: usize, v: Value) -> bool {
+        match self.body.borrow().upvals.get(i) {
+            Some(c) => {
+                *c.borrow_mut() = v;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+// ----------------------------------------------------------------- runtime
+
+/// What to put before a call's results: nothing, or what the innermost
+/// protected-call record says (`true` for pcall, `false` for an xpcall
+/// handler's results), and so on outwards.
+#[derive(Clone, Copy)]
+enum Ret {
+    Plain,
+    Wrapped,
+}
+
+/// A Lua function running.
+struct Frame {
+    #[allow(dead_code)]
+    closure: Rc<Closure>,
+    body: Rc<Body>,
+    /// The next instruction, while another frame runs.
+    pc: usize,
+    base: usize,
+    /// Where its results go, in the caller's registers.
+    func: usize,
+    nres: u16,
+    varargs: usize,
+    nvarargs: usize,
+    /// Where its cells start.
+    cells: usize,
+    line: u32,
+    ret: Ret,
+}
+
+/// A pcall or xpcall in progress (`catches`), or an xpcall handler running
+/// (whose results get `false` in front).
+struct Protect {
+    /// The frame count when it began: an error unwinds to it.
+    frames: usize,
+    func: usize,
+    nres: u16,
+    cells: usize,
+    handler: Option<Value>,
+    catches: bool,
+    ret: Ret,
+}
+
+/// The call a coroutine yielded from: where its results go once resumed.
+struct Pending {
+    func: usize,
+    nres: u16,
+    ret: Ret,
+}
+
+/// A thread's own stack: registers, frames, cells and protected calls.
+#[derive(Default)]
+struct ThreadState {
+    stack: Vec<Value>,
+    frames: Vec<Frame>,
+    cells: Vec<Cell>,
+    pcalls: Vec<Protect>,
+    /// The end of the last multiple results.
+    top: usize,
+    /// VM loops running on this thread: past one, a yield would cross a
+    /// native's call into Lua.
+    runs: u32,
+    pending: Option<Pending>,
+    /// A coroutine's function, before its first resume.
+    start: Option<Value>,
+}
+
+/// The live objects, when tracked (`getgc`).
+#[derive(Default)]
+struct Registry {
+    closures: Vec<Weak<Closure>>,
+    tables: Vec<Weak<RefCell<Table>>>,
+    prune_at: usize,
+}
+
+/// Debug information about a running Lua function.
+#[allow(dead_code)]
+pub struct FrameInfo {
+    pub closure: Rc<Closure>,
+    pub proto: Rc<Proto>,
+    pub line: u32,
+    pub pc: usize,
+}
+
+#[derive(Clone, Copy)]
+enum Ev {
+    Index,
+    NewIndex,
+    Call,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+    Unm,
+    IDiv,
+    BAnd,
+    BOr,
+    BXor,
+    Shl,
+    Shr,
+    BNot,
+    Concat,
+    Len,
+    Eq,
+    Lt,
+    Le,
+    ToString,
+    Namecall,
+}
+
+const EV_NAMES: [&str; 24] = [
+    "__index",
+    "__newindex",
+    "__call",
+    "__add",
+    "__sub",
+    "__mul",
+    "__div",
+    "__mod",
+    "__pow",
+    "__unm",
+    "__idiv",
+    "__band",
+    "__bor",
+    "__bxor",
+    "__shl",
+    "__shr",
+    "__bnot",
+    "__concat",
+    "__len",
+    "__eq",
+    "__lt",
+    "__le",
+    "__tostring",
+    "__namecall",
+];
+
+thread_local! {
+    /// The metamethods' names as table keys, made once.
+    static EVENTS: Rc<[Key]> = EV_NAMES.iter().map(|n| Key::Str(Rc::from(n.as_bytes()))).collect();
+}
+
+fn arith_event(op: BinOp) -> Ev {
+    match op {
+        BinOp::Add => Ev::Add,
+        BinOp::Sub => Ev::Sub,
+        BinOp::Mul => Ev::Mul,
+        BinOp::Div => Ev::Div,
+        BinOp::IDiv => Ev::IDiv,
+        BinOp::Mod => Ev::Mod,
+        BinOp::Pow => Ev::Pow,
+        BinOp::BAnd => Ev::BAnd,
+        BinOp::BOr => Ev::BOr,
+        BinOp::BXor => Ev::BXor,
+        BinOp::Shl => Ev::Shl,
+        _ => Ev::Shr,
+    }
 }
 
 pub struct Lua {
@@ -1672,12 +3900,17 @@ pub struct Lua {
     /// The random generator's state (math.random).
     pub rng: u64,
     pub started: std::time::Instant,
-    depth: usize,
+    /// The running thread's stack.
+    cur: ThreadState,
+    thread: Rc<Thread>,
+    /// Natives calling into Lua and resumes, nested.
+    ccalls: usize,
     stack_base: usize,
-    line: u32,
-    chunk: Rc<str>,
-    /// For each running Lua function: its name and where it was called from.
-    frames: Vec<(Rc<str>, Rc<str>, u32)>,
+    /// The method name of the running `obj:Name()` call on a userdata.
+    namecall: Option<Str>,
+    registry: Option<Registry>,
+    events: Rc<[Key]>,
+    nil_cell: Cell,
 }
 
 impl Default for Lua {
@@ -1695,11 +3928,19 @@ impl Lua {
             string_lib: None,
             rng: 0x2545_F491_4F6C_DD1D,
             started: std::time::Instant::now(),
-            depth: 0,
+            cur: ThreadState::default(),
+            thread: Rc::new(Thread {
+                state: RefCell::new(None),
+                status: std::cell::Cell::new(Status::Running),
+                main: true,
+                error: RefCell::new(None),
+            }),
+            ccalls: 0,
             stack_base: 0,
-            line: 0,
-            chunk: HOST_CHUNK.into(),
-            frames: Vec::new(),
+            namecall: None,
+            registry: None,
+            events: EVENTS.with(Rc::clone),
+            nil_cell: Rc::new(RefCell::new(Value::Nil)),
         }
     }
 
@@ -1710,7 +3951,7 @@ impl Lua {
     pub fn load_bytes(&mut self, src: &[u8], chunk: &str, env: &TableRef) -> Result<Value, String> {
         SYNTAX_AT.with(|s| s.set(None));
         let (toks, starts) = lex(src, chunk)?;
-        let parser = Parser {
+        let mut parser = Parser {
             toks,
             starts,
             pos: 0,
@@ -1718,23 +3959,34 @@ impl Lua {
             fs: Vec::new(),
             depth: 0,
             stack_base: stack_addr(),
+            written: HashSet::new(),
+            fenv: false,
         };
-        let proto = parser.chunk()?;
-        Ok(Value::Func(Rc::new(Closure {
-            proto: Rc::new(proto),
-            upvals: Vec::new(),
-            env: env.clone(),
-        })))
+        let ast = parser.chunk()?;
+        let proto = compile(&ast, &parser.chunk, &parser.written, parser.fenv)?;
+        let c = Rc::new(Closure::new(Rc::new(proto), Vec::new(), env.clone()));
+        self.track_closure(&c);
+        Ok(Value::Func(c))
     }
 
+    // ------------------------------------------------------------- positions
+
+    /// The running Lua function's chunk and line.
+    fn here(&self) -> Option<(Rc<str>, u32)> {
+        self.cur.frames.last().map(|f| (f.body.proto.chunk.clone(), f.line))
+    }
     /// An error at the running statement: `chunk:line: msg`, with a traceback.
     pub fn rt_error(&self, msg: impl AsRef<str>) -> Throw {
-        let text = if &*self.chunk == HOST_CHUNK {
-            msg.as_ref().to_owned()
-        } else {
-            format!("{}:{}: {}", self.chunk, self.line, msg.as_ref())
+        let text = match self.here() {
+            None => msg.as_ref().to_owned(),
+            Some((chunk, line)) => format!("{chunk}:{line}: {}", msg.as_ref()),
         };
         Throw::Error(Value::str(&text), self.traceback())
+    }
+    /// A fatal error at the running statement (`[host]:0:` outside Lua).
+    fn fatal_here(&self, msg: &str) -> Throw {
+        let (chunk, line) = self.here().unwrap_or_else(|| (HOST_CHUNK.into(), 0));
+        Throw::Fatal(format!("{chunk}:{line}: {msg}"))
     }
     /// Where `error(msg, level)` puts its message: level 1 is the running
     /// function, 2 its caller.
@@ -1742,28 +3994,19 @@ impl Lua {
         if level == 0 {
             return None;
         }
-        let (chunk, line) = if level == 1 {
-            (self.chunk.clone(), self.line)
-        } else {
-            let f = self.frames.len().checked_sub(level - 1)?;
-            let (_, c, l) = self.frames.get(f)?;
-            (c.clone(), *l)
-        };
-        (&*chunk != HOST_CHUNK).then(|| format!("{chunk}:{line}:"))
+        let i = self.cur.frames.len().checked_sub(level)?;
+        let f = &self.cur.frames[i];
+        Some(format!("{}:{}:", f.body.proto.chunk, f.line))
     }
     pub fn traceback(&self) -> String {
         let mut lines = Vec::new();
-        let (mut chunk, mut line) = (self.chunk.clone(), self.line);
-        for (name, caller, at) in self.frames.iter().rev() {
-            if &*chunk != HOST_CHUNK {
-                if &**name == "main chunk" {
-                    lines.push(format!("{chunk}:{line}: in main chunk"));
-                } else {
-                    lines.push(format!("{chunk}:{line}: in {name}"));
-                }
+        for f in self.cur.frames.iter().rev() {
+            let p = &f.body.proto;
+            if &*p.name == "main chunk" {
+                lines.push(format!("{}:{}: in main chunk", p.chunk, f.line));
+            } else {
+                lines.push(format!("{}:{}: in {}", p.chunk, f.line, p.name));
             }
-            chunk = caller.clone();
-            line = *at;
         }
         if lines.len() > 12 {
             let tail = lines.split_off(lines.len() - 5);
@@ -1773,17 +4016,18 @@ impl Lua {
         }
         lines.join("\n")
     }
+    #[cold]
+    fn out_of_steps(&self) -> Throw {
+        let at = match self.here() {
+            None => String::new(),
+            Some((chunk, line)) => format!("{chunk}:{line}: "),
+        };
+        Throw::Fatal(format!("{at}script ran too long and was stopped (an endless loop?)"))
+    }
     #[inline]
     fn step(&mut self) -> Result<(), Throw> {
         if self.steps == 0 {
-            let at = if &*self.chunk == HOST_CHUNK {
-                String::new()
-            } else {
-                format!("{}:{}: ", self.chunk, self.line)
-            };
-            return Err(Throw::Fatal(format!(
-                "{at}script ran too long and was stopped (an endless loop?)"
-            )));
+            return Err(self.out_of_steps());
         }
         self.steps -= 1;
         Ok(())
@@ -1799,335 +4043,1447 @@ impl Lua {
         Ok(())
     }
 
+    // ------------------------------------------------------------- calls
+
     /// Calls `f` with `args`.
     pub fn call(&mut self, h: &mut dyn Host, f: &Value, args: Vec<Value>) -> Res {
-        if self.depth == 0 {
+        if self.ccalls == 0 {
             self.stack_base = stack_addr();
         }
-        match f {
-            Value::Func(c) => self.call_closure(h, c.clone(), args),
-            Value::Native(n) => {
-                self.step()?;
-                match n.kind {
-                    NativeKind::Builtin(b) => b(self, h, n, args),
-                    NativeKind::Host(id) => h.call(self, id, args),
-                }
-            }
-            other => self.call_other(h, other, args),
+        match self.call_value(h, f, args) {
+            Err(Throw::Yield(_)) => Err(self.rt_error(self.yield_error())),
+            r => r,
         }
-    }
-    #[inline(never)]
-    fn call_other(&mut self, h: &mut dyn Host, f: &Value, args: Vec<Value>) -> Res {
-        if let Some(mm) = self.metamethod(f, "__call")
-            && !matches!(mm, Value::Table(_))
-        {
-            let mut a = Vec::with_capacity(args.len() + 1);
-            a.push(f.clone());
-            a.extend(args);
-            return self.call(h, &mm, a);
-        }
-        Err(self.rt_error(format!("attempt to call a {} value", f.type_name())))
     }
     /// The first result of a call, or nil.
     pub fn call1(&mut self, h: &mut dyn Host, f: &Value, args: Vec<Value>) -> Result<Value, Throw> {
         Ok(self.call(h, f, args)?.into_iter().next().unwrap_or_default())
     }
-    fn call_closure(&mut self, h: &mut dyn Host, c: Rc<Closure>, args: Vec<Value>) -> Res {
-        if self.depth >= MAX_DEPTH || self.stack_base.saturating_sub(stack_addr()) > STACK_LIMIT {
+    fn yield_error(&self) -> &'static str {
+        if self.thread.main {
+            "attempt to yield from outside a coroutine"
+        } else {
+            "attempt to yield across a C-call boundary"
+        }
+    }
+    fn call_value(&mut self, h: &mut dyn Host, f: &Value, mut args: Vec<Value>) -> Res {
+        let mut f = f.clone();
+        for _ in 0..64 {
+            match f {
+                Value::Func(c) => return self.call_lua(h, c, args),
+                Value::Native(n) => {
+                    self.step()?;
+                    return self.call_native(h, &n, args);
+                }
+                other => match self.meta(&other, Ev::Call) {
+                    Some(mm) if !matches!(mm, Value::Table(_)) => {
+                        args.insert(0, other);
+                        f = mm;
+                    }
+                    _ => return Err(self.rt_error(format!("attempt to call a {} value", other.type_name()))),
+                },
+            }
+        }
+        Err(self.rt_error("'__call' chain too long; possible loop"))
+    }
+    /// A Lua function called from Rust: a VM loop of its own, until it returns.
+    fn call_lua(&mut self, h: &mut dyn Host, c: Rc<Closure>, args: Vec<Value>) -> Res {
+        if self.cur.frames.len() >= MAX_DEPTH
+            || self.ccalls >= MAX_CCALLS
+            || self.stack_base.saturating_sub(stack_addr()) > STACK_LIMIT
+        {
             return Err(self.rt_error("stack overflow"));
         }
         self.step()?;
-        let proto = c.proto.clone();
-        let slots: Vec<Cell> = (0..proto.nslots).map(|_| Rc::new(RefCell::new(Value::Nil))).collect();
-        let mut args = args.into_iter();
-        for slot in slots.iter().take(proto.nparams) {
-            *slot.borrow_mut() = args.next().unwrap_or_default();
+        let func = self.cur.stack.len();
+        let n = args.len();
+        self.cur.stack.push(Value::Func(c.clone()));
+        self.cur.stack.extend(args);
+        self.enter(c, func, n, MULTI, Ret::Plain);
+        let entry = self.cur.frames.len() - 1;
+        self.ccalls += 1;
+        self.cur.runs += 1;
+        let r = self.run(h, entry);
+        self.ccalls -= 1;
+        self.cur.runs -= 1;
+        r
+    }
+    fn call_native(&mut self, h: &mut dyn Host, n: &Rc<Native>, args: Vec<Value>) -> Res {
+        match n.kind {
+            NativeKind::Builtin(f) => f(self, h, n, args),
+            NativeKind::Host(id) => h.call(self, id, args),
+            NativeKind::Pcall(handler) => self.pcall_nested(h, handler, args),
         }
-        let varargs = if proto.vararg { args.collect() } else { Vec::new() };
-        self.frames.push((proto.name.clone(), self.chunk.clone(), self.line));
-        let saved = (std::mem::replace(&mut self.chunk, proto.chunk.clone()), self.line);
-        self.depth += 1;
-        let mut frame = Frame {
-            slots,
-            closure: c,
-            varargs,
+    }
+    /// pcall and xpcall called from Rust (not from Lua code, where the VM
+    /// runs them): protected calls of their own.
+    fn pcall_nested(&mut self, h: &mut dyn Host, handler: bool, mut args: Vec<Value>) -> Res {
+        if !handler && args.is_empty() {
+            return Err(bad_arg(self, 0, "pcall", "value expected"));
+        }
+        if handler && args.len() < 2 {
+            return Err(bad_arg(self, 1, "xpcall", "value expected"));
+        }
+        let f = args.remove(0);
+        let handler = handler.then(|| args.remove(0));
+        let r = match self.call_value(h, &f, args) {
+            Err(Throw::Yield(_)) => Err(self.rt_error(self.yield_error())),
+            r => r,
         };
-        let r = self.exec_block(h, &mut frame, &proto.body);
-        self.depth -= 1;
-        (self.chunk, self.line) = saved;
-        self.frames.pop();
-        match r? {
-            Flow::Return(v) => Ok(v),
-            _ => Ok(Vec::new()),
+        match r {
+            Ok(mut r) => {
+                r.insert(0, Value::Bool(true));
+                Ok(r)
+            }
+            Err(Throw::Error(v, _)) => match handler {
+                None => Ok(vec![Value::Bool(false), v]),
+                Some(hf) => {
+                    let mut r = self.call_value(h, &hf, vec![v])?;
+                    r.insert(0, Value::Bool(false));
+                    Ok(r)
+                }
+            },
+            Err(other) => Err(other),
         }
     }
 
-    fn exec_block(&mut self, h: &mut dyn Host, f: &mut Frame, b: &[Stmt]) -> Result<Flow, Throw> {
-        for s in b {
-            self.line = s.line;
-            self.step()?;
-            match self.exec(h, f, s)? {
-                Flow::Normal => {}
-                other => return Ok(other),
+    // ------------------------------------------------------------- the VM
+
+    /// Pushes a frame for `c`, whose `n` arguments follow it at `func`.
+    fn enter(&mut self, c: Rc<Closure>, func: usize, n: usize, nres: u16, ret: Ret) {
+        let body = c.body();
+        let p = &body.proto;
+        let st = &mut self.cur.stack;
+        let (base, varargs, nvarargs) = if p.vararg {
+            let nfix = p.nparams;
+            let base = func + 1 + n;
+            let need = base + p.maxstack.max(nfix);
+            if st.len() < need {
+                st.resize(need, Value::Nil);
             }
+            for i in 0..nfix {
+                st[base + i] = if i < n {
+                    std::mem::take(&mut st[func + 1 + i])
+                } else {
+                    Value::Nil
+                };
+            }
+            (base, func + 1 + nfix.min(n), n.saturating_sub(nfix))
+        } else {
+            let base = func + 1;
+            let need = base + p.maxstack.max(p.nparams);
+            if st.len() < need {
+                st.resize(need, Value::Nil);
+            }
+            for v in st.iter_mut().skip(base + n).take(p.nparams.saturating_sub(n)) {
+                *v = Value::Nil;
+            }
+            (base, base, 0)
+        };
+        let cells = self.cur.cells.len();
+        if p.ncells > 0 {
+            self.cur.cells.resize(cells + p.ncells, self.nil_cell.clone());
         }
-        Ok(Flow::Normal)
+        let line = p.line;
+        self.cur.frames.push(Frame {
+            closure: c,
+            body,
+            pc: 0,
+            base,
+            func,
+            nres,
+            varargs,
+            nvarargs,
+            cells,
+            line,
+            ret,
+        });
     }
 
-    // Each kind of statement runs in its own function, so a call nested in
-    // a script holds only the frames of the statements it passes through.
-    fn exec(&mut self, h: &mut dyn Host, f: &mut Frame, s: &Stmt) -> Result<Flow, Throw> {
-        match &s.kind {
-            StmtKind::Local(slots, exprs) => self.exec_local(h, f, slots, exprs)?,
-            StmtKind::LocalFunction(slot, proto) => {
-                f.slots[*slot] = Rc::new(RefCell::new(Value::Nil));
-                let c = self.closure(f, proto);
-                *f.slots[*slot].borrow_mut() = c;
-            }
-            StmtKind::Assign(targets, exprs) => self.exec_assign(h, f, targets, exprs)?,
-            StmtKind::Call(e) => {
-                self.eval_call(h, f, e)?;
-            }
-            StmtKind::Do(b) => return self.exec_block(h, f, b),
-            StmtKind::While(cond, body) => return self.exec_while(h, f, cond, body),
-            StmtKind::Repeat(body, cond) => return self.exec_repeat(h, f, body, cond),
-            StmtKind::If(arms, otherwise) => {
-                for (cond, body) in arms {
-                    if self.eval(h, f, cond)?.truthy() {
-                        return self.exec_block(h, f, body);
+    /// Runs frames until the one at `entry` returns: its results.
+    fn run(&mut self, h: &mut dyn Host, entry: usize) -> Res {
+        let (entry_func, entry_cells) = match self.cur.frames.get(entry) {
+            Some(f) => (f.func, f.cells),
+            None => (self.cur.stack.len(), self.cur.cells.len()),
+        };
+        'frames: loop {
+            let Some(fi) = self.cur.frames.len().checked_sub(1) else {
+                return Ok(Vec::new());
+            };
+            let (body, base, cb, mut pc) = {
+                let f = &self.cur.frames[fi];
+                (f.body.clone(), f.base, f.cells, f.pc)
+            };
+            let p: &Proto = &body.proto;
+            let code = &p.code[..];
+            let k = &p.constants[..];
+            let err: Throw = 'inner: loop {
+                let op = code[pc];
+                pc += 1;
+                match op {
+                    Op::Step(line) => {
+                        self.cur.frames[fi].line = line;
+                        if self.steps == 0 {
+                            break 'inner self.out_of_steps();
+                        }
+                        self.steps -= 1;
+                    }
+                    Op::Tick => {
+                        if self.steps == 0 {
+                            break 'inner self.out_of_steps();
+                        }
+                        self.steps -= 1;
+                    }
+                    Op::Charge(n) => {
+                        if let Err(e) = self.charge(n as usize * 16) {
+                            break 'inner e;
+                        }
+                    }
+                    Op::Move(a, b) => {
+                        let v = self.cur.stack[base + b as usize].clone();
+                        self.cur.stack[base + a as usize] = v;
+                    }
+                    Op::LoadK(a, kk) => self.cur.stack[base + a as usize] = k[kk as usize].clone(),
+                    Op::LoadN(a, n) => self.set_num(base + a as usize, f64::from(n)),
+                    Op::LoadNil(a, n) => {
+                        let a = base + a as usize;
+                        for v in &mut self.cur.stack[a..a + n as usize] {
+                            *v = Value::Nil;
+                        }
+                    }
+                    Op::LoadBool(a, b) => self.cur.stack[base + a as usize] = Value::Bool(b),
+                    Op::GetUpval(a, u) => {
+                        let v = body.upvals[u as usize].borrow().clone();
+                        self.cur.stack[base + a as usize] = v;
+                    }
+                    Op::SetUpval(a, u) => {
+                        let v = self.cur.stack[base + a as usize].clone();
+                        *body.upvals[u as usize].borrow_mut() = v;
+                    }
+                    Op::GetCell(a, c) => {
+                        let v = self.cur.cells[cb + c as usize].borrow().clone();
+                        self.cur.stack[base + a as usize] = v;
+                    }
+                    Op::SetCell(a, c) => {
+                        let v = self.cur.stack[base + a as usize].clone();
+                        *self.cur.cells[cb + c as usize].borrow_mut() = v;
+                    }
+                    Op::NewCell(c, a) => {
+                        let v = if a == NO_REG {
+                            Value::Nil
+                        } else {
+                            self.cur.stack[base + a as usize].clone()
+                        };
+                        self.cur.cells[cb + c as usize] = Rc::new(RefCell::new(v));
+                    }
+                    Op::GetGlobal(a, kk) => {
+                        let found = {
+                            let env = body.env.borrow();
+                            let v = match &p.keys[kk as usize] {
+                                Some(key) => env.get_key(key),
+                                None => env.get(&k[kk as usize]),
+                            };
+                            (!v.is_nil() || env.meta.is_none()).then_some(v)
+                        };
+                        let v = match found {
+                            Some(v) => v,
+                            None => {
+                                self.cur.frames[fi].pc = pc;
+                                match self.index(h, &Value::Table(body.env.clone()), &k[kk as usize]) {
+                                    Ok(v) => v,
+                                    Err(e) => break 'inner e,
+                                }
+                            }
+                        };
+                        self.cur.stack[base + a as usize] = v;
+                    }
+                    Op::SetGlobal(a, kk) => {
+                        let v = self.cur.stack[base + a as usize].clone();
+                        self.cur.frames[fi].pc = pc;
+                        let env = Value::Table(body.env.clone());
+                        if let Err(e) = self.store(h, &env, k[kk as usize].clone(), p.keys[kk as usize].as_ref(), v) {
+                            break 'inner e;
+                        }
+                    }
+                    Op::GetImport(a, i) => {
+                        self.cur.frames[fi].pc = pc;
+                        match self.import(h, p, &body.env, i as usize) {
+                            Ok(v) => self.cur.stack[base + a as usize] = v,
+                            Err(e) => break 'inner e,
+                        }
+                    }
+                    Op::GetTable(a, b, c) => {
+                        let found = match &self.cur.stack[base + b as usize] {
+                            Value::Table(t) => {
+                                let t = t.borrow();
+                                let v = t.get(&self.cur.stack[base + c as usize]);
+                                (!v.is_nil() || t.meta.is_none()).then_some(v)
+                            }
+                            _ => None,
+                        };
+                        let v = match found {
+                            Some(v) => v,
+                            None => {
+                                self.cur.frames[fi].pc = pc;
+                                let o = self.cur.stack[base + b as usize].clone();
+                                let key = self.cur.stack[base + c as usize].clone();
+                                match self.get_slow(h, &o, &key, p, pc - 1) {
+                                    Ok(v) => v,
+                                    Err(e) => break 'inner e,
+                                }
+                            }
+                        };
+                        self.cur.stack[base + a as usize] = v;
+                    }
+                    Op::GetField(a, b, kk) => {
+                        let found = match (&self.cur.stack[base + b as usize], &p.keys[kk as usize]) {
+                            (Value::Table(t), Some(key)) => {
+                                let t = t.borrow();
+                                let v = t.get_key(key);
+                                (!v.is_nil() || t.meta.is_none()).then_some(v)
+                            }
+                            _ => None,
+                        };
+                        let v = match found {
+                            Some(v) => v,
+                            None => {
+                                self.cur.frames[fi].pc = pc;
+                                let o = self.cur.stack[base + b as usize].clone();
+                                match self.get_slow(h, &o, &k[kk as usize], p, pc - 1) {
+                                    Ok(v) => v,
+                                    Err(e) => break 'inner e,
+                                }
+                            }
+                        };
+                        self.cur.stack[base + a as usize] = v;
+                    }
+                    Op::SetTable(a, b, c) => {
+                        let done = match &self.cur.stack[base + a as usize] {
+                            Value::Table(t) => {
+                                let mut t = t.borrow_mut();
+                                if t.meta.is_none() {
+                                    let key = self.cur.stack[base + b as usize].clone();
+                                    let v = self.cur.stack[base + c as usize].clone();
+                                    Some(t.set(key, v))
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        };
+                        match done {
+                            Some(Ok(())) => {}
+                            Some(Err(e)) => break 'inner self.set_error(e),
+                            None => {
+                                self.cur.frames[fi].pc = pc;
+                                let o = self.cur.stack[base + a as usize].clone();
+                                let key = self.cur.stack[base + b as usize].clone();
+                                let v = self.cur.stack[base + c as usize].clone();
+                                if let Err(e) = self.set_slow(h, &o, key, None, v, p, pc - 1) {
+                                    break 'inner e;
+                                }
+                            }
+                        }
+                    }
+                    Op::SetField(a, kk, c) => {
+                        let done = match (&self.cur.stack[base + a as usize], &p.keys[kk as usize]) {
+                            (Value::Table(t), Some(key)) => {
+                                let mut t = t.borrow_mut();
+                                if t.meta.is_none() {
+                                    let v = self.cur.stack[base + c as usize].clone();
+                                    Some(t.store(key.clone(), k[kk as usize].clone(), v))
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        };
+                        match done {
+                            Some(Ok(())) => {}
+                            Some(Err(e)) => break 'inner self.set_error(e),
+                            None => {
+                                self.cur.frames[fi].pc = pc;
+                                let o = self.cur.stack[base + a as usize].clone();
+                                let v = self.cur.stack[base + c as usize].clone();
+                                let key = p.keys[kk as usize].as_ref();
+                                if let Err(e) = self.set_slow(h, &o, k[kk as usize].clone(), key, v, p, pc - 1) {
+                                    break 'inner e;
+                                }
+                            }
+                        }
+                    }
+                    Op::NewTable(a, narr, nhash) => {
+                        let t = Rc::new(RefCell::new(Table::with_capacity(narr as usize, nhash as usize)));
+                        self.track_table(&t);
+                        self.cur.stack[base + a as usize] = Value::Table(t);
+                    }
+                    Op::SetList(a, packed) => {
+                        if let Err(e) = self.set_list(base + a as usize, packed as u8, packed >> 8) {
+                            break 'inner e;
+                        }
+                    }
+                    Op::Method(a, b, kk) => {
+                        self.cur.frames[fi].pc = pc;
+                        let made = p.keys[kk as usize].as_ref();
+                        if let Err(e) = self.method(h, base, [a as usize, b as usize], &k[kk as usize], made, p, pc - 1)
+                        {
+                            break 'inner e;
+                        }
+                    }
+                    Op::Namecall(a, kk) => {
+                        if let (Value::Userdata(_), Value::Str(name)) =
+                            (&self.cur.stack[base + a as usize + 1], &k[kk as usize])
+                        {
+                            self.namecall = Some(name.clone());
+                        }
+                    }
+                    Op::Call(a, nargs, nres) => {
+                        self.cur.frames[fi].pc = pc;
+                        let func = base + a as usize;
+                        let n = if nargs == MULTI {
+                            self.cur.top.saturating_sub(func + 1)
+                        } else {
+                            nargs as usize
+                        };
+                        match self.op_call(h, func, n, nres, Some((p, pc - 1)), Ret::Plain) {
+                            Ok(true) => continue 'frames,
+                            Ok(false) => {}
+                            Err(e) => break 'inner e,
+                        }
+                    }
+                    Op::Return(a, n) => {
+                        let start = base + a as usize;
+                        let n = if n == MULTI {
+                            self.cur.top.saturating_sub(start)
+                        } else {
+                            n as usize
+                        };
+                        if let Some(vals) = self.op_return(start, n, entry) {
+                            return Ok(vals);
+                        }
+                        continue 'frames;
+                    }
+                    Op::Vararg(a, n) => self.vararg(fi, base + a as usize, n),
+                    Op::Closure(a, i) => {
+                        let f = self.closure(&body, cb, i as usize);
+                        self.cur.stack[base + a as usize] = f;
+                    }
+                    Op::Add(a, b, c) => match self.nums(base + b as usize, base + c as usize) {
+                        Some((x, y)) => self.set_num(base + a as usize, x + y),
+                        None => {
+                            if let Err(e) = self.arith_regs(h, BinOp::Add, base, a, b, c, p, pc - 1) {
+                                break 'inner e;
+                            }
+                        }
+                    },
+                    Op::Sub(a, b, c) => match self.nums(base + b as usize, base + c as usize) {
+                        Some((x, y)) => self.set_num(base + a as usize, x - y),
+                        None => {
+                            if let Err(e) = self.arith_regs(h, BinOp::Sub, base, a, b, c, p, pc - 1) {
+                                break 'inner e;
+                            }
+                        }
+                    },
+                    Op::Mul(a, b, c) => match self.nums(base + b as usize, base + c as usize) {
+                        Some((x, y)) => self.set_num(base + a as usize, x * y),
+                        None => {
+                            if let Err(e) = self.arith_regs(h, BinOp::Mul, base, a, b, c, p, pc - 1) {
+                                break 'inner e;
+                            }
+                        }
+                    },
+                    Op::Div(a, b, c) => match self.nums(base + b as usize, base + c as usize) {
+                        Some((x, y)) => self.set_num(base + a as usize, x / y),
+                        None => {
+                            if let Err(e) = self.arith_regs(h, BinOp::Div, base, a, b, c, p, pc - 1) {
+                                break 'inner e;
+                            }
+                        }
+                    },
+                    Op::Mod(a, b, c) => match self.nums(base + b as usize, base + c as usize) {
+                        Some((x, y)) => self.set_num(base + a as usize, arith(BinOp::Mod, x, y)),
+                        None => {
+                            if let Err(e) = self.arith_regs(h, BinOp::Mod, base, a, b, c, p, pc - 1) {
+                                break 'inner e;
+                            }
+                        }
+                    },
+                    Op::AddK(a, b, kk) => match (&self.cur.stack[base + b as usize], &k[kk as usize]) {
+                        (Value::Num(x), Value::Num(y)) => {
+                            let v = x + y;
+                            self.set_num(base + a as usize, v)
+                        }
+                        _ => {
+                            if let Err(e) = self.arith_k(h, BinOp::Add, base, a, b, &k[kk as usize], p, pc - 1) {
+                                break 'inner e;
+                            }
+                        }
+                    },
+                    Op::SubK(a, b, kk) => match (&self.cur.stack[base + b as usize], &k[kk as usize]) {
+                        (Value::Num(x), Value::Num(y)) => {
+                            let v = x - y;
+                            self.set_num(base + a as usize, v)
+                        }
+                        _ => {
+                            if let Err(e) = self.arith_k(h, BinOp::Sub, base, a, b, &k[kk as usize], p, pc - 1) {
+                                break 'inner e;
+                            }
+                        }
+                    },
+                    Op::MulK(a, b, kk) => match (&self.cur.stack[base + b as usize], &k[kk as usize]) {
+                        (Value::Num(x), Value::Num(y)) => {
+                            let v = x * y;
+                            self.set_num(base + a as usize, v)
+                        }
+                        _ => {
+                            if let Err(e) = self.arith_k(h, BinOp::Mul, base, a, b, &k[kk as usize], p, pc - 1) {
+                                break 'inner e;
+                            }
+                        }
+                    },
+                    Op::DivK(a, b, kk) => match (&self.cur.stack[base + b as usize], &k[kk as usize]) {
+                        (Value::Num(x), Value::Num(y)) => {
+                            let v = x / y;
+                            self.set_num(base + a as usize, v)
+                        }
+                        _ => {
+                            if let Err(e) = self.arith_k(h, BinOp::Div, base, a, b, &k[kk as usize], p, pc - 1) {
+                                break 'inner e;
+                            }
+                        }
+                    },
+                    Op::ModK(a, b, kk) => match (&self.cur.stack[base + b as usize], &k[kk as usize]) {
+                        (Value::Num(x), Value::Num(y)) => {
+                            let v = arith(BinOp::Mod, *x, *y);
+                            self.set_num(base + a as usize, v)
+                        }
+                        _ => {
+                            if let Err(e) = self.arith_k(h, BinOp::Mod, base, a, b, &k[kk as usize], p, pc - 1) {
+                                break 'inner e;
+                            }
+                        }
+                    },
+                    Op::Arith(op, a, b, c) => {
+                        if let Err(e) = self.arith_regs(h, op, base, a, b, c, p, pc - 1) {
+                            break 'inner e;
+                        }
+                    }
+                    Op::ArithK(op, a, b, kk) => {
+                        if let Err(e) = self.arith_k(h, op, base, a, b, &k[kk as usize], p, pc - 1) {
+                            break 'inner e;
+                        }
+                    }
+                    Op::Concat(a, b, c) => {
+                        let x = self.cur.stack[base + b as usize].clone();
+                        let y = self.cur.stack[base + c as usize].clone();
+                        match self.concat(h, x, y, p, pc - 1) {
+                            Ok(v) => self.cur.stack[base + a as usize] = v,
+                            Err(e) => break 'inner e,
+                        }
+                    }
+                    Op::Eq(a, b, c) | Op::Ne(a, b, c) => {
+                        let ne = matches!(op, Op::Ne(..));
+                        let fast = {
+                            let (x, y) = (&self.cur.stack[base + b as usize], &self.cur.stack[base + c as usize]);
+                            match (x, y) {
+                                (Value::Num(x), Value::Num(y)) => Some(x == y),
+                                (Value::Table(_), Value::Table(_)) | (Value::Userdata(_), Value::Userdata(_)) => {
+                                    x.raw_eq(y).then_some(true)
+                                }
+                                _ => Some(x.raw_eq(y)),
+                            }
+                        };
+                        let r = match fast {
+                            Some(r) => r,
+                            None => {
+                                self.cur.frames[fi].pc = pc;
+                                let x = self.cur.stack[base + b as usize].clone();
+                                let y = self.cur.stack[base + c as usize].clone();
+                                match self.equals(h, &x, &y) {
+                                    Ok(r) => r,
+                                    Err(e) => break 'inner e,
+                                }
+                            }
+                        };
+                        self.set_bool(base + a as usize, r != ne);
+                    }
+                    Op::EqK(a, b, kk) => {
+                        let r = self.cur.stack[base + b as usize].raw_eq(&k[kk as usize]);
+                        self.set_bool(base + a as usize, r);
+                    }
+                    Op::NeK(a, b, kk) => {
+                        let r = self.cur.stack[base + b as usize].raw_eq(&k[kk as usize]);
+                        self.set_bool(base + a as usize, !r);
+                    }
+                    Op::Lt(a, b, c) | Op::Le(a, b, c) => {
+                        let le = matches!(op, Op::Le(..));
+                        let r = match (&self.cur.stack[base + b as usize], &self.cur.stack[base + c as usize]) {
+                            (Value::Num(x), Value::Num(y)) => {
+                                if le {
+                                    x <= y
+                                } else {
+                                    x < y
+                                }
+                            }
+                            _ => {
+                                self.cur.frames[fi].pc = pc;
+                                let x = self.cur.stack[base + b as usize].clone();
+                                let y = self.cur.stack[base + c as usize].clone();
+                                match self.less(h, &x, &y, le) {
+                                    Ok(r) => r,
+                                    Err(e) => break 'inner e,
+                                }
+                            }
+                        };
+                        self.set_bool(base + a as usize, r);
+                    }
+                    Op::Unm(a, b) => match &self.cur.stack[base + b as usize] {
+                        Value::Num(n) => {
+                            let v = -n;
+                            self.set_num(base + a as usize, v)
+                        }
+                        _ => {
+                            if let Err(e) = self.unary(h, UnOp::Neg, base, a, b, p, pc - 1) {
+                                break 'inner e;
+                            }
+                        }
+                    },
+                    Op::Not(a, b) => {
+                        let r = !self.cur.stack[base + b as usize].truthy();
+                        self.set_bool(base + a as usize, r);
+                    }
+                    Op::Len(a, b) => {
+                        let fast = match &self.cur.stack[base + b as usize] {
+                            Value::Str(s) => Some(s.len()),
+                            Value::Table(t) => {
+                                let t = t.borrow();
+                                t.meta.is_none().then(|| t.len())
+                            }
+                            _ => None,
+                        };
+                        match fast {
+                            Some(n) => self.set_num(base + a as usize, n as f64),
+                            None => {
+                                if let Err(e) = self.unary(h, UnOp::Len, base, a, b, p, pc - 1) {
+                                    break 'inner e;
+                                }
+                            }
+                        }
+                    }
+                    Op::BNot(a, b) => {
+                        if let Err(e) = self.unary(h, UnOp::BNot, base, a, b, p, pc - 1) {
+                            break 'inner e;
+                        }
+                    }
+                    Op::Jmp(off) => pc = pc.wrapping_add_signed(off as isize),
+                    Op::JmpIf(a, off) => {
+                        if self.cur.stack[base + a as usize].truthy() {
+                            pc = pc.wrapping_add_signed(off as isize);
+                        }
+                    }
+                    Op::JmpIfNot(a, off) => {
+                        if !self.cur.stack[base + a as usize].truthy() {
+                            pc = pc.wrapping_add_signed(off as isize);
+                        }
+                    }
+                    Op::ForCheck(a, what) => {
+                        let i = base + a as usize;
+                        match self.cur.stack[i].to_num() {
+                            Some(n) => self.cur.stack[i] = Value::Num(n),
+                            None => {
+                                let what = ["initial", "limit", "step"][what as usize % 3];
+                                break 'inner self.rt_error(format!("'for' {what} value must be a number"));
+                            }
+                        }
+                    }
+                    Op::ForPrep(a, off) => {
+                        let i = base + a as usize;
+                        let r = &mut self.cur.stack[i..i + 5];
+                        let (start, limit, step) = (num(&r[0]), num(&r[1]), num(&r[2]));
+                        if step == 0.0 {
+                            break 'inner self.rt_error("'for' step is zero");
+                        }
+                        let x = start + 0.0 * step;
+                        if (step > 0.0 && x > limit) || (step < 0.0 && x < limit) {
+                            pc = pc.wrapping_add_signed(off as isize);
+                        } else {
+                            put_num(&mut r[3], 0.0);
+                            put_num(&mut r[4], x);
+                            if self.steps == 0 {
+                                break 'inner self.out_of_steps();
+                            }
+                            self.steps -= 1;
+                        }
+                    }
+                    Op::ForLoop(a, off) => {
+                        let i = base + a as usize;
+                        let r = &mut self.cur.stack[i..i + 5];
+                        let (start, limit, step) = (num(&r[0]), num(&r[1]), num(&r[2]));
+                        let count = num(&r[3]) + 1.0;
+                        let x = start + count * step;
+                        if !((step > 0.0 && x > limit) || (step < 0.0 && x < limit)) {
+                            if self.steps == 0 {
+                                break 'inner self.out_of_steps();
+                            }
+                            self.steps -= 1;
+                            put_num(&mut r[3], count);
+                            put_num(&mut r[4], x);
+                            pc = pc.wrapping_add_signed(off as isize);
+                        }
+                    }
+                    Op::TForPrep(a) => {
+                        let it = &self.cur.stack[base + a as usize];
+                        if !it.is_callable() && !matches!(it, Value::Table(_) | Value::Userdata(_)) {
+                            let t = it.type_name();
+                            break 'inner self.rt_error(format!("attempt to call a {t} value (for iterator)"));
+                        }
+                    }
+                    Op::TForCall(a, n) => {
+                        if self.steps == 0 {
+                            break 'inner self.out_of_steps();
+                        }
+                        self.steps -= 1;
+                        let i = base + a as usize;
+                        for j in 0..3 {
+                            let v = self.cur.stack[i + j].clone();
+                            self.cur.stack[i + 3 + j] = v;
+                        }
+                        self.cur.frames[fi].pc = pc;
+                        match self.op_call(h, i + 3, 2, n, None, Ret::Plain) {
+                            Ok(true) => continue 'frames,
+                            Ok(false) => {}
+                            Err(e) => break 'inner e,
+                        }
+                    }
+                    Op::TForLoop(a, off) => {
+                        let i = base + a as usize;
+                        if self.cur.stack[i + 3].is_nil() {
+                            pc = pc.wrapping_add_signed(off as isize);
+                        } else {
+                            let v = self.cur.stack[i + 3].clone();
+                            self.cur.stack[i + 2] = v;
+                        }
                     }
                 }
-                if let Some(body) = otherwise {
-                    return self.exec_block(h, f, body);
-                }
-            }
-            StmtKind::NumFor(slot, start, limit, step, body) => {
-                return self.exec_numfor(h, f, *slot, [start, limit], step.as_ref(), body);
-            }
-            StmtKind::GenFor(slots, exprs, body) => return self.exec_genfor(h, f, slots, exprs, body),
-            StmtKind::Return(exprs) => return self.exec_return(h, f, exprs),
-            StmtKind::Break => return Ok(Flow::Break),
-        }
-        Ok(Flow::Normal)
-    }
-    #[inline(never)]
-    fn exec_local(&mut self, h: &mut dyn Host, f: &mut Frame, slots: &[usize], exprs: &[Expr]) -> Result<(), Throw> {
-        if let ([slot], [e]) = (slots, exprs) {
-            let v = self.eval(h, f, e)?;
-            fresh(&mut f.slots[*slot], v);
-        } else {
-            let vals = self.eval_list_n(h, f, exprs, slots.len())?;
-            for (slot, v) in slots.iter().zip(vals) {
-                fresh(&mut f.slots[*slot], v);
-            }
-        }
-        Ok(())
-    }
-    #[inline(never)]
-    fn exec_assign(&mut self, h: &mut dyn Host, f: &mut Frame, targets: &[Expr], exprs: &[Expr]) -> Result<(), Throw> {
-        if let ([t], [e]) = (targets, exprs) {
-            let place = self.place(h, f, t)?;
-            let v = self.eval(h, f, e)?;
-            return self.assign(h, f, place, v);
-        }
-        let mut places = Vec::with_capacity(targets.len());
-        for t in targets {
-            places.push(self.place(h, f, t)?);
-        }
-        let vals = self.eval_list_n(h, f, exprs, targets.len())?;
-        for (p, v) in places.into_iter().zip(vals) {
-            self.assign(h, f, p, v)?;
-        }
-        Ok(())
-    }
-    #[inline(never)]
-    fn exec_return(&mut self, h: &mut dyn Host, f: &mut Frame, exprs: &[Expr]) -> Result<Flow, Throw> {
-        if let [e @ (Expr::Call(..) | Expr::Method(..))] = exprs {
-            return Ok(Flow::Return(self.eval_call(h, f, e)?));
-        }
-        Ok(Flow::Return(self.eval_list(h, f, exprs)?))
-    }
-    #[inline(never)]
-    fn exec_while(&mut self, h: &mut dyn Host, f: &mut Frame, cond: &Expr, body: &[Stmt]) -> Result<Flow, Throw> {
-        loop {
-            self.step()?;
-            if !self.eval(h, f, cond)?.truthy() {
-                return Ok(Flow::Normal);
-            }
-            match self.exec_block(h, f, body)? {
-                Flow::Break => return Ok(Flow::Normal),
-                Flow::Return(v) => return Ok(Flow::Return(v)),
-                Flow::Normal => {}
-            }
-        }
-    }
-    #[inline(never)]
-    fn exec_repeat(&mut self, h: &mut dyn Host, f: &mut Frame, body: &[Stmt], cond: &Expr) -> Result<Flow, Throw> {
-        loop {
-            match self.exec_block(h, f, body)? {
-                Flow::Break => return Ok(Flow::Normal),
-                Flow::Return(v) => return Ok(Flow::Return(v)),
-                Flow::Normal => {}
-            }
-            if self.eval(h, f, cond)?.truthy() {
-                return Ok(Flow::Normal);
-            }
-        }
-    }
-    #[inline(never)]
-    fn exec_numfor(
-        &mut self,
-        h: &mut dyn Host,
-        f: &mut Frame,
-        slot: usize,
-        [start, limit]: [&Expr; 2],
-        step: Option<&Expr>,
-        body: &[Stmt],
-    ) -> Result<Flow, Throw> {
-        let mut bounds = [0.0; 3];
-        for (i, (e, what)) in [(Some(start), "initial"), (Some(limit), "limit"), (step, "step")]
-            .into_iter()
-            .enumerate()
-        {
-            bounds[i] = match e {
-                Some(e) => {
-                    let v = self.eval(h, f, e)?;
-                    v.to_num()
-                        .ok_or_else(|| self.rt_error(format!("'for' {what} value must be a number")))?
-                }
-                None => 1.0,
             };
-        }
-        let [a, b, c] = bounds;
-        if c == 0.0 {
-            return Err(self.rt_error("'for' step is zero"));
-        }
-        let mut k = 0u64;
-        loop {
-            let i = a + k as f64 * c;
-            if (c > 0.0 && i > b) || (c < 0.0 && i < b) {
-                return Ok(Flow::Normal);
+            if let Some(f) = self.cur.frames.get_mut(fi) {
+                f.pc = pc;
             }
-            self.step()?;
-            fresh(&mut f.slots[slot], Value::Num(i));
-            match self.exec_block(h, f, body)? {
-                Flow::Break => return Ok(Flow::Normal),
-                Flow::Return(v) => return Ok(Flow::Return(v)),
-                Flow::Normal => {}
-            }
-            k += 1;
-        }
-    }
-    #[inline(never)]
-    fn exec_genfor(
-        &mut self,
-        h: &mut dyn Host,
-        f: &mut Frame,
-        slots: &[usize],
-        exprs: &[Expr],
-        body: &[Stmt],
-    ) -> Result<Flow, Throw> {
-        let mut init = self.eval_list_n(h, f, exprs, 3)?.into_iter();
-        let iter = init.next().unwrap_or_default();
-        let state = init.next().unwrap_or_default();
-        let mut control = init.next().unwrap_or_default();
-        if !iter.is_callable() && !matches!(iter, Value::Table(_)) {
-            return Err(self.rt_error(format!("attempt to call a {} value (for iterator)", iter.type_name())));
-        }
-        loop {
-            self.step()?;
-            let r = self.call(h, &iter, vec![state.clone(), control.clone()])?;
-            let first = r.first().cloned().unwrap_or_default();
-            if first.is_nil() {
-                return Ok(Flow::Normal);
-            }
-            control = first;
-            let mut r = r.into_iter();
-            for slot in slots {
-                fresh(&mut f.slots[*slot], r.next().unwrap_or_default());
-            }
-            match self.exec_block(h, f, body)? {
-                Flow::Break => return Ok(Flow::Normal),
-                Flow::Return(v) => return Ok(Flow::Return(v)),
-                Flow::Normal => {}
+            match self.catch(h, err, entry) {
+                Ok(()) => continue 'frames,
+                Err(e) => {
+                    if !matches!(e, Throw::Yield(_)) {
+                        self.unwind_run(entry, entry_func, entry_cells);
+                    }
+                    return Err(e);
+                }
             }
         }
     }
 
-    fn closure(&self, f: &Frame, proto: &Rc<Proto>) -> Value {
-        let upvals = proto
+    /// A number into a register, without dropping the number already there.
+    #[inline(always)]
+    fn set_num(&mut self, i: usize, x: f64) {
+        put_num(&mut self.cur.stack[i], x);
+    }
+    #[inline(always)]
+    fn set_bool(&mut self, i: usize, b: bool) {
+        match &mut self.cur.stack[i] {
+            Value::Bool(v) => *v = b,
+            slot => *slot = Value::Bool(b),
+        }
+    }
+    #[inline(always)]
+    fn nums(&self, b: usize, c: usize) -> Option<(f64, f64)> {
+        match (&self.cur.stack[b], &self.cur.stack[c]) {
+            (Value::Num(x), Value::Num(y)) => Some((*x, *y)),
+            _ => None,
+        }
+    }
+
+    /// Calls the value at `func` with the `n` after it. A Lua function gets
+    /// a frame (true: the loop goes to it); anything else runs now, its
+    /// results in place.
+    fn op_call(
+        &mut self,
+        h: &mut dyn Host,
+        func: usize,
+        mut n: usize,
+        nres: u16,
+        site: Option<(&Proto, usize)>,
+        ret: Ret,
+    ) -> Result<bool, Throw> {
+        let mut first = true;
+        for _ in 0..64 {
+            let f = self.cur.stack[func].clone();
+            match f {
+                Value::Func(c) => {
+                    if self.cur.frames.len() >= MAX_DEPTH {
+                        return Err(self.rt_error("stack overflow"));
+                    }
+                    self.step()?;
+                    self.enter(c, func, n, nres, ret);
+                    return Ok(true);
+                }
+                Value::Native(nat) => {
+                    self.step()?;
+                    if let NativeKind::Pcall(handler) = nat.kind {
+                        return self.op_pcall(h, func, n, nres, handler, ret);
+                    }
+                    // The arguments stay in their registers while it runs,
+                    // as Luau has them (debug.getstack sees them).
+                    let args = self.cur.stack[func + 1..func + 1 + n].to_vec();
+                    return match self.call_native(h, &nat, args) {
+                        Ok(vals) => {
+                            self.deliver(func, vals, nres, ret);
+                            Ok(false)
+                        }
+                        Err(Throw::Yield(vals)) => self.suspend(func, nres, ret, vals),
+                        Err(e) => Err(e),
+                    };
+                }
+                other => {
+                    let mm = self.meta(&other, Ev::Call);
+                    if first
+                        && mm.is_none()
+                        && let Some((p, pc)) = site
+                    {
+                        return Err(self.rt_error(format!(
+                            "attempt to call a {} value{}",
+                            other.type_name(),
+                            p.desc(pc, 0)
+                        )));
+                    }
+                    first = false;
+                    match mm {
+                        Some(mm) if !matches!(mm, Value::Table(_)) => {
+                            // f(...) is __call(f, ...).
+                            let need = func + n + 2;
+                            if self.cur.stack.len() < need {
+                                self.cur.stack.resize(need, Value::Nil);
+                            }
+                            for i in (0..n).rev() {
+                                let v = std::mem::take(&mut self.cur.stack[func + 1 + i]);
+                                self.cur.stack[func + 2 + i] = v;
+                            }
+                            self.cur.stack[func + 1] = other;
+                            self.cur.stack[func] = mm;
+                            n += 1;
+                        }
+                        _ => return Err(self.rt_error(format!("attempt to call a {} value", other.type_name()))),
+                    }
+                }
+            }
+        }
+        Err(self.rt_error("'__call' chain too long; possible loop"))
+    }
+    /// pcall(f, ...) or xpcall(f, handler, ...) at `func`: a record to unwind
+    /// to, then the call.
+    fn op_pcall(
+        &mut self,
+        h: &mut dyn Host,
+        func: usize,
+        n: usize,
+        nres: u16,
+        handler: bool,
+        ret: Ret,
+    ) -> Result<bool, Throw> {
+        if !handler && n == 0 {
+            return Err(bad_arg(self, 0, "pcall", "value expected"));
+        }
+        if handler && n < 2 {
+            return Err(bad_arg(self, 1, "xpcall", "value expected"));
+        }
+        let skip = if handler { 2 } else { 1 };
+        let st = &mut self.cur.stack;
+        let hf = handler.then(|| std::mem::take(&mut st[func + 2]));
+        st[func] = std::mem::take(&mut st[func + 1]);
+        for i in 0..n - skip {
+            st[func + 1 + i] = std::mem::take(&mut st[func + 1 + skip + i]);
+        }
+        self.cur.pcalls.push(Protect {
+            frames: self.cur.frames.len(),
+            func,
+            nres,
+            cells: self.cur.cells.len(),
+            handler: hf,
+            catches: true,
+            ret,
+        });
+        self.op_call(h, func, n - skip, nres, None, Ret::Wrapped)
+    }
+    /// A native yielded: this coroutine stops here, if it can.
+    fn suspend(&mut self, func: usize, nres: u16, ret: Ret, vals: Vec<Value>) -> Result<bool, Throw> {
+        if self.thread.main || self.cur.runs > 1 {
+            return Err(self.rt_error(self.yield_error()));
+        }
+        self.cur.pending = Some(Pending { func, nres, ret });
+        Err(Throw::Yield(vals))
+    }
+    /// An error in the frames above `entry`: unwound to the innermost
+    /// pcall there, which then carries on; else it goes on out.
+    fn catch(&mut self, h: &mut dyn Host, mut err: Throw, entry: usize) -> Result<(), Throw> {
+        loop {
+            match err {
+                Throw::Yield(_) => return Err(err),
+                Throw::Fatal(_) => {
+                    while self.cur.pcalls.last().is_some_and(|r| r.frames > entry) {
+                        self.cur.pcalls.pop();
+                    }
+                    return Err(err);
+                }
+                Throw::Error(..) => {}
+            }
+            if !self.cur.pcalls.last().is_some_and(|r| r.frames > entry) {
+                return Err(err);
+            }
+            let Some(r) = self.cur.pcalls.pop() else {
+                return Err(err);
+            };
+            if !r.catches {
+                continue;
+            }
+            let Throw::Error(v, _) = err else {
+                return Err(err);
+            };
+            self.cur.frames.truncate(r.frames);
+            self.cur.cells.truncate(r.cells);
+            match r.handler {
+                None => {
+                    self.deliver(r.func, vec![Value::Bool(false), v], r.nres, r.ret);
+                    return Ok(());
+                }
+                Some(hf) => {
+                    // The handler's results get `false` in front.
+                    self.cur.pcalls.push(Protect {
+                        frames: self.cur.frames.len(),
+                        func: r.func,
+                        nres: r.nres,
+                        cells: self.cur.cells.len(),
+                        handler: None,
+                        catches: false,
+                        ret: r.ret,
+                    });
+                    if self.cur.stack.len() < r.func + 2 {
+                        self.cur.stack.resize(r.func + 2, Value::Nil);
+                    }
+                    self.cur.stack[r.func] = hf;
+                    self.cur.stack[r.func + 1] = v;
+                    match self.op_call(h, r.func, 1, r.nres, None, Ret::Wrapped) {
+                        Ok(_) => return Ok(()),
+                        Err(e) => err = e,
+                    }
+                }
+            }
+        }
+    }
+    /// A VM loop failed: its frames go.
+    fn unwind_run(&mut self, entry: usize, func: usize, cells: usize) {
+        self.cur.frames.truncate(entry);
+        while self.cur.pcalls.last().is_some_and(|r| r.frames > entry) {
+            self.cur.pcalls.pop();
+        }
+        self.cur.cells.truncate(cells);
+        self.cur.stack.truncate(func);
+    }
+    /// The running frame returns registers `start..start + n`.
+    fn op_return(&mut self, start: usize, n: usize, entry: usize) -> Option<Vec<Value>> {
+        let fr = self.cur.frames.pop()?;
+        self.cur.cells.truncate(fr.cells);
+        if self.cur.frames.len() <= entry {
+            let end = (start + n).min(self.cur.stack.len());
+            let vals: Vec<Value> = self.cur.stack.drain(start.min(end)..end).collect();
+            self.cur.stack.truncate(fr.func);
+            return Some(vals);
+        }
+        self.place(fr.func, start, n, fr.nres, fr.ret);
+        None
+    }
+    /// What goes before results delivered with `ret`, outermost first.
+    fn prefix(&mut self, ret: Ret, out: &mut Vec<Value>) {
+        if let Ret::Wrapped = ret
+            && let Some(r) = self.cur.pcalls.pop()
+        {
+            self.prefix(r.ret, out);
+            out.push(Value::Bool(r.catches));
+        }
+    }
+    /// Moves results `src..src + n` to `dst`, as the caller wants them.
+    fn place(&mut self, dst: usize, src: usize, n: usize, nres: u16, ret: Ret) {
+        let mut pre = Vec::new();
+        if let Ret::Wrapped = ret {
+            self.prefix(ret, &mut pre);
+        }
+        let to = dst + pre.len();
+        let st = &mut self.cur.stack;
+        if st.len() < to + n {
+            st.resize(to + n, Value::Nil);
+        }
+        if to <= src {
+            for i in 0..n {
+                st[to + i] = std::mem::take(&mut st[src + i]);
+            }
+        } else {
+            for i in (0..n).rev() {
+                st[to + i] = std::mem::take(&mut st[src + i]);
+            }
+        }
+        let count = pre.len() + n;
+        for (i, v) in pre.into_iter().enumerate() {
+            st[dst + i] = v;
+        }
+        self.finish(dst, count, nres);
+    }
+    /// A native's results to `dst`, as the caller wants them.
+    fn deliver(&mut self, dst: usize, vals: Vec<Value>, nres: u16, ret: Ret) {
+        let mut pre = Vec::new();
+        if let Ret::Wrapped = ret {
+            self.prefix(ret, &mut pre);
+        }
+        let count = pre.len() + vals.len();
+        let st = &mut self.cur.stack;
+        if st.len() < dst + count {
+            st.resize(dst + count, Value::Nil);
+        }
+        for (i, v) in pre.into_iter().chain(vals).enumerate() {
+            st[dst + i] = v;
+        }
+        self.finish(dst, count, nres);
+    }
+    /// After `count` results went to `dst`: pads them to `nres` and makes
+    /// sure the frame that goes on has its registers. The stack only grows
+    /// here (registers above the frame are free); it shrinks when a call
+    /// from Rust returns.
+    fn finish(&mut self, dst: usize, count: usize, nres: u16) {
+        let end = self.cur.frames.last().map_or(0, |f| f.base + f.body.proto.maxstack);
+        let st = &mut self.cur.stack;
+        if nres == MULTI {
+            let top = dst + count;
+            self.cur.top = top;
+            if st.len() < end.max(top) {
+                st.resize(end.max(top), Value::Nil);
+            }
+        } else {
+            let want = nres as usize;
+            if st.len() < end.max(dst + want) {
+                st.resize(end.max(dst + want), Value::Nil);
+            }
+            for v in st.iter_mut().skip(dst + count).take(want.saturating_sub(count)) {
+                *v = Value::Nil;
+            }
+        }
+    }
+    fn vararg(&mut self, fi: usize, dst: usize, n: u16) {
+        let (from, have) = {
+            let f = &self.cur.frames[fi];
+            (f.varargs, f.nvarargs)
+        };
+        let st = &mut self.cur.stack;
+        let n = if n == MULTI {
+            self.cur.top = dst + have;
+            have
+        } else {
+            n as usize
+        };
+        if st.len() < dst + n {
+            st.resize(dst + n, Value::Nil);
+        }
+        for i in 0..n {
+            st[dst + i] = if i < have { st[from + i].clone() } else { Value::Nil };
+        }
+    }
+    fn closure(&mut self, body: &Body, cells: usize, i: usize) -> Value {
+        let Some(p) = body.proto.protos.get(i).cloned() else {
+            return Value::Nil;
+        };
+        let upvals = p
             .upvals
             .iter()
             .map(|u| {
-                if u.from_local {
-                    f.slots[u.index].clone()
+                let c = if u.from_local {
+                    self.cur.cells.get(cells + u.index)
                 } else {
-                    f.closure.upvals[u.index].clone()
-                }
+                    body.upvals.get(u.index)
+                };
+                c.cloned().unwrap_or_else(|| self.nil_cell.clone())
             })
             .collect();
-        Value::Func(Rc::new(Closure {
-            proto: proto.clone(),
-            upvals,
-            env: f.closure.env.clone(),
-        }))
+        let c = Rc::new(Closure::new(p, upvals, body.env.clone()));
+        self.track_closure(&c);
+        Value::Func(c)
     }
-
-    fn place(&mut self, h: &mut dyn Host, f: &mut Frame, e: &Expr) -> Result<Place, Throw> {
-        Ok(match e {
-            Expr::Local(s, _) => Place::Local(*s),
-            Expr::Upval(i, _) => Place::Up(*i),
-            Expr::Global(n) => Place::Global(n.clone()),
-            Expr::Index(o, k) => {
-                let ov = self.eval(h, f, o)?;
-                let kv = self.eval(h, f, k)?;
-                Place::Index(ov, kv, o.describe())
-            }
-            _ => return Err(self.rt_error("cannot assign to this expression")),
-        })
-    }
-    fn assign(&mut self, h: &mut dyn Host, f: &mut Frame, p: Place, v: Value) -> Result<(), Throw> {
-        match p {
-            Place::Local(s) => *f.slots[s].borrow_mut() = v,
-            Place::Up(i) => *f.closure.upvals[i].borrow_mut() = v,
-            Place::Global(n) => {
-                let env = Value::Table(f.closure.env.clone());
-                self.set_index(h, &env, Value::Str(n), v)?;
-            }
-            Place::Index(o, k, desc) => {
-                if !matches!(o, Value::Table(_)) {
-                    return Err(self.rt_error(format!("attempt to index a {} value{desc}", o.type_name())));
-                }
-                self.set_index(h, &o, k, v)?;
+    fn set_list(&mut self, t: usize, n: u8, start: u32) -> Result<(), Throw> {
+        let count = if n == MULTI8 {
+            self.cur.top.saturating_sub(t + 1)
+        } else {
+            n as usize
+        };
+        let Value::Table(tb) = self.cur.stack[t].clone() else {
+            return Ok(());
+        };
+        let mut tb = tb.borrow_mut();
+        for i in 0..count {
+            let v = std::mem::take(&mut self.cur.stack[t + 1 + i]);
+            let r = tb.set(Value::Num(f64::from(start) + i as f64), v);
+            if let Err(e) = r
+                && n != MULTI8
+            {
+                return Err(self.rt_error(e));
             }
         }
         Ok(())
     }
-
-    pub fn metamethod(&self, v: &Value, event: &str) -> Option<Value> {
-        let Value::Table(t) = v else {
-            return None;
+    #[cold]
+    fn set_error(&self, e: &'static str) -> Throw {
+        match e {
+            "table is too large" => self.fatal_here(e),
+            e => self.rt_error(e),
+        }
+    }
+    /// `obj:name` for a method call: the method and `obj` in place.
+    #[allow(clippy::too_many_arguments)]
+    fn method(
+        &mut self,
+        h: &mut dyn Host,
+        base: usize,
+        [a, b]: [usize; 2],
+        name: &Value,
+        made: Option<&Key>,
+        p: &Proto,
+        pc: usize,
+    ) -> Result<(), Throw> {
+        let obj = self.cur.stack[base + b].clone();
+        if !matches!(obj, Value::Table(_) | Value::Str(_) | Value::Userdata(_)) {
+            return Err(self.rt_error(format!("attempt to index a {} value{}", obj.type_name(), p.desc(pc, 0))));
+        }
+        // A userdata's `__namecall` takes every method call on it.
+        if let Value::Userdata(_) = obj
+            && let Some(nc) = self.meta(&obj, Ev::Namecall)
+            && nc.is_callable()
+        {
+            self.cur.stack[base + a + 1] = obj;
+            self.cur.stack[base + a] = nc;
+            return Ok(());
+        }
+        let f = self.index_key(h, &obj, name, made)?;
+        if !f.is_callable() && self.meta(&f, Ev::Call).is_none() {
+            return Err(self.rt_error(format!(
+                "attempt to call a {} value (method '{}')",
+                f.type_name(),
+                name.plain_text()
+            )));
+        }
+        self.cur.stack[base + a + 1] = obj;
+        self.cur.stack[base + a] = f;
+        Ok(())
+    }
+    /// `o[key]` when the quick way would not do: strings, userdata,
+    /// `__index`, errors that name `o`.
+    fn get_slow(&mut self, h: &mut dyn Host, o: &Value, key: &Value, p: &Proto, pc: usize) -> Result<Value, Throw> {
+        match o {
+            Value::Table(_) | Value::Str(_) => self.index(h, o, key),
+            Value::Userdata(_) if self.meta(o, Ev::Index).is_some() => self.index(h, o, key),
+            _ => Err(self.rt_error(format!("attempt to index a {} value{}", o.type_name(), p.desc(pc, 0)))),
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn set_slow(
+        &mut self,
+        h: &mut dyn Host,
+        o: &Value,
+        key: Value,
+        made: Option<&Key>,
+        v: Value,
+        p: &Proto,
+        pc: usize,
+    ) -> Result<(), Throw> {
+        match o {
+            Value::Table(_) => self.store(h, o, key, made, v),
+            Value::Userdata(_) if self.meta(o, Ev::NewIndex).is_some() => self.set_index(h, o, key, v),
+            _ => Err(self.rt_error(format!("attempt to index a {} value{}", o.type_name(), p.desc(pc, 0)))),
+        }
+    }
+    /// `t[key] = v` on a table, its key made already when it is a constant.
+    fn store(&mut self, h: &mut dyn Host, t: &Value, key: Value, made: Option<&Key>, v: Value) -> Result<(), Throw> {
+        if let (Value::Table(tb), Some(made)) = (t, made) {
+            let quick = {
+                let mut tb = tb.borrow_mut();
+                if tb.meta.is_none() {
+                    Some(tb.store(made.clone(), key.clone(), v.clone()))
+                } else {
+                    None
+                }
+            };
+            match quick {
+                Some(Ok(())) => return Ok(()),
+                Some(Err(e)) => return Err(self.set_error(e)),
+                None => {}
+            }
+        }
+        self.set_index(h, t, key, v)
+    }
+    /// GetImport: a global and the fields after it.
+    fn import(&mut self, h: &mut dyn Host, p: &Proto, env: &TableRef, i: usize) -> Result<Value, Throw> {
+        let Some(names) = p.imports.get(i) else {
+            return Ok(Value::Nil);
         };
-        let mt = t.borrow().meta.clone()?;
+        let first = names[0] as usize;
+        let found = {
+            let e = env.borrow();
+            let v = match &p.keys[first] {
+                Some(key) => e.get_key(key),
+                None => e.get(&p.constants[first]),
+            };
+            (!v.is_nil() || e.meta.is_none()).then_some(v)
+        };
+        let mut v = match found {
+            Some(v) => v,
+            None => self.index(h, &Value::Table(env.clone()), &p.constants[first])?,
+        };
+        for (j, &name) in names.iter().enumerate().skip(1) {
+            let name = name as usize;
+            v = match &v {
+                Value::Table(t) => {
+                    let quick = {
+                        let t = t.borrow();
+                        let x = match &p.keys[name] {
+                            Some(key) => t.get_key(key),
+                            None => t.get(&p.constants[name]),
+                        };
+                        (!x.is_nil() || t.meta.is_none()).then_some(x)
+                    };
+                    match quick {
+                        Some(x) => x,
+                        None => self.index(h, &v, &p.constants[name])?,
+                    }
+                }
+                Value::Str(_) => self.index(h, &v, &p.constants[name])?,
+                Value::Userdata(_) if self.meta(&v, Ev::Index).is_some() => self.index(h, &v, &p.constants[name])?,
+                other => {
+                    let prev = &p.constants[names[j - 1] as usize];
+                    let desc = if j == 1 {
+                        Desc::Global(Rc::from(prev.plain_text().as_bytes()))
+                    } else {
+                        Desc::Field(Rc::from(prev.plain_text().as_bytes()))
+                    };
+                    return Err(self.rt_error(format!(
+                        "attempt to index a {} value{}",
+                        other.type_name(),
+                        desc.text()
+                    )));
+                }
+            };
+        }
+        Ok(v)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn arith_regs(
+        &mut self,
+        h: &mut dyn Host,
+        op: BinOp,
+        base: usize,
+        a: u16,
+        b: u16,
+        c: u16,
+        p: &Proto,
+        pc: usize,
+    ) -> Result<(), Throw> {
+        let x = self.cur.stack[base + b as usize].clone();
+        let y = self.cur.stack[base + c as usize].clone();
+        let v = self.arith_slow(h, op, x, y, p, pc)?;
+        self.cur.stack[base + a as usize] = v;
+        Ok(())
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn arith_k(
+        &mut self,
+        h: &mut dyn Host,
+        op: BinOp,
+        base: usize,
+        a: u16,
+        b: u16,
+        k: &Value,
+        p: &Proto,
+        pc: usize,
+    ) -> Result<(), Throw> {
+        let x = self.cur.stack[base + b as usize].clone();
+        let v = self.arith_slow(h, op, x, k.clone(), p, pc)?;
+        self.cur.stack[base + a as usize] = v;
+        Ok(())
+    }
+    /// Arithmetic and bitwise operators past the quick cases: coercion,
+    /// metamethods, errors.
+    fn arith_slow(
+        &mut self,
+        h: &mut dyn Host,
+        op: BinOp,
+        x: Value,
+        y: Value,
+        p: &Proto,
+        pc: usize,
+    ) -> Result<Value, Throw> {
+        match op {
+            BinOp::BAnd | BinOp::BOr | BinOp::BXor | BinOp::Shl | BinOp::Shr => {
+                let (i, j) = (integer(&x), integer(&y));
+                if let (Ok(i), Ok(j)) = (&i, &j) {
+                    return Ok(Value::Num(bitwise(op, *i, *j) as f64));
+                }
+                let ev = arith_event(op);
+                if let Some(mm) = self.meta(&x, ev).or_else(|| self.meta(&y, ev)) {
+                    return self.call1(h, &mm, vec![x, y]);
+                }
+                Err(self.rt_error(match i {
+                    Err(why) => bitwise_error(why, &x, &p.desc(pc, 0)),
+                    Ok(_) => bitwise_error(j.err().unwrap_or(false), &y, &p.desc(pc, 1)),
+                }))
+            }
+            _ => {
+                if let (Some(i), Some(j)) = (x.to_num(), y.to_num()) {
+                    return Ok(Value::Num(arith(op, i, j)));
+                }
+                let ev = arith_event(op);
+                if let Some(mm) = self.meta(&x, ev).or_else(|| self.meta(&y, ev)) {
+                    return self.call1(h, &mm, vec![x, y]);
+                }
+                let (bad, i) = if x.to_num().is_none() { (&x, 0) } else { (&y, 1) };
+                let desc = p.desc(pc, i);
+                Err(self.rt_error(if matches!(bad, Value::Str(_)) {
+                    format!("attempt to perform arithmetic on a string value{desc} (not a number)")
+                } else {
+                    format!("attempt to perform arithmetic on a {} value{desc}", bad.type_name())
+                }))
+            }
+        }
+    }
+    fn concat(&mut self, h: &mut dyn Host, x: Value, y: Value, p: &Proto, pc: usize) -> Result<Value, Throw> {
+        fn piece(v: &Value) -> Option<std::borrow::Cow<'_, [u8]>> {
+            match v {
+                Value::Str(s) => Some(std::borrow::Cow::Borrowed(&s[..])),
+                Value::Num(n) => Some(std::borrow::Cow::Owned(fmt_num(*n).into_bytes())),
+                _ => None,
+            }
+        }
+        if let (Some(a), Some(b)) = (piece(&x), piece(&y)) {
+            let len = a.len() + b.len();
+            if len > MAX_STRING {
+                return Err(self.fatal_here("string is too long"));
+            }
+            self.charge(len)?;
+            let mut out = Vec::with_capacity(len);
+            out.extend_from_slice(&a);
+            out.extend_from_slice(&b);
+            return Ok(Value::Str(out.into()));
+        }
+        if let Some(mm) = self.meta(&x, Ev::Concat).or_else(|| self.meta(&y, Ev::Concat)) {
+            return self.call1(h, &mm, vec![x, y]);
+        }
+        let (bad, i) = if piece(&x).is_none() { (&x, 0) } else { (&y, 1) };
+        Err(self.rt_error(format!(
+            "attempt to concatenate a {} value{}",
+            bad.type_name(),
+            p.desc(pc, i)
+        )))
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn unary(
+        &mut self,
+        h: &mut dyn Host,
+        op: UnOp,
+        base: usize,
+        a: u16,
+        b: u16,
+        p: &Proto,
+        pc: usize,
+    ) -> Result<(), Throw> {
+        let x = self.cur.stack[base + b as usize].clone();
+        let v = match op {
+            UnOp::Neg => match x.to_num() {
+                Some(n) => Value::Num(-n),
+                None => match self.meta(&x, Ev::Unm) {
+                    Some(mm) => self.call1(h, &mm, vec![x.clone(), x])?,
+                    None => {
+                        return Err(self.rt_error(format!(
+                            "attempt to perform arithmetic on a {} value{}",
+                            x.type_name(),
+                            p.desc(pc, 0)
+                        )));
+                    }
+                },
+            },
+            UnOp::BNot => match integer(&x) {
+                Ok(i) => Value::Num(!i as f64),
+                Err(why) => match self.meta(&x, Ev::BNot) {
+                    Some(mm) => self.call1(h, &mm, vec![x.clone(), x])?,
+                    None => return Err(self.rt_error(bitwise_error(why, &x, &p.desc(pc, 0)))),
+                },
+            },
+            UnOp::Len => match &x {
+                Value::Str(s) => Value::Num(s.len() as f64),
+                Value::Table(_) | Value::Userdata(_) => match self.meta(&x, Ev::Len) {
+                    Some(mm) => self.call1(h, &mm, vec![x.clone()])?,
+                    None => match &x {
+                        Value::Table(t) => Value::Num(t.borrow().len() as f64),
+                        _ => {
+                            return Err(
+                                self.rt_error(format!("attempt to get length of a userdata value{}", p.desc(pc, 0)))
+                            );
+                        }
+                    },
+                },
+                _ => {
+                    return Err(self.rt_error(format!(
+                        "attempt to get length of a {} value{}",
+                        x.type_name(),
+                        p.desc(pc, 0)
+                    )));
+                }
+            },
+            UnOp::Not => Value::Bool(!x.truthy()),
+        };
+        self.cur.stack[base + a as usize] = v;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------- metamethods
+
+    #[inline]
+    fn meta(&self, v: &Value, ev: Ev) -> Option<Value> {
+        let mt = match v {
+            Value::Table(t) => t.borrow().meta.clone()?,
+            Value::Userdata(u) => u.meta.borrow().clone()?,
+            _ => return None,
+        };
+        let m = mt.borrow().get_key(&self.events[ev as usize]);
+        (!m.is_nil()).then_some(m)
+    }
+    pub fn metamethod(&self, v: &Value, event: &str) -> Option<Value> {
+        let mt = v.metatable()?;
         let m = mt.borrow().get_str(event);
         (!m.is_nil()).then_some(m)
     }
 
     /// `obj[key]`, with `__index`.
     pub fn index(&mut self, h: &mut dyn Host, obj: &Value, key: &Value) -> Result<Value, Throw> {
+        self.index_key(h, obj, key, None)
+    }
+    /// `index`, with the key as tables hold it when it is a constant.
+    fn index_key(&mut self, h: &mut dyn Host, obj: &Value, key: &Value, made: Option<&Key>) -> Result<Value, Throw> {
         let mut cur = obj.clone();
         for _ in 0..64 {
             let handler = match &cur {
                 Value::Table(t) => {
                     let t = t.borrow();
-                    let v = t.get(key);
+                    let v = match made {
+                        Some(k) => t.get_key(k),
+                        None => t.get(key),
+                    };
                     if !v.is_nil() {
                         return Ok(v);
                     }
                     let Some(mt) = &t.meta else {
                         return Ok(Value::Nil);
                     };
-                    let handler = mt.borrow().get_str("__index");
+                    let handler = mt.borrow().get_key(&self.events[Ev::Index as usize]);
                     if handler.is_nil() {
                         return Ok(Value::Nil);
                     }
@@ -2136,6 +5492,10 @@ impl Lua {
                 Value::Str(_) => {
                     return Ok(self.string_lib.as_ref().map_or(Value::Nil, |s| s.borrow().get(key)));
                 }
+                Value::Userdata(_) => match self.meta(&cur, Ev::Index) {
+                    Some(handler) => handler,
+                    None => return Err(self.rt_error("attempt to index a userdata value")),
+                },
                 other => {
                     return Err(self.rt_error(format!("attempt to index a {} value", other.type_name())));
                 }
@@ -2157,21 +5517,22 @@ impl Lua {
                     let handler = {
                         let tb = t.borrow();
                         match &tb.meta {
-                            Some(mt) if tb.get(&key).is_nil() => mt.borrow().get_str("__newindex"),
+                            Some(mt) if tb.get(&key).is_nil() => {
+                                mt.borrow().get_key(&self.events[Ev::NewIndex as usize])
+                            }
                             _ => Value::Nil,
                         }
                     };
                     if handler.is_nil() {
                         let r = t.borrow_mut().set(key, v);
-                        return r.map_err(|e| match e {
-                            "table is too large" => {
-                                Throw::Fatal(format!("{}:{}: table is too large", self.chunk, self.line))
-                            }
-                            e => self.rt_error(e),
-                        });
+                        return r.map_err(|e| self.set_error(e));
                     }
                     handler
                 }
+                Value::Userdata(_) => match self.meta(&cur, Ev::NewIndex) {
+                    Some(handler) => handler,
+                    None => return Err(self.rt_error("attempt to index a userdata value")),
+                },
                 other => {
                     return Err(self.rt_error(format!("attempt to index a {} value", other.type_name())));
                 }
@@ -2185,324 +5546,14 @@ impl Lua {
         Err(self.rt_error("'__newindex' chain too long; possible loop"))
     }
 
-    // As with statements, the bigger expressions have functions of their
-    // own, which keeps this one's frame small on the path of nested calls.
-    fn eval(&mut self, h: &mut dyn Host, f: &mut Frame, e: &Expr) -> Result<Value, Throw> {
-        Ok(match e {
-            Expr::Nil => Value::Nil,
-            Expr::True => Value::Bool(true),
-            Expr::False => Value::Bool(false),
-            Expr::Num(n) => Value::Num(*n),
-            Expr::Str(s) => Value::Str(s.clone()),
-            Expr::Vararg => f.varargs.first().cloned().unwrap_or_default(),
-            Expr::Function(p) => self.closure(f, p),
-            Expr::Local(s, _) => f.slots[*s].borrow().clone(),
-            Expr::Upval(i, _) => f.closure.upvals[*i].borrow().clone(),
-            Expr::Global(n) => return self.eval_global(h, f, n),
-            Expr::Index(o, k) => return self.eval_index(h, f, o, k),
-            Expr::Call(..) | Expr::Method(..) => self.eval_call(h, f, e)?.into_iter().next().unwrap_or_default(),
-            Expr::And(a, b) => {
-                let v = self.eval(h, f, a)?;
-                if v.truthy() { self.eval(h, f, b)? } else { v }
-            }
-            Expr::Or(a, b) => {
-                let v = self.eval(h, f, a)?;
-                if v.truthy() { v } else { self.eval(h, f, b)? }
-            }
-            Expr::Bin(op, a, b) => return self.eval_binary(h, f, *op, a, b),
-            Expr::Un(op, a) => return self.eval_unary(h, f, *op, a),
-            Expr::Table(items) => return self.eval_table(h, f, items),
-            Expr::Paren(inner) => self.eval(h, f, inner)?,
-        })
-    }
-    #[inline(never)]
-    fn eval_global(&mut self, h: &mut dyn Host, f: &mut Frame, n: &Str) -> Result<Value, Throw> {
-        let env = f.closure.env.clone();
-        let v = env.borrow().get(&Value::Str(n.clone()));
-        if v.is_nil() && env.borrow().meta.is_some() {
-            return self.index(h, &Value::Table(env), &Value::Str(n.clone()));
-        }
-        Ok(v)
-    }
-    #[inline(never)]
-    fn eval_index(&mut self, h: &mut dyn Host, f: &mut Frame, o: &Expr, k: &Expr) -> Result<Value, Throw> {
-        let ov = self.eval(h, f, o)?;
-        let kv = self.eval(h, f, k)?;
-        if let Value::Table(t) = &ov {
-            let v = t.borrow().get(&kv);
-            if !v.is_nil() || t.borrow().meta.is_none() {
-                return Ok(v);
-            }
-        } else if !matches!(ov, Value::Str(_)) {
-            return Err(self.index_error(&ov, o));
-        }
-        self.index(h, &ov, &kv)
-    }
-    #[inline(never)]
-    fn eval_binary(&mut self, h: &mut dyn Host, f: &mut Frame, op: BinOp, a: &Expr, b: &Expr) -> Result<Value, Throw> {
-        let x = self.eval(h, f, a)?;
-        let y = self.eval(h, f, b)?;
-        if let (Value::Num(p), Value::Num(q)) = (&x, &y) {
-            match op {
-                BinOp::Eq => return Ok(Value::Bool(p == q)),
-                BinOp::Ne => return Ok(Value::Bool(p != q)),
-                BinOp::Lt => return Ok(Value::Bool(p < q)),
-                BinOp::Le => return Ok(Value::Bool(p <= q)),
-                BinOp::Gt => return Ok(Value::Bool(p > q)),
-                BinOp::Ge => return Ok(Value::Bool(p >= q)),
-                BinOp::Concat | BinOp::BAnd | BinOp::BOr | BinOp::BXor | BinOp::Shl | BinOp::Shr => {}
-                _ => return Ok(Value::Num(arith(op, *p, *q))),
-            }
-        }
-        self.binary(h, op, x, y, a, b)
-    }
-    #[inline(never)]
-    fn eval_unary(&mut self, h: &mut dyn Host, f: &mut Frame, op: UnOp, a: &Expr) -> Result<Value, Throw> {
-        let x = self.eval(h, f, a)?;
-        Ok(match op {
-            UnOp::Not => Value::Bool(!x.truthy()),
-            UnOp::Neg => match x.to_num() {
-                Some(n) => Value::Num(-n),
-                None => match self.metamethod(&x, "__unm") {
-                    Some(mm) => self.call1(h, &mm, vec![x.clone(), x])?,
-                    None => {
-                        return Err(self.rt_error(format!(
-                            "attempt to perform arithmetic on a {} value{}",
-                            x.type_name(),
-                            a.describe()
-                        )));
-                    }
-                },
-            },
-            UnOp::BNot => match integer(&x) {
-                Ok(i) => Value::Num(!i as f64),
-                Err(why) => match self.metamethod(&x, "__bnot") {
-                    Some(mm) => self.call1(h, &mm, vec![x.clone(), x])?,
-                    None => return Err(self.rt_error(bitwise_error(why, &x, a))),
-                },
-            },
-            UnOp::Len => match &x {
-                Value::Str(s) => Value::Num(s.len() as f64),
-                Value::Table(t) => match self.metamethod(&x, "__len") {
-                    Some(mm) => self.call1(h, &mm, vec![x.clone()])?,
-                    None => Value::Num(t.borrow().len() as f64),
-                },
-                _ => {
-                    return Err(self.rt_error(format!(
-                        "attempt to get length of a {} value{}",
-                        x.type_name(),
-                        a.describe()
-                    )));
-                }
-            },
-        })
-    }
-    #[inline(never)]
-    fn eval_table(&mut self, h: &mut dyn Host, f: &mut Frame, items: &[(Option<Expr>, Expr)]) -> Result<Value, Throw> {
-        let mut t = Table::new();
-        let mut n = 0usize;
-        for (i, (k, v)) in items.iter().enumerate() {
-            match k {
-                Some(k) => {
-                    let kv = self.eval(h, f, k)?;
-                    let vv = self.eval(h, f, v)?;
-                    if let Err(e) = t.set(kv, vv) {
-                        return Err(self.rt_error(e));
-                    }
-                }
-                None if i + 1 == items.len() && v.is_multi() => {
-                    let mut vals = Vec::new();
-                    self.eval_multi(h, f, v, &mut vals)?;
-                    for vv in vals {
-                        n += 1;
-                        let _ = t.set(Value::Num(n as f64), vv);
-                    }
-                }
-                None => {
-                    n += 1;
-                    let vv = self.eval(h, f, v)?;
-                    if let Err(e) = t.set(Value::Num(n as f64), vv) {
-                        return Err(self.rt_error(e));
-                    }
-                }
-            }
-        }
-        self.charge(items.len() * 16)?;
-        Ok(Value::table(t))
-    }
-
-    fn eval_multi(&mut self, h: &mut dyn Host, f: &mut Frame, e: &Expr, out: &mut Vec<Value>) -> Result<(), Throw> {
-        match e {
-            Expr::Call(..) | Expr::Method(..) => out.extend(self.eval_call(h, f, e)?),
-            Expr::Vararg => out.extend(f.varargs.iter().cloned()),
-            _ => out.push(self.eval(h, f, e)?),
-        }
-        Ok(())
-    }
-    fn eval_list(&mut self, h: &mut dyn Host, f: &mut Frame, exprs: &[Expr]) -> Result<Vec<Value>, Throw> {
-        let mut out = Vec::with_capacity(exprs.len());
-        for (i, e) in exprs.iter().enumerate() {
-            if i + 1 == exprs.len() {
-                self.eval_multi(h, f, e, &mut out)?;
-            } else {
-                out.push(self.eval(h, f, e)?);
-            }
-        }
-        Ok(out)
-    }
-    fn eval_list_n(&mut self, h: &mut dyn Host, f: &mut Frame, exprs: &[Expr], n: usize) -> Result<Vec<Value>, Throw> {
-        let mut v = self.eval_list(h, f, exprs)?;
-        v.resize(n, Value::Nil);
-        Ok(v)
-    }
-    fn eval_call(&mut self, h: &mut dyn Host, f: &mut Frame, e: &Expr) -> Res {
-        match e {
-            Expr::Call(fe, args) => {
-                let fv = self.eval(h, f, fe)?;
-                let argv = self.eval_list(h, f, args)?;
-                if !fv.is_callable() && self.metamethod(&fv, "__call").is_none() {
-                    return Err(self.call_error(&fv, fe));
-                }
-                self.call(h, &fv, argv)
-            }
-            Expr::Method(oe, name, args) => {
-                let ov = self.eval(h, f, oe)?;
-                if !matches!(ov, Value::Table(_) | Value::Str(_)) {
-                    return Err(self.index_error(&ov, oe));
-                }
-                let fv = self.index(h, &ov, &Value::Str(name.clone()))?;
-                if !fv.is_callable() && self.metamethod(&fv, "__call").is_none() {
-                    return Err(self.method_error(&fv, name));
-                }
-                let mut argv = Vec::with_capacity(args.len() + 1);
-                argv.push(ov);
-                argv.extend(self.eval_list(h, f, args)?);
-                self.call(h, &fv, argv)
-            }
-            _ => Ok(vec![self.eval(h, f, e)?]),
-        }
-    }
-    #[cold]
-    #[inline(never)]
-    fn call_error(&self, fv: &Value, fe: &Expr) -> Throw {
-        self.rt_error(format!("attempt to call a {} value{}", fv.type_name(), fe.describe()))
-    }
-    #[cold]
-    #[inline(never)]
-    fn index_error(&self, ov: &Value, oe: &Expr) -> Throw {
-        self.rt_error(format!("attempt to index a {} value{}", ov.type_name(), oe.describe()))
-    }
-    #[cold]
-    #[inline(never)]
-    fn method_error(&self, fv: &Value, name: &[u8]) -> Throw {
-        self.rt_error(format!(
-            "attempt to call a {} value (method '{}')",
-            fv.type_name(),
-            String::from_utf8_lossy(name)
-        ))
-    }
-
-    #[inline(never)]
-    fn binary(&mut self, h: &mut dyn Host, op: BinOp, x: Value, y: Value, a: &Expr, b: &Expr) -> Result<Value, Throw> {
-        match op {
-            BinOp::Eq => Ok(Value::Bool(self.equals(h, &x, &y)?)),
-            BinOp::Ne => Ok(Value::Bool(!self.equals(h, &x, &y)?)),
-            BinOp::Lt => Ok(Value::Bool(self.less(h, &x, &y, false)?)),
-            BinOp::Le => Ok(Value::Bool(self.less(h, &x, &y, true)?)),
-            BinOp::Gt => Ok(Value::Bool(self.less(h, &y, &x, false)?)),
-            BinOp::Ge => Ok(Value::Bool(self.less(h, &y, &x, true)?)),
-            BinOp::BAnd | BinOp::BOr | BinOp::BXor | BinOp::Shl | BinOp::Shr => {
-                let (p, q) = (integer(&x), integer(&y));
-                if let (Ok(p), Ok(q)) = (&p, &q) {
-                    return Ok(Value::Num(bitwise(op, *p, *q) as f64));
-                }
-                let event = match op {
-                    BinOp::BAnd => "__band",
-                    BinOp::BOr => "__bor",
-                    BinOp::BXor => "__bxor",
-                    BinOp::Shl => "__shl",
-                    _ => "__shr",
-                };
-                if let Some(mm) = self.metamethod(&x, event).or_else(|| self.metamethod(&y, event)) {
-                    return self.call1(h, &mm, vec![x, y]);
-                }
-                Err(self.rt_error(match p {
-                    Err(why) => bitwise_error(why, &x, a),
-                    Ok(_) => bitwise_error(q.err().unwrap_or(false), &y, b),
-                }))
-            }
-            BinOp::Concat => {
-                let piece = |v: &Value| -> Option<Vec<u8>> {
-                    match v {
-                        Value::Str(s) => Some(s.to_vec()),
-                        Value::Num(n) => Some(fmt_num(*n).into_bytes()),
-                        _ => None,
-                    }
-                };
-                if let (Some(mut p), Some(q)) = (piece(&x), piece(&y)) {
-                    if p.len() + q.len() > MAX_STRING {
-                        return Err(Throw::Fatal(format!(
-                            "{}:{}: string is too long",
-                            self.chunk, self.line
-                        )));
-                    }
-                    self.charge(p.len() + q.len())?;
-                    p.extend_from_slice(&q);
-                    return Ok(Value::Str(p.into()));
-                }
-                if let Some(mm) = self
-                    .metamethod(&x, "__concat")
-                    .or_else(|| self.metamethod(&y, "__concat"))
-                {
-                    return self.call1(h, &mm, vec![x, y]);
-                }
-                let (bad, e) = if piece(&x).is_none() { (&x, a) } else { (&y, b) };
-                Err(self.rt_error(format!(
-                    "attempt to concatenate a {} value{}",
-                    bad.type_name(),
-                    e.describe()
-                )))
-            }
-            _ => {
-                if let (Some(p), Some(q)) = (x.to_num(), y.to_num()) {
-                    return Ok(Value::Num(arith(op, p, q)));
-                }
-                let event = match op {
-                    BinOp::Add => "__add",
-                    BinOp::Sub => "__sub",
-                    BinOp::Mul => "__mul",
-                    BinOp::Div => "__div",
-                    BinOp::IDiv => "__idiv",
-                    BinOp::Mod => "__mod",
-                    _ => "__pow",
-                };
-                if let Some(mm) = self.metamethod(&x, event).or_else(|| self.metamethod(&y, event)) {
-                    return self.call1(h, &mm, vec![x, y]);
-                }
-                let (bad, e) = if x.to_num().is_none() { (&x, a) } else { (&y, b) };
-                let what = if matches!(bad, Value::Str(_)) {
-                    format!(
-                        "attempt to perform arithmetic on a string value{} (not a number)",
-                        e.describe()
-                    )
-                } else {
-                    format!(
-                        "attempt to perform arithmetic on a {} value{}",
-                        bad.type_name(),
-                        e.describe()
-                    )
-                };
-                Err(self.rt_error(what))
-            }
-        }
-    }
-
     pub fn equals(&mut self, h: &mut dyn Host, x: &Value, y: &Value) -> Result<bool, Throw> {
         if x.raw_eq(y) {
             return Ok(true);
         }
-        if let (Value::Table(_), Value::Table(_)) = (x, y)
-            && let Some(mm) = self.metamethod(x, "__eq").or_else(|| self.metamethod(y, "__eq"))
+        if matches!(
+            (x, y),
+            (Value::Table(_), Value::Table(_)) | (Value::Userdata(_), Value::Userdata(_))
+        ) && let Some(mm) = self.meta(x, Ev::Eq).or_else(|| self.meta(y, Ev::Eq))
         {
             return Ok(self.call1(h, &mm, vec![x.clone(), y.clone()])?.truthy());
         }
@@ -2515,8 +5566,8 @@ impl Lua {
             (Value::Num(a), Value::Num(b)) => Ok(if or_equal { a <= b } else { a < b }),
             (Value::Str(a), Value::Str(b)) => Ok(if or_equal { a <= b } else { a < b }),
             _ => {
-                let event = if or_equal { "__le" } else { "__lt" };
-                if let Some(mm) = self.metamethod(x, event).or_else(|| self.metamethod(y, event)) {
+                let ev = if or_equal { Ev::Le } else { Ev::Lt };
+                if let Some(mm) = self.meta(x, ev).or_else(|| self.meta(y, ev)) {
                     return Ok(self.call1(h, &mm, vec![x.clone(), y.clone()])?.truthy());
                 }
                 let (tx, ty) = (x.type_name(), y.type_name());
@@ -2531,7 +5582,7 @@ impl Lua {
 
     /// `tostring`, with `__tostring`.
     pub fn tostring(&mut self, h: &mut dyn Host, v: &Value) -> Result<String, Throw> {
-        if let Some(mm) = self.metamethod(v, "__tostring") {
+        if let Some(mm) = self.meta(v, Ev::ToString) {
             let r = self.call1(h, &mm, vec![v.clone()])?;
             return match r {
                 Value::Str(s) => Ok(String::from_utf8_lossy(&s).into_owned()),
@@ -2540,6 +5591,285 @@ impl Lua {
             };
         }
         Ok(v.plain_text())
+    }
+    /// `typeof`: a userdata's `__type`, else `type`.
+    #[allow(dead_code)]
+    pub fn type_of(&self, v: &Value) -> String {
+        match v {
+            Value::Userdata(u) => u.type_name().unwrap_or_else(|| "userdata".into()),
+            other => other.type_name().into(),
+        }
+    }
+
+    // ------------------------------------------------------------- coroutines
+
+    /// A coroutine that will run `f`.
+    pub fn new_thread(&mut self, f: Value) -> Rc<Thread> {
+        Rc::new(Thread {
+            state: RefCell::new(Some(ThreadState {
+                start: Some(f),
+                ..ThreadState::default()
+            })),
+            status: std::cell::Cell::new(Status::Suspended),
+            main: false,
+            error: RefCell::new(None),
+        })
+    }
+    /// The running thread (the main one outside coroutines).
+    pub fn current_thread(&self) -> Rc<Thread> {
+        self.thread.clone()
+    }
+    /// Whether the running code may yield: in a coroutine, and not inside
+    /// a native's call into Lua.
+    pub fn is_yieldable(&self) -> bool {
+        !self.thread.main && self.cur.runs <= 1
+    }
+    /// Runs `co` with `args` until it yields, returns or fails.
+    pub fn resume(&mut self, h: &mut dyn Host, co: &Rc<Thread>, args: Vec<Value>) -> Resume {
+        if self.ccalls == 0 {
+            self.stack_base = stack_addr();
+        }
+        match co.status.get() {
+            Status::Suspended => {}
+            Status::Dead => {
+                return Resume::Error(Throw::Error(Value::str("cannot resume dead coroutine"), String::new()));
+            }
+            _ => {
+                return Resume::Error(Throw::Error(
+                    Value::str("cannot resume non-suspended coroutine"),
+                    String::new(),
+                ));
+            }
+        }
+        if self.ccalls >= MAX_CCALLS || self.stack_base.saturating_sub(stack_addr()) > STACK_LIMIT {
+            return Resume::Error(self.rt_error("stack overflow"));
+        }
+        let state = co.state.borrow_mut().take().unwrap_or_default();
+        let mine = std::mem::replace(&mut self.cur, state);
+        let prev = std::mem::replace(&mut self.thread, co.clone());
+        *prev.state.borrow_mut() = Some(mine);
+        prev.status.set(Status::Normal);
+        co.status.set(Status::Running);
+        self.ccalls += 1;
+        let r = self.run_thread(h, args);
+        self.ccalls -= 1;
+        let mine = prev.state.borrow_mut().take().unwrap_or_default();
+        let state = std::mem::replace(&mut self.cur, mine);
+        prev.status.set(Status::Running);
+        self.thread = prev;
+        match r {
+            Ok(vals) => {
+                co.status.set(Status::Dead);
+                Resume::Done(vals)
+            }
+            Err(Throw::Yield(vals)) => {
+                *co.state.borrow_mut() = Some(state);
+                co.status.set(Status::Suspended);
+                Resume::Yielded(vals)
+            }
+            Err(e) => {
+                co.status.set(Status::Dead);
+                if let Throw::Error(v, _) = &e {
+                    *co.error.borrow_mut() = Some(v.clone());
+                }
+                Resume::Error(e)
+            }
+        }
+    }
+    /// The running coroutine starts, or goes on from its yield.
+    fn run_thread(&mut self, h: &mut dyn Host, args: Vec<Value>) -> Res {
+        self.cur.runs = 1;
+        let r = if let Some(f) = self.cur.start.take() {
+            match f {
+                Value::Func(c) => match self.step() {
+                    Err(e) => Err(e),
+                    Ok(()) => {
+                        let n = args.len();
+                        self.cur.stack.push(Value::Func(c.clone()));
+                        self.cur.stack.extend(args);
+                        self.enter(c, 0, n, MULTI, Ret::Plain);
+                        self.run(h, 0)
+                    }
+                },
+                Value::Native(n) => match self.step() {
+                    Err(e) => Err(e),
+                    Ok(()) => match self.call_native(h, &n, args) {
+                        Err(Throw::Yield(vals)) => {
+                            self.cur.stack.push(Value::Nil);
+                            self.cur.pending = Some(Pending {
+                                func: 0,
+                                nres: MULTI,
+                                ret: Ret::Plain,
+                            });
+                            Err(Throw::Yield(vals))
+                        }
+                        r => r,
+                    },
+                },
+                other => self.call_value(h, &other, args),
+            }
+        } else if let Some(p) = self.cur.pending.take() {
+            self.deliver(p.func, args, p.nres, p.ret);
+            if self.cur.frames.is_empty() {
+                let top = self.cur.top.min(self.cur.stack.len());
+                let vals = self.cur.stack.drain(p.func.min(top)..top).collect();
+                self.cur.stack.clear();
+                Ok(vals)
+            } else {
+                self.run(h, 0)
+            }
+        } else {
+            Err(Throw::Error(Value::str("cannot resume dead coroutine"), String::new()))
+        };
+        self.cur.runs = 0;
+        r
+    }
+    /// `coroutine.close`: a suspended or dead coroutine ends; the error it
+    /// died of, if it failed. Err when it is running or normal.
+    pub fn close_thread(&mut self, co: &Rc<Thread>) -> Result<Option<Value>, &'static str> {
+        match co.status.get() {
+            Status::Running => Err("cannot close a running coroutine"),
+            Status::Normal => Err("cannot close a normal coroutine"),
+            Status::Suspended | Status::Dead => {
+                co.status.set(Status::Dead);
+                *co.state.borrow_mut() = None;
+                Ok(co.error.borrow_mut().take())
+            }
+        }
+    }
+}
+
+/// The host's view into the VM, for the debug functions (Luau's, sUNC's)
+/// built on it.
+#[allow(dead_code)]
+impl Lua {
+    /// The method name of the running `obj:Name(...)` call on a userdata
+    /// (`getnamecallmethod`).
+    pub fn namecall_method(&self) -> Option<Str> {
+        self.namecall.clone()
+    }
+    fn frame_at(&self, level: usize) -> Option<&Frame> {
+        let i = self.cur.frames.len().checked_sub(level)?;
+        if level == 0 {
+            return None;
+        }
+        self.cur.frames.get(i)
+    }
+    /// The Lua function `level` frames up (1: the one running).
+    pub fn frame_info(&self, level: usize) -> Option<FrameInfo> {
+        let f = self.frame_at(level)?;
+        Some(FrameInfo {
+            closure: f.closure.clone(),
+            proto: f.body.proto.clone(),
+            line: f.line,
+            pc: f.pc,
+        })
+    }
+    /// Register `slot` of the frame `level` up (its cell, for a captured local).
+    pub fn get_stack(&self, level: usize, slot: usize) -> Option<Value> {
+        let f = self.frame_at(level)?;
+        let p = &f.body.proto;
+        if slot >= p.maxstack {
+            return None;
+        }
+        if let Some(LocalVar { cell: Some(c), .. }) = p.local_at(slot, f.pc) {
+            return self.cur.cells.get(f.cells + *c as usize).map(|c| c.borrow().clone());
+        }
+        self.cur.stack.get(f.base + slot).cloned()
+    }
+    pub fn set_stack(&mut self, level: usize, slot: usize, v: Value) -> bool {
+        let Some(f) = self.frame_at(level) else {
+            return false;
+        };
+        let p = &f.body.proto;
+        if slot >= p.maxstack {
+            return false;
+        }
+        if let Some(LocalVar { cell: Some(c), .. }) = p.local_at(slot, f.pc) {
+            return match self.cur.cells.get(f.cells + *c as usize) {
+                Some(cell) => {
+                    *cell.borrow_mut() = v;
+                    true
+                }
+                None => false,
+            };
+        }
+        let i = f.base + slot;
+        match self.cur.stack.get_mut(i) {
+            Some(r) => {
+                *r = v;
+                true
+            }
+            None => false,
+        }
+    }
+    /// Every register of the frame `level` up.
+    pub fn stack_values(&self, level: usize) -> Option<Vec<Value>> {
+        let n = self.frame_at(level)?.body.proto.maxstack;
+        Some((0..n).map(|i| self.get_stack(level, i).unwrap_or_default()).collect())
+    }
+    /// Keeps a list of the closures and tables made from now on, for
+    /// `getgc` (off by default).
+    pub fn track_objects(&mut self, on: bool) {
+        if on && self.registry.is_none() {
+            self.registry = Some(Registry {
+                prune_at: 1024,
+                ..Registry::default()
+            });
+        } else if !on {
+            self.registry = None;
+        }
+    }
+    fn track_closure(&mut self, c: &Rc<Closure>) {
+        if let Some(r) = &mut self.registry {
+            r.closures.push(Rc::downgrade(c));
+            r.prune();
+        }
+    }
+    fn track_table(&mut self, t: &TableRef) {
+        if let Some(r) = &mut self.registry {
+            r.tables.push(Rc::downgrade(t));
+            r.prune();
+        }
+    }
+    /// The tracked closures still alive.
+    pub fn live_closures(&mut self) -> Vec<Rc<Closure>> {
+        self.registry
+            .as_ref()
+            .map_or_else(Vec::new, |r| r.closures.iter().filter_map(Weak::upgrade).collect())
+    }
+    /// The tracked tables still alive.
+    pub fn live_tables(&mut self) -> Vec<TableRef> {
+        self.registry
+            .as_ref()
+            .map_or_else(Vec::new, |r| r.tables.iter().filter_map(Weak::upgrade).collect())
+    }
+}
+
+impl Registry {
+    fn prune(&mut self) {
+        if self.closures.len() + self.tables.len() < self.prune_at {
+            return;
+        }
+        self.closures.retain(|w| w.strong_count() > 0);
+        self.tables.retain(|w| w.strong_count() > 0);
+        self.prune_at = ((self.closures.len() + self.tables.len()) * 2).max(1024);
+    }
+}
+
+#[inline(always)]
+fn num(v: &Value) -> f64 {
+    match v {
+        Value::Num(n) => *n,
+        _ => 0.0,
+    }
+}
+
+#[inline(always)]
+fn put_num(slot: &mut Value, x: f64) {
+    match slot {
+        Value::Num(n) => *n = x,
+        slot => *slot = Value::Num(x),
     }
 }
 
@@ -2556,14 +5886,13 @@ fn integer(v: &Value) -> Result<i64, bool> {
     }
 }
 
-fn bitwise_error(number: bool, v: &Value, e: &Expr) -> String {
+fn bitwise_error(number: bool, v: &Value, desc: &str) -> String {
     if number {
-        format!("number{} has no integer representation", e.describe())
+        format!("number{desc} has no integer representation")
     } else {
         format!(
-            "attempt to perform bitwise operation on a {} value{}",
-            v.type_name(),
-            e.describe()
+            "attempt to perform bitwise operation on a {} value{desc}",
+            v.type_name()
         )
     }
 }
