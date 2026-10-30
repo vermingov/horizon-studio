@@ -453,6 +453,8 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
     if !game.native_window() {
         return;
     }
+    // Natrium's switches follow its settings.
+    super::hstudio_natrium::sync(game);
     // ViaHorizon runs from the title screen on, while the studio is on.
     let on = game.native_on(ID);
     if on {

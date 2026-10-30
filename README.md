@@ -23,6 +23,9 @@ native Horizon mod that adds:
   shared config. Libraries load first, and mods using one reload with it. Mods send each other events, and
   `gfx.*` draws in Horizon's own style (rounded shapes, the Geist fonts) so a UI library can be written in Lua. The
   bundled **UI Kit** is one, installed with the studio.
+- **Natrium: Sodium's and Lithium's ideas for Horizon.** A second native mod in the same bundle: particles off
+  screen and terrain hidden in thick fog aren't drawn, the server's ticks skip work that changes nothing, and a
+  graphics preset sets Horizon's own options for frame time. It draws and ticks the same as without it.
 
 ![The console](docs/screenshots/console.png)
 
@@ -117,6 +120,32 @@ the server its version).
 What ViaProxy translates is the protocol: blocks, items, entities, chat, the world. It does not turn Horizon's 26.3
 movement and combat into an old version's, as ViaFabricPlus's emulation does inside a Fabric client, so on a 1.8
 PvP server you move and hit as in 26.3, which some anticheats notice. Joining as 26.3 skips ViaProxy.
+
+## Natrium
+
+Natrium does for Horizon what Sodium and Lithium do for Java Minecraft: the same picture and the same game, with
+less work a frame and a tick. It comes with Horizon Studio, has its own row in Options → Mods, and is on from the
+start. Its page has a switch for each part, the preset, and what it has skipped so far.
+
+- **Particle culling.** Horizon builds every particle's quad each frame, behind the camera too (up to 16,384).
+  Natrium tests each one against the frame's view first: those outside it cost nothing. Those in view are built
+  exactly as Horizon builds them.
+- **Fog culling.** Where the fog ends in its own colour, as in the Nether, under water or lava, in powder snow, with
+  blindness or darkness, a chunk section wholly past the fog's end is invisible, so it isn't drawn. It never applies
+  where the sky shows through (the Overworld's clear air, the End) or with a shader pack.
+- **Faster ticks**, as Lithium's: the same work in the same order, with less of it. Item merging looks each
+  stack's size up once instead of up to four times per neighbour, and keeps its list of neighbours between items
+  (moving drops try to merge every other tick). Villagers looking for items to pick up ask an item where it is before
+  what it is, so a village near an item farm no longer costs a tag lookup per villager and item each tick. Swimming
+  mobs (fish, squid, drowned) search for paths without a new hash map for every node.
+- **The preset** (a button on its page) sets Horizon's own options as their descriptions advise for frame time:
+  Entity Culling on (it is off by default), Cave Culling on, and at most 16 chunk updates and 4 MiB of uploads a
+  frame, which keeps frames even while chunks load. It changes nothing else and saves with your options.
+- **Block face culling** (Sodium's skipping of faces turned away from the camera) is already in Horizon and on by
+  default, so Natrium doesn't add it twice; its page shows its state.
+
+Each part checks its own switch at the moment it runs, so turning one off in Options → Mods takes effect on the next
+frame or tick. To see what it gains on your machine, compare the FPS counter (F3) with Natrium on and off.
 
 ## Write a script mod
 
@@ -400,8 +429,13 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `via_auth.rs` (`net::hstudio_via_auth`) | ViaHorizon's sign-in with the account a join is made as |
 | `via_picker.rs`, `via_menu.rs` (`hstudio_via_picker`, `hstudio_via_menu`) | The multiplayer screen's button and the version picker (drawn with the design system's shapes and fonts) |
 | `via_net.rs` (`horizon_protocol::hstudio_via_net`) | In the protocol crate: ViaProxy's internal host, the redirect, OpenAuthMod's answers |
+| `natrium.rs` (`hstudio_natrium`) | Natrium's settings, its Options → Mods row and page, the preset |
+| `natrium_flags.rs` (`horizon_core::natrium`) | In the core crate, which the renderer and the server both read: Natrium's switches and counts |
+| `natrium_particles.rs` (`particles::natrium_particles`) | In the renderer: Horizon's particle loop, with the view test first |
+| `natrium_items.rs`, `natrium_villagers.rs`, `natrium_paths.rs` | Next to the code they speed up: item merging, villagers' item pickup, swimmers' path search |
 
-The hooks, HEAD hooks but for via-startup (via-address, via-srv and via-recv can answer in their function's place):
+The hooks, HEAD hooks but where it says otherwise (via-address, via-srv, via-recv and Natrium's particle, merge,
+pickup and swim hooks can answer in their function's place):
 
 | Hook | Target | For |
 |---|---|---|
@@ -416,9 +450,14 @@ The hooks, HEAD hooks but for via-startup (via-address, via-srv and via-recv can
 | via-menu-draw | `game::chat::Game::draw_link_prompt` | after the title screen draws: ViaHorizon's button on the multiplayer list, and its picker |
 | via-startup | `game::startup_menu::Loading::draw_menu` (a RETURN hook) | the same on the startup menu's title screen, before the game has loaded |
 | via-session, via-transfer | `net::Session::connect`, `connect_transferred` | the account the join is made as, for that sign-in |
+| natrium-view | `horizon_client_render::gfx::Renderer::camera_frustum` (RETURN) | the frame's view, for particle culling |
+| natrium-particles-render | `horizon_client_render::particles::ParticleEngine::render` | Natrium's particle loop in its place, while particle culling is on |
+| natrium-frame | `horizon_client_render::gfx::Renderer::render` | this frame's fog, and whether it hides what is past it |
+| natrium-fog | `horizon_client_render::gfx::resident::in_frustum` (RETURN) | a section wholly past that fog counts as out of view |
+| natrium-merge, natrium-pickups, natrium-swim | `entities::merge_with_neighbours`, `game::villagers::Game::villager_pickups`, `mobs::path::Finder::swim_neighbors` | Natrium's versions in their place, while faster ticks are on |
 | hud, key, command, zoom, list, settings, click | Horizon's [native hook points](https://github.com/horizon-rust/horizon/blob/main/crates/horizon-client/src/game/native_hooks.rs) | the HUD, keys, commands, `view.zoom`, the Options → Mods row and page |
 
-The first five, and ViaHorizon's, go beyond the stable hook points, so the bundle pins one Horizon commit (a Nightly's,
+The first five, ViaHorizon's and Natrium's go beyond the stable hook points, so the bundle pins one Horizon commit (a Nightly's,
 `compatibility.json`): the launcher builds it on that commit. Their bodies are free of macros, which the launcher's
 horizon-mixins (`0d6b103`) requires of a hooked function. The studio opens over the game's chat screen, which frees
 the pointer and keeps the world running while it takes the keyboard.
@@ -459,5 +498,7 @@ The built game needs resources prepared from your own Minecraft 26.3, as Horizon
 applies to the pinned Horizon and the modded game compiles. ViaHorizon's joins run end to end, through the game's
 network code and the real ViaProxy, against fake 1.8 servers. It has not been played in a running game yet: the
 drawing, layout and input are untested on screen, and ViaHorizon hasn't met a real server, so expect rough edges.
+Natrium's particle loop and item merging are checked against Horizon's own (the same vertices, the same items, tick
+after tick, in the staged game); what it gains in frames and ticks has not been measured on a real machine yet.
 
 License: MIT.

@@ -26,3 +26,7 @@ pub mod net {
     #[path = "../../mixins/horizon_studio/via.rs"]
     pub mod hstudio_via;
 }
+
+/// Natrium's switches, as horizon-core has them (`horizon_core::natrium`).
+#[path = "../mixins/horizon_studio/natrium_flags.rs"]
+pub mod natrium;

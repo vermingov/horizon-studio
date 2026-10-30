@@ -62,6 +62,12 @@ name = "hstudio_via_menu"
 source = "via_menu.rs"
 
 [[module]]
+id = "natrium"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_natrium"
+source = "natrium.rs"
+
+[[module]]
 id = "bridge"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_bridge"
@@ -189,6 +195,7 @@ kind = "HEAD"
 target = "horizon_client::game::native_hooks::Game<'_>::native_settings"
 helper = "settings.rs"
 bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
   { name = "mod_id", ty = "&str", value = "mod_id" },
   { name = "buttons", ty = "&mut Vec<String>", value = "&mut *buttons" },
 ]
@@ -303,4 +310,126 @@ bindings = [
   { name = "value", ty = "()", value = "$value" },
   { name = "loading", ty = "&mut super::Loading", value = "&mut *self" },
   { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
+]
+
+# Natrium: its switches in horizon-core (read by the renderer and the
+# server), its particle loop in the game's particles module.
+[[module]]
+id = "natrium-flags"
+file = "crates/horizon-core/src/lib.rs"
+name = "natrium"
+source = "natrium_flags.rs"
+visibility = "pub"
+
+[[module]]
+id = "natrium-particles"
+file = "crates/horizon-client-render/src/particles.rs"
+name = "natrium_particles"
+source = "natrium_particles.rs"
+
+# The frame's camera frustum, kept for particle culling.
+[[injection]]
+id = "natrium-view"
+kind = "RETURN"
+target = "horizon_client_render::gfx::Renderer::camera_frustum"
+helper = "natrium_view.rs"
+bindings = [
+  { name = "value", ty = "Frustum", value = "$value" },
+]
+
+# Particles: Natrium's loop, which leaves out those outside the view.
+[[injection]]
+id = "natrium-particles-render"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client_render::particles::ParticleEngine::render"
+helper = "natrium_render.rs"
+bindings = [
+  { name = "engine", ty = "&ParticleEngine", value = "self" },
+  { name = "camera", ty = "DVec3", value = "camera" },
+  { name = "yaw", ty = "f32", value = "yaw" },
+  { name = "pitch", ty = "f32", value = "pitch" },
+  { name = "partial", ty = "f32", value = "partial" },
+  { name = "light_at", ty = "&dyn Fn([i32; 3]) -> u8", value = "light_at" },
+  { name = "out", ty = "&mut Vec<Vertex>", value = "&mut *out" },
+]
+
+# Each frame: whether fog culling applies, and where the fog ends.
+[[injection]]
+id = "natrium-frame"
+kind = "HEAD"
+target = "horizon_client_render::gfx::Renderer::render"
+helper = "natrium_frame.rs"
+bindings = [
+  { name = "renderer", ty = "&Renderer", value = "&*self" },
+  { name = "frame", ty = "&Frame<'_>", value = "frame" },
+]
+
+# Sections wholly inside that fog are left out of the frame.
+[[injection]]
+id = "natrium-fog"
+kind = "RETURN"
+target = "horizon_client_render::gfx::resident::in_frustum"
+helper = "natrium_fog.rs"
+bindings = [
+  { name = "value", ty = "Option<(f64, Vec3)>", value = "$value" },
+]
+
+
+# Natrium's faster ticks: the same results, less work.
+[[module]]
+id = "natrium-items"
+file = "crates/horizon-client/src/entities.rs"
+name = "natrium_items"
+source = "natrium_items.rs"
+
+[[module]]
+id = "natrium-villagers"
+file = "crates/horizon-client/src/game/villagers.rs"
+name = "natrium_villagers"
+source = "natrium_villagers.rs"
+
+[[module]]
+id = "natrium-paths"
+file = "crates/horizon-client/src/mobs/path.rs"
+name = "natrium_paths"
+source = "natrium_paths.rs"
+
+# Item merging: each stack's size looked up once, the neighbour list kept.
+[[injection]]
+id = "natrium-merge"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::entities::merge_with_neighbours"
+helper = "natrium_merge.rs"
+bindings = [
+  { name = "items", ty = "&mut [ItemEntity]", value = "&mut *items" },
+  { name = "removed", ty = "&mut [bool]", value = "&mut *removed" },
+  { name = "cells", ty = "&mut ItemCells", value = "&mut *cells" },
+  { name = "i", ty = "usize", value = "i" },
+  { name = "max_stack", ty = "&dyn Fn(&ItemStack) -> u32", value = "max_stack" },
+]
+
+# Villagers' item pickup: where an item is before what it is.
+[[injection]]
+id = "natrium-pickups"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::villagers::Game<'_>::villager_pickups"
+helper = "natrium_pickups.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+# Swimmers' path search: a node's sides in an array, not a hash map.
+[[injection]]
+id = "natrium-swim"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::mobs::path::Finder<'_,'_>::swim_neighbors"
+helper = "natrium_swim.rs"
+bindings = [
+  { name = "finder", ty = "&mut Finder<'_, '_>", value = "&mut *self" },
+  { name = "pos", ty = "u32", value = "pos" },
+  { name = "out", ty = "&mut Vec<u32>", value = "&mut *out" },
 ]
