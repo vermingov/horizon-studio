@@ -245,6 +245,26 @@ pub enum MenuCmd {
     LogEnd,
     /// The agent's conversation started afresh.
     NewConversation,
+    /// A mod's commands, by its id.
+    Mod(String, ModCmd),
+    /// The editor's file read again from disk, its unsaved edits dropped as
+    /// one edit (Ctrl+Z brings them back).
+    Revert,
+}
+
+/// What a mod's menu does to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModCmd {
+    /// Its main file opened.
+    Edit,
+    Reload,
+    /// Turned on or off.
+    Toggle,
+    /// The Rename and Duplicate prompts for it.
+    Rename,
+    Duplicate,
+    /// Its error, and the traceback, to the clipboard.
+    CopyError,
 }
 
 /// The editor's commands in its menu.
@@ -470,8 +490,9 @@ impl Menu {
 /// What the naming prompt names: a new script or module (Tab or its switch
 /// goes from one to the other), the editor's code saved as a new script
 /// (Save File), the agent's model, a new file of the module in that
-/// folder, a module's file renamed, or (asking, nothing typed) a mod's
-/// file or the whole mod going to the trash.
+/// folder, a module's file renamed, (asking, nothing typed) a mod's file or
+/// the whole mod going to the trash, or the mod with this id renamed or
+/// copied.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum NamingKind {
     #[default]
@@ -482,6 +503,8 @@ pub enum NamingKind {
     NewFile(PathBuf),
     Rename(PathBuf),
     Delete(PathBuf),
+    RenameMod(String),
+    Duplicate(String),
 }
 
 /// The editor's scroll bar as drawn: where it is across, its track's top and height, the thumb's
@@ -2888,6 +2911,8 @@ pub(crate) fn naming_plan(st: &Studio) -> Result<String, String> {
                 rel.unwrap_or_else(|| prompt_name(st, path))
             ))
         }
+        NamingKind::RenameMod(id) => st.rename_plan(id, typed),
+        NamingKind::Duplicate(id) => st.duplicate_plan(id, typed),
     }
 }
 
@@ -2930,6 +2955,23 @@ fn finish_naming(st: &mut Studio, game: &mut dyn GameApi) {
             st.add_file(game, &folder, &wanted).map(Some)
         }
         NamingKind::Rename(path) => st.rename_file(game, &path, &wanted).map(|_| None),
+        NamingKind::RenameMod(id) => st.rename_mod(game, &id, &wanted).map(|_| None),
+        NamingKind::Duplicate(id) => match st.duplicate_mod(game, &id, &wanted) {
+            // The copy is chosen in the Library, and opens in the Editor.
+            Ok(main) => {
+                if let Some(i) = st.s.mods.iter().position(|m| m.main == main) {
+                    st.s.ui.library_sel = i;
+                }
+                let new_id = super::hstudio::mod_id(&wanted);
+                notice(st, format!("Made {new_id}, turned off"));
+                let editing = st.s.ui.tab == Tab::Editor;
+                if editing {
+                    st.save_before_switch(game, Some(&main));
+                }
+                Ok(editing.then_some(main))
+            }
+            Err(e) => Err(e),
+        },
     };
     match made {
         Ok(Some(path)) => {
@@ -2937,7 +2979,10 @@ fn finish_naming(st: &mut Studio, game: &mut dyn GameApi) {
             st.s.ui.tab = Tab::Editor;
         }
         Ok(None) => {}
-        Err(e) => st.s.log(LogKind::Error, e),
+        Err(e) => {
+            notice(st, e.clone());
+            st.s.log(LogKind::Error, e);
+        }
     }
 }
 

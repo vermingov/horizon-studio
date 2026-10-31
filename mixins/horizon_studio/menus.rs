@@ -7,14 +7,16 @@
 // mods by id and files by path, never by their place in a list: a scan
 // between the menu opening and an item chosen can move them.
 
-use super::hstudio::{GameApi, Studio};
+use super::hstudio::{GameApi, ModState, Studio};
+use super::hstudio_examples::EXAMPLES;
 use super::hstudio_modfiles::{path_in, rel_in};
 use super::hstudio_ui::{
-    AREA_AGENT, AREA_LOG, Action, EditCmd, FIELD_AGENT, FieldCmd, Menu, MenuCmd, MenuItem, NamingKind, Panel,
+    AREA_AGENT, AREA_LOG, Action, EditCmd, FIELD_AGENT, FieldCmd, Menu, MenuCmd, MenuItem, ModCmd, NamingKind, Panel,
     ScriptRow, Spot, Tab, UiResult, act, agent_busy, agent_model, agent_new_conversation, agent_send, copy_text,
-    editor_pos, file_in_module, in_text_selection, inside, make_module, menu_pick, open_module, open_naming, open_path,
-    run_console_line, selected_text, set_agent_model, spot_at,
+    editor_pos, file_in_module, in_text_selection, inside, make_module, menu_pick, notice, open_module, open_naming,
+    open_path, run_console_line, selected_text, set_agent_model, spot_at,
 };
+use std::path::Path;
 
 /// A right press at the pointer: an open menu closes (a press on it does
 /// nothing), and the menu of what is under the pointer opens there, if it
@@ -77,12 +79,15 @@ fn open_spot(st: &mut Studio, game: &mut dyn GameApi, spot: Spot, rect: [f32; 4]
             }
             (field_items(st, field), None)
         }
+        Spot::File => (file_items(st), None),
+        Spot::Scripts => (scripts_items(st), None),
         Spot::Row(k) => (row_items(st, usize::from(k)), Some(rect)),
         Spot::Mod(k) => {
             let Some(i) = drawn_mod(st, k) else { return false };
             st.s.ui.library_sel = i;
             (library_items(st, i), Some(rect))
         }
+        Spot::Example(i) => (example_items(st, i), Some(rect)),
         _ => return false,
     };
     open(st, at, 0.0, items, target)
@@ -381,6 +386,13 @@ pub fn run(st: &mut Studio, game: &mut dyn GameApi, cmd: MenuCmd, place: [f32; 4
         MenuCmd::Copy(text) => copy_text(st, game, &text),
         MenuCmd::LogEnd => st.s.ui.log_scroll = 0,
         MenuCmd::NewConversation => agent_new_conversation(st),
+        MenuCmd::Mod(id, cmd) => return mod_cmd(st, game, &id, cmd),
+        MenuCmd::Revert => {
+            if st.s.editor.revert() {
+                st.s.editor.reloaded_at = Some(st.s.now);
+                notice(st, "Back to the saved file: Ctrl+Z brings your edits back");
+            }
+        }
     }
     UiResult::Used
 }
@@ -395,47 +407,210 @@ pub(crate) fn open_row_menu(st: &mut Studio, k: usize, at: [f32; 4]) {
     open(st, [at[0], at[1] + at[3]], at[3], items, target);
 }
 
-/// The items of row `k` of the script list: a module's (a new file, its
-/// main.lua, its folder, delete it), a file's (open, rename, delete: not
-/// main.lua, which starts the module) or a script's (make it a module,
-/// delete it). The scratch file has none.
+/// The items of row `k` of the script list. A script's: Open (unless it is
+/// open), then its mod's. A module's: New file, Open main.lua, then its
+/// mod's. A module's file: Open, Rename and Delete (not main.lua, which
+/// starts the module), its folder and its path. The scratch file's: Open,
+/// or Run and Save as a script while it is open, its folder and its path.
 fn row_items(st: &Studio, k: usize) -> Vec<MenuItem> {
     let Some(row) = st.s.ui.script_rows.get(k).cloned() else {
         return Vec::new();
     };
+    let open = st.s.editor.path.clone();
+    let open_item =
+        |path: &Path| (open.as_deref() != Some(path)).then(|| MenuItem::new("Open", MenuCmd::Open(path.to_path_buf())));
     match row {
-        ScriptRow::Scratch => Vec::new(),
+        ScriptRow::Scratch => {
+            let path = st.scratch_path();
+            let mut items: Vec<MenuItem> = Vec::new();
+            if open.as_deref() == Some(path.as_path()) {
+                items.push(MenuItem::new("Run", MenuCmd::Act(Action::Run)).keys("Ctrl ⏎"));
+                items.push(MenuItem::new("Save as a script...", MenuCmd::Act(Action::SaveFile)));
+            } else {
+                items.push(MenuItem::new("Open", MenuCmd::Act(Action::EditScratch)));
+            }
+            items.push(MenuItem::separator());
+            items.push(MenuItem::new("Show in folder", MenuCmd::Reveal(st.s.dir.clone())));
+            items.push(copy_path(&path));
+            items
+        }
         ScriptRow::Module { id, .. } => {
-            let Some(folder) = st.s.mods.iter().find(|m| m.id == id).and_then(|m| m.folder.clone()) else {
+            let Some(i) = st.s.mods.iter().position(|m| m.id == id) else {
                 return Vec::new();
             };
-            vec![
+            let Some(folder) = st.s.mods[i].folder.clone() else {
+                return Vec::new();
+            };
+            let mut items = vec![
                 MenuItem::new("New file...", MenuCmd::NewFile(folder.clone())),
                 MenuItem::new("Open main.lua", MenuCmd::Open(folder.join("main.lua"))),
-                MenuItem::new("Show in folder", MenuCmd::Reveal(folder.clone())),
-                MenuItem::new("Delete module...", MenuCmd::Delete(folder)).danger(),
-            ]
+                MenuItem::separator(),
+            ];
+            items.extend(mod_items(st, i, false));
+            items
         }
         ScriptRow::File { path, rel, .. } => {
             let main = rel == "main.lua";
-            vec![
-                MenuItem::new("Open", MenuCmd::Open(path.clone())),
-                MenuItem::new("Rename...", MenuCmd::Rename(path.clone())).enabled(!main),
-                MenuItem::new("Delete...", MenuCmd::Delete(path))
+            let mut items: Vec<MenuItem> = open_item(&path).into_iter().collect();
+            items.push(MenuItem::new("Rename...", MenuCmd::Rename(path.clone())).enabled(!main));
+            items.push(
+                MenuItem::new("Delete...", MenuCmd::Delete(path.clone()))
                     .enabled(!main)
                     .danger(),
-            ]
+            );
+            items.push(MenuItem::separator());
+            if let Some(dir) = path.parent() {
+                items.push(MenuItem::new("Show in folder", MenuCmd::Reveal(dir.to_path_buf())));
+            }
+            items.push(copy_path(&path));
+            items
         }
         ScriptRow::Script { path, .. } => {
-            let Some(id) = st.mod_of_path(&path).map(|i| st.s.mods[i].id.clone()) else {
+            let Some(i) = st.mod_of_path(&path) else {
                 return Vec::new();
             };
-            vec![
-                MenuItem::new("Make it a module", MenuCmd::MakeModule(id)),
-                MenuItem::new("Delete...", MenuCmd::Delete(path)).danger(),
-            ]
+            let mut items: Vec<MenuItem> = open_item(&path).into_iter().collect();
+            items.push(MenuItem::separator());
+            items.extend(mod_items(st, i, false));
+            items
         }
     }
+}
+
+/// Copy path: `path` to the clipboard, as the system writes it.
+fn copy_path(path: &Path) -> MenuItem {
+    MenuItem::new("Copy path", MenuCmd::Copy(path.display().to_string()))
+}
+
+/// What every mod's menu has, after what its list puts first: Reload, Turn
+/// off or on, Rename, Duplicate, Make it a module (a script), Delete, its
+/// folder and its path, and for a mod that failed Copy the error. With
+/// `keys`, the Library's keys for them.
+fn mod_items(st: &Studio, i: usize, keys: bool) -> Vec<MenuItem> {
+    let Some(m) = st.s.mods.get(i) else {
+        return Vec::new();
+    };
+    let key = |it: MenuItem, k: &str| if keys { it.keys(k) } else { it };
+    let cmd = |c: ModCmd| MenuCmd::Mod(m.id.clone(), c);
+    let toggle = if m.enabled { "Turn off" } else { "Turn on" };
+    let mut items = vec![
+        key(MenuItem::new("Reload", cmd(ModCmd::Reload)), "R"),
+        key(MenuItem::new(toggle, cmd(ModCmd::Toggle)), "Space"),
+        MenuItem::separator(),
+        MenuItem::new("Rename...", cmd(ModCmd::Rename)),
+        MenuItem::new("Duplicate...", cmd(ModCmd::Duplicate)),
+    ];
+    let (folder, path) = match &m.folder {
+        Some(f) => {
+            items.push(MenuItem::new("Delete module...", MenuCmd::Delete(f.clone())).danger());
+            (f.clone(), f.clone())
+        }
+        None => {
+            items.push(key(
+                MenuItem::new("Make it a module", MenuCmd::MakeModule(m.id.clone())),
+                "M",
+            ));
+            items.push(MenuItem::new("Delete...", MenuCmd::Delete(m.main.clone())).danger());
+            (st.s.mods_dir(), m.main.clone())
+        }
+    };
+    items.push(MenuItem::separator());
+    items.push(MenuItem::new("Show in folder", MenuCmd::Reveal(folder)));
+    items.push(copy_path(&path));
+    if matches!(m.state, ModState::Failed(..)) {
+        items.push(MenuItem::separator());
+        items.push(MenuItem::new("Copy the error", cmd(ModCmd::CopyError)));
+    }
+    items
+}
+
+/// The script list's own menu (and the Library list's), off its rows: a
+/// new script, module or file, Reload all, and the mods folder.
+fn scripts_items(st: &Studio) -> Vec<MenuItem> {
+    let mut items = new_items(st);
+    items.push(MenuItem::separator());
+    items.push(MenuItem::new("Reload all", MenuCmd::Act(Action::ReloadAll)));
+    items.push(MenuItem::new("Open the mods folder", MenuCmd::Act(Action::OpenFolder)));
+    items
+}
+
+/// An example's menu in the Library: Install it (or Edit it, installed),
+/// and Copy its code.
+fn example_items(st: &Studio, i: usize) -> Vec<MenuItem> {
+    let Some(ex) = EXAMPLES.get(i) else {
+        return Vec::new();
+    };
+    let first = if st.s.mods.iter().any(|m| m.id == ex.id) {
+        MenuItem::new("Edit", MenuCmd::Mod(ex.id.to_owned(), ModCmd::Edit))
+    } else {
+        MenuItem::new("Install", MenuCmd::Act(Action::Install(i)))
+    };
+    vec![
+        first,
+        MenuItem::new("Copy its code", MenuCmd::Copy(ex.source.to_owned())),
+    ]
+}
+
+/// The menu of the editor's file (its title, Synapse's tab): Save, Save as
+/// a script (scratch code, a file of no mod), Revert to saved (with unsaved
+/// edits), Rename (a mod's file: a module's other file by itself, else the
+/// mod), its folder and its path.
+fn file_items(st: &Studio) -> Vec<MenuItem> {
+    let ed = &st.s.editor;
+    let Some(path) = ed.path.clone() else {
+        return Vec::new();
+    };
+    let owner = st.mod_of_path(&path);
+    let mut items = vec![MenuItem::new("Save", MenuCmd::Act(Action::Save)).keys("Ctrl S")];
+    if owner.is_none() {
+        items.push(MenuItem::new("Save as a script...", MenuCmd::Act(Action::SaveFile)));
+    }
+    items.push(MenuItem::new("Revert to saved", MenuCmd::Revert).enabled(ed.dirty && path.is_file()));
+    items.push(MenuItem::separator());
+    if let Some(i) = owner {
+        let m = &st.s.mods[i];
+        let other = m
+            .folder
+            .as_deref()
+            .and_then(|f| rel_in(f, &path))
+            .filter(|r| r != "main.lua");
+        items.push(match other {
+            Some(_) => MenuItem::new("Rename...", MenuCmd::Rename(path.clone())),
+            None => MenuItem::new("Rename...", MenuCmd::Mod(m.id.clone(), ModCmd::Rename)),
+        });
+    }
+    if let Some(dir) = path.parent() {
+        items.push(MenuItem::new("Show in folder", MenuCmd::Reveal(dir.to_path_buf())));
+    }
+    items.push(copy_path(&path));
+    items
+}
+
+/// A mod's command from its menu, the mod found by id now (a scan since
+/// the menu opened may have moved it, or taken it away).
+fn mod_cmd(st: &mut Studio, game: &mut dyn GameApi, id: &str, cmd: ModCmd) -> UiResult {
+    let Some(i) = st.s.mods.iter().position(|m| m.id == id) else {
+        notice(st, format!("{id} is gone"));
+        return UiResult::Used;
+    };
+    match cmd {
+        ModCmd::Edit => return act(st, game, Action::Edit(i)),
+        ModCmd::Reload => return act(st, game, Action::Reload(i)),
+        ModCmd::Toggle => return act(st, game, Action::Toggle(i)),
+        ModCmd::Rename => open_naming(st, NamingKind::RenameMod(id.to_owned()), id),
+        ModCmd::Duplicate => open_naming(st, NamingKind::Duplicate(id.to_owned()), &format!("{id}_copy")),
+        ModCmd::CopyError => {
+            if let ModState::Failed(msg, trace) = &st.s.mods[i].state {
+                let text = if trace.is_empty() {
+                    msg.clone()
+                } else {
+                    format!("{msg}\n{trace}")
+                };
+                copy_text(st, game, &text);
+            }
+        }
+    }
+    UiResult::Used
 }
 
 /// The Library's menu of mod `i`, under `at` (its "..."), its row outlined.
@@ -449,18 +624,19 @@ pub(crate) fn open_library_menu(st: &mut Studio, i: usize, at: [f32; 4]) {
     open(st, [at[0], at[1] + at[3] + 4.0], at[3], items, target);
 }
 
-/// The Library's items for mod `i`: a module's files (one chosen opens), a
-/// new file, renaming and deleting the one of its files the editor has open
-/// (not main.lua), its folder, and deleting it; a script's Make it a module
-/// and Delete. In the executor styles, which have no script list, a
-/// module's files are reached so.
+/// The Library's items for mod `i` (its "...", the . key, a right click on
+/// its row): a module's files (one chosen opens), New file, and Rename and
+/// Delete for the one of its files the editor has open (not main.lua); a
+/// script's Edit; then what every mod's menu has, with the Library's keys.
+/// In the executor styles, which have no script list, a module's files are
+/// reached so.
 fn library_items(st: &Studio, i: usize) -> Vec<MenuItem> {
     const SHOWN: usize = 12;
     let Some(m) = st.s.mods.get(i) else {
         return Vec::new();
     };
     let open = st.s.editor.path.clone();
-    match &m.folder {
+    let mut items = match &m.folder {
         Some(folder) => {
             let files = m.files();
             let mut items: Vec<MenuItem> = files
@@ -480,22 +656,20 @@ fn library_items(st: &Studio, i: usize) -> Vec<MenuItem> {
                 )));
             }
             items.push(MenuItem::separator());
-            items.push(MenuItem::new("New file...", MenuCmd::NewFile(folder.clone())));
+            items.push(MenuItem::new("New file...", MenuCmd::NewFile(folder.clone())).keys("F"));
             if let Some(path) = open.filter(|p| p.starts_with(folder))
                 && let Some(rel) = rel_in(folder, &path).filter(|r| r != "main.lua")
             {
                 items.push(MenuItem::new(format!("Rename {rel}..."), MenuCmd::Rename(path.clone())));
                 items.push(MenuItem::new(format!("Delete {rel}..."), MenuCmd::Delete(path)).danger());
             }
-            items.push(MenuItem::new("Show in folder", MenuCmd::Reveal(folder.clone())));
-            items.push(MenuItem::new("Delete module...", MenuCmd::Delete(folder.clone())).danger());
             items
         }
-        None => vec![
-            MenuItem::new("Make it a module", MenuCmd::MakeModule(m.id.clone())),
-            MenuItem::new("Delete...", MenuCmd::Delete(m.main.clone())).danger(),
-        ],
-    }
+        None => vec![MenuItem::new("Edit", MenuCmd::Mod(m.id.clone(), ModCmd::Edit)).keys("⏎")],
+    };
+    items.push(MenuItem::separator());
+    items.extend(mod_items(st, i, true));
+    items
 }
 
 /// The script list's + menu, under the + (`at`, where it was drawn).

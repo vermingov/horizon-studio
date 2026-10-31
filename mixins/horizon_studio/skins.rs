@@ -182,6 +182,9 @@ fn synapse(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         };
         let tw = (p.measure(&label, 12.0, Font::Regular) + 26.0).min(area[2] - 40.0);
         p.rect([area[0], area[1], tw, 24.0], 3.0, c.plate_soft);
+        st.s.ui
+            .hits
+            .push(([area[0], area[1], tw, 24.0], Action::Spot(Spot::File)));
         let label = p.fit(&label, tw - 20.0, 12.0, Font::Regular);
         p.text(
             &label,
@@ -265,6 +268,8 @@ fn script_list(st: &mut Studio, p: &mut P, x: f32, y: f32, w: f32, h: f32, dt: f
     p.text("Scripts", x + 4.0, top(y + 12.0, 11.0), 11.0, Font::Medium, c.muted);
     let list = [x, y + 24.0, w, h - 24.0];
     p.rect(list, 2.0, c.plate_soft);
+    // Its own menu, under its rows'.
+    st.s.ui.hits.push(([x, y, w, h], Action::Spot(Spot::Scripts)));
     let row_h = 21.0;
     let rows = (((list[3] - 8.0) / row_h).floor() as usize).max(1);
     let all = script_rows(st);

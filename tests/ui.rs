@@ -1463,7 +1463,10 @@ fn a_rows_menu_adds_renames_and_deletes_files() {
         [
             ("Open".to_owned(), true),
             ("Rename...".to_owned(), true),
-            ("Delete...".to_owned(), true)
+            ("Delete...".to_owned(), true),
+            (String::new(), false),
+            ("Show in folder".to_owned(), true),
+            ("Copy path".to_owned(), true)
         ]
     );
     handle(&mut st, &mut game, key(Key::Escape, NONE));
@@ -1473,7 +1476,7 @@ fn a_rows_menu_adds_renames_and_deletes_files() {
     let main = text_at(&game, "main.lua");
     right_click(&mut st, &mut game, (main.0 + 2.0, main.1 + 2.0));
     assert_eq!(
-        menu_labels(&st),
+        menu_labels(&st)[..3],
         [
             ("Open".to_owned(), true),
             ("Rename...".to_owned(), false),
@@ -1483,10 +1486,22 @@ fn a_rows_menu_adds_renames_and_deletes_files() {
     handle(&mut st, &mut game, key(Key::Escape, NONE));
     // The module's row: its menu, and its + for a new file.
     right_click(&mut st, &mut game, (kit.0 + 2.0, kit.1 + 2.0));
-    let labels: Vec<String> = menu_labels(&st).into_iter().map(|(l, _)| l).collect();
     assert_eq!(
-        labels,
-        ["New file...", "Open main.lua", "Show in folder", "Delete module..."]
+        menu_items(&st),
+        [
+            "New file...",
+            "Open main.lua",
+            "",
+            "Reload",
+            "Turn off",
+            "",
+            "Rename...",
+            "Duplicate...",
+            "Delete module...",
+            "",
+            "Show in folder",
+            "Copy path"
+        ]
     );
     handle(&mut st, &mut game, key(Key::Escape, NONE));
     handle(&mut st, &mut game, Input::Mouse(kit.0 + 2.0, kit.1 + 2.0));
@@ -1811,8 +1826,16 @@ fn the_executor_styles_reach_a_modules_files_from_the_library() {
                 "shared.lua",
                 "",
                 "New file...",
+                "",
+                "Reload",
+                "Turn off",
+                "",
+                "Rename...",
+                "Duplicate...",
+                "Delete module...",
+                "",
                 "Show in folder",
-                "Delete module..."
+                "Copy path"
             ],
             "{theme}"
         );
@@ -1837,7 +1860,19 @@ fn the_executor_styles_reach_a_modules_files_from_the_library() {
         redraw(&mut st, &mut game);
         let dots = text_at(&game, "...");
         click(&mut st, &mut game, (dots.0 + 2.0, dots.1 + 2.0));
-        assert_eq!(menu_items(&st), ["Make it a module", "Delete..."], "{theme}");
+        assert_eq!(menu_items(&st)[0], "Edit", "{theme}");
+        assert!(
+            usable(&st).ends_with(&[
+                "Rename...".to_owned(),
+                "Duplicate...".to_owned(),
+                "Make it a module".to_owned(),
+                "Delete...".to_owned(),
+                "Show in folder".to_owned(),
+                "Copy path".to_owned()
+            ]),
+            "{theme}: {:?}",
+            menu_items(&st)
+        );
         redraw(&mut st, &mut game);
         let at = last_text_at(&game, "Make it a module");
         click(&mut st, &mut game, at);
@@ -1877,7 +1912,11 @@ fn the_library_keys_make_files_and_modules_and_open_its_menu() {
     assert_eq!(menu_items(&st)[0], "main.lua");
     redraw(&mut st, &mut game);
     let rect = st.s.ui.menu.as_ref().and_then(|m| m.rect).expect("drawn");
-    assert!(rect[1] > dots.1, "{rect:?} under {dots:?}");
+    assert!(
+        rect[0] <= dots.0 && dots.0 < rect[0] + rect[2],
+        "at its \"...\": {rect:?}"
+    );
+    assert!(within(rect, [0.0, 0.0, 960.0, 540.0]), "{rect:?}");
     handle(&mut st, &mut game, key(Key::Down, NONE));
     handle(&mut st, &mut game, key(Key::Down, NONE));
     handle(&mut st, &mut game, key(Key::Enter, NONE));
@@ -1889,7 +1928,33 @@ fn the_library_keys_make_files_and_modules_and_open_its_menu() {
     let via = text_at(&game, "ViaHorizon");
     right_click(&mut st, &mut game, (via.0 + 2.0, via.1 + 2.0));
     assert_eq!(st.s.mods[st.s.ui.library_sel].id, "viahorizon");
-    assert_eq!(menu_items(&st), ["Make it a module", "Delete..."]);
+    assert_eq!(
+        menu_items(&st),
+        [
+            "Edit",
+            "",
+            "Reload",
+            "Turn off",
+            "",
+            "Rename...",
+            "Duplicate...",
+            "Make it a module",
+            "Delete...",
+            "",
+            "Show in folder",
+            "Copy path"
+        ]
+    );
+    let hints: Vec<String> =
+        st.s.ui
+            .menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .map(|i| i.hint.clone())
+            .collect();
+    assert_eq!(hints[..4], ["⏎", "", "R", "Space"], "the Library's keys");
     handle(&mut st, &mut game, key(Key::Escape, NONE));
     // A big module's menu lists twelve of its files and says where the rest are.
     for n in 0..12 {
@@ -2070,8 +2135,20 @@ fn menus_read_and_fit_in_every_style() {
                 let (c, bg) = text_on(&game, label);
                 assert!(contrast(c, bg) >= 4.5, "{what}: {label} {c:06x} on {bg:06x}");
             }
-            for (k, label) in [(Key::Home, "main.lua"), (Key::End, "Delete module...")] {
-                handle(&mut st, &mut game, key(k, NONE));
+            // Lit: the first item (Home), then the second that starts with D.
+            for (typed, label) in [
+                (None, "main.lua"),
+                (Some("d"), "Duplicate..."),
+                (Some("d"), "Delete module..."),
+            ] {
+                match typed {
+                    None => {
+                        handle(&mut st, &mut game, key(Key::Home, NONE));
+                    }
+                    Some(t) => {
+                        handle(&mut st, &mut game, Input::Text(t.into()));
+                    }
+                }
                 redraw(&mut st, &mut game);
                 let (c, bg) = text_on(&game, label);
                 let plate = text_on(&game, "New file...").1;
@@ -2292,9 +2369,9 @@ fn a_click_outside_closes_the_menu_and_goes_no_further() {
             .and_then(|m| m.target)
             .expect("its row is outlined");
     assert!(target[1] <= hello.1 && hello.1 < target[1] + target[3], "{target:?}");
-    // A right press on another row puts that row's menu in its place.
+    // A right press on another row (left of the menu) puts that row's menu in its place.
     let kit = text_at(&game, "kit/");
-    right_click(&mut st, &mut game, (kit.0 + 2.0, kit.1 + 2.0));
+    right_click(&mut st, &mut game, (kit.0 - 10.0, kit.1 + 2.0));
     assert_eq!(menu_items(&st)[0], "New file...");
     // A left click outside closes it, and the tab under it stays as it was.
     redraw(&mut st, &mut game);
@@ -2644,4 +2721,302 @@ fn no_menu_on_the_scroll_bar_the_suggestions_or_a_banner() {
     let said = text_at(&game, "This file changed on disk while you were editing it.");
     right_click(&mut st, &mut game, (said.0 + 2.0, said.1 + 4.0));
     assert!(st.s.ui.menu.is_none(), "the banner");
+}
+
+/// Empties the naming prompt's field.
+fn clear_field(st: &mut horizon_studio::game::hstudio::Studio, game: &mut FakeGame) {
+    let n = st.s.ui.naming.as_ref().map_or(0, |n| n.text.chars().count());
+    handle(st, game, key(Key::End, NONE));
+    for _ in 0..n {
+        handle(st, game, key(Key::Backspace, NONE));
+    }
+}
+
+#[test]
+fn the_script_list_renames_a_mod_and_the_editor_follows() {
+    use horizon_studio::game::hstudio_ui::NamingKind;
+    let mut game = FakeGame::new("ui-rename-mod");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    let i = mod_index(&st, "hello");
+    st.edit_mod(i);
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    st.s.editor.click(0, 0, false);
+    type_text(&mut st, &mut game, "-- mine\n");
+    redraw(&mut st, &mut game);
+    let row = last_text_at(&game, "hello.lua");
+    right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
+    assert!(!menu_items(&st).contains(&"Open".to_owned()), "it is open");
+    choose(&mut st, &mut game, "Rename...");
+    assert_eq!(st.s.ui.naming_kind, NamingKind::RenameMod("hello".into()));
+    assert_eq!(st.s.ui.naming.as_ref().map(|n| n.text.as_str()), Some("hello"));
+    clear_field(&mut st, &mut game);
+    type_text(&mut st, &mut game, "greeter");
+    redraw(&mut st, &mut game);
+    assert!(drawn_contains(&game, "Rename hello.lua"));
+    assert!(drawn_contains(&game, "hello.lua becomes greeter.lua"));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    let mods = game.mods_dir();
+    assert!(mods.join("greeter.lua").is_file() && !mods.join("hello.lua").exists());
+    assert_eq!(st.s.mods[i].id, "greeter", "in hello's place");
+    assert!(st.s.mods[i].running());
+    assert_eq!(st.s.editor.path.as_ref(), Some(&mods.join("greeter.lua")));
+    assert_eq!(st.s.editor.title, "greeter.lua");
+    // The edit was saved first; the name in the Library follows the id it was.
+    assert!(
+        st.s.editor.text().starts_with("-- mine\n-- name: greeter\n"),
+        "{}",
+        st.s.editor.text()
+    );
+    assert!(!st.s.editor.dirty);
+    assert_eq!(st.s.mods[i].name, "greeter");
+    // Ctrl+Z takes back the name, then the edit.
+    handle(&mut st, &mut game, key(Key::Char('z'), CTRL));
+    assert!(st.s.editor.text().starts_with("-- mine\n-- name: Hello\n"));
+    for _ in 0..10 {
+        handle(&mut st, &mut game, key(Key::Char('z'), CTRL));
+    }
+    assert!(
+        st.s.editor.text().starts_with("-- name: Hello\n"),
+        "{}",
+        st.s.editor.text()
+    );
+}
+
+#[test]
+fn duplicate_makes_a_copy_that_starts_off() {
+    let mut game = FakeGame::new("ui-duplicate-mod");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    redraw(&mut st, &mut game);
+    let row = last_text_at(&game, "hello.lua");
+    right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
+    choose(&mut st, &mut game, "Duplicate...");
+    assert_eq!(st.s.ui.naming.as_ref().map(|n| n.text.as_str()), Some("hello_copy"));
+    redraw(&mut st, &mut game);
+    assert!(drawn_contains(&game, "Duplicate hello.lua"));
+    assert!(drawn_contains(&game, "hello_copy.lua: a copy of hello.lua, turned off"));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    let copy = game.mods_dir().join("hello_copy.lua");
+    assert!(
+        std::fs::read_to_string(&copy)
+            .unwrap()
+            .starts_with("-- name: hello_copy\n")
+    );
+    let c = mod_index(&st, "hello_copy");
+    assert!(!st.s.mods[c].enabled);
+    assert_eq!(st.s.ui.library_sel, c, "chosen in the Library");
+    assert_eq!(st.s.editor.path.as_ref(), Some(&copy), "open in the editor");
+    assert!(
+        std::fs::read_to_string(st.s.dir.join("studio.txt"))
+            .unwrap()
+            .contains("off:hello_copy")
+    );
+    // Its menu turns it on (where it fails: its /hello is hello's).
+    redraw(&mut st, &mut game);
+    let row = last_text_at(&game, "hello_copy.lua");
+    right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
+    choose(&mut st, &mut game, "Turn on");
+    assert!(st.s.mods[c].enabled);
+    assert!(st.s.mods[mod_index(&st, "hello")].running(), "the original runs on");
+}
+
+#[test]
+fn delete_asks_first_and_moves_the_mod_to_the_trash() {
+    let mut game = FakeGame::new("ui-delete-mod");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    let i = mod_index(&st, "hello");
+    st.edit_mod(i);
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    redraw(&mut st, &mut game);
+    let row = last_text_at(&game, "hello.lua");
+    right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
+    let menu = st.s.ui.menu.clone().unwrap();
+    assert!(menu.items.iter().any(|it| it.label == "Delete..." && it.danger));
+    choose(&mut st, &mut game, "Delete...");
+    redraw(&mut st, &mut game);
+    assert!(drawn_contains(&game, "Delete hello.lua?"));
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    let hello = game.mods_dir().join("hello.lua");
+    assert!(hello.is_file(), "Escape deletes nothing");
+    redraw(&mut st, &mut game);
+    right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
+    choose(&mut st, &mut game, "Delete...");
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert!(!hello.exists() && st.s.dir.join("trash").join("hello.lua").is_file());
+    assert!(!st.s.mods.iter().any(|m| m.id == "hello"));
+    assert_eq!(st.s.editor.title, "scratch.lua");
+    assert!(
+        !std::fs::read_to_string(st.s.dir.join("studio.txt"))
+            .unwrap()
+            .contains("off:hello")
+    );
+}
+
+#[test]
+fn library_rows_have_the_mods_menu() {
+    let mut game = FakeGame::new("ui-library-menus");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.create_module(&mut game, "Kit").unwrap();
+    handle(&mut st, &mut game, key(Key::Char('3'), CTRL));
+    st.s.ui.library_sel = mod_index(&st, "uikit");
+    redraw(&mut st, &mut game);
+    // A right click on a row chooses it; Turn off turns it off.
+    let hello = text_at(&game, "Your first script mod. Type /hello in chat, then o…");
+    right_click(&mut st, &mut game, (hello.0 + 2.0, hello.1 + 2.0));
+    let h = mod_index(&st, "hello");
+    assert_eq!(st.s.ui.library_sel, h);
+    choose(&mut st, &mut game, "Turn off");
+    assert!(!st.s.mods[h].enabled);
+    redraw(&mut st, &mut game);
+    right_click(&mut st, &mut game, (hello.0 + 2.0, hello.1 + 2.0));
+    assert!(menu_items(&st).contains(&"Turn on".to_owned()));
+    // Show in folder: the mods folder for a script, its own for a module.
+    choose(&mut st, &mut game, "Show in folder");
+    assert_eq!(game.opened.last(), Some(&game.mods_dir()));
+    st.s.ui.library_sel = mod_index(&st, "kit");
+    redraw(&mut st, &mut game);
+    handle(&mut st, &mut game, Input::Text(".".into()));
+    choose(&mut st, &mut game, "Show in folder");
+    assert_eq!(game.opened.last(), Some(&game.mods_dir().join("kit")));
+    // An example's menu installs it, and copies its code.
+    redraw(&mut st, &mut game);
+    let clock = text_at(&game, "Clock");
+    right_click(&mut st, &mut game, (clock.0 + 2.0, clock.1 + 2.0));
+    assert_eq!(menu_items(&st), ["Install", "Copy its code"]);
+    choose(&mut st, &mut game, "Copy its code");
+    assert!(game.clipboard.contains("-- name:"), "{}", game.clipboard);
+    redraw(&mut st, &mut game);
+    right_click(&mut st, &mut game, (clock.0 + 2.0, clock.1 + 2.0));
+    choose(&mut st, &mut game, "Install");
+    assert!(st.s.mods.iter().any(|m| m.id == "clock"));
+    // The list's own menu, off its rows.
+    redraw(&mut st, &mut game);
+    let title = text_at(&game, "Script mods");
+    right_click(&mut st, &mut game, (title.0 + 2.0, title.1 + 2.0));
+    assert_eq!(
+        menu_items(&st),
+        [
+            "New script...",
+            "New module...",
+            "",
+            "Reload all",
+            "Open the mods folder"
+        ]
+    );
+}
+
+#[test]
+fn a_mod_gone_since_its_menu_opened_is_said_to_be_gone() {
+    let mut game = FakeGame::new("ui-menu-gone");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    game.write_mod("zz.lua", "print('zz')\n");
+    run_for(&mut st, &mut game, 0.6);
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    redraw(&mut st, &mut game);
+    let row = text_at(&game, "zz.lua");
+    right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
+    redraw(&mut st, &mut game);
+    std::fs::remove_file(game.mods_dir().join("zz.lua")).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    let at = last_text_at(&game, "Turn off");
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.ui.notice.as_ref().map(|n| n.0.as_str()), Some("zz is gone"));
+    assert!(st.s.mods.iter().all(|m| m.enabled), "no other mod turned off");
+}
+
+#[test]
+fn the_files_menu_saves_reverts_and_renames() {
+    use horizon_studio::game::hstudio_ui::NamingKind;
+    let mut game = FakeGame::new("ui-file-menu");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    redraw(&mut st, &mut game);
+    // The scratch file: Save as a script, and its folder.
+    let title = text_at(&game, "scratch.lua");
+    right_click(&mut st, &mut game, (title.0 + 2.0, title.1 + 2.0));
+    assert_eq!(
+        usable(&st),
+        ["Save", "Save as a script...", "Show in folder", "Copy path"]
+    );
+    choose(&mut st, &mut game, "Copy path");
+    assert_eq!(game.clipboard, st.s.dir.join("scratch.lua").display().to_string());
+    // A mod's file: Revert to saved drops the edits, and Ctrl+Z brings them back.
+    let i = mod_index(&st, "hello");
+    st.edit_mod(i);
+    let saved = st.s.editor.text();
+    st.s.editor.click(0, 0, false);
+    type_text(&mut st, &mut game, "-- mine\n");
+    redraw(&mut st, &mut game);
+    let title = text_at(&game, "hello.lua");
+    right_click(&mut st, &mut game, (title.0 + 2.0, title.1 + 2.0));
+    assert_eq!(
+        usable(&st),
+        ["Save", "Revert to saved", "Rename...", "Show in folder", "Copy path"]
+    );
+    choose(&mut st, &mut game, "Revert to saved");
+    assert_eq!(st.s.editor.text(), saved);
+    assert!(!st.s.editor.dirty);
+    handle(&mut st, &mut game, key(Key::Char('z'), CTRL));
+    assert!(st.s.editor.text().starts_with("-- mine\n"));
+    assert!(st.s.editor.dirty);
+    // Rename names the mod.
+    redraw(&mut st, &mut game);
+    right_click(&mut st, &mut game, (title.0 + 2.0, title.1 + 2.0));
+    choose(&mut st, &mut game, "Rename...");
+    assert_eq!(st.s.ui.naming_kind, NamingKind::RenameMod("hello".into()));
+}
+
+#[test]
+fn the_script_lists_own_menu_and_synapses() {
+    use horizon_studio::game::hstudio_theme::THEMES;
+    let mut game = FakeGame::new("ui-scripts-menu");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.create_module(&mut game, "Kit").unwrap();
+    st.open_file(&game.mods_dir().join("kit").join("lib.lua"));
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    redraw(&mut st, &mut game);
+    let title = text_at(&game, "Scripts");
+    right_click(&mut st, &mut game, (title.0 + 2.0, title.1 + 2.0));
+    assert_eq!(
+        menu_items(&st),
+        [
+            "New script...",
+            "New module...",
+            "",
+            "New file in kit...",
+            "",
+            "Reload all",
+            "Open the mods folder"
+        ]
+    );
+    choose(&mut st, &mut game, "Open the mods folder");
+    assert_eq!(game.opened.last(), Some(&game.mods_dir()));
+    // Synapse's list and its file's tab have the same menus.
+    st.s.ui.look.theme = THEMES.iter().position(|t| t.id == "synapse").unwrap();
+    redraw(&mut st, &mut game);
+    let title = text_at(&game, "Scripts");
+    right_click(&mut st, &mut game, (title.0 + 2.0, title.1 + 2.0));
+    assert_eq!(menu_items(&st)[0], "New script...");
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    let tab = text_at(&game, "kit/lib.lua");
+    right_click(&mut st, &mut game, (tab.0 + 2.0, tab.1 + 2.0));
+    assert_eq!(menu_items(&st)[0], "Save");
+    assert!(menu_items(&st).contains(&"Rename...".to_owned()));
+    let row = text_at(&game, "shared.lua");
+    right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
+    assert_eq!(menu_items(&st)[0], "Open");
 }

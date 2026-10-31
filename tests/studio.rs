@@ -1483,3 +1483,146 @@ fn colors_in_every_written_form() {
         assert!(c(Value::str(bad)).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn rename_mod_moves_files_and_keeps_state() {
+    let mut game = FakeGame::new("rename-mod");
+    let mut st = studio(&mut game);
+    // A library with saved data, a mod that imports it, and a module.
+    game.write_mod(
+        "kit.lua",
+        "-- name: Kit\nstorage.set('n', 7)\nexport({ hi = function() return 'hi' end })\n",
+    );
+    game.write_mod("user.lua", "local kit = import('kit')\nprint('user ' .. kit.hi())\n");
+    write_module(
+        &game,
+        "box",
+        &[
+            ("main.lua", "-- name: My Box\nlocal lib = require('lib')\n"),
+            ("lib.lua", "return {}\n"),
+        ],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let mods = game.mods_dir();
+    let k = mod_index(&st, "kit");
+    assert!(game.dir.join("storage/kit/n.lua").is_file());
+    let main = st.rename_mod(&mut game, "kit", "Toolkit").unwrap();
+    assert_eq!(main, mods.join("toolkit.lua"));
+    assert!(main.is_file() && !mods.join("kit.lua").exists());
+    assert_eq!(st.s.mods[k].id, "toolkit", "in place");
+    assert!(st.s.mods[k].running(), "{:?}", st.s.mods[k].state);
+    assert_eq!(st.s.mods[k].name, "Toolkit", "its name was the id's: it follows");
+    assert!(
+        std::fs::read_to_string(&main)
+            .unwrap()
+            .starts_with("-- name: Toolkit\n")
+    );
+    assert!(
+        game.dir.join("storage/toolkit/n.lua").is_file(),
+        "its saved data follows"
+    );
+    assert!(!game.dir.join("storage/kit").exists());
+    // The mod that imports it fails until it imports the new id, and the log says so.
+    let lines = log(&st);
+    assert!(lines.contains(&"Renamed kit to toolkit".to_owned()), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("user imports kit, which is toolkit now")),
+        "{lines:?}"
+    );
+    assert!(matches!(st.s.mods[mod_index(&st, "user")].state, ModState::Failed(..)));
+    // A module, turned off: it stays off under its new id, and a name written by hand stays.
+    let b = mod_index(&st, "box");
+    st.set_enabled(&mut game, b, false);
+    st.rename_mod(&mut game, "box", "crate").unwrap();
+    assert!(mods.join("crate").join("lib.lua").is_file() && !mods.join("box").exists());
+    assert_eq!(st.s.mods[b].id, "crate");
+    assert_eq!(st.s.mods[b].folder.as_deref(), Some(mods.join("crate").as_path()));
+    assert!(!st.s.mods[b].enabled);
+    assert_eq!(st.s.mods[b].name, "My Box");
+    let kept = std::fs::read_to_string(game.dir.join("studio.txt")).unwrap();
+    assert!(kept.contains("off:crate") && !kept.contains("off:box"), "{kept}");
+    // Onto an id that is taken: an error, and nothing changes.
+    let e = st.rename_mod(&mut game, "crate", "User").unwrap_err();
+    assert!(e.contains("user already exists"), "{e}");
+    assert!(mods.join("crate").is_dir() && mods.join("user.lua").is_file());
+    assert!(
+        st.rename_mod(&mut game, "nope", "x")
+            .unwrap_err()
+            .contains("nope is gone")
+    );
+    // A rename to its own name does nothing.
+    assert_eq!(
+        st.rename_mod(&mut game, "toolkit", "toolkit").unwrap(),
+        mods.join("toolkit.lua")
+    );
+    // The next start finds them under their new ids.
+    let mut again = studio(&mut game);
+    assert!(again.s.mods.iter().any(|m| m.id == "toolkit" && m.running()));
+    assert!(again.s.mods.iter().any(|m| m.id == "crate" && !m.enabled));
+    let _ = &mut again;
+}
+
+#[test]
+fn duplicate_mod_copies_it_turned_off() {
+    let mut game = FakeGame::new("duplicate-mod");
+    let mut st = studio(&mut game);
+    game.write_mod(
+        "glow.lua",
+        "-- name: Glow\n-- version: 1.0\nstorage.set('n', 1)\nprint('glow runs')\n",
+    );
+    write_module(
+        &game,
+        "box",
+        &[
+            ("main.lua", "local lib = require('lib.util')\nprint('box runs')\n"),
+            ("lib/util.lua", "return {}\n"),
+        ],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let mods = game.mods_dir();
+    let copy = st.duplicate_mod(&mut game, "glow", "Glow 2").unwrap();
+    assert_eq!(copy, mods.join("glow_2.lua"));
+    let text = std::fs::read_to_string(&copy).unwrap();
+    assert!(text.starts_with("-- name: Glow 2\n-- version: 1.0\n"), "{text}");
+    let c = mod_index(&st, "glow_2");
+    assert!(!st.s.mods[c].enabled && !st.s.mods[c].running());
+    assert_eq!(st.s.mods[c].name, "Glow 2");
+    assert!(st.s.mods[mod_index(&st, "glow")].running(), "the original runs on");
+    assert!(
+        std::fs::read_to_string(game.dir.join("studio.txt"))
+            .unwrap()
+            .contains("off:glow_2")
+    );
+    assert!(
+        !game.dir.join("storage/glow_2").exists(),
+        "its saved data stays the original's"
+    );
+    // A module: every file, its main.lua named.
+    let copy = st.duplicate_mod(&mut game, "box", "crate").unwrap();
+    assert_eq!(copy, mods.join("crate").join("main.lua"));
+    assert!(mods.join("crate").join("lib").join("util.lua").is_file());
+    assert!(
+        std::fs::read_to_string(&copy)
+            .unwrap()
+            .starts_with("-- name: crate\nlocal lib")
+    );
+    let c = mod_index(&st, "crate");
+    assert!(st.s.mods[c].folder.is_some() && !st.s.mods[c].enabled);
+    assert!(!mods.join(".crate.copying").exists());
+    // A name that is taken.
+    let e = st.duplicate_mod(&mut game, "box", "glow").unwrap_err();
+    assert!(e.contains("glow already exists"), "{e}");
+}
+
+#[test]
+fn a_bundled_library_deleted_stays_deleted() {
+    let mut game = FakeGame::new("trash-bundled");
+    let mut st = studio(&mut game);
+    let uikit = game.mods_dir().join("uikit.lua");
+    st.delete_path(&mut game, &uikit).unwrap();
+    assert!(!uikit.exists() && game.dir.join("trash").join("uikit.lua").is_file());
+    let again = studio(&mut game);
+    assert!(!uikit.exists() && !again.s.mods.iter().any(|m| m.id == "uikit"));
+}

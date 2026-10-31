@@ -756,6 +756,34 @@ pub fn read_header(src: &str) -> Vec<(String, String)> {
     out
 }
 
+/// A main file's source with its `-- name:` line saying `name`, or one
+/// added at its top when its header has none.
+pub fn with_name(src: &str, name: &str) -> String {
+    let mut out = String::with_capacity(src.len() + name.len() + 10);
+    let mut header = true;
+    let mut done = false;
+    for line in src.split_inclusive('\n') {
+        let t = line.trim();
+        if header && !done {
+            let is_name = t
+                .strip_prefix("--")
+                .and_then(|rest| rest.split_once(':'))
+                .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("name"));
+            if is_name {
+                let eol = &line[line.trim_end_matches(['\r', '\n']).len()..];
+                out.push_str(&format!("-- name: {name}{eol}"));
+                done = true;
+                continue;
+            }
+            if !t.is_empty() && !t.starts_with("--") {
+                header = false;
+            }
+        }
+        out.push_str(line);
+    }
+    if done { out } else { format!("-- name: {name}\n{src}") }
+}
+
 /// A mod id from a file or folder name.
 pub fn mod_id(name: &str) -> String {
     let id: String = name
@@ -1741,6 +1769,270 @@ impl Studio {
         self.file_moved(&old, Some(&main), &main);
         self.scan(game);
         self.settle_open();
+        Ok(main)
+    }
+
+    /// What a new id typed for mod `id` would be (renaming or copying it),
+    /// or why it can't be: empty, the same, or taken. None while nothing is
+    /// typed.
+    fn new_mod_id(&self, id: &str, typed: &str, renaming: bool) -> Option<Result<String, String>> {
+        let name = typed.trim();
+        if name.is_empty() {
+            return None;
+        }
+        let new_id = mod_id(name);
+        let mods = self.s.mods_dir();
+        Some(if renaming && new_id == id {
+            Ok(new_id)
+        } else if mods.join(format!("{new_id}.lua")).exists() || mods.join(&new_id).exists() {
+            Err(format!("{new_id} already exists"))
+        } else {
+            Ok(new_id)
+        })
+    }
+
+    /// The line under the Rename prompt of mod `id`: what its file or folder
+    /// becomes, and which mods fail until they import the new id; or why
+    /// the name typed can't be (an Err).
+    pub fn rename_plan(&self, id: &str, typed: &str) -> Result<String, String> {
+        let Some(m) = self.s.mods.iter().find(|m| m.id == id) else {
+            return Err(format!("{id} is gone"));
+        };
+        let new_id = match self.new_mod_id(id, typed, true) {
+            None => return Ok(String::new()),
+            Some(r) => r?,
+        };
+        if new_id == id {
+            return Ok(String::new());
+        }
+        let storage = self.s.dir.join("storage");
+        if storage.join(id).exists() && storage.join(&new_id).exists() {
+            return Err(format!("storage/{new_id} holds another mod's saved data"));
+        }
+        let (from, to) = match m.folder {
+            Some(_) => (format!("{id}/"), format!("{new_id}/")),
+            None => (format!("{id}.lua"), format!("{new_id}.lua")),
+        };
+        let users: Vec<&str> = self
+            .s
+            .mods
+            .iter()
+            .filter(|u| u.imports.iter().any(|d| d == id))
+            .map(|u| u.id.as_str())
+            .collect();
+        Ok(if users.is_empty() {
+            format!("{from} becomes {to}")
+        } else {
+            format!(
+                "{from} becomes {to}; {} import {id} and fail until they import {new_id}",
+                users.join(", ")
+            )
+        })
+    }
+
+    /// The line under the Duplicate prompt of mod `id`: what the copy is, or
+    /// why the name typed can't be (an Err).
+    pub fn duplicate_plan(&self, id: &str, typed: &str) -> Result<String, String> {
+        let Some(m) = self.s.mods.iter().find(|m| m.id == id) else {
+            return Err(format!("{id} is gone"));
+        };
+        let new_id = match self.new_mod_id(id, typed, false) {
+            None => return Ok(String::new()),
+            Some(r) => r?,
+        };
+        Ok(match m.folder {
+            Some(_) => format!("{new_id}/: a copy of {id}/, turned off"),
+            None => format!("{new_id}.lua: a copy of {id}.lua, turned off"),
+        })
+    }
+
+    /// Saves the editor's unsaved edits when its file is `path` or inside
+    /// it, before the studio moves or copies that; `what` says what then
+    /// didn't happen when they can't be saved.
+    fn save_edits_in(&mut self, path: &Path, what: &str) -> Result<(), String> {
+        let ed = &mut self.s.editor;
+        if ed.dirty && ed.path.as_deref().is_some_and(|p| p.starts_with(path)) {
+            ed.save()
+                .map_err(|e| format!("could not save {}: {e}; nothing was {what}", ed.title))?;
+        }
+        Ok(())
+    }
+
+    /// Renames mod `id` as typed: its file or its folder takes the new id,
+    /// in place (it keeps its place in the list), and so do its on/off
+    /// state and its saved data (`storage/<id>`). Its name in the Library
+    /// follows when it was the old id's, as the New prompt writes it (a name
+    /// written by hand stays). Unsaved edits in its files are saved first,
+    /// and the editor follows the file it has open. The mods that import it
+    /// reload, and fail until they import the new id: the log says which.
+    /// Returns its main file.
+    pub fn rename_mod(&mut self, game: &mut dyn GameApi, id: &str, typed: &str) -> Result<PathBuf, String> {
+        let plan = self.rename_plan(id, typed)?;
+        let i = self.s.mods.iter().position(|m| m.id == id).ok_or("that mod is gone")?;
+        let new_id = mod_id(typed.trim());
+        if plan.is_empty() || new_id == id {
+            return Ok(self.s.mods[i].main.clone());
+        }
+        let mods = self.s.mods_dir();
+        let module = self.s.mods[i].folder.is_some();
+        let (from, to) = match &self.s.mods[i].folder {
+            Some(f) => (f.clone(), mods.join(&new_id)),
+            None => (self.s.mods[i].main.clone(), mods.join(format!("{new_id}.lua"))),
+        };
+        self.save_edits_in(&from, "renamed")?;
+        let users: Vec<String> = self
+            .s
+            .mods
+            .iter()
+            .filter(|u| u.imports.iter().any(|d| d == id))
+            .map(|u| u.id.clone())
+            .collect();
+        self.unload(game, i);
+        if let Err(e) = std::fs::rename(&from, &to) {
+            if self.s.mods[i].enabled {
+                self.load(game, i);
+            }
+            return Err(format!("could not rename {}: {e}", from.display()));
+        }
+        let storage = self.s.dir.join("storage");
+        if storage.join(id).exists()
+            && let Err(e) = std::fs::rename(storage.join(id), storage.join(&new_id))
+        {
+            self.s.log(
+                LogKind::Error,
+                format!("{new_id}'s saved data stays in storage/{id}: {e}"),
+            );
+        }
+        let main = if module { to.join("main.lua") } else { to.clone() };
+        {
+            let m = &mut self.s.mods[i];
+            m.id = new_id.clone();
+            m.main = main.clone();
+            if module {
+                m.folder = Some(to.clone());
+            }
+        }
+        let off = self.s.disabled.remove(id);
+        // A turned-off line left by another mod of that id no longer counts.
+        self.s.disabled.remove(&new_id);
+        if off {
+            self.s.disabled.insert(new_id.clone());
+        }
+        self.save_settings();
+        if self.s.ui.expanded.remove(id) {
+            self.s.ui.expanded.insert(new_id.clone());
+        }
+        self.file_moved(&from, Some(&to), &main);
+        self.rename_header(&main, id, typed.trim());
+        let m = &mut self.s.mods[i];
+        m.stamp = Self::stamp(&m.main, m.folder.as_deref());
+        self.read_meta(i);
+        self.settle_open();
+        if self.s.mods[i].enabled {
+            self.load(game, i);
+        }
+        self.s.log(LogKind::Info, format!("Renamed {id} to {new_id}"));
+        for u in &users {
+            self.s.log(
+                LogKind::Error,
+                format!("{u} imports {id}, which is {new_id} now: make it import(\"{new_id}\")"),
+            );
+        }
+        self.reload_users(game, vec![id.to_owned()]);
+        Ok(main)
+    }
+
+    /// The `-- name:` line of a mod's main file set to `name`, when it named
+    /// the mod by its old id (`mod_id` of it is the id, as the New prompt
+    /// writes it); a name written by hand stays. Through the editor when it
+    /// has the file open, so Ctrl+Z takes it back there.
+    fn rename_header(&mut self, main: &Path, old_id: &str, name: &str) {
+        let Ok(src) = std::fs::read_to_string(main) else {
+            return;
+        };
+        let named = read_header(&src).into_iter().find(|(k, _)| k == "name");
+        if !named.is_some_and(|(_, n)| mod_id(&n) == old_id) {
+            return;
+        }
+        let src = with_name(&src, name);
+        if self.s.editor.path.as_deref() == Some(main) && !self.s.editor.dirty {
+            self.s.editor.replace_text(&src);
+            if let Err(e) = self.s.editor.save() {
+                self.s.log(LogKind::Error, format!("Could not save: {e}"));
+            }
+        } else if let Err(e) = std::fs::write(main, src) {
+            self.s.log(
+                LogKind::Error,
+                format!("Could not rename it in {}: {e}", main.display()),
+            );
+        }
+    }
+
+    /// A copy of mod `id` under the name typed, turned off (it would
+    /// register the same commands and handlers twice), its `-- name:` line
+    /// saying the new name. A module's files are copied as an install copies
+    /// them (at most 256 files and 8 MiB), in a hidden folder first. Unsaved
+    /// edits in its files are saved first, so the copy is what the editor
+    /// shows; its saved data is not copied. Returns the copy's main file.
+    pub fn duplicate_mod(&mut self, game: &mut dyn GameApi, id: &str, typed: &str) -> Result<PathBuf, String> {
+        let plan = self.duplicate_plan(id, typed)?;
+        if plan.is_empty() {
+            return Err("the copy needs a name".into());
+        }
+        let i = self.s.mods.iter().position(|m| m.id == id).ok_or("that mod is gone")?;
+        let name = typed.trim();
+        let new_id = mod_id(name);
+        let mods = self.s.mods_dir();
+        let source = self.s.mods[i]
+            .folder
+            .clone()
+            .unwrap_or_else(|| self.s.mods[i].main.clone());
+        self.save_edits_in(&source, "copied")?;
+        // Off before it is on disk, so no scan starts it.
+        self.s.disabled.insert(new_id.clone());
+        self.save_settings();
+        let made = match &self.s.mods[i].folder {
+            None => {
+                let dest = mods.join(format!("{new_id}.lua"));
+                std::fs::read_to_string(&source)
+                    .and_then(|src| std::fs::write(&dest, with_name(&src, name)))
+                    .map(|()| dest)
+                    .map_err(|e| e.to_string())
+            }
+            Some(folder) => read_folder(folder).and_then(|files| {
+                let fresh = mods.join(format!(".{new_id}.copying"));
+                let _ = std::fs::remove_dir_all(&fresh);
+                let written = files.iter().try_for_each(|(rel, bytes)| {
+                    let target = fresh.join(rel);
+                    if let Some(dir) = target.parent() {
+                        std::fs::create_dir_all(dir)?;
+                    }
+                    match (rel == Path::new("main.lua"), std::str::from_utf8(bytes)) {
+                        (true, Ok(src)) => std::fs::write(&target, with_name(src, name)),
+                        _ => std::fs::write(&target, bytes),
+                    }
+                });
+                let dest = mods.join(&new_id);
+                if let Err(e) = written.and_then(|()| std::fs::rename(&fresh, &dest)) {
+                    let _ = std::fs::remove_dir_all(&fresh);
+                    return Err(e.to_string());
+                }
+                Ok(dest.join("main.lua"))
+            }),
+        };
+        let main = match made {
+            Ok(main) => main,
+            Err(e) => {
+                self.s.disabled.remove(&new_id);
+                self.save_settings();
+                return Err(format!("could not copy {id}: {e}"));
+            }
+        };
+        self.scan(game);
+        self.s.log(
+            LogKind::Info,
+            format!("Made {new_id}, a copy of {id}: it is turned off, turn it on in its menu"),
+        );
         Ok(main)
     }
 

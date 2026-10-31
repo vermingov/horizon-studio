@@ -1330,6 +1330,7 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let tmax = (w * 0.45).max(80.0);
     let title = p.fit(&title, tmax, 15.0, Font::Medium);
     let tw = p.text(&title, x, top(y + 16.0, 15.0), 15.0, Font::Medium, pal().ink);
+    st.s.ui.hits.push(([x, y, tw + 22.0, 32.0], Action::Spot(Spot::File)));
     let dirty = glide(&mut st.s.ui, id("dirty", 0), st.s.editor.dirty, dt);
     if dirty > 0.01 {
         let d = 7.0 * dirty;
@@ -1553,6 +1554,8 @@ pub(super) fn state_dot(state: &ModState) -> u32 {
 fn draw_scripts(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     use super::hstudio_ui::{ScriptRow, open_row, row_label, script_rows, scripts_first};
     p.rect([x, y, w, h], 14.0, pal().plate_soft);
+    // Its own menu, under its rows' and its buttons.
+    st.s.ui.hits.push(([x, y, w, h], Action::Spot(Spot::Scripts)));
     p.text(
         "Scripts",
         x + 14.0,
@@ -2812,6 +2815,10 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let row_h = 52.0;
     let max_rows = ((list_h / row_h).floor() as usize).max(1);
     let first = st.s.ui.library_sel.saturating_sub(max_rows - 1);
+    // The list's own menu, under its rows'.
+    st.s.ui
+        .hits
+        .push(([x, y, list_w, list_h + 30.0], Action::Spot(Spot::Scripts)));
     let (base_a, base_dy) = (p.alpha, p.dy);
     let mut ly = list_top;
     if n == 0 {
@@ -2964,6 +2971,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             break;
         }
         let r = [x, ey, list_w, 30.0];
+        st.s.ui.hits.push((r, Action::Spot(Spot::Example(i))));
         let over = inside(r, st.s.ui.mouse);
         let hv = hover(&mut st.s.ui, id("ex", i), over, dt);
         if inside(r, st.s.ui.mouse) {
@@ -3593,6 +3601,14 @@ fn stepper(ui: &mut Ui, p: &mut P, x: f32, cy: f32, value: &str, which: u8, dt: 
     );
 }
 
+/// A mod as its file shows it: `<id>.lua` for a script, `<id>/` for a module.
+fn mod_file(st: &Studio, id: &str) -> String {
+    match st.s.mods.iter().find(|m| m.id == id) {
+        Some(m) if m.folder.is_some() => format!("{id}/"),
+        _ => format!("{id}.lua"),
+    }
+}
+
 /// The naming prompt over everything: its heading (with the Script and
 /// Module switch for a new mod), what to type, the field (none when it only
 /// asks, for a delete), the line saying what Enter will do or why it can't,
@@ -3653,6 +3669,16 @@ fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32, dt: f32) 
                 "The module reloads without it."
             },
             "Enter to delete  ·  Esc to cancel",
+        ),
+        NamingKind::RenameMod(id) => (
+            format!("Rename {}", mod_file(st, id)),
+            "Its new name (its file's)",
+            "Enter to rename  ·  Esc to cancel",
+        ),
+        NamingKind::Duplicate(id) => (
+            format!("Duplicate {}", mod_file(st, id)),
+            "The copy's name (it starts turned off)",
+            "Enter to duplicate  ·  Esc to cancel",
         ),
     };
     let heading = p.fit(&heading, cw - 44.0 - 150.0, 16.0, Font::Medium);
