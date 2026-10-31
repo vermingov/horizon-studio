@@ -1571,3 +1571,59 @@ fn a_script_moving_the_player_every_frame_leaves_the_mods_their_sends() {
     assert_eq!(p.len(), 3, "{p:?}");
     assert!(p.iter().all(|n| n.parse::<u32>().unwrap() >= 3), "{p:?}");
 }
+
+#[test]
+fn rays_see_what_a_script_just_moved_and_the_mouse_points_once_a_frame() {
+    let mut game = FakeGame::new("rbxw-fresh");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local mouse = game.Players.LocalPlayer:GetMouse()
+        local eyes = Vector3.new(10.5, 65.62, -3.25)
+        local ahead = Vector3.new(0, 0, -10)
+        local function ray() return workspace:Raycast(eyes, ahead) end
+        local function far(r) return r and string.format("%.2f", r.Distance) end
+        local wall, box
+        command("wall", function()
+            print(mouse.Target)
+            wall = Instance.new("Part")
+            wall.Name = "Wall"
+            wall.Size = Vector3.new(4, 4, 1)
+            wall.CFrame = CFrame.new(10.5, 65.62, -6.25)
+            wall.Parent = workspace
+            -- A ray meets it at once; the Mouse, worked out once a frame, the next frame.
+            print(ray().Instance.Name, mouse.Target)
+            wall.Position = Vector3.new(10.5, 65.62, -8.25)
+            print(far(ray()))
+            wall.CanQuery = false
+            print(ray())
+            wall.CanQuery = true
+            wall.Size = Vector3.new(4, 4, 3)
+            print(far(ray()), #workspace:GetPartBoundsInRadius(Vector3.new(10.5, 65.62, -8.25), 1))
+            box = Instance.new("Model", workspace)
+            wall.Parent = box
+            print(ray().Instance.Name)
+            box.Parent = nil
+            print(ray())
+            box.Parent = workspace
+        end)
+        command("later", function() print(mouse.Target.Name, far(ray())) end)
+    "#;
+    load(&mut game, &mut st, "fresh", src, 0.6);
+    assert!(st.command("wall"));
+    run_for(&mut st, &mut game, 0.05);
+    assert!(st.command("later"));
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(
+        printed(&st, "fresh"),
+        [
+            "nil",
+            "Wall    nil",
+            "4.50",
+            "nil",
+            "3.50    1",
+            "Wall",
+            "nil",
+            "Wall    3.50"
+        ]
+    );
+}

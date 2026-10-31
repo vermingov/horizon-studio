@@ -1475,6 +1475,7 @@ impl Rbx {
     /// Changed and the property's own signal, as Roblox fires them (a
     /// ValueBase's Changed is for its Value only, with the value).
     pub fn changed(&mut self, id: Id, name: &str, v: &Value) {
+        super::hstudio_rbx_query::changed(self, id, name);
         let value_base = self.insts.get(&id).is_some_and(|i| is_a(i.class, "ValueBase"));
         if value_base && name == "Value" {
             self.fire(id, "Changed", vec![v.clone()]);

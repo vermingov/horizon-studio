@@ -4,11 +4,13 @@
 // Hit and Target), and the bounds queries (GetPartBoundsInRadius,
 // GetPartBoundsInBox, GetPartsInPart). A stud is a block. The local
 // character is left out of rays, which start at its eyes, unless an Include
-// filter names it. And the map, read through workspace.Terrain: a cell is a
-// block (GetBlock, ReadVoxels).
+// filter names it. The parts are boxed once while nothing in the Workspace
+// moves, so that a frame's many rays and queries don't each walk it. And the
+// map, read through workspace.Terrain: a cell is a block (GetBlock,
+// ReadVoxels).
 
 use super::hstudio_lua::{Lua, Res, Table, TableRef, Value, bad_arg, check_num};
-use super::hstudio_rbx::{Env, Id, Rbx, is_a};
+use super::hstudio_rbx::{C, Env, Id, Rbx, is_a};
 use super::hstudio_rbx_draw::{block_material, first_block, passable};
 use super::hstudio_rbx_types::{CFrame, Vector3};
 use super::hstudio_rbx_values::{Data, as_cf, as_item, as_v3, enum_item, enum_value, get, v3};
@@ -60,21 +62,127 @@ impl Filter {
     }
 }
 
-/// The Workspace's parts a ray (`ray`) or a query can meet: BaseParts but the
-/// Terrain, with CanQuery, that the filter lets through. A ray leaves out the
-/// local character unless an Include filter names it.
-fn parts(rbx: &Rbx, filter: &Filter, ray: bool) -> Vec<Id> {
-    rbx.descendants(rbx.workspace)
-        .into_iter()
-        .filter(|&id| {
-            let inst = rbx.inst(id);
-            is_a(inst.class, "BasePart")
-                && inst.class.name != "Terrain"
-                && inst.get("CanQuery").truthy()
-                && filter.passes(rbx, id)
-                && !(ray && rbx.is_descendant_of(id, rbx.character) && !filter.include)
-        })
-        .collect()
+// ---------------------------------------------------------------- the parts, boxed
+
+/// The Workspace's parts a ray or a query can meet (BaseParts but the
+/// Terrain, with CanQuery), worked out once and kept while nothing in the
+/// Workspace moves: the world's entities and the character move as each
+/// frame begins, and what a script changes goes through Rbx::changed
+/// (`changed`). Each part has its place, half its size and the box it fills
+/// in the world. The parts under each of the Workspace's children (a
+/// model's, a mob's) are a group with a box around them all, so that a ray
+/// or a query that misses a group's box passes all its parts by.
+#[derive(Default)]
+pub struct Boxes {
+    /// Whether they are as the Workspace is.
+    pub fresh: bool,
+    parts: Vec<Boxed>,
+    groups: Vec<Group>,
+    /// The walk's stack: instances, and whether they are in the character.
+    stack: Vec<(Id, bool)>,
+    /// The classes met, and whether their instances are parts rays meet.
+    kinds: Vec<(&'static C, bool)>,
+}
+
+/// A part as rays and queries meet it, and whether it is in the local
+/// character.
+struct Boxed {
+    id: Id,
+    frame: CFrame,
+    half: Vector3,
+    lo: Vector3,
+    hi: Vector3,
+    mine: bool,
+}
+
+/// The parts under one of the Workspace's children (`parts[start..end]`),
+/// and the box around them.
+struct Group {
+    lo: Vector3,
+    hi: Vector3,
+    start: usize,
+    end: usize,
+}
+
+impl Boxes {
+    /// The Workspace's parts as they are now, in its order.
+    fn build(&mut self, rbx: &Rbx) {
+        self.parts.clear();
+        self.groups.clear();
+        for &top in rbx.children(rbx.workspace) {
+            let start = self.parts.len();
+            self.stack.clear();
+            self.stack.push((top, top == rbx.character));
+            while let Some((id, mine)) = self.stack.pop() {
+                let Some(inst) = rbx.try_inst(id) else {
+                    continue;
+                };
+                let part = match self.kinds.iter().find(|k| std::ptr::eq(k.0, inst.class)) {
+                    Some(k) => k.1,
+                    None => {
+                        let part = inst.class.name != "Terrain" && is_a(inst.class, "BasePart");
+                        self.kinds.push((inst.class, part));
+                        part
+                    }
+                };
+                if part && inst.props.get("CanQuery").is_some_and(Value::truthy) {
+                    let frame = inst.props.get("CFrame").and_then(as_cf).unwrap_or_default();
+                    let half = inst.props.get("Size").and_then(as_v3).unwrap_or(Vector3::ONE) / 2.0;
+                    let (lo, hi) = oriented_bounds(frame, half.abs());
+                    self.parts.push(Boxed {
+                        id,
+                        frame,
+                        half,
+                        lo,
+                        hi,
+                        mine,
+                    });
+                }
+                let character = rbx.character;
+                self.stack
+                    .extend(inst.children.iter().rev().map(|&c| (c, mine || c == character)));
+            }
+            if let Some(first) = self.parts.get(start) {
+                let (lo, hi) = self.parts[start..]
+                    .iter()
+                    .fold((first.lo, first.hi), |(lo, hi), b| (lo.min(b.lo), hi.max(b.hi)));
+                self.groups.push(Group {
+                    lo,
+                    hi,
+                    start,
+                    end: self.parts.len(),
+                });
+            }
+        }
+        self.fresh = true;
+    }
+}
+
+/// The Workspace's parts, boxed, worked out again if something moved.
+fn ready(rbx: &mut Rbx) {
+    if !rbx.world.boxes.fresh {
+        let mut boxes = std::mem::take(&mut rbx.world.boxes);
+        boxes.build(rbx);
+        rbx.world.boxes = boxes;
+    }
+}
+
+/// A property of `id` changed (Rbx::changed): the boxes are stale when the
+/// change can move what rays and queries meet, a part's place, size or
+/// CanQuery, or where anything but a GUI object is.
+pub fn changed(rbx: &mut Rbx, id: Id, name: &str) {
+    if !rbx.world.boxes.fresh {
+        return;
+    }
+    let class = rbx.try_inst(id).map(|i| i.class);
+    let moves = match name {
+        "Parent" => class.is_none_or(|c| !is_a(c, "GuiBase2d")),
+        "CFrame" | "Size" | "CanQuery" => class.is_some_and(|c| is_a(c, "BasePart")),
+        _ => false,
+    };
+    if moves {
+        rbx.world.boxes.fresh = false;
+    }
 }
 
 // ---------------------------------------------------------------- rays
@@ -100,12 +208,26 @@ pub fn cast(env: &mut dyn Env, origin: Vector3, dir: Vector3, filter: &Filter) -
     }
     let unit = dir.unit();
     let rbx = env.rbx();
+    ready(rbx);
+    let rbx: &Rbx = rbx;
+    let boxes = &rbx.world.boxes;
+    let inv = Vector3::new(1.0 / unit.x, 1.0 / unit.y, 1.0 / unit.z);
     let mut best: Option<(f64, Vector3, Vector3, Id)> = None;
-    for id in parts(rbx, filter, true) {
-        if let Some((t, face, normal)) = ray_box(rbx, id, origin, unit, length)
-            && best.is_none_or(|b| t < b.0)
-        {
-            best = Some((t, face, normal, id));
+    for g in &boxes.groups {
+        // A group farther than the nearest part met yet has none nearer.
+        if !ray_meets(origin, unit, inv, best.map_or(length, |b| b.0), g.lo, g.hi) {
+            continue;
+        }
+        for b in &boxes.parts[g.start..g.end] {
+            // The local character is left out unless an Include filter names it.
+            if b.mine && !filter.include || !filter.passes(rbx, b.id) {
+                continue;
+            }
+            if let Some((t, face, normal)) = ray_box(b.frame, b.half, origin, unit, length)
+                && best.is_none_or(|x| t < x.0)
+            {
+                best = Some((t, face, normal, b.id));
+            }
         }
     }
     let terrain = rbx.id_of(&rbx.raw_get(rbx.workspace, "Terrain"));
@@ -137,12 +259,43 @@ pub fn cast(env: &mut dyn Env, origin: Vector3, dir: Vector3, filter: &Filter) -
     }
 }
 
-/// Where a ray (unit `unit`, `length` long) meets a part's box: how far
-/// along, and the face's normal in the part's space and in the world's.
-fn ray_box(rbx: &Rbx, id: Id, origin: Vector3, unit: Vector3, length: f64) -> Option<(f64, Vector3, Vector3)> {
-    let inst = rbx.inst(id);
-    let frame = as_cf(&inst.get("CFrame")).unwrap_or_default();
-    let half = as_v3(&inst.get("Size")).unwrap_or(Vector3::ONE) / 2.0;
+/// Whether a ray (`unit` and its inverse `inv`, as far as `reach`) meets a
+/// box in the world (its least and most corners), with a hair to spare.
+fn ray_meets(origin: Vector3, unit: Vector3, inv: Vector3, reach: f64, lo: Vector3, hi: Vector3) -> bool {
+    const HAIR: f64 = 1e-6;
+    let (mut t0, mut t1) = (0.0f64, reach + HAIR);
+    for (o, d, i, l, h) in [
+        (origin.x, unit.x, inv.x, lo.x, hi.x),
+        (origin.y, unit.y, inv.y, lo.y, hi.y),
+        (origin.z, unit.z, inv.z, lo.z, hi.z),
+    ] {
+        let (l, h) = (l - HAIR, h + HAIR);
+        if d.abs() < 1e-12 {
+            if o < l || o > h {
+                return false;
+            }
+            continue;
+        }
+        let (a, b) = ((l - o) * i, (h - o) * i);
+        t0 = t0.max(a.min(b));
+        t1 = t1.min(a.max(b));
+        if t0 > t1 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Where a ray (unit `unit`, `length` long) meets a part's box (at `frame`,
+/// `half` its size): how far along, and the face's normal in the part's
+/// space and in the world's.
+fn ray_box(
+    frame: CFrame,
+    half: Vector3,
+    origin: Vector3,
+    unit: Vector3,
+    length: f64,
+) -> Option<(f64, Vector3, Vector3)> {
     let o = frame.point_to_object(origin);
     let d = frame.vector_to_object(unit);
     let (mut t0, mut t1) = (0.0f64, length);
@@ -295,21 +448,27 @@ fn query(env: &mut dyn Env, params: Option<&Value>, not: Option<Id>, meets: impl
         _ => None,
     };
     let rbx = env.rbx();
+    ready(rbx);
+    let rbx: &Rbx = rbx;
     let filter = Filter::of(rbx, params.as_ref());
     let most = params
         .as_ref()
         .and_then(|p| p.borrow().get_str("MaxParts").to_num())
         .filter(|n| *n >= 1.0)
         .map_or(usize::MAX, |n| n as usize);
-    let found: Vec<Id> = parts(rbx, &filter, false)
-        .into_iter()
-        .filter(|&id| Some(id) != not)
-        .filter(|&id| {
-            let (lo, hi) = bounds(rbx, id);
-            meets(lo, hi)
-        })
-        .take(most)
-        .collect();
+    let boxes = &rbx.world.boxes;
+    let mut found: Vec<Id> = Vec::new();
+    // A group's box holds its parts': one it doesn't meet has none that do.
+    'groups: for g in boxes.groups.iter().filter(|g| meets(g.lo, g.hi)) {
+        for b in &boxes.parts[g.start..g.end] {
+            if Some(b.id) != not && filter.passes(rbx, b.id) && meets(b.lo, b.hi) {
+                found.push(b.id);
+                if found.len() >= most {
+                    break 'groups;
+                }
+            }
+        }
+    }
     Ok(vec![rbx.list(&found)])
 }
 

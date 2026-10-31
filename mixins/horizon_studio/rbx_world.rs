@@ -118,6 +118,13 @@ pub struct World {
     /// milliseconds as it said (negative while unknown).
     pub next_list: f64,
     pub ping: i32,
+    /// The Workspace's parts as rays and queries meet them (hstudio_rbx_query).
+    pub boxes: super::hstudio_rbx_query::Boxes,
+    /// The frames the layer has followed the game, and when the Mouse was
+    /// last worked out: the frame, whether the pointer was free and where,
+    /// and the Mouse's TargetFilter.
+    pub frames: u64,
+    pub mouse_at: Option<(u64, bool, f64, f64, Option<Id>)>,
 }
 
 impl Default for World {
@@ -141,6 +148,9 @@ impl Default for World {
             others: Vec::new(),
             next_list: 0.0,
             ping: -1,
+            boxes: Default::default(),
+            frames: 0,
+            mouse_at: None,
         }
     }
 }
@@ -276,6 +286,10 @@ fn invisible_part(rbx: &mut Rbx, name: &str, size: Vector3) -> Id {
 /// The world brought up to the game, each frame: the local player, and the
 /// entities near them while a script looks.
 pub fn sync(rbx: &mut Rbx, game: &mut dyn GameApi) {
+    // A new frame: the parts the world moves quietly are elsewhere, and the
+    // Mouse points anew.
+    rbx.world.frames += 1;
+    rbx.world.boxes.fresh = false;
     let player = game.player();
     if let Some(p) = &player {
         let pose = game.pose();
@@ -524,6 +538,8 @@ pub fn look(env: &mut dyn Env) {
     if first {
         let player = game.player();
         sync_world(rbx, game, player.as_ref(), true);
+        // The Mouse may point at an entity that is there now.
+        rbx.world.mouse_at = None;
     }
 }
 
@@ -1200,10 +1216,10 @@ pub fn member(rbx: &Rbx, id: Id, key: &str) -> Option<Value> {
 }
 
 /// What a read of `key` on `id` needs from the game first: the Mouse's Hit,
-/// Target, TargetSurface, UnitRay and Origin are worked out where it points
-/// (its Hit, Target and TargetSurface are a look at the world); the local
-/// Humanoid's FloorMaterial is the block under the player, looked up only
-/// when a script asks; and a read that reaches the world's entities
+/// Target, TargetSurface, UnitRay and Origin are worked out where it points,
+/// once a frame (its Hit, Target and TargetSurface are a look at the world);
+/// the local Humanoid's FloorMaterial is the block under the player, looked
+/// up only when a script asks; and a read that reaches the world's entities
 /// (`reaches_world`) has them mirrored.
 pub fn before_read(env: &mut dyn Env, id: Id, key: &str) {
     if id == env.rbx().mouse {
@@ -1212,7 +1228,7 @@ pub fn before_read(env: &mut dyn Env, id: Id, key: &str) {
             look(env);
         }
         if matches!(key, "Hit" | "Target" | "TargetSurface" | "UnitRay" | "Origin") {
-            super::hstudio_rbx_draw::mouse_refresh(env);
+            mouse_once_a_frame(env);
         }
         return;
     }
@@ -1224,6 +1240,20 @@ pub fn before_read(env: &mut dyn Env, id: Id, key: &str) {
     if reaches_world(env.rbx(), id, key) {
         look(env);
     }
+}
+
+/// Where the Mouse points, worked out once a frame as Roblox does it, and
+/// again only as the pointer moves or the Mouse's TargetFilter changes: a
+/// script that reads Hit and Target each frame casts one ray.
+fn mouse_once_a_frame(env: &mut dyn Env) {
+    let rbx = env.rbx();
+    let filter = rbx.id_of(&rbx.raw_get(rbx.mouse, "TargetFilter"));
+    let now = (rbx.world.frames, rbx.pointer.free, rbx.pointer.x, rbx.pointer.y, filter);
+    if rbx.world.mouse_at == Some(now) {
+        return;
+    }
+    super::hstudio_rbx_draw::mouse_refresh(env);
+    env.rbx().world.mouse_at = Some(now);
 }
 
 /// Whether reading `key` of `id` reaches the world's entities: anything of
