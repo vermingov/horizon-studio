@@ -728,9 +728,10 @@ pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
         node_inst: Vec::new(),
         path: &path,
         rows: std::collections::HashSet::new(),
+        items: std::collections::HashSet::new(),
     };
-    part.add(path[0], None, true);
-    let (mut tree, node_inst) = (part.tree, part.node_inst);
+    part.add(path[0], None, true, false);
+    let (mut tree, node_inst, items) = (part.tree, part.node_inst, part.items);
     if let (Some(r), Some(&root)) = (board, tree.roots().first()) {
         tree[root].billboard = r;
     }
@@ -741,13 +742,13 @@ pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
     };
     let lay = tree.layout(&Viewport::new(f64::from(w), f64::from(h), 0.0), &mut measure);
     // Only the way down is laid out as the whole GUI would be, with the
-    // layouts that arrange it.
+    // layouts on it whose items are all there.
     let wanted = |n: NodeId| {
         path.contains(&node_inst[n])
             || matches!(
                 tree[n].class,
                 Class::UIListLayout | Class::UIGridLayout | Class::UIPageLayout | Class::UITableLayout
-            ) && tree.parent(n).is_some_and(|p| path.contains(&node_inst[p]))
+            ) && tree.parent(n).is_some_and(|p| items.contains(&p))
     };
     let mut writes = Vec::new();
     let mut fresh = Vec::new();
@@ -799,17 +800,22 @@ struct Partial<'a> {
     node_inst: Vec<Id>,
     /// From the ScreenGui down to the instance read.
     path: &'a [Id],
-    /// A table's rows (or columns) on the way: all their cells are sized,
-    /// since each column is as wide as its widest.
+    /// The rows (or columns) of a table on the way, or of one that sizes
+    /// an object: all their cells are sized, since each column is as wide
+    /// as its widest.
     rows: std::collections::HashSet<Id>,
+    /// The nodes on the path whose GuiObjects are all in the tree, so that
+    /// their layout's values are what the whole layout gives.
+    items: std::collections::HashSet<NodeId>,
 }
 
 impl Partial<'_> {
     /// Adds `id` under `parent`: placed as in the whole layout when it is
     /// on the path, else only sized. Under it go the UI components that
     /// apply, and the children its size, its canvas or its layout (on the
-    /// path) depends on.
-    fn add(&mut self, id: Id, parent: Option<NodeId>, on_path: bool) {
+    /// path) depends on. `contents` says, for a Folder, whether what it
+    /// holds counts: its GUI ancestor's size or canvas comes from it.
+    fn add(&mut self, id: Id, parent: Option<NodeId>, on_path: bool, contents: bool) {
         let rbx = self.rbx;
         let inst = rbx.inst(id);
         let class = layout_class(inst.class);
@@ -839,13 +845,19 @@ impl Partial<'_> {
                 "UIListLayout" | "UIGridLayout" | "UIPageLayout" | "UITableLayout"
             )
         });
-        if on_path && inst.children.iter().any(|&c| rbx.inst(c).class.name == "UITableLayout") {
+        // What it holds counts for its size (or, on the path, its canvas);
+        // a Folder's counts as much as for the object it is in.
+        let contents = if folder { contents } else { auto || on_path && canvas };
+        if (on_path || auto) && inst.children.iter().any(|&c| rbx.inst(c).class.name == "UITableLayout") {
             self.rows.extend(inst.children.iter().copied());
         }
         let row = self.rows.contains(&id);
+        if on_path && !folder && (contents || row || arranged && next.is_some()) {
+            self.items.insert(n);
+        }
         for &c in &inst.children {
             if Some(c) == next {
-                self.add(c, Some(n), true);
+                self.add(c, Some(n), true, contents);
                 continue;
             }
             let cc = layout_class(rbx.inst(c).class);
@@ -861,20 +873,15 @@ impl Partial<'_> {
                         Class::UISizeConstraint | Class::UIAspectRatioConstraint | Class::UIFlexItem
                     )
                 {
-                    self.add(c, Some(n), false);
+                    self.add(c, Some(n), false, false);
                 }
                 continue;
             }
-            // What a Folder holds counts for its GUI ancestor's size.
-            let needed = if folder {
-                !on_path
-            } else if on_path {
-                auto || canvas || arranged && cc.is_gui_object() && next.is_some() || row && cc.is_gui_object()
-            } else {
-                auto || row && cc.is_gui_object()
-            };
+            // What its size comes from, a row's cells, and the items its
+            // layout arranges on the way.
+            let needed = contents || !folder && cc.is_gui_object() && (row || arranged && next.is_some());
             if needed {
-                self.add(c, Some(n), false);
+                self.add(c, Some(n), false, contents);
             }
         }
     }

@@ -373,6 +373,51 @@ fn absolute_values_are_fresh_when_read() {
 }
 
 #[test]
+fn a_container_read_leaves_its_layout_right() {
+    // A read of a list's or a grid's container lays out the container, not
+    // its items: the layout's own values stay as they were until they are
+    // read, and are right then. Its signal never sees anything else.
+    let mut game = FakeGame::new("rbx-container");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local sf = Instance.new("ScrollingFrame", gui)
+        sf.Size = UDim2.fromOffset(300, 200)
+        local list = Instance.new("UIListLayout", sf)
+        list:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+            print("content", list.AbsoluteContentSize)
+        end)
+        for i = 1, 3 do
+            Instance.new("Frame", sf).Size = UDim2.new(1, 0, 0, 20)
+        end
+        local box = Instance.new("Frame", gui)
+        box.Position = UDim2.fromOffset(0, 200)
+        box.Size = UDim2.fromOffset(200, 300)
+        local grid = Instance.new("UIGridLayout", box)
+        grid.CellSize = UDim2.fromOffset(50, 50)
+        for i = 1, 5 do
+            Instance.new("Frame", box)
+        end
+        command("read", function()
+            sf.Size = UDim2.fromOffset(310, 200)
+            box.Size = UDim2.fromOffset(110, 300)
+            local sizes = tostring(sf.AbsoluteSize) .. " " .. tostring(box.AbsoluteSize)
+            return sizes .. " / " .. tostring(list.AbsoluteContentSize) .. " / "
+                .. tostring(grid.AbsoluteContentSize) .. " " .. tostring(grid.AbsoluteCellCount)
+        end)
+    "#;
+    load(&mut game, &mut st, "container", src, 0.6);
+    hud(&mut st, &mut game);
+    run_for(&mut st, &mut game, 0.1);
+    assert_eq!(
+        say(&mut st, &mut game, "read"),
+        "310, 200 110, 300 / 310, 60 / 105, 160 2, 3"
+    );
+    run_for(&mut st, &mut game, 0.1);
+    assert_eq!(printed(&st, "container"), ["content    300, 60", "content    310, 60"]);
+}
+
+#[test]
 fn reads_while_a_gui_is_built_lay_out_only_their_way() {
     // A UI library builds rows and reads each one's place as it goes. Each
     // read lays out the way down to its row, and in a list only the sizes
@@ -430,11 +475,85 @@ fn reads_while_a_gui_is_built_lay_out_only_their_way() {
     assert_eq!(listed, (1..=50).map(|i| 4 + i).sum::<u64>(), "{listed}");
 }
 
+/// What each of `ids` reports of its layout: every output, as text.
+fn reported(rbx: &horizon_studio::game::hstudio_rbx::Rbx, ids: &[u32]) -> Vec<Vec<String>> {
+    ids.iter()
+        .map(|&id| {
+            OUTPUTS
+                .iter()
+                .map(|k| format!("{k} {:?}", get(&rbx.raw_get(id, k))))
+                .collect()
+        })
+        .collect()
+}
+
+/// Reads of `ids` lay out as the whole GUI does. Each read on its own,
+/// after something moved, writes nothing but what laying out the whole GUI
+/// gives, nor does reading them all in turn with nothing moved between.
+/// Then, after the mod's `change` command, every value a read marks fresh
+/// is what laying out the whole GUI gives then.
+fn reads_agree_with_the_whole_layout(st: &mut Studio, game: &mut FakeGame, ids: &[u32], change: &str) {
+    let rbx = &mut st.s.rbx;
+    rbx.gui_epoch += 1;
+    lay_out(rbx, game);
+    let whole = reported(rbx, ids);
+    let same = |rbx: &horizon_studio::game::hstudio_rbx::Rbx, after: u32| {
+        for (i, now) in reported(rbx, ids).iter().enumerate() {
+            assert_eq!(
+                now,
+                &whole[i],
+                "{} after a read of {}",
+                rbx.full_name(ids[i]),
+                rbx.full_name(after)
+            );
+        }
+    };
+    for &id in ids {
+        // Something moved: each read works its own values out.
+        rbx.gui_epoch += 1;
+        fresh_layout(rbx, game, id);
+        same(rbx, id);
+    }
+    rbx.gui_epoch += 1;
+    for &id in ids {
+        fresh_layout(rbx, game, id);
+        same(rbx, id);
+    }
+    say(st, game, change);
+    let rbx = &mut st.s.rbx;
+    let epoch = rbx.gui_epoch;
+    // Each instance's values whenever a read has marked them fresh.
+    let mut fresh: Vec<(usize, Vec<String>, u32)> = Vec::new();
+    for &id in ids {
+        fresh_layout(rbx, game, id);
+        let now = reported(rbx, ids);
+        for (i, &j) in ids.iter().enumerate() {
+            if rbx.inst(j).laid_out == epoch {
+                fresh.push((i, now[i].clone(), id));
+            }
+        }
+    }
+    assert_eq!(rbx.gui_epoch, epoch, "reads move nothing");
+    rbx.gui_epoch += 1;
+    lay_out(rbx, game);
+    let whole = reported(rbx, ids);
+    for (i, got, after) in fresh {
+        assert_eq!(
+            got,
+            whole[i],
+            "{} after the change and a read of {}",
+            rbx.full_name(ids[i]),
+            rbx.full_name(after)
+        );
+    }
+}
+
 #[test]
 fn a_read_lays_out_as_the_whole_gui_does() {
-    // Every output a read works out on its own is what laying out the whole
-    // GUI gives, with automatic sizes, layouts, padding, scale, constraints,
-    // Folders and scrolling canvases on the way.
+    // Every output a read works out is what laying out the whole GUI gives,
+    // with automatic sizes, layouts, padding, scale, constraints, Folders
+    // and scrolling canvases on the way, and so is every other value it
+    // writes.
     let mut game = FakeGame::new("rbx-partial");
     let mut st = studio(&mut game);
     let src = r#"
@@ -477,6 +596,16 @@ fn a_read_lays_out_as_the_whole_gui_does() {
         for i = 1, 7 do
             Instance.new("ImageLabel", scroll).Name = "cell" .. i
         end
+        -- A table in an automatic frame that the list sizes beside the way.
+        local sheet = Instance.new("Frame", panel)
+        sheet.AutomaticSize = Enum.AutomaticSize.XY
+        Instance.new("UITableLayout", sheet)
+        for r = 1, 3 do
+            local line = Instance.new("Frame", sheet)
+            for c = 1, 2 do
+                Instance.new("Frame", line).Size = UDim2.fromOffset(40, 30)
+            end
+        end
         local big = Instance.new("TextLabel", panel)
         big.Size = UDim2.new(0.5, 0, 0, 20)
         big.TextScaled = true
@@ -491,29 +620,49 @@ fn a_read_lays_out_as_the_whole_gui_does() {
         corner.Size = UDim2.fromScale(0.25, 0.25)
         corner.Text = ""
         corner.PlaceholderText = "type"
+        -- An automatic frame sized by what its Folders hold, and a canvas.
+        local holder = Instance.new("Frame", gui)
+        holder.AnchorPoint = Vector2.new(0.5, 0.5)
+        holder.Position = UDim2.fromScale(0.5, 0.5)
+        holder.AutomaticSize = Enum.AutomaticSize.XY
+        local held = Instance.new("Folder", holder)
+        local large = Instance.new("Frame", held)
+        large.Size = UDim2.fromOffset(100, 100)
+        local small = Instance.new("Frame", held)
+        small.Size = UDim2.fromOffset(10, 10)
+        small.AnchorPoint = Vector2.new(1, 1)
+        small.Position = UDim2.fromScale(1, 1)
+        local deeper = Instance.new("Folder", held)
+        Instance.new("Frame", deeper).Size = UDim2.fromOffset(30, 140)
+        local pane = Instance.new("ScrollingFrame", gui)
+        pane.Position = UDim2.fromOffset(0, 150)
+        pane.Size = UDim2.fromOffset(100, 50)
+        pane.CanvasSize = UDim2.new()
+        pane.AutomaticCanvasSize = Enum.AutomaticSize.XY
+        local kept = Instance.new("Folder", pane)
+        Instance.new("Frame", kept).Size = UDim2.fromOffset(150, 20)
+        local tall = Instance.new("Frame", kept)
+        tall.Position = UDim2.fromOffset(0, 10)
+        tall.Size = UDim2.fromOffset(20, 200)
+        command("change", function()
+            title.Text = "A shorter title"
+            row.Size = UDim2.new(1, 0, 0, 36)
+            loose.Size = UDim2.fromOffset(25, 25)
+            Instance.new("ImageLabel", scroll).Name = "cell8"
+            sheet:GetChildren()[2]:GetChildren()[1].Size = UDim2.fromOffset(55, 35)
+            large.Size = UDim2.fromOffset(120, 80)
+            tall.Size = UDim2.fromOffset(20, 260)
+            list.Padding = UDim.new(0, 6)
+        end)
     "#;
     load(&mut game, &mut st, "partial", src, 0.6);
-    let rbx = &mut st.s.rbx;
-    let gui = rbx.player_gui;
-    let ids: Vec<_> = rbx.descendants(gui).into_iter().filter(|&i| rbx.inst(i).gui).collect();
-    let outputs = |rbx: &horizon_studio::game::hstudio_rbx::Rbx, id| -> Vec<String> {
-        OUTPUTS
-            .iter()
-            .map(|k| format!("{k} {:?}", get(&rbx.raw_get(id, k))))
-            .collect()
-    };
-    let mut alone = Vec::new();
-    for &id in &ids {
-        // Something moved: each read works its own values out.
-        rbx.gui_epoch += 1;
-        fresh_layout(rbx, &mut game, id);
-        alone.push(outputs(rbx, id));
-    }
-    rbx.gui_epoch += 1;
-    lay_out(rbx, &mut game);
-    for (i, &id) in ids.iter().enumerate() {
-        assert_eq!(alone[i], outputs(rbx, id), "{}", rbx.full_name(id));
-    }
+    let rbx = &st.s.rbx;
+    let ids: Vec<_> = rbx
+        .descendants(rbx.player_gui)
+        .into_iter()
+        .filter(|&i| rbx.inst(i).gui)
+        .collect();
+    reads_agree_with_the_whole_layout(&mut st, &mut game, &ids, "change");
 }
 
 const NONE: Mods = Mods {
@@ -1750,8 +1899,8 @@ fn table_layouts_from_a_script() {
 
 #[test]
 fn reads_in_the_new_layouts_lay_out_as_the_whole_gui_does() {
-    // Flex, pages, tables, rich text and billboards: every output a read
-    // works out on its own is what laying out the whole GUI gives.
+    // Flex, pages, tables, rich text and billboards: every value a read
+    // writes is what laying out the whole GUI gives.
     let mut game = FakeGame::new("rbx-partial-new");
     let mut st = studio(&mut game);
     let src = r#"
@@ -1812,29 +1961,20 @@ fn reads_in_the_new_layouts_lay_out_as_the_whole_gui_does() {
         inner.Size = UDim2.fromScale(0.5, 1)
         Instance.new("UIListLayout", inner)
         Instance.new("TextLabel", inner).Size = UDim2.new(1, 0, 0, 10)
+        command("change", function()
+            row:GetChildren()[3].Size = UDim2.fromOffset(70, 30)
+            pages.Padding = UDim.new(0, 14)
+            box:GetChildren()[3]:GetChildren()[2].Size = UDim2.fromOffset(44, 30)
+            rich.Text = '<font size="20">mid</font> line'
+            inner.Size = UDim2.fromScale(0.75, 1)
+        end)
     "#;
     load(&mut game, &mut st, "partialnew", src, 0.6);
-    let rbx = &mut st.s.rbx;
+    let rbx = &st.s.rbx;
     let mut ids: Vec<_> = rbx.descendants(rbx.player_gui);
     ids.extend(rbx.descendants(rbx.workspace));
     ids.retain(|&i| rbx.inst(i).gui);
-    let outputs = |rbx: &horizon_studio::game::hstudio_rbx::Rbx, id| -> Vec<String> {
-        OUTPUTS
-            .iter()
-            .map(|k| format!("{k} {:?}", get(&rbx.raw_get(id, k))))
-            .collect()
-    };
-    let mut alone = Vec::new();
-    for &id in &ids {
-        rbx.gui_epoch += 1;
-        fresh_layout(rbx, &mut game, id);
-        alone.push(outputs(rbx, id));
-    }
-    rbx.gui_epoch += 1;
-    lay_out(rbx, &mut game);
-    for (i, &id) in ids.iter().enumerate() {
-        assert_eq!(alone[i], outputs(rbx, id), "{}", rbx.full_name(id));
-    }
+    reads_agree_with_the_whole_layout(&mut st, &mut game, &ids, "change");
 }
 
 #[test]
