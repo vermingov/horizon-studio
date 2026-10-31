@@ -112,8 +112,9 @@ In a world, press **F8** (or type `/studio`). Escape or F8 closes it. The world 
 | **Docs** | The API. | Up/Down, Page Up/Down, wheel |
 | **Settings** | How the studio looks: see [Themes](#themes-and-the-window). | Up/Down, Page Up/Down, wheel |
 
-Ctrl+1 to Ctrl+5 switch tabs. In chat: `/studio` opens it, `/studio reload` reloads every script mod, and
-`/lua <code>` runs code and prints the result in chat.
+Ctrl+1 to Ctrl+5 switch tabs. In chat: `/studio` opens it, `/studio reload` reloads every script mod, `/studio help`
+lists the commands the studio takes, and `/lua <code>` runs code and prints the result in chat. These and your mods'
+commands are in the chat's suggestions, beside the server's.
 
 ### The editor
 
@@ -414,7 +415,7 @@ In Roblox's style, each file of a module is also a ModuleScript under `script`: 
 | Function | What it does |
 |---|---|
 | `on(event, fn)` | Runs `fn` on an event (above). |
-| `command(name, fn[, help])` | `/name args` calls `fn(args, words)`; a returned string shows in chat. Vanilla's command names are refused. |
+| `command(name, fn[, help \| options])` | `/name args` calls `fn(args, words)`; a returned string shows in chat. The chat lists, colours and completes it as the server's commands; `options` declares its arguments and their completions ([Commands in the chat](#commands-in-the-chat)). Vanilla's command names are refused. |
 | `after(seconds, fn)`, `every(seconds, fn)`, `cancel(id)` | Timers; `after` and `every` return an id. |
 | `require(name)` | Loads another file of a module, once (`require(script.lib)` too). |
 | `task.wait([seconds])`, `task.spawn(fn, ...)`, `task.defer(fn, ...)`, `task.delay(seconds, fn, ...)`, `task.cancel(thread)` | Luau's task scheduler: wait without stopping the game (a mod's top level, commands, these threads and Roblox signal handlers can wait), and threads of their own now, after the current code, or later. `task.synchronize()` and `task.desynchronize()` do nothing. |
@@ -483,6 +484,30 @@ limited to reading the world and acting as the player: nothing that saves, quits
 In the console only: `help([name])`, `clear()`, `reload([id])`, `mods()`, `edit(id[, file])` (a module's other
 files by their path in it: `edit("tool", "lib.lua")`), `new(name[, kind])` (`new("Tool", "module")` makes a
 module).
+
+### Commands in the chat
+
+In the game, every command a mod registers is in the chat's suggestions beside the server's commands: `/` lists it,
+Tab completes it, the grey line under the box shows what it takes, and it isn't red as an unknown command. An options
+table in place of the help text declares its arguments, and the chat completes them:
+
+```lua
+command("wp", function(rest, words) --[[ as before ]] end, {
+  description = "Waypoints",
+  args = {
+    { name = "action", options = { "add", "list", { text = "clear", tooltip = "Removes every waypoint" } } },
+    { name = "name", kind = "text", optional = true, suggest = function(rest, words) return saved_names() end },
+  },
+})
+```
+
+The chat then shows `/wp <action> [<name>]`, offers add, clear and list after `/wp ` (clear's tooltip on hover), and
+after that what `suggest` returns, which the studio filters by what is typed. An argument is a `word` (the default:
+anything but a space) or `text` (the rest of the line), or one the chat reads, colours and completes as the game's own
+commands do: `int` and `number` (with `min` and `max`, red outside them), `bool`, `player`, `pos`, `item` and `block`.
+`fn` still gets the line as typed. The studio answers the chat's completion requests itself, so nothing typed for a
+script's command reaches the server. `/studio help` and the Library show each command with its usage. Script commands
+don't show in a command block's editor (command blocks run on the server) or after `/execute ... run`.
 
 ### Screens
 
@@ -760,6 +785,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `sunc.rs` (`hstudio_sunc`) | The executor functions on the studio: environments, files, HTTP, WebSockets, Drawing, Instances, signals, scripts |
 | `net.rs`, `crypt.rs` (`hstudio_net`, `hstudio_crypt`) | HTTP and WebSockets for scripts (the internet only); hashes, Base64 and LZ4 |
 | `studio.rs` (`hstudio`) | Script mods, hot reloading, events, timers, the API, the console |
+| `chatcmd.rs`, `cmdtree.rs` (`hstudio_chatcmd`, `hstudio_cmdtree`) | The scripts' commands in the chat: what `command` declares (arguments, kinds, completions), and their place in the chat's command tree |
 | `ui.rs` (`hstudio_ui`) | The screen: console, editor, library, docs, settings; input, the window's moving and sizing |
 | `assist.rs` (`hstudio_assist`) | The editor's and console's suggestions, and the live check of a script (syntax, unknown names) |
 | `agent.rs` (`hstudio_agent`) | The in-game agent: finding Claude Code and omp, running one with the editor's context, reading its events |
@@ -782,16 +808,17 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `natrium_particles.rs` (`particles::natrium_particles`) | In the renderer: Horizon's particle loop, with the view test first |
 | `natrium_items.rs`, `natrium_villagers.rs`, `natrium_paths.rs` | Next to the code they speed up: item merging, villagers' item pickup, swimmers' path search |
 
-The hooks, HEAD hooks but where it says otherwise (via-address, via-srv, via-recv, via-ping, via-pong and Natrium's particle, Video
-Settings, merge, pickup and swim hooks can answer in their function's place):
+The hooks, HEAD hooks but where it says otherwise (suggest, via-address, via-srv, via-recv, via-ping, via-pong and Natrium's
+particle, Video Settings, merge, pickup and swim hooks can answer in their function's place):
 
 | Hook | Target | For |
 |---|---|---|
-| frame | `game::control::poll_control` | each frame with the event loop: scripts, input, agent commands |
+| frame | `game::control::poll_control` | each frame with the event loop: scripts, input, agent commands; the scripts' commands into the chat's command tree (the server's), and the completions the chat asked for |
 | window-input | `game::follow_keymap` | each window event: dropped files to install; while the studio is open, keys, clicks and the wheel (the game gets an event it ignores) |
 | overlay | `game::remote::remote_hud` | the studio's screen and the scripts' screens, drawn last |
 | world | `game::end::end_geometry` | each frame in a world, with its camera: `draw.*` shapes go into the entity geometry, depth tested |
 | chat | `game::remote::chat_line` | `on("chat")` |
+| suggest | `game::remote::send_suggestion_request` | the chat's completion request: one for a script's command stays in the game and the studio answers it at the frame; any other is sent as before |
 | via-address | `horizon_protocol::servers::parse_address` | on the threads that join and ping servers, an address ViaHorizon routes parses as ViaProxy's internal host (the server and version, for ViaProxy to read from the handshake) |
 | via-srv | `horizon_protocol::resolver::srv_redirect` | that host's SRV lookup answers with the local ViaProxy, so the connection goes there |
 | via-recv | `horizon_protocol::connection::Connection::recv` | during login, ViaProxy's OpenAuthMod sign-in requests are answered |
@@ -809,7 +836,7 @@ Settings, merge, pickup and swim hooks can answer in their function's place):
 | natrium-merge, natrium-pickups, natrium-swim | `entities::merge_with_neighbours`, `game::villagers::Game::villager_pickups`, `mobs::path::Finder::swim_neighbors` | Natrium's versions in their place, while faster ticks are on |
 | hud, key, command, zoom, list, settings, click | Horizon's [native hook points](https://github.com/horizon-rust/horizon/blob/main/crates/horizon-client/src/game/native_hooks.rs) | the HUD, keys, commands, `view.zoom`, the Options → Mods row and page |
 
-The first five, ViaHorizon's and Natrium's go beyond the stable hook points, so the bundle pins one Horizon commit (a Nightly's,
+The first six, ViaHorizon's and Natrium's go beyond the stable hook points, so the bundle pins one Horizon commit (a Nightly's,
 `compatibility.json`): the launcher builds it on that commit. Their bodies are free of macros, which the launcher's
 horizon-mixins (`0d6b103`) requires of a hooked function. The studio opens over the game's chat screen, which frees
 the pointer and keeps the world running while it takes the keyboard.

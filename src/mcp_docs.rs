@@ -553,7 +553,7 @@ Use `pcall` around code that may fail. Running out of steps (an endless loop), a
 - The Editor's script list shows a module as a folder that folds open to its files. The menus of its rows (their "...", or a right click) add, rename and delete a module's files, delete a mod, and make a script a module (its file becomes `<id>/main.lua`, keeping its id, storage and on/off state). A delete asks first and moves what it deletes to `trash/`. In the Library each mod has the same menu (its "...", a right click on its row, or the . key), with a module's files to open, which is how the executor styles, which have no script list, reach them; F there makes a new file of a module and M makes a script a module. When the open script is made a module elsewhere (an agent's `write_mod`), the editor follows it to its main.lua, unsaved edits and all; when the open file is removed, its module's main.lua opens, or with unsaved edits the file stays open, marked as removed (a save writes it back, Close lets it go).
 - Dropping a `.lua` file, a mod folder or a `.zip` of either on the game window installs it; a mod of the same id and kind is replaced (at most 256 files and 8 MiB).
 - On its first start the studio writes the welcome mod `hello.lua`, and it installs the bundled libraries `uikit` and `viahorizon` once (deleting one keeps it deleted).
-- In chat, `/studio` opens the studio, `/studio reload` reloads every mod, `/lua <code>` runs Lua in the console.
+- In chat, `/studio` opens the studio, `/studio reload` reloads every mod, `/studio help` lists the commands the studio takes (with what they take and do), `/lua <code>` runs Lua in the console. These and every mod's `command` are in the chat's suggestions, beside the server's commands.
 - An AI agent writes mods with the MCP tool `write_mod`, which checks the mod headless first (see `mcp`).
 
 ## A whole mod
@@ -614,7 +614,7 @@ The studio runs a call in one of four phases. Most functions work in all of them
 
 | Phase | What runs in it | Only here | Not here |
 | --- | --- | --- | --- |
-| normal | loading, `tick`, `frame`, `key`, `chat`, `unload`, mod-to-mod events, timers, commands, agent callbacks, screen callbacks other than `draw`, the console | | `hud.text`, `hud.rect`, `gfx.rect`, `gfx.border`, `gfx.text`, `draw.*` |
+| normal | loading, `tick`, `frame`, `key`, `chat`, `unload`, mod-to-mod events, timers, commands and their `suggest` functions, agent callbacks, screen callbacks other than `draw`, the console | | `hud.text`, `hud.rect`, `gfx.rect`, `gfx.border`, `gfx.text`, `draw.*` |
 | HUD | `on("hud")` | `hud.text`, `hud.rect`, `gfx.rect`, `gfx.border`, `gfx.text` (also in a screen's draw) | `agent.*`, `world.find`, `world.entities`, `world.particle`, `sound.*`, `draw.*` |
 | screen draw | a screen's `draw(w, h)` | the HUD's drawing functions | `world.particle`, `draw.*` |
 | world | `on("world")` | `draw.*` | `hud.text`, `hud.rect`, `gfx.rect`, `gfx.border`, `gfx.text`, `world.particle`, `sound.*` |
@@ -655,7 +655,8 @@ const EVENTS: &str = r##"
 7. Timers that are due (`after`, `every`).
 8. Agent replies that arrived: `agent.run` callbacks.
 9. `frame` handlers.
-10. Drawing: `world` handlers and attached models as the world draws; then the HUD (through-wall lines and labels from `world` handlers, `hud` handlers, `hud.panel` boxes); then a script screen (its widgets and `draw`).
+10. In the game, the completions the chat asked for (a command's `suggest` functions), and the chat's command tree catching up with the commands registered or dropped.
+11. Drawing: `world` handlers and attached models as the world draws; then the HUD (through-wall lines and labels from `world` handlers, `hud` handlers, `hud.panel` boxes); then a script screen (its widgets and `draw`).
 
 Handlers of one event run mod by mod (in the order the mods were found: sorted file names, newer mods after), then the console's; within a mod, in the order they were registered. A handler may register more handlers; they run from the next time the event fires. There is no way to remove a handler: keep a flag and return early, or reload the mod.
 
@@ -1552,6 +1553,64 @@ command("calc", function(rest, words)
 end, "Calculates: /calc <a> <op> <b>")
 ```
 
+## Chat command with completions
+
+Declared arguments show in the chat's usage line (`/home <action> <name>`), and the chat completes them: the options (with their tooltips) for the first, the saved names for the second.
+
+```lua
+-- name: Homes
+-- description: /home add|remove|show <name>: places to come back to
+local homes = storage.get("homes") or {}
+
+local function names()
+  local list = {}
+  for name in pairs(homes) do list[#list + 1] = name end
+  table.sort(list)
+  return list
+end
+
+command("home", function(rest, words)
+  local action, name = words[1], words[2]
+  if action == "add" and name then
+    local x, y, z = player.block()
+    if not x then return "Not in a world" end
+    homes[name] = { x = x, y = y, z = z }
+    storage.set("homes", homes)
+    return "Saved " .. name
+  elseif action == "remove" and homes[name] then
+    homes[name] = nil
+    storage.set("homes", homes)
+    return "Removed " .. name
+  elseif action == "show" and homes[name] then
+    local h = homes[name]
+    return string.format("%s: %d %d %d", name, h.x, h.y, h.z)
+  end
+  return "Usage: /home add|remove|show <name>"
+end, {
+  description = "Places to come back to",
+  args = {
+    { name = "action", options = {
+      { text = "add", tooltip = "Saves where you stand" },
+      { text = "remove", tooltip = "Forgets a place" },
+      { text = "show", tooltip = "Shows where a place is" },
+    } },
+    { name = "name", suggest = function(rest, words)
+      -- After add a new name is typed; remove and show take a saved one.
+      if words[1] == "add" then return {} end
+      return names()
+    end },
+  },
+})
+
+-- Typed arguments complete as the game's own commands do: players online,
+-- and a number the chat shows in red outside 1 to 64.
+command("tip", function(rest, words)
+  return "Tipped " .. words[1] .. " " .. words[2] .. " emeralds"
+end, { args = { { name = "who", kind = "player" }, { name = "amount", kind = "int", min = 1, max = 64 } } })
+```
+
+Test the completions headless with `{"suggest": "/home re", "expect_output": "remove (Forgets a place)"}`.
+
 ## Toggle with a key
 
 ```lua
@@ -1817,7 +1876,13 @@ Every number below is in the runtime's source.
 | What | Limit |
 | --- | --- |
 | `chat.say` and `game.run` together (`SEND_BURST`, `SEND_RATE`) | a burst of 8, then 4 a second |
-| Command name | 1 to 32 letters, digits, `_`, `-` |
+| Command name, argument name | 1 to 32 letters, digits, `_`, `-` |
+| Commands one mod (or the console) has (`MAX_COMMANDS`) | 256 |
+| Arguments one command declares (`MAX_ARGS`) | 16 |
+| Options of one argument / completions in one answer (`MAX_COMPLETIONS`) | 256 / 256 |
+| A completion's text / tooltip (`MAX_COMPLETION_BYTES`) | 256 bytes (a longer text is left out, a tooltip is cut) |
+| Entries of a `suggest` function's list looked at | 4096 |
+| `/studio help` lines for the mods' commands | 20 (the Library lists them all) |
 
 ## Per mod
 
@@ -2001,6 +2066,11 @@ Errors have the form `<file>:<line>: <message>`; in a handler the event's name c
 | `/time is the game's own command` | `command` with a vanilla or studio name | pick another name |
 | `/x is already used by othermod` | another running mod has that command | pick another name |
 | `bad argument #1 to 'command' (a name of letters, digits, '_' or '-' expected)` | spaces or symbols in a command name | letters, digits, `_` and `-`, up to 32 |
+| `too many commands (256)` | registering commands in a loop | fewer commands, with arguments (`args`) to choose what they do |
+| `bad argument #3 to 'command' (args[1].kind: unknown kind 'x' (word, text, ...))` | a kind that does not exist | `word`, `text`, `int`, `number`, `bool`, `player`, `pos`, `item` or `block` |
+| `bad argument #3 to 'command' (args[2]: a required argument can't follow an optional one)` / `(args[1]: only the last argument can be text)` | arguments in an order the chat can't read | optional arguments last, a `text` one at the very end |
+| `bad argument #3 to 'command' (suggest: with args, each argument takes its own suggest)` | a command-level `suggest` beside `args` | put `suggest` in the argument it completes |
+| `/home completions: homes.lua:9: ...` (in the console) | the command's `suggest` function failed; it is logged once and the mod runs on | fix the function; it is called again at the next keystroke |
 | `no mod 'x' to import` | no such mod in the mods folder | check the id (the file or folder name) |
 | `'x' exports nothing: it needs export(...) or to return a table` | the library neither called `export` nor returned a table | add `export({...})` or `return M` |
 | `library 'x' failed: ...` / `library 'x' is turned off` | the library is broken or off | fix or turn on the library; this mod reloads with it |
@@ -2075,18 +2145,57 @@ end)
         "command",
         "api",
         r##"
-`command(name, fn[, help])`
+`command(name, fn[, help | options])`
 
 Adds the chat command `/name`. When the player types `/name ...` in chat, the studio takes it before the server and `fn(rest, words)` runs on the next frame. If `fn` returns a value other than nil, the player's chat shows it as plain text (numbers formatted, tables as `table: 0x...`; no prefix). An error in `fn` does not stop the mod: the chat shows `/name: <message>` and the console logs it with a traceback.
 
-- `name` (string): 1 to 32 letters, digits, `_` or `-`; a leading `/` is dropped. Registering the same name again in the same mod replaces it.
-- `fn(rest, words)`: `rest` is the text after the name, trimmed (`""` when there is none); `words` is `rest` split on whitespace, a list (`words[1]` is the first word, nil when none).
-- `help` (string, optional): shown in the Library next to the command.
-- Returns: nothing.
-- Where: anywhere. The command lasts until the mod reloads or stops.
-- Errors: `bad argument #1 to 'command' (a name of letters, digits, '_' or '-' expected)`; `/name is the game's own command` (names of vanilla commands and the studio's: `studio`, `lua`, `advancement`, `attribute`, `ban`, `ban-ip`, `banlist`, `bossbar`, `clear`, `clone`, `damage`, `data`, `datapack`, `debug`, `defaultgamemode`, `deop`, `dialog`, `difficulty`, `effect`, `enchant`, `execute`, `experience`, `xp`, `fetchprofile`, `fill`, `fillbiome`, `forceload`, `function`, `gamemode`, `gamerule`, `give`, `help`, `item`, `jfr`, `kick`, `kill`, `list`, `locate`, `loot`, `me`, `msg`, `tell`, `w`, `op`, `pardon`, `pardon-ip`, `particle`, `perf`, `place`, `playsound`, `publish`, `random`, `recipe`, `reload`, `return`, `ride`, `rotate`, `save-all`, `save-off`, `save-on`, `say`, `schedule`, `scoreboard`, `seed`, `setblock`, `setidletimeout`, `setworldspawn`, `spawnpoint`, `spectate`, `spreadplayers`, `stop`, `stopsound`, `stopwatch`, `summon`, `tag`, `team`, `teammsg`, `tm`, `teleport`, `tp`, `tellraw`, `test`, `tick`, `time`, `title`, `transfer`, `trigger`, `version`, `waypoint`, `weather`, `whitelist`, `worldborder`); `/name is already used by <mod id>` (another running mod has it).
+In the game the command is in the chat's suggestions too, beside the server's commands: typing `/` lists it, Tab completes its name, the grey line under the box shows what it takes, and it is not red as an unknown command. An options table declares its arguments and their completions.
 
-`game.run("name args")` runs a mod's command too. In tests: `{"command": "/name args", "expect_chat": "..."}`.
+- `name` (string): 1 to 32 letters, digits, `_` or `-`; a leading `/` is dropped. Registering the same name again in the same mod replaces it.
+- `fn(rest, words)`: `rest` is the text after the name, trimmed (`""` when there is none); `words` is `rest` split on whitespace, a list (`words[1]` is the first word, nil when none). It gets the line as typed whatever the arguments declare: their kinds give the chat its colours, completions and usage line, and check nothing.
+- `help` (string, optional): the description, shown in the Library and by `/studio help`.
+- `options` (table, optional), in place of `help`:
+  - `description` (string): the same as `help`.
+  - `args` (a list of at most 16): the arguments, in order. Each is a name (a required word), or a table:
+    - `name` (string): 1 to 32 letters, digits, `_` or `-`; the usage line shows `<name>`.
+    - `kind` (string, default `"word"`): what it takes; see the table below.
+    - `optional` (boolean): the usage line shows `[<name>]`. A required argument can't follow an optional one, and only the last argument can be `text`.
+    - `min`, `max` (numbers): the bounds of an `int` (whole numbers from -2147483648 to 2147483647) or a `number` (finite); the chat shows the game's red range error outside them. Other kinds ignore them.
+    - `options` (a list of at most 256): fixed completions, each a string, a number, or `{text = "clear", tooltip = "Removes every waypoint"}` (the chat shows the tooltip over it).
+    - `suggest` (function): more completions, `suggest(rest, words, name)` (see below).
+  - `suggest` (function): completes a command that declares no `args` (its free text), at the word typed. With `args`, each argument takes its own.
+  - Other keys are ignored.
+- Returns: nothing.
+- Where: anywhere. The command lasts until the mod reloads or stops. A mod (and the console) has at most 256 commands.
+
+| Kind | Takes | In the chat |
+| --- | --- | --- |
+| `word` | one word: anything but a space | no completions of its own; a word that starts with `@` reads as a player selector |
+| `text` | the rest of the line (the last argument only) | no completions of its own |
+| `int` | a whole number | red when it is not one, or outside `min` and `max` |
+| `number` | a number | the same, for any number |
+| `bool` | `true` or `false` | completes them |
+| `player` | a player's name, or a selector (`@p`, `@s`) | completes the players online and the selectors |
+| `pos` | a block position: three numbers or `~` (`~ ~1 ~`), or `^ ^ ^` | completes `~ ~ ~` and the block looked at |
+| `item` | an item id (`minecraft:diamond_sword`) | completes item ids |
+| `block` | a block id, with states (`minecraft:oak_stairs[facing=east]`) | completes block ids and states |
+
+Without `args` a command takes any text after its name (the usage line shows `[<args>]`); `args = {}` takes nothing.
+
+Completions: when the chat comes to an argument that has `options` or a `suggest` function, it asks the studio for its completions, as it asks a server for a server's, and the list shows a frame later; an argument with neither keeps the game's own completions for its kind. What is completed is the argument at the cursor: a one-word argument at its word, a `text` argument as a whole (the option `"the base"` completes `/wp remove the b`), and a command without `args` at the word typed.
+
+- `suggest(rest, words, name)` gets the text after the command's name up to the cursor, its words, and the argument's name (nil for a command without `args`). Unlike `fn`'s, `rest` keeps its trailing spaces and `words` always ends with the word being typed: `""` after a space (`"/wp remove "` gives `"remove "` and `{"remove", ""}`).
+- It returns a list of strings, numbers or `{text = , tooltip = }` tables (other entries are skipped), or nil for none.
+- The studio keeps what matches the text typed, as the game's own completions match (at the start, or after a `.`, `_` or `/`, in any case: `ho` matches `go_home`), and leaves out the text typed itself, empty texts, texts over 256 bytes and, but for `text` arguments and free text, texts with a space. Tooltips are cut to 256 bytes, and at most 256 completions go to the chat, which sorts them.
+- It runs in the normal phase, with a handler's budget, on every keystroke at that argument: keep it quick. It can't wait.
+- An error in it does not stop the mod: the console logs `/name completions: <message>` once, until the message changes or the function works again, and the `options` are still offered. One that runs out of steps is not called again until the mod reloads.
+
+Where the commands show: on servers (vanilla, Paper, proxies, older versions through ViaHorizon) and in single player and LAN, where the game joins its own server. A script's command hides the server's command of the same name, which the studio takes first anyway. They do not show in a command block's editor (command blocks run on the server; until you type there, its first list may still have them), after `/execute ... run` (the server runs what follows), before a server has sent its commands, or in the deprecated in-frame single player: there they run but are not suggested. Nothing typed for them reaches the server, completions included.
+
+- Errors: `bad argument #1 to 'command' (a name of letters, digits, '_' or '-' expected)`; `/name is the game's own command` (names of vanilla commands and the studio's: `studio`, `lua`, `advancement`, `attribute`, `ban`, `ban-ip`, `banlist`, `bossbar`, `clear`, `clone`, `damage`, `data`, `datapack`, `debug`, `defaultgamemode`, `deop`, `dialog`, `difficulty`, `effect`, `enchant`, `execute`, `experience`, `xp`, `fetchprofile`, `fill`, `fillbiome`, `forceload`, `function`, `gamemode`, `gamerule`, `give`, `help`, `item`, `jfr`, `kick`, `kill`, `list`, `locate`, `loot`, `me`, `msg`, `tell`, `w`, `op`, `pardon`, `pardon-ip`, `particle`, `perf`, `place`, `playsound`, `publish`, `random`, `recipe`, `reload`, `return`, `ride`, `rotate`, `save-all`, `save-off`, `save-on`, `say`, `schedule`, `scoreboard`, `seed`, `setblock`, `setidletimeout`, `setworldspawn`, `spawnpoint`, `spectate`, `spreadplayers`, `stop`, `stopsound`, `stopwatch`, `summon`, `tag`, `team`, `teammsg`, `tm`, `teleport`, `tp`, `tellraw`, `test`, `tick`, `time`, `title`, `transfer`, `trigger`, `version`, `waypoint`, `weather`, `whitelist`, `worldborder`); `/name is already used by <mod id>` (another running mod has it); `too many commands (256)`.
+- Errors in the options table are `bad argument #3 to 'command' (...)`, saying what is wrong: `(string or table expected, got boolean)`; `(description: string expected)`; `(suggest: function expected)`; `(suggest: with args, each argument takes its own suggest)`; `(args: a list of at most 16 arguments expected)`; `(args[2]: a name or a table expected)`; `(args[2]: a name of letters, digits, '_' or '-' expected)` (a name alone) or `(args[2].name: ...)`; `(args[2].kind: unknown kind 'x' (word, text, int, number, bool, player, pos, item or block))`; `(args[1].optional: true or false expected)`; `(args[1].min: a whole number from -2147483648 to 2147483647 expected)` (an `int`), `(args[1].min: a finite number expected)` (a `number`), `(args[1].min is more than its max)`; `(args[1].options: a list of at most 256 strings or {text, tooltip} tables expected)`; `(args[1].suggest: function expected)`; `(args[2]: only the last argument can be text)`; `(args[2]: a required argument can't follow an optional one)`.
+
+`game.run("name args")` runs a mod's command too. In tests: `{"command": "/name args", "expect_chat": "..."}`, and `{"suggest": "/name words", "expect_output": "..."}` for its completions (headless).
 
 ```lua
 command("greet", function(rest, words)
@@ -2094,6 +2203,19 @@ command("greet", function(rest, words)
   local times = tonumber(words[2]) or 1
   for i = 1, math.min(times, 5) do chat.show("Hello, " .. words[1] .. "!") end
 end, "Greets someone: /greet <name> [times]")
+
+-- The same with its arguments declared: the chat shows /hi <who> [<times>],
+-- completes the players online, and shows a times over 5 in red.
+command("hi", function(rest, words)
+  local times = tonumber(words[2]) or 1
+  for i = 1, math.min(times, 5) do chat.show("Hello, " .. words[1] .. "!") end
+end, {
+  description = "Greets someone",
+  args = {
+    { name = "who", kind = "player" },
+    { name = "times", kind = "int", min = 1, max = 5, optional = true },
+  },
+})
 ```
 "##
     ),

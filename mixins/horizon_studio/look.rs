@@ -3144,8 +3144,9 @@ fn docs() -> Vec<Doc> {
     out.push(Doc::Para("horizon-studio-mcp lets AI agents (Claude Code, omp, Codex, Cursor...) make mods here: they write and test them, headless and in this game, run Lua in the console and read what happened. Copy AI setup prompt, at the top right, copies a prompt for your agent that sets it all up; once one is connected, its name shows there. Options > Mods > Horizon Studio turns the AI link off.".into()));
     out.push(Doc::Heading("Commands in chat".into()));
     out.push(Doc::Para(
-        "/studio opens this screen, /studio reload reloads every script mod, /lua <code> runs code.".into(),
+        "/studio opens this screen, /studio reload reloads every script mod, /studio help lists the commands the studio takes, /lua <code> runs code.".into(),
     ));
+    out.push(Doc::Para("Every mod's command is in the chat's suggestions beside the server's: / lists it, Tab completes it, and the line under the box shows what it takes. command(name, fn, {description = ..., args = {...}}) declares its arguments: a word, text, int, number, bool, player, pos, item or block, with options or a suggest function that the chat completes. A command block's editor and /execute ... run don't offer them: the server runs those.".into()));
     out
 }
 

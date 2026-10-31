@@ -3544,7 +3544,7 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "",
         "command",
         2,
-        "command(name, fn[, help]): /name in chat calls fn(args, words); a returned string is shown",
+        "command(name, fn[, help | {description, args, suggest}]): /name in chat calls fn(args, words) and is in the chat's suggestions; args declares its arguments (kind, optional, options, suggest), which the chat completes; a returned string is shown",
     ),
     (
         "",

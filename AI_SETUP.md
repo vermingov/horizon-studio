@@ -79,8 +79,8 @@ Once the `horizon-studio` tools are available:
   where the game reads it; the game reloads it at once.
 - Shared code goes in a library: `export{...}` in one mod, `import("id")` in others. The bundled UI Kit (`uikit`) is
   one; `examples` lists the bundled mods and gives their source.
-- Test with `test_mod`: headless first (commands, chat, keys, Lua assertions, the player and blocks, script screens and
-  clicks, sounds, particles, text drawn), then live. Fix what fails and test again.
+- Test with `test_mod`: headless first (commands and their completions, chat, keys, Lua assertions, the player and
+  blocks, script screens and clicks, sounds, particles, text drawn), then live. Fix what fails and test again.
 - In the running game: `run_lua` runs Lua in the studio's console, `send_chat` sends chat or commands and returns what
   followed, `game_log` reads the console and chat, `reload_mod` reloads.
 - With Horizon started with `--control` (or `horizon-ctl launch --world NAME --wait`), `horizon_ctl` plays the game
