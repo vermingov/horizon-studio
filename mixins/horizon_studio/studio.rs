@@ -15,7 +15,9 @@ use super::hstudio_lua::{
     check_str, check_table, check_text, opt_num, opt_str,
 };
 use super::hstudio_lualib::{inspect, new_env, quote, text_of};
-use super::hstudio_modfiles::{TEMPLATE, file_name, lua_files, path_in, prune_empty, rel_in, require_path, to_trash};
+use super::hstudio_modfiles::{
+    TEMPLATE, file_name, find_mods, id_taken, lua_files, path_in, prune_empty, rel_in, require_path, to_trash,
+};
 use super::hstudio_ui::{Editor, ScriptScreen, Ui};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -1091,36 +1093,7 @@ impl Studio {
 
     /// The mods on disk: (id, main file, folder).
     fn discover(&self) -> Vec<(String, PathBuf, Option<PathBuf>)> {
-        let Ok(entries) = std::fs::read_dir(self.s.mods_dir()) else {
-            return Vec::new();
-        };
-        let mut found: Vec<(String, PathBuf, Option<PathBuf>)> = Vec::new();
-        let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
-        paths.sort();
-        for p in paths {
-            let Some(name) = p.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
-                continue;
-            };
-            if name.starts_with('.') {
-                continue;
-            }
-            let (id, main, folder) = if p.is_dir() {
-                let main = p.join("main.lua");
-                if !main.is_file() {
-                    continue;
-                }
-                (mod_id(&name), main, Some(p.clone()))
-            } else if let Some(stem) = name.strip_suffix(".lua") {
-                (mod_id(stem), p.clone(), None)
-            } else {
-                continue;
-            };
-            if found.iter().any(|f| f.0 == id) {
-                continue;
-            }
-            found.push((id, main, folder));
-        }
-        found
+        find_mods(&self.s.mods_dir())
     }
 
     /// Its files' sizes and times, to see when it changes: a script's file,
@@ -1637,7 +1610,7 @@ impl Studio {
     pub fn create_mod(&mut self, game: &mut dyn GameApi, name: &str, code: Option<&str>) -> Result<PathBuf, String> {
         let id = mod_id(name.trim());
         let path = self.s.mods_dir().join(format!("{id}.lua"));
-        if path.exists() || self.s.mods_dir().join(&id).exists() {
+        if id_taken(&self.s.mods_dir(), &id) {
             return Err(format!("{id} already exists"));
         }
         let _ = std::fs::create_dir_all(self.s.mods_dir());
@@ -1773,18 +1746,18 @@ impl Studio {
     }
 
     /// What a new id typed for mod `id` would be (renaming or copying it),
-    /// or why it can't be: empty, the same, or taken. None while nothing is
-    /// typed.
+    /// or why it can't be: taken by a mod listed, or by one in the mods
+    /// folder, whatever its name ("My Mod.lua" is my_mod's), or the same as
+    /// the original's for a copy. None while nothing is typed.
     fn new_mod_id(&self, id: &str, typed: &str, renaming: bool) -> Option<Result<String, String>> {
         let name = typed.trim();
         if name.is_empty() {
             return None;
         }
         let new_id = mod_id(name);
-        let mods = self.s.mods_dir();
         Some(if renaming && new_id == id {
             Ok(new_id)
-        } else if mods.join(format!("{new_id}.lua")).exists() || mods.join(&new_id).exists() {
+        } else if self.s.mods.iter().any(|m| m.id == new_id) || id_taken(&self.s.mods_dir(), &new_id) {
             Err(format!("{new_id} already exists"))
         } else {
             Ok(new_id)
@@ -1865,6 +1838,8 @@ impl Studio {
     /// written by hand stays). Unsaved edits in its files are saved first,
     /// and the editor follows the file it has open. The mods that import it
     /// reload, and fail until they import the new id: the log says which.
+    /// The mods that were waiting for the new id (their import failed for
+    /// want of it) reload too, and find it, as when its file appears.
     /// Returns its main file.
     pub fn rename_mod(&mut self, game: &mut dyn GameApi, id: &str, typed: &str) -> Result<PathBuf, String> {
         let plan = self.rename_plan(id, typed)?;
@@ -1938,7 +1913,7 @@ impl Studio {
                 format!("{u} imports {id}, which is {new_id} now: make it import(\"{new_id}\")"),
             );
         }
-        self.reload_users(game, vec![id.to_owned()]);
+        self.reload_users(game, vec![id.to_owned(), new_id]);
         Ok(main)
     }
 

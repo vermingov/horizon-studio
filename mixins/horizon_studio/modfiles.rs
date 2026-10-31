@@ -4,7 +4,8 @@
 // a folder `<id>/` whose main.lua loads its other `.lua` files with
 // `require`. These are plain filesystem rules, shared by the runtime
 // (hstudio), the editor and the MCP server (headless.rs), so they all agree
-// on what a module holds; with them, the starter files of a new script or
+// on what a module holds; with them, which names in the mods folder are
+// mods (and so which ids are taken), the starter files of a new script or
 // module, the names typed for new files, and the moves the studio makes
 // (renaming a file, a script made a module, deleting to the trash).
 
@@ -102,6 +103,54 @@ pub fn require_name(rel: &str) -> String {
     rel.strip_suffix(".lua").unwrap_or(rel).replace('/', ".")
 }
 
+// ----------------------------------------------------------------- the mods folder
+
+/// The mods in the mods folder, as the studio lists them: (id, main file,
+/// folder), in the order of their names. A script is a `.lua` file and a
+/// module a folder with a main.lua; each takes its id from its name
+/// (`mod_id`: "My Mod.lua" is my_mod), and of two names with one id only
+/// the first counts. Names that start with `.` are left out.
+pub fn find_mods(mods: &Path) -> Vec<(String, PathBuf, Option<PathBuf>)> {
+    let Ok(entries) = std::fs::read_dir(mods) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(String, PathBuf, Option<PathBuf>)> = Vec::new();
+    let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    paths.sort();
+    for p in paths {
+        let Some(name) = p.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        let (id, main, folder) = if p.is_dir() {
+            let main = p.join("main.lua");
+            if !main.is_file() {
+                continue;
+            }
+            (super::hstudio::mod_id(&name), main, Some(p.clone()))
+        } else if let Some(stem) = name.strip_suffix(".lua") {
+            (super::hstudio::mod_id(stem), p.clone(), None)
+        } else {
+            continue;
+        };
+        if found.iter().any(|f| f.0 == id) {
+            continue;
+        }
+        found.push((id, main, folder));
+    }
+    found
+}
+
+/// Whether a new mod can't take `id`: the mods folder has `<id>.lua` or
+/// `<id>` already, or a mod whose own name gives that id ("My Mod.lua" is
+/// my_mod's). Of two mods with one id only one is listed, so the new one
+/// or the other would be lost.
+pub fn id_taken(mods: &Path, id: &str) -> bool {
+    mods.join(format!("{id}.lua")).exists() || mods.join(id).exists() || find_mods(mods).iter().any(|f| f.0 == id)
+}
+
 // ----------------------------------------------------------------- names typed for new files
 
 /// What was typed for a file of a module, as its path in it: "util" is
@@ -155,7 +204,7 @@ pub fn plan_mod(mods: &Path, typed: &str, module: bool) -> Result<String, String
         return Ok(String::new());
     }
     let id = super::hstudio::mod_id(name);
-    if mods.join(format!("{id}.lua")).exists() || mods.join(&id).exists() {
+    if id_taken(mods, &id) {
         return Err(format!("{id} already exists"));
     }
     Ok(if module {
@@ -201,10 +250,10 @@ fn fill(text: &str, id: &str, name: &str) -> String {
 
 /// Writes a new module `<mods>/<id>/` with the three starter files, in a
 /// hidden folder first and then renamed into place, so a scan never sees
-/// half of it. Returns its main.lua.
+/// half of it; not while the id is taken. Returns its main.lua.
 pub fn write_module(mods: &Path, id: &str, name: &str) -> Result<PathBuf, String> {
     let dest = mods.join(id);
-    if dest.exists() || mods.join(format!("{id}.lua")).exists() {
+    if id_taken(mods, id) {
         return Err(format!("{id} already exists"));
     }
     let fresh = mods.join(format!(".{id}.creating"));

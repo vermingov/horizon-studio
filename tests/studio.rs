@@ -1488,24 +1488,32 @@ fn colors_in_every_written_form() {
 fn rename_mod_moves_files_and_keeps_state() {
     let mut game = FakeGame::new("rename-mod");
     let mut st = studio(&mut game);
-    // A library with saved data, a mod that imports it, and a module.
+    // A library with saved data, a mod that imports it, one waiting for a
+    // toolkit, and a module.
     game.write_mod(
         "kit.lua",
         "-- name: Kit\nstorage.set('n', 7)\nexport({ hi = function() return 'hi' end })\n",
     );
     game.write_mod("user.lua", "local kit = import('kit')\nprint('user ' .. kit.hi())\n");
+    game.write_mod(
+        "waiter.lua",
+        "local t = import('toolkit')\nprint('waiter ' .. t.hi())\n",
+    );
     write_module(
         &game,
         "box",
         &[
             ("main.lua", "-- name: My Box\nlocal lib = require('lib')\n"),
             ("lib.lua", "return {}\n"),
+            ("lib/util.lua", "return {}\n"),
         ],
     );
     run_for(&mut st, &mut game, 0.6);
     let mods = game.mods_dir();
     let k = mod_index(&st, "kit");
     assert!(game.dir.join("storage/kit/n.lua").is_file());
+    let waiting = failure(&st, "waiter").0;
+    assert!(waiting.contains("no mod 'toolkit' to import"), "{waiting}");
     let main = st.rename_mod(&mut game, "kit", "Toolkit").unwrap();
     assert_eq!(main, mods.join("toolkit.lua"));
     assert!(main.is_file() && !mods.join("kit.lua").exists());
@@ -1532,15 +1540,27 @@ fn rename_mod_moves_files_and_keeps_state() {
         "{lines:?}"
     );
     assert!(matches!(st.s.mods[mod_index(&st, "user")].state, ModState::Failed(..)));
+    // The mod that was waiting for a toolkit has one now, and runs.
+    let w = mod_index(&st, "waiter");
+    assert!(st.s.mods[w].running(), "{:?}", st.s.mods[w].state);
+    assert!(lines.contains(&"[waiter] waiter hi".to_owned()), "{lines:?}");
     // A module, turned off: it stays off under its new id, and a name written by hand stays.
+    // Its file open with an unsaved edit is saved first, and the editor follows it.
     let b = mod_index(&st, "box");
     st.set_enabled(&mut game, b, false);
+    st.open_file(&mods.join("box").join("lib").join("util.lua"));
+    st.s.editor.insert("-- mine\n");
     st.rename_mod(&mut game, "box", "crate").unwrap();
     assert!(mods.join("crate").join("lib.lua").is_file() && !mods.join("box").exists());
     assert_eq!(st.s.mods[b].id, "crate");
     assert_eq!(st.s.mods[b].folder.as_deref(), Some(mods.join("crate").as_path()));
     assert!(!st.s.mods[b].enabled);
     assert_eq!(st.s.mods[b].name, "My Box");
+    let util = mods.join("crate").join("lib").join("util.lua");
+    assert_eq!(st.s.editor.path.as_ref(), Some(&util));
+    assert_eq!(st.s.editor.title, "crate/lib/util.lua");
+    assert!(!st.s.editor.dirty);
+    assert_eq!(std::fs::read_to_string(&util).unwrap(), "-- mine\nreturn {}\n");
     let kept = std::fs::read_to_string(game.dir.join("studio.txt")).unwrap();
     assert!(kept.contains("off:crate") && !kept.contains("off:box"), "{kept}");
     // Onto an id that is taken: an error, and nothing changes.
@@ -1557,11 +1577,121 @@ fn rename_mod_moves_files_and_keeps_state() {
         st.rename_mod(&mut game, "toolkit", "toolkit").unwrap(),
         mods.join("toolkit.lua")
     );
-    // The next start finds them under their new ids.
-    let mut again = studio(&mut game);
-    assert!(again.s.mods.iter().any(|m| m.id == "toolkit" && m.running()));
+    // Back to its old id, it heals the mod the first rename broke, and the
+    // other waits for a toolkit again.
+    st.rename_mod(&mut game, "toolkit", "kit").unwrap();
+    let u = mod_index(&st, "user");
+    assert!(st.s.mods[u].running(), "{:?}", st.s.mods[u].state);
+    assert!(matches!(
+        st.s.mods[mod_index(&st, "waiter")].state,
+        ModState::Failed(..)
+    ));
+    assert!(game.dir.join("storage/kit/n.lua").is_file());
+    // The next start finds them under their ids.
+    let again = studio(&mut game);
+    assert!(again.s.mods.iter().any(|m| m.id == "kit" && m.running()));
+    assert!(again.s.mods.iter().any(|m| m.id == "user" && m.running()));
     assert!(again.s.mods.iter().any(|m| m.id == "crate" && !m.enabled));
-    let _ = &mut again;
+}
+
+#[test]
+fn a_rename_or_copy_onto_another_mods_id_or_data_changes_nothing() {
+    use horizon_studio::game::hstudio_modfiles::plan_mod;
+    let mut game = FakeGame::new("rename-taken");
+    let mut st = studio(&mut game);
+    // A mod whose file isn't named by its id, and one to rename or copy.
+    game.write_mod("My Mod.lua", "print('mine')\n");
+    game.write_mod("bar.lua", "storage.set('n', 1)\nprint('bar')\n");
+    run_for(&mut st, &mut game, 0.6);
+    let mods = game.mods_dir();
+    let mine = mod_index(&st, "my_mod");
+    assert_eq!(st.s.mods[mine].main, mods.join("My Mod.lua"));
+    // Its id is taken, though no file is called my_mod: renaming, copying
+    // and a new mod are refused, and nothing is written.
+    assert_eq!(st.rename_plan("bar", "My_Mod"), Err("my_mod already exists".to_owned()));
+    let e = st.rename_mod(&mut game, "bar", "my_mod").unwrap_err();
+    assert_eq!(e, "my_mod already exists");
+    assert_eq!(st.s.mods[mod_index(&st, "bar")].main, mods.join("bar.lua"));
+    let e = st.duplicate_mod(&mut game, "bar", "My Mod").unwrap_err();
+    assert_eq!(e, "my_mod already exists");
+    assert_eq!(
+        plan_mod(&mods, "my mod", false),
+        Err("my_mod already exists".to_owned())
+    );
+    assert!(st.create_mod(&mut game, "My_Mod", None).is_err());
+    assert!(st.create_module(&mut game, "my mod").is_err());
+    assert!(!mods.join("my_mod.lua").exists() && !mods.join("my_mod").exists());
+    let kept = std::fs::read_to_string(game.dir.join("studio.txt")).unwrap();
+    assert!(!kept.contains("off:my_mod"), "{kept}");
+    assert_eq!(st.s.mods.iter().filter(|m| m.id == "my_mod").count(), 1);
+    // A file written a moment ago, before the scan has listed it, counts
+    // too, and so does a mod still listed whose file went a moment ago.
+    game.write_mod("Fresh One.lua", "print('fresh')\n");
+    let e = st.rename_mod(&mut game, "bar", "fresh_one").unwrap_err();
+    assert_eq!(e, "fresh_one already exists");
+    game.write_mod("gone.lua", "print('gone')\n");
+    run_for(&mut st, &mut game, 0.6);
+    std::fs::remove_file(mods.join("gone.lua")).unwrap();
+    let e = st.rename_mod(&mut game, "bar", "gone").unwrap_err();
+    assert_eq!(e, "gone already exists");
+    // Another mod's saved data, left in storage/old: renaming onto it is
+    // refused, and both stay where they are.
+    std::fs::create_dir_all(game.dir.join("storage/old")).unwrap();
+    std::fs::write(game.dir.join("storage/old/n.lua"), "return 2\n").unwrap();
+    assert!(game.dir.join("storage/bar/n.lua").is_file());
+    let e = st.rename_mod(&mut game, "bar", "old").unwrap_err();
+    assert_eq!(e, "storage/old holds another mod's saved data");
+    assert!(mods.join("bar.lua").is_file() && !mods.join("old.lua").exists());
+    assert!(game.dir.join("storage/bar/n.lua").is_file());
+    assert_eq!(
+        std::fs::read_to_string(game.dir.join("storage/old/n.lua")).unwrap(),
+        "return 2\n"
+    );
+    // The next start lists my_mod once, from its own file, turned on.
+    let again = studio(&mut game);
+    let m = &again.s.mods[mod_index(&again, "my_mod")];
+    assert_eq!(m.main, mods.join("My Mod.lua"));
+    assert!(m.enabled && m.running());
+}
+
+#[test]
+fn a_rename_or_copy_whose_save_fails_changes_nothing() {
+    let mut game = FakeGame::new("rename-save-fails");
+    let mut st = studio(&mut game);
+    st.create_module(&mut game, "Box").unwrap();
+    let mods = game.mods_dir();
+    let lib = mods.join("box").join("lib.lua");
+    st.open_file(&lib);
+    st.s.editor.insert("-- my unsaved work\n");
+    // The save will fail: a folder stands where the file was.
+    std::fs::remove_file(&lib).unwrap();
+    std::fs::create_dir_all(&lib).unwrap();
+    let e = st.rename_mod(&mut game, "box", "crate").unwrap_err();
+    assert!(
+        e.contains("could not save box/lib.lua") && e.contains("nothing was renamed"),
+        "{e}"
+    );
+    assert!(mods.join("box").is_dir() && !mods.join("crate").exists());
+    assert_eq!(
+        st.s.mods[mod_index(&st, "box")].folder.as_deref(),
+        Some(mods.join("box").as_path())
+    );
+    let e = st.duplicate_mod(&mut game, "box", "crate").unwrap_err();
+    assert!(
+        e.contains("could not save box/lib.lua") && e.contains("nothing was copied"),
+        "{e}"
+    );
+    assert!(!mods.join("crate").exists() && !mods.join(".crate.copying").exists());
+    let kept = std::fs::read_to_string(game.dir.join("studio.txt")).unwrap();
+    assert!(!kept.contains("off:crate"), "{kept}");
+    // The edits are still there, unsaved.
+    assert_eq!(st.s.editor.title, "box/lib.lua");
+    assert!(st.s.editor.dirty && st.s.editor.text().starts_with("-- my unsaved work"));
+    // A copy needs a name.
+    assert_eq!(
+        st.duplicate_mod(&mut game, "box", "  ").unwrap_err(),
+        "the copy needs a name"
+    );
 }
 
 #[test]

@@ -173,10 +173,12 @@ do anything now are greyed out, and each shows its shortcut.
   files), Reload, Turn off or on, Rename..., Duplicate..., Make it a module, Delete..., Show in folder, Copy path, and
   for a mod that failed Copy the error and Fix with the agent. Rename gives the mod's file or folder a new id in
   place: its on/off state and its saved data (`storage/<id>`) go with it, and its name in the Library too when it was
-  the old id's (a name written by hand stays); mods that import it fail until they import the new id, and the prompt
-  says which. A duplicate starts turned off, as it would register the same commands twice. Delete asks first and
-  moves the mod to `trash/` in the studio's folder. The lists' empty space offers New script, New module, New file in
-  the module open, Reload all and the mods folder; an example offers Install and Copy its code.
+  the old id's (a name written by hand stays); mods that import it fail until they import the new id (the prompt says
+  which), and mods that were waiting for the new id start. An id that another mod has is refused, whatever its file is
+  called (`My Mod.lua` has the id `my_mod`). A duplicate starts turned off, as it would register the same commands
+  twice. Delete asks first and moves the mod to `trash/` in the studio's folder. The lists' empty space offers New
+  script, New module, New file in the module open, Reload all and the mods folder; an example offers Install and Copy
+  its code.
 - **The console's lines** and **the agent's conversation**: Copy what is selected, Copy all, Clear (or Stop and New
   conversation). **Their input lines**: Paste, Copy, Cut and Clear the line, Run (or Send).
 - **The panel's tabs**: Copy all, Clear, Copy all problems, the agents found and Look for agents again, Model ›, Hide
