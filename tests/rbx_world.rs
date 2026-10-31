@@ -352,3 +352,48 @@ fn the_humanoid_follows_the_game() {
         "Running>Jumping Jumping>Freefall Freefall>Landed Landed>Running    true false    4.3000 0.0000    2"
     );
 }
+
+#[test]
+fn respawning_makes_a_new_character() {
+    let mut game = FakeGame::new("rbxw-respawn");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local me = game.Players.LocalPlayer
+        local first = me.Character
+        local log = {}
+        first.Humanoid.Died:Connect(function() table.insert(log, "died") end)
+        me.CharacterRemoving:Connect(function(c) table.insert(log, "removing " .. tostring(c == first)) end)
+        me.CharacterAdded:Connect(function(c)
+            table.insert(log, "added " .. tostring(c == me.Character) .. " " .. tostring(c.Parent == workspace))
+        end)
+        me.CharacterAppearanceLoaded:Connect(function(c) table.insert(log, "loaded " .. c.Name) end)
+        command("state", function() print(me.Character.Humanoid:GetState().Name, me.Character == first) end)
+        command("check", function()
+            local now = me.Character
+            print(table.concat(log, ", "))
+            print(now ~= first, first.Parent, now.Parent == workspace, workspace.CurrentCamera.CameraSubject == now.Humanoid)
+            print(now.Humanoid.Health, now.Humanoid.WalkSpeed, now.Humanoid:GetState().Name, now.PrimaryPart.Name)
+        end)
+    "#;
+    load(&mut game, &mut st, "life", src, 0.7);
+    // Dying: Died fires once, however long the player stays dead.
+    game.player.as_mut().unwrap().health = 0.0;
+    run_for(&mut st, &mut game, 0.3);
+    assert!(st.command("state"));
+    run_for(&mut st, &mut game, 0.05);
+    // Back to life, a new character.
+    game.player.as_mut().unwrap().health = 20.0;
+    run_for(&mut st, &mut game, 0.2);
+    // Out of a world, the character stays as it is.
+    let saved = game.player.take();
+    run_for(&mut st, &mut game, 0.2);
+    game.player = saved;
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.command("check"));
+    run_for(&mut st, &mut game, 0.05);
+    let p = printed(&st, "life");
+    assert_eq!(p[0], "Dead    true");
+    assert_eq!(p[1], "died, removing true, added true true, loaded Player1");
+    assert_eq!(p[2], "true    nil    true    true");
+    assert_eq!(p[3], "100    4.3178    Running    HumanoidRootPart");
+}

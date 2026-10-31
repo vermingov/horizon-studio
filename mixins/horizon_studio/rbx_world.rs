@@ -304,8 +304,11 @@ pub fn sync(rbx: &mut Rbx, game: &mut dyn GameApi) {
 /// The LocalPlayer is the player, and its character follows them: its root
 /// part on the torso, its head at the eyes facing where they look (both as
 /// low as the pose has them), its Humanoid's health, speeds, motion and
-/// state.
+/// state. Coming back to life, they get a new character.
 fn sync_local(rbx: &mut Rbx, p: &PlayerInfo, pose: Option<&PlayerPose>) {
+    if rbx.last_health.is_some_and(|h| h <= 0.0) && p.health > 0.0 {
+        respawn(rbx);
+    }
     identity(rbx, p);
     let yaw = f64::from(p.yaw).to_radians();
     let pitch = f64::from(p.pitch).to_radians();
@@ -373,6 +376,37 @@ fn motion(rbx: &mut Rbx, p: &PlayerInfo) -> f64 {
     let hum = rbx.humanoid;
     rbx.raw_set(hum, "MoveDirection", v3(way));
     speed
+}
+
+/// The player came back to life: a new character takes the old one's place,
+/// as in Roblox. CharacterRemoving fires with the old one, which goes; then
+/// CharacterAdded and CharacterAppearanceLoaded with the new one, which the
+/// Camera follows and which takes the game's values afresh.
+fn respawn(rbx: &mut Rbx) {
+    let player = rbx.local_player;
+    let old = rbx.character;
+    let old_v = rbx.value(old);
+    rbx.fire(player, "CharacterRemoving", vec![old_v]);
+    let name = rbx.inst(player).name.clone();
+    let rig = build_character(rbx, &name);
+    rbx.character = rig.model;
+    rbx.root_part = rig.root;
+    rbx.head = rig.head;
+    rbx.humanoid = rig.humanoid;
+    rbx.destroy(old);
+    let cv = rbx.value(rig.model);
+    rbx.raw_set(player, "Character", cv.clone());
+    let subject = rbx.value(rig.humanoid);
+    let camera = rbx.camera;
+    rbx.raw_set(camera, "CameraSubject", subject);
+    let ws = rbx.workspace;
+    let _ = rbx.set_parent(rig.model, Some(ws));
+    rbx.world.speed = None;
+    rbx.world.jump = None;
+    rbx.world.state = "Running";
+    rbx.world.running = 0.0;
+    rbx.fire(player, "CharacterAdded", vec![cv.clone()]);
+    rbx.fire(player, "CharacterAppearanceLoaded", vec![cv]);
 }
 
 /// The local Humanoid's state after `was`, from the player's health, pose

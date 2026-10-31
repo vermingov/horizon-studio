@@ -424,7 +424,13 @@ pub static CLASSES: &[C] = &[
             p("CameraMaxZoomDistance", Num, N(128.0)),
             p("CameraMinZoomDistance", Num, N(0.5)),
         ],
-        &["Chatted", "CharacterAdded", "CharacterRemoving", "Idled"],
+        &[
+            "Chatted",
+            "CharacterAdded",
+            "CharacterRemoving",
+            "Idled",
+            "CharacterAppearanceLoaded",
+        ],
     ),
     abstract_class(
         "PlayerGui",
