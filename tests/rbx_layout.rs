@@ -11,7 +11,9 @@ use horizon_studio::game::hstudio_rbx_layout::{
     ScrollBarInset, SizeConstraint, SortOrder, StartCorner, TOP_BAR, TextTruncate, TextXAlignment, TextYAlignment,
     Tree, VerticalAlignment, Viewport, ZIndexBehavior,
 };
-use horizon_studio::game::hstudio_rbx_layout::{RichStyle, RichText, parse_rich};
+use horizon_studio::game::hstudio_rbx_layout::{
+    FlexAlignment, FlexMode, ItemLineAlignment, RichStyle, RichText, parse_rich,
+};
 use horizon_studio::game::hstudio_rbx_types::{Color3, Font, FontWeight, UDim, UDim2, Vector2};
 
 /// A monospace font: each character is half the text size wide.
@@ -431,6 +433,112 @@ fn constraints_override_a_list_layout() {
 // ---------------------------------------------------------------- UIGridLayout
 
 /// A 350x300 frame with a default UIGridLayout (100x100 cells, 5 apart) and five items.
+/// A 300 x 100 frame with a horizontal list, and items of these sizes in it.
+fn flex_row(sizes: &[(f64, f64)]) -> (Tree, NodeId, Vec<NodeId>) {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    let f = frame(&mut tree, gui, px(0.0, 0.0), px(300.0, 100.0));
+    let list = tree.add(Class::UIListLayout, Some(f));
+    tree[list].fill_direction = FillDirection::Horizontal;
+    tree[list].sort_order = SortOrder::LayoutOrder;
+    let items = sizes
+        .iter()
+        .map(|&(w, h)| frame(&mut tree, f, px(0.0, 0.0), px(w, h)))
+        .collect();
+    (tree, list, items)
+}
+
+/// Gives `item` a UIFlexItem.
+fn flex_item(tree: &mut Tree, item: NodeId, mode: FlexMode) -> NodeId {
+    let f = tree.add(Class::UIFlexItem, Some(item));
+    tree[f].flex_mode = mode;
+    f
+}
+
+#[test]
+fn flex_items_grow_shrink_and_fill() {
+    // Two 50-wide items that grow share the 200 left: 150 each.
+    let (mut tree, _, items) = flex_row(&[(50.0, 20.0), (50.0, 20.0)]);
+    for &i in &items {
+        flex_item(&mut tree, i, FlexMode::Grow);
+    }
+    let l = run(&tree);
+    assert_rect(&l, items[0], (0.0, 0.0, 150.0, 20.0));
+    assert_rect(&l, items[1], (150.0, 0.0, 150.0, 20.0));
+    // GrowRatio 1 and 3 share it as 50 and 150.
+    let (mut tree, _, items) = flex_row(&[(50.0, 20.0), (50.0, 20.0)]);
+    for (&i, ratio) in items.iter().zip([1.0, 3.0]) {
+        let f = flex_item(&mut tree, i, FlexMode::Custom);
+        tree[f].grow_ratio = ratio;
+    }
+    let l = run(&tree);
+    assert_rect(&l, items[0], (0.0, 0.0, 100.0, 20.0));
+    assert_rect(&l, items[1], (100.0, 0.0, 200.0, 20.0));
+    // Shrink fits oversized items, each by its share of their sizes.
+    let (mut tree, _, items) = flex_row(&[(200.0, 20.0), (200.0, 20.0)]);
+    for &i in &items {
+        flex_item(&mut tree, i, FlexMode::Shrink);
+    }
+    let l = run(&tree);
+    assert_rect(&l, items[0], (0.0, 0.0, 150.0, 20.0));
+    assert_rect(&l, items[1], (150.0, 0.0, 150.0, 20.0));
+    // The layout's HorizontalFlex: gaps, or every item filling the line.
+    let (mut tree, list2, items) = flex_row(&[(50.0, 20.0), (50.0, 20.0), (50.0, 20.0)]);
+    let xs = |tree: &Tree| -> Vec<f64> {
+        let l = run(tree);
+        items.iter().map(|&i| l.get(i).unwrap().position.x).collect()
+    };
+    tree[list2].horizontal_flex = FlexAlignment::SpaceBetween;
+    assert_eq!(xs(&tree), [0.0, 125.0, 250.0]);
+    tree[list2].horizontal_flex = FlexAlignment::SpaceEvenly;
+    assert_eq!(xs(&tree), [37.5, 125.0, 212.5]);
+    tree[list2].horizontal_flex = FlexAlignment::SpaceAround;
+    assert_eq!(xs(&tree), [25.0, 125.0, 225.0]);
+    tree[list2].horizontal_flex = FlexAlignment::Fill;
+    let l = run(&tree);
+    assert_rect(&l, items[2], (200.0, 0.0, 100.0, 20.0));
+    // A UIFlexItem that doesn't flex keeps its size in a filling line.
+    flex_item(&mut tree, items[0], FlexMode::None);
+    let l = run(&tree);
+    assert_rect(&l, items[0], (0.0, 0.0, 50.0, 20.0));
+    assert_rect(&l, items[1], (50.0, 0.0, 125.0, 20.0));
+    // Across: Stretch fills the line; an item's own ItemLineAlignment wins.
+    let (mut tree, list, items) = flex_row(&[(50.0, 20.0), (50.0, 20.0), (50.0, 20.0)]);
+    tree[list].item_line_alignment = ItemLineAlignment::Stretch;
+    let f = flex_item(&mut tree, items[1], FlexMode::None);
+    tree[f].item_line_alignment = ItemLineAlignment::End;
+    let f = flex_item(&mut tree, items[2], FlexMode::None);
+    tree[f].item_line_alignment = ItemLineAlignment::Center;
+    let l = run(&tree);
+    assert_rect(&l, items[0], (0.0, 0.0, 50.0, 100.0));
+    assert_rect(&l, items[1], (50.0, 80.0, 50.0, 20.0));
+    assert_rect(&l, items[2], (100.0, 40.0, 50.0, 20.0));
+}
+
+#[test]
+fn flex_shares_the_room_between_wrapped_lines() {
+    // Items 200 wide wrap one to a line; VerticalFlex shares the 60 left.
+    let (mut tree, list, items) = flex_row(&[(200.0, 20.0), (200.0, 20.0)]);
+    tree[list].wraps = true;
+    let ys = |tree: &Tree| -> Vec<(f64, f64)> {
+        let l = run(tree);
+        items
+            .iter()
+            .map(|&i| (l.get(i).unwrap().position.y, l.get(i).unwrap().size.y))
+            .collect()
+    };
+    assert_eq!(ys(&tree), [(0.0, 20.0), (20.0, 20.0)]);
+    tree[list].vertical_flex = FlexAlignment::Fill;
+    assert_eq!(ys(&tree), [(0.0, 20.0), (50.0, 20.0)]);
+    tree[list].item_line_alignment = ItemLineAlignment::Stretch;
+    assert_eq!(ys(&tree), [(0.0, 50.0), (50.0, 50.0)]);
+    tree[list].item_line_alignment = ItemLineAlignment::Automatic;
+    tree[list].vertical_flex = FlexAlignment::SpaceBetween;
+    assert_eq!(ys(&tree), [(0.0, 20.0), (80.0, 20.0)]);
+    tree[list].vertical_flex = FlexAlignment::SpaceEvenly;
+    assert_eq!(ys(&tree), [(20.0, 20.0), (60.0, 20.0)]);
+}
+
 fn grid() -> (Tree, NodeId, Vec<NodeId>) {
     let mut tree = Tree::new();
     let gui = screen(&mut tree);

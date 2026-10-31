@@ -55,11 +55,12 @@ pub enum Class {
     UIScale,
     UICorner,
     UIStroke,
+    UIFlexItem,
     Folder,
 }
 
 impl Class {
-    pub const ALL: [Class; 19] = [
+    pub const ALL: [Class; 20] = [
         Class::ScreenGui,
         Class::BillboardGui,
         Class::Frame,
@@ -78,6 +79,7 @@ impl Class {
         Class::UIScale,
         Class::UICorner,
         Class::UIStroke,
+        Class::UIFlexItem,
         Class::Folder,
     ];
 
@@ -102,6 +104,7 @@ impl Class {
             Class::UIScale => "UIScale",
             Class::UICorner => "UICorner",
             Class::UIStroke => "UIStroke",
+            Class::UIFlexItem => "UIFlexItem",
             Class::Folder => "Folder",
         }
     }
@@ -294,6 +297,51 @@ pub enum ApplyStrokeMode {
     Border,
 }
 
+/// Enum.UIFlexAlignment: what a UIListLayout does with the room left along
+/// an axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FlexAlignment {
+    /// Nothing: the alignment places what is there.
+    #[default]
+    None,
+    /// Along the line, the items grow (or shrink) to fill it; across, the
+    /// lines do.
+    Fill,
+    /// In gaps, half a gap at each end.
+    SpaceAround,
+    /// In gaps between them only.
+    SpaceBetween,
+    /// In gaps, as large at the ends as between.
+    SpaceEvenly,
+}
+
+/// Enum.ItemLineAlignment: where an item goes across its line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ItemLineAlignment {
+    /// As the layout's alignment across says.
+    #[default]
+    Automatic,
+    Start,
+    Center,
+    End,
+    /// As thick as the line.
+    Stretch,
+}
+
+/// Enum.UIFlexMode: how a UIFlexItem's object grows and shrinks in its
+/// line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FlexMode {
+    #[default]
+    None,
+    Grow,
+    Shrink,
+    /// Both.
+    Fill,
+    /// By GrowRatio and ShrinkRatio.
+    Custom,
+}
+
 /// Enum.TextTruncate: how text that doesn't fit ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TextTruncate {
@@ -396,6 +444,14 @@ pub struct Node {
     /// UIListLayout.Padding: the gap between items.
     pub padding: UDim,
     pub wraps: bool,
+    pub horizontal_flex: FlexAlignment,
+    pub vertical_flex: FlexAlignment,
+    /// The layout's, and a UIFlexItem's own for its object.
+    pub item_line_alignment: ItemLineAlignment,
+    // UIFlexItem
+    pub flex_mode: FlexMode,
+    pub grow_ratio: f64,
+    pub shrink_ratio: f64,
     pub cell_size: UDim2,
     pub cell_padding: UDim2,
     /// 0 is no limit.
@@ -496,6 +552,12 @@ impl Node {
             sort_order: SortOrder::Name,
             padding: UDim::default(),
             wraps: false,
+            horizontal_flex: FlexAlignment::None,
+            vertical_flex: FlexAlignment::None,
+            item_line_alignment: ItemLineAlignment::Automatic,
+            flex_mode: FlexMode::None,
+            grow_ratio: 1.0,
+            shrink_ratio: 1.0,
             cell_size: UDim2::from_offset(100.0, 100.0),
             cell_padding: UDim2::from_offset(5.0, 5.0),
             fill_direction_max_cells: 0,
@@ -1650,6 +1712,25 @@ impl<'a> Pass<'a> {
         items
     }
 
+    /// How an item grows and shrinks along its line (UIFlexItem's FlexMode,
+    /// or every item alike when the line fills), and its own place across.
+    fn flex_of(&self, item: NodeId, line: FlexAlignment) -> (f64, f64, ItemLineAlignment) {
+        match self.component(item, Class::UIFlexItem) {
+            Some(f) => {
+                let (grow, shrink) = match f.flex_mode {
+                    FlexMode::None => (0.0, 0.0),
+                    FlexMode::Grow => (1.0, 0.0),
+                    FlexMode::Shrink => (0.0, 1.0),
+                    FlexMode::Fill => (1.0, 1.0),
+                    FlexMode::Custom => (f.grow_ratio.max(0.0), f.shrink_ratio.max(0.0)),
+                };
+                (grow, shrink, f.item_line_alignment)
+            }
+            None if line == FlexAlignment::Fill => (1.0, 1.0, ItemLineAlignment::Automatic),
+            None => (0.0, 0.0, ItemLineAlignment::Automatic),
+        }
+    }
+
     /// Arranges a container's items by its layout in `area`: each item's
     /// area, and the layout's AbsoluteContentSize.
     fn arrange(&mut self, container: NodeId, layout: NodeId, area: Area) -> Arranged {
@@ -1657,9 +1738,15 @@ impl<'a> Pass<'a> {
         if self.node(layout).class == Class::UIGridLayout {
             return self.arrange_grid(layout, &items, area);
         }
-        let sizes: Vec<Vector2> = items.iter().map(|&c| self.size_of(c, area.size())).collect();
+        let mut sizes: Vec<Vector2> = items.iter().map(|&c| self.size_of(c, area.size())).collect();
         let l = self.node(layout);
         let vertical = l.fill_direction == FillDirection::Vertical;
+        let (main_flex, cross_flex) = if vertical {
+            (l.vertical_flex, l.horizontal_flex)
+        } else {
+            (l.horizontal_flex, l.vertical_flex)
+        };
+        let flex: Vec<(f64, f64, ItemLineAlignment)> = items.iter().map(|&c| self.flex_of(c, main_flex)).collect();
         // The fill axis is "main", the other "cross".
         let (main_len, cross_len) = if vertical { (area.h, area.w) } else { (area.w, area.h) };
         let main = |v: Vector2| if vertical { v.y } else { v.x };
@@ -1684,28 +1771,91 @@ impl<'a> Pass<'a> {
             used += if line.is_empty() { main(s) } else { gap + main(s) };
             line.push(i);
         }
+        // Along each line, the room left goes to the items that grow, or
+        // comes from those that shrink (by ShrinkRatio times their size).
+        for line in &lines {
+            let used = line.iter().map(|&i| main(sizes[i])).sum::<f64>() + gap * line.len().saturating_sub(1) as f64;
+            let free = main_len - used;
+            let grow: f64 = line.iter().map(|&i| flex[i].0).sum();
+            let shrink: f64 = line.iter().map(|&i| flex[i].1 * main(sizes[i])).sum();
+            for &i in line {
+                let along = main(sizes[i]);
+                let flexed = if free > 0.0 && grow > 0.0 {
+                    along + free * flex[i].0 / grow
+                } else if free < 0.0 && shrink > 0.0 {
+                    (along + free * flex[i].1 * along / shrink).max(0.0)
+                } else {
+                    continue;
+                };
+                let s = if vertical {
+                    Vector2::new(sizes[i].x, flexed)
+                } else {
+                    Vector2::new(flexed, sizes[i].y)
+                };
+                sizes[i] = self.clamp_size(items[i], s);
+            }
+        }
         let line_main = |line: &[usize]| {
             line.iter().map(|&i| main(sizes[i])).sum::<f64>() + gap * line.len().saturating_sub(1) as f64
         };
         let line_cross = |line: &[usize]| line.iter().map(|&i| cross(sizes[i])).fold(0.0, f64::max);
-        let block_cross: f64 =
+        let mut block_cross: f64 =
             lines.iter().map(|l| line_cross(l)).sum::<f64>() + gap * lines.len().saturating_sub(1) as f64;
-        let content_main = lines.iter().map(|l| line_main(l)).fold(0.0, f64::max);
+        let mut content_main: f64 = 0.0;
 
-        let mut placed = Vec::with_capacity(items.len());
-        let mut cross_at = if l.wraps {
-            (cross_len - block_cross) * cross_align
+        // Across, the room left goes to the lines when they wrap.
+        let (mut cross_at, line_gap, line_grow) = if l.wraps {
+            let free = (cross_len - block_cross).max(0.0);
+            let n = lines.len() as f64;
+            match cross_flex {
+                FlexAlignment::Fill => (0.0, 0.0, free / n),
+                FlexAlignment::SpaceBetween if n > 1.0 => (0.0, free / (n - 1.0), 0.0),
+                FlexAlignment::SpaceAround => (free / n / 2.0, free / n, 0.0),
+                FlexAlignment::SpaceEvenly => (free / (n + 1.0), free / (n + 1.0), 0.0),
+                _ => ((cross_len - block_cross) * cross_align, 0.0, 0.0),
+            }
         } else {
-            0.0
+            (0.0, 0.0, 0.0)
         };
+        if l.wraps && cross_flex != FlexAlignment::None {
+            block_cross = block_cross + line_gap * (lines.len() as f64 - 1.0).max(0.0) + line_grow * lines.len() as f64;
+        }
+        let mut placed = Vec::with_capacity(items.len());
         for line in &lines {
-            let (span, thick) = (line_main(line), line_cross(line));
+            let (span, thick) = (line_main(line), line_cross(line) + line_grow);
             // Without Wraps each item aligns across the whole container.
             let band = if l.wraps { thick } else { cross_len };
-            let mut main_at = (main_len - span) * main_align;
+            // Along the line, the room left is the alignment's, or gaps.
+            let free = main_len - span;
+            let n = line.len() as f64;
+            let (mut main_at, spacing) = match main_flex {
+                FlexAlignment::SpaceBetween if free > 0.0 && n > 1.0 => (0.0, free / (n - 1.0)),
+                FlexAlignment::SpaceAround if free > 0.0 => (free / n / 2.0, free / n),
+                FlexAlignment::SpaceEvenly if free > 0.0 => (free / (n + 1.0), free / (n + 1.0)),
+                _ => (free * main_align, 0.0),
+            };
+            content_main = content_main.max(span + spacing * (n - 1.0).max(0.0));
             for &i in line {
-                let s = sizes[i];
-                let c = cross_at + (band - cross(s)) * cross_align;
+                let mut s = sizes[i];
+                let along = match flex[i].2 {
+                    ItemLineAlignment::Automatic => l.item_line_alignment,
+                    own => own,
+                };
+                let fraction = match along {
+                    ItemLineAlignment::Start => 0.0,
+                    ItemLineAlignment::Center => 0.5,
+                    ItemLineAlignment::End => 1.0,
+                    ItemLineAlignment::Stretch => {
+                        s = if vertical {
+                            Vector2::new(band, s.y)
+                        } else {
+                            Vector2::new(s.x, band)
+                        };
+                        0.0
+                    }
+                    ItemLineAlignment::Automatic => cross_align,
+                };
+                let c = cross_at + (band - cross(s)) * fraction;
                 let (x, y) = if vertical { (c, main_at) } else { (main_at, c) };
                 placed.push((
                     items[i],
@@ -1716,9 +1866,9 @@ impl<'a> Pass<'a> {
                         h: s.y,
                     },
                 ));
-                main_at += main(s) + gap;
+                main_at += main(s) + gap + spacing;
             }
-            cross_at += thick + gap;
+            cross_at += thick + gap + line_gap;
         }
         let content_size = if vertical {
             Vector2::new(block_cross, content_main)

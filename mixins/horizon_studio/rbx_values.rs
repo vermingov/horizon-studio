@@ -1473,6 +1473,32 @@ const ENUMS: &[(&str, &[(&str, i32)])] = &[
     ),
     ("ResamplerMode", &[("Default", 0), ("Pixelated", 1)]),
     (
+        "UIFlexMode",
+        &[("None", 0), ("Grow", 1), ("Shrink", 2), ("Fill", 3), ("Custom", 4)],
+    ),
+    (
+        "UIFlexAlignment",
+        &[
+            ("None", 0),
+            ("Fill", 1),
+            ("SpaceAround", 2),
+            ("SpaceBetween", 3),
+            ("SpaceEvenly", 4),
+        ],
+    ),
+    (
+        "ItemLineAlignment",
+        &[
+            ("Automatic", 0),
+            ("Start", 1),
+            ("Center", 2),
+            ("End", 3),
+            ("Stretch", 4),
+        ],
+    ),
+    ("TableMajorAxis", &[("RowMajor", 0), ("ColumnMajor", 1)]),
+    ("SafeAreaCompatibility", &[("None", 0), ("FullscreenExtension", 1)]),
+    (
         "ScreenInsets",
         &[
             ("None", 0),

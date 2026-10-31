@@ -191,6 +191,9 @@ fn fill(node: &mut layout::Node, inst: &super::hstudio_rbx::Inst, focused: bool)
             if c.name == "UIListLayout" {
                 node.padding = as_udim(&inst.get("Padding")).unwrap_or_default();
                 node.wraps = flag(inst, "Wraps");
+                node.horizontal_flex = flex_alignment(&inst.get("HorizontalFlex"));
+                node.vertical_flex = flex_alignment(&inst.get("VerticalFlex"));
+                node.item_line_alignment = line_alignment(&inst.get("ItemLineAlignment"));
             } else {
                 node.cell_size = as_udim2(&inst.get("CellSize")).unwrap_or_default();
                 node.cell_padding = as_udim2(&inst.get("CellPadding")).unwrap_or_default();
@@ -202,6 +205,18 @@ fn fill(node: &mut layout::Node, inst: &super::hstudio_rbx::Inst, focused: bool)
                     _ => StartCorner::TopLeft,
                 };
             }
+        }
+        "UIFlexItem" => {
+            node.flex_mode = match enum_name(&inst.get("FlexMode")) {
+                "Grow" => layout::FlexMode::Grow,
+                "Shrink" => layout::FlexMode::Shrink,
+                "Fill" => layout::FlexMode::Fill,
+                "Custom" => layout::FlexMode::Custom,
+                _ => layout::FlexMode::None,
+            };
+            node.grow_ratio = num(inst, "GrowRatio");
+            node.shrink_ratio = num(inst, "ShrinkRatio");
+            node.item_line_alignment = line_alignment(&inst.get("ItemLineAlignment"));
         }
         "UIPadding" => {
             node.padding_top = as_udim(&inst.get("PaddingTop")).unwrap_or_default();
@@ -239,6 +254,28 @@ fn fill(node: &mut layout::Node, inst: &super::hstudio_rbx::Inst, focused: bool)
             };
         }
         _ => {}
+    }
+}
+
+/// Enum.UIFlexAlignment's item as the layout has it.
+fn flex_alignment(v: &Value) -> layout::FlexAlignment {
+    match enum_name(v) {
+        "Fill" => layout::FlexAlignment::Fill,
+        "SpaceAround" => layout::FlexAlignment::SpaceAround,
+        "SpaceBetween" => layout::FlexAlignment::SpaceBetween,
+        "SpaceEvenly" => layout::FlexAlignment::SpaceEvenly,
+        _ => layout::FlexAlignment::None,
+    }
+}
+
+/// Enum.ItemLineAlignment's item as the layout has it.
+fn line_alignment(v: &Value) -> layout::ItemLineAlignment {
+    match enum_name(v) {
+        "Start" => layout::ItemLineAlignment::Start,
+        "Center" => layout::ItemLineAlignment::Center,
+        "End" => layout::ItemLineAlignment::End,
+        "Stretch" => layout::ItemLineAlignment::Stretch,
+        _ => layout::ItemLineAlignment::Automatic,
     }
 }
 
@@ -778,7 +815,13 @@ impl Partial<'_> {
             }
             if !cc.is_gui_object() && cc != Class::Folder {
                 // A UI component: a sized node needs only its size constraints.
-                if on_path || auto || matches!(cc, Class::UISizeConstraint | Class::UIAspectRatioConstraint) {
+                if on_path
+                    || auto
+                    || matches!(
+                        cc,
+                        Class::UISizeConstraint | Class::UIAspectRatioConstraint | Class::UIFlexItem
+                    )
+                {
                     self.add(c, Some(n), false);
                 }
                 continue;

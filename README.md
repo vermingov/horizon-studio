@@ -636,8 +636,8 @@ end)
   `GetPropertyChangedSignal`, a child by its name. Signals have `Connect`, `Once` and `Wait`, and are deferred, as
   Roblox's are by default.
 - **ScreenGuis** in the PlayerGui (or CoreGui) are laid out as Roblox lays them out (UDim2 sizes and positions,
-  AnchorPoint, UIListLayout, UIGridLayout, UIPadding, UIScale, the constraints, ScrollingFrames, AutomaticSize,
-  ZIndex) and drawn on the HUD with Horizon's shapes and Geist fonts, UICorner, UIStroke, borders and UIGradients
+  AnchorPoint, UIListLayout with its flex and UIFlexItem, UIGridLayout, UIPadding, UIScale, the constraints,
+  ScrollingFrames, AutomaticSize, ZIndex) and drawn on the HUD with Horizon's shapes and Geist fonts, UICorner, UIStroke, borders and UIGradients
   (every keypoint, turned and moved) included; `ClipsDescendants` cuts exactly, `Rotation` turns an object and what it
   holds, a CanvasGroup tints and fades all it holds, `RichText`'s markup is drawn (colours, sizes, faces, bold,
   underline, strokes, marks, capitals), and a `getcustomasset` image is drawn as it is, with its `ScaleType` (Fit,

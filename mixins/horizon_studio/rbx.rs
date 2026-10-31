@@ -852,6 +852,9 @@ pub static CLASSES: &[C] = &[
             p("FillDirection", K::Enum("FillDirection"), D::E("Vertical")),
             p("Padding", K::UD, D::UD(0.0, 0.0)),
             p("Wraps", Bool, B(false)),
+            p("HorizontalFlex", K::Enum("UIFlexAlignment"), D::E("None")),
+            p("VerticalFlex", K::Enum("UIFlexAlignment"), D::E("None")),
+            p("ItemLineAlignment", K::Enum("ItemLineAlignment"), D::E("Automatic")),
         ],
         &[],
     ),
@@ -936,7 +939,21 @@ pub static CLASSES: &[C] = &[
             &["DidLoop", "Ended", "Loaded", "Paused", "Played"],
         )
     },
-    kept("UIFlexItem", "UIComponent"),
+    // Real now, and lenient as they were when only kept.
+    C {
+        lenient: true,
+        ..class(
+            "UIFlexItem",
+            "UIComponent",
+            &[
+                p("FlexMode", K::Enum("UIFlexMode"), D::E("None")),
+                p("GrowRatio", Num, N(1.0)),
+                p("ShrinkRatio", Num, N(1.0)),
+                p("ItemLineAlignment", K::Enum("ItemLineAlignment"), D::E("Automatic")),
+            ],
+            &[],
+        )
+    },
     kept("UIPageLayout", "UIGridStyleLayout"),
     kept("UITableLayout", "UIGridStyleLayout"),
     kept("Decal", "Instance"),

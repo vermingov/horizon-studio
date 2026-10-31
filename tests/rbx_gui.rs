@@ -235,7 +235,12 @@ fn kept_classes_take_any_property() {
         local flex = Instance.new("UIFlexItem")
         flex.FlexMode = "Grow"
         print(view.CurrentCamera == workspace.CurrentCamera, video.Video, video.Playing, board.PlayerToHideFrom.Name)
-        print(pages.GamepadInputEnabled, grid.FillEmptySpaceRows, flex.FlexMode, view.Nothing)
+        print(pages.GamepadInputEnabled, grid.FillEmptySpaceRows, flex.FlexMode.Name, view.Nothing)
+        flex.Unknown = 1
+        board.Unknown = 2
+        pages.Unknown = 3
+        grid.Unknown = 4
+        print(flex.Unknown, board.Unknown, pages.Unknown, grid.Unknown)
     "#;
     load(&mut game, &mut st, "kept", src, 0.6);
     let p = printed(&st, "kept");
@@ -243,7 +248,8 @@ fn kept_classes_take_any_property() {
         p,
         [
             "true    rbxassetid://1    true    Player1",
-            "false    true    Grow    nil"
+            "false    true    Grow    nil",
+            "1    2    3    4"
         ]
     );
 }
@@ -1581,4 +1587,35 @@ fn billboard_offsets_follow_the_adornee_box() {
     // SizeOffset, in fractions of the billboard's size, y up.
     say(&mut st, &mut game, "shift");
     near_rect(green(&mut st, &mut game), [480.0, 260.0, 40.0, 10.0]);
+}
+
+#[test]
+fn flex_layouts_from_a_script() {
+    let mut game = FakeGame::new("rbx-flex");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local row = Instance.new("Frame", gui)
+        row.Size = UDim2.fromOffset(300, 40)
+        local list = Instance.new("UIListLayout", row)
+        list.FillDirection = Enum.FillDirection.Horizontal
+        list.HorizontalFlex = Enum.UIFlexAlignment.SpaceBetween
+        list.ItemLineAlignment = Enum.ItemLineAlignment.Stretch
+        local a = Instance.new("Frame", row)
+        a.Size = UDim2.fromOffset(50, 10)
+        local b = Instance.new("Frame", row)
+        b.Size = UDim2.fromOffset(50, 10)
+        print(a.AbsoluteSize, b.AbsolutePosition, list.HorizontalFlex)
+        local flex = Instance.new("UIFlexItem", b)
+        flex.FlexMode = Enum.UIFlexMode.Grow
+        print(b.AbsolutePosition, b.AbsoluteSize, flex.GrowRatio, flex.ItemLineAlignment)
+    "#;
+    load(&mut game, &mut st, "flex", src, 0.6);
+    assert_eq!(
+        printed(&st, "flex"),
+        [
+            "50, 40    250, 0    Enum.UIFlexAlignment.SpaceBetween",
+            "50, 0    250, 40    1    Enum.ItemLineAlignment.Automatic"
+        ]
+    );
 }
