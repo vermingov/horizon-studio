@@ -16,7 +16,7 @@ use super::hstudio_lua::{
 };
 use super::hstudio_lualib::{inspect, new_env, quote, text_of};
 use super::hstudio_modfiles::{
-    TEMPLATE, file_name, find_mods, id_taken, lua_files, path_in, prune_empty, rel_in, require_path, to_trash,
+    TEMPLATE, file_name, find_mod, find_mods, id_taken, lua_files, path_in, prune_empty, rel_in, require_path, to_trash,
 };
 use super::hstudio_ui::{Editor, ScriptScreen, Ui};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -2083,10 +2083,15 @@ impl Studio {
         }
     }
 
-    /// Writes bundled example `i` into the mods folder.
+    /// Writes bundled example `i` into the mods folder, unless a mod has its
+    /// id, whatever that mod's file is called.
     pub fn install_example(&mut self, game: &mut dyn GameApi, i: usize) -> Result<PathBuf, String> {
         let ex = EXAMPLES.get(i).ok_or("no such example")?;
         let path = self.s.mods_dir().join(format!("{}.lua", ex.id));
+        if let Some((main, folder)) = find_mod(&self.s.mods_dir(), ex.id) {
+            let held = folder.unwrap_or(main);
+            return Err(format!("{} is already installed{}", ex.id, other_name(&held, &path)));
+        }
         if path.exists() {
             return Err(format!("{} is already installed", ex.id));
         }
@@ -2099,7 +2104,8 @@ impl Studio {
 
     /// Installs what was dropped on the game window: a `.lua` file, a mod
     /// folder (with `main.lua`), or a `.zip` of either. A mod of the same id
-    /// and kind is replaced (an update). Returns a line saying what happened.
+    /// and kind is replaced where it is, whatever its file or folder is
+    /// called (an update). Returns a line saying what happened.
     pub fn install_path(&mut self, game: &mut dyn GameApi, path: &Path) -> Result<String, String> {
         self.start(game);
         let mods = self.s.mods_dir();
@@ -2120,25 +2126,12 @@ impl Studio {
                 Some("lua") => {
                     let stem = name.trim_end_matches(".lua").trim_end_matches(".LUA");
                     let bytes = read_capped(path)?;
-                    let id = mod_id(stem);
-                    if mods.join(&id).is_dir() {
-                        return Err(format!("a folder mod named {id} is installed: remove it first"));
-                    }
-                    let existed = mods.join(format!("{id}.lua")).exists();
-                    std::fs::write(mods.join(format!("{id}.lua")), bytes).map_err(|e| e.to_string())?;
-                    return Ok(self.after_install(game, &id, existed));
+                    return self.install_script(game, &mod_id(stem), &bytes);
                 }
                 Some("zip") => {
                     let (id, layout) = read_zip(path, name.trim_end_matches(".zip").trim_end_matches(".ZIP"))?;
                     match layout {
-                        ZipMod::File(bytes) => {
-                            if mods.join(&id).is_dir() {
-                                return Err(format!("a folder mod named {id} is installed: remove it first"));
-                            }
-                            let existed = mods.join(format!("{id}.lua")).exists();
-                            std::fs::write(mods.join(format!("{id}.lua")), bytes).map_err(|e| e.to_string())?;
-                            return Ok(self.after_install(game, &id, existed));
-                        }
+                        ZipMod::File(bytes) => return self.install_script(game, &id, &bytes),
                         ZipMod::Folder(files) => (id, Some(files)),
                     }
                 }
@@ -2150,11 +2143,8 @@ impl Studio {
             }
         };
         let files = files.unwrap_or_default();
-        if mods.join(format!("{id}.lua")).is_file() {
-            return Err(format!("a one-file mod named {id} is installed: remove it first"));
-        }
+        let dest = install_target(&mods, &id, true)?;
         // Written beside, then swapped in, so a reload never sees half a mod.
-        let dest = mods.join(&id);
         let fresh = mods.join(format!(".{id}.installing"));
         let _ = std::fs::remove_dir_all(&fresh);
         for (rel, bytes) in &files {
@@ -2170,6 +2160,15 @@ impl Studio {
         }
         std::fs::rename(&fresh, &dest).map_err(|e| e.to_string())?;
         Ok(self.after_install(game, &id, existed))
+    }
+
+    /// A dropped script, as `<id>.lua` or over the script the studio runs as
+    /// `id` (`install_target`).
+    fn install_script(&mut self, game: &mut dyn GameApi, id: &str, bytes: &[u8]) -> Result<String, String> {
+        let target = install_target(&self.s.mods_dir(), id, false)?;
+        let existed = target.exists();
+        std::fs::write(&target, bytes).map_err(|e| e.to_string())?;
+        Ok(self.after_install(game, id, existed))
     }
 
     fn after_install(&mut self, game: &mut dyn GameApi, id: &str, existed: bool) -> String {
@@ -3227,6 +3226,39 @@ const SCRATCH: &str = "-- scratch.lua: a place to try code. Ctrl+Enter runs this
 /// The most a dropped mod may hold.
 const MAX_INSTALL_FILES: usize = 256;
 const MAX_INSTALL_BYTES: u64 = 8 << 20;
+
+/// Where a dropped mod `id` goes, a module or a script: over the mod the
+/// studio lists under that id when it is of that kind, where it is and
+/// whatever it is called ("Night Light.lua" for a dropped night_light.lua),
+/// as an update; else at `<id>/` or `<id>.lua`. Not over a mod of the other
+/// kind.
+fn install_target(mods: &Path, id: &str, module: bool) -> Result<PathBuf, String> {
+    let (folder, script) = (mods.join(id), mods.join(format!("{id}.lua")));
+    match find_mod(mods, id) {
+        Some((_, Some(held))) if module => Ok(held),
+        Some((held, None)) if !module => Ok(held),
+        Some((_, Some(held))) => Err(format!(
+            "a folder mod named {id} is installed{}: remove it first",
+            other_name(&held, &folder)
+        )),
+        Some((held, None)) => Err(format!(
+            "a one-file mod named {id} is installed{}: remove it first",
+            other_name(&held, &script)
+        )),
+        None if module && script.is_file() => Err(format!("a one-file mod named {id} is installed: remove it first")),
+        None if !module && folder.is_dir() => Err(format!("a folder mod named {id} is installed: remove it first")),
+        None => Ok(if module { folder } else { script }),
+    }
+}
+
+/// ` ("Night Light.lua")`: the name a mod has on disk when it is not the
+/// one its id gives (`own`), to say which file is meant; else nothing.
+fn other_name(held: &Path, own: &Path) -> String {
+    match held.file_name() {
+        Some(name) if held != own => format!(" (\"{}\")", name.to_string_lossy()),
+        _ => String::new(),
+    }
+}
 
 fn read_capped(path: &Path) -> Result<Vec<u8>, String> {
     let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();

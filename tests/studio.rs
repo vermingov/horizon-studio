@@ -1541,6 +1541,65 @@ fn dropped_files_install_and_run() {
 }
 
 #[test]
+fn a_dropped_update_replaces_its_mod_whatever_the_mods_name() {
+    let mut game = FakeGame::new("drop-held");
+    game.write_mod("Night Light.lua", "print('night v1')\n");
+    let mut st = studio(&mut game);
+    run_for(&mut st, &mut game, 0.2);
+    let mods = game.mods_dir();
+    let downloads = game.dir.join("downloads");
+    std::fs::create_dir_all(&downloads).unwrap();
+    // "Night Light.lua" is night_light: a dropped night_light updates it,
+    // not a night_light.lua beside it that the studio would pass over.
+    let file = downloads.join("night_light.lua");
+    std::fs::write(&file, "print('night v2')\n").unwrap();
+    assert_eq!(
+        st.install_path(&mut game, &file).unwrap(),
+        "Updated night_light: running"
+    );
+    assert!(
+        log(&st).contains(&"[night_light] night v2".to_owned()),
+        "{:?}",
+        log(&st)
+    );
+    assert!(!mods.join("night_light.lua").exists());
+    assert_eq!(
+        std::fs::read_to_string(mods.join("Night Light.lua")).unwrap(),
+        "print('night v2')\n"
+    );
+    // A module the same way: its folder keeps its name, its files are the new ones.
+    let held = mods.join("Desk Lamp");
+    std::fs::create_dir_all(&held).unwrap();
+    std::fs::write(held.join("main.lua"), "print('lamp v1')\n").unwrap();
+    std::fs::write(held.join("old.lua"), "return 1\n").unwrap();
+    st.scan(&mut game);
+    let folder = downloads.join("desk_lamp");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("main.lua"), "print('lamp v2')\n").unwrap();
+    assert_eq!(
+        st.install_path(&mut game, &folder).unwrap(),
+        "Updated desk_lamp: running"
+    );
+    assert!(log(&st).contains(&"[desk_lamp] lamp v2".to_owned()), "{:?}", log(&st));
+    assert!(!mods.join("desk_lamp").exists());
+    assert!(held.join("main.lua").is_file() && !held.join("old.lua").exists());
+    // A mod of the other kind is not replaced, and the message names it.
+    let script = downloads.join("Desk Lamp.lua");
+    std::fs::write(&script, "print('a script')\n").unwrap();
+    let e = st.install_path(&mut game, &script).unwrap_err();
+    assert!(
+        e.contains("a folder mod named desk_lamp is installed (\"Desk Lamp\")"),
+        "{e}"
+    );
+    // An example whose id a mod of another name has is installed already.
+    std::fs::write(mods.join("Clock.lua"), "print('my clock')\n").unwrap();
+    let i = EXAMPLES.iter().position(|e| e.id == "clock").unwrap();
+    let e = st.install_example(&mut game, i).unwrap_err();
+    assert_eq!(e, "clock is already installed (\"Clock.lua\")");
+    assert!(!mods.join("clock.lua").exists());
+}
+
+#[test]
 fn the_library_opens_the_mods_folder() {
     use horizon_studio::game::hstudio_ui::{Input, Tab, draw, handle};
     let mut game = FakeGame::new("open-folder");
