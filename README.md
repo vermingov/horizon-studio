@@ -649,12 +649,21 @@ end)
   CFrame, `PivotTo`, a tween) teleports you with `/tp`, and `Humanoid:MoveTo` walks you there (MoveToFinished
   fires). `workspace.CurrentCamera` follows the camera (`WorldToViewportPoint`), Parts in the Workspace are drawn in
   the world, and `workspace:Raycast` goes through the world's blocks and the parts.
+- **Entities and other players.** Once a script looks at the world (the Workspace's children or events, a raycast,
+  the Mouse's Target, Players), the mobs, dropped items and experience orbs near you are in the Workspace while it
+  runs: a mob is a Model with a HumanoidRootPart, a Head and a Humanoid (its health times 5), an item or an orb a
+  Part, each with `EntityId` and `EntityType` attributes, following the game each frame, with ChildAdded,
+  Destroying, HealthChanged and Died as they come, go and get hurt. The other players on the server are in Players
+  (PlayerAdded, PlayerRemoving), their Characters R6 rigs while they are near (CharacterAdded), and every character
+  has R6's Torso, arms and legs. Raycasts, `FindPartOnRay`, the Mouse's Target and `GetPartBoundsInRadius` and the
+  other bounds queries find them, a mob's Head on its own, and `workspace.Terrain` reads the map (`GetBlock`,
+  `ReadVoxels` with a `Region3`). A UI script that never looks costs the game nothing.
 - **Services:** Players, RunService (Heartbeat, RenderStepped, Stepped, BindToRenderStep), UserInputService,
   TweenService, Debris, HttpService (JSON and GUIDs), TextService, GuiService, StarterGui (`SetCore` notifications in
   chat), CollectionService, ContextActionService, Lighting (the world's time) and the containers.
 - **Data types and `Enum`:** Vector2, Vector3, CFrame, Color3, UDim, UDim2, Rect, NumberRange, NumberSequence,
-  ColorSequence, TweenInfo, BrickColor, Font, Random, Ray, RaycastParams, with their constructors, properties,
-  methods and operators, and the Enum tree (`Enum.KeyCode.E`).
+  ColorSequence, TweenInfo, BrickColor, Font, Random, Ray, Region3, RaycastParams, with their constructors,
+  properties, methods and operators, and the Enum tree (`Enum.KeyCode.E`).
 
 Not there: a server (RemoteEvents go nowhere), physics, animations, Roblox's assets (images, meshes and sounds by
 id), BillboardGuis and SurfaceGuis. The MCP's `roblox` topic (`docs`) lists every class, member and difference.
@@ -754,7 +763,8 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `rbx_values.rs` (`hstudio_rbx_values`) | Roblox's data types and `Enum` for scripts |
 | `rbx.rs`, `rbx_methods.rs` (`hstudio_rbx`, `hstudio_rbx_methods`) | The Roblox layer: the DataModel, Instances, their properties, events and methods, services, signals, tweens |
 | `rbx_draw.rs` (`hstudio_rbx_draw`) | The Roblox layer on the game: ScreenGuis drawn and clicked, input, Parts in the world, raycasts, each frame's step |
-| `rbx_world.rs` (`hstudio_rbx_world`) | The Roblox layer's world: the LocalPlayer and its character following the player, teleports, `Humanoid:MoveTo` |
+| `rbx_world.rs` (`hstudio_rbx_world`) | The Roblox layer's world: the LocalPlayer and its character following the player, teleports, `Humanoid:MoveTo`, the entities and other players mirrored once a script looks |
+| `rbx_query.rs` (`hstudio_rbx_query`) | What scripts ask of the world: raycasts through its blocks and parts, the Mouse's target, the bounds queries, Terrain's reads |
 | `exec.rs` (`hstudio_exec`) | The executor (sUNC) functions that need only the interpreter: hooks, newcclosure, debug, metatables, encoding, getgc |
 | `sunc.rs` (`hstudio_sunc`) | The executor functions on the studio: environments, files, HTTP, WebSockets, Drawing, Instances, signals, scripts |
 | `net.rs`, `crypt.rs` (`hstudio_net`, `hstudio_crypt`) | HTTP and WebSockets for scripts (the internet only); hashes, Base64 and LZ4 |
