@@ -611,3 +611,45 @@ fn the_middle_button_is_mouse_button_3_on_a_gui() {
         "not the right button: {lines:?}"
     );
 }
+
+#[test]
+fn space_and_the_backquote_are_key_codes_on_a_gui() {
+    use horizon_studio::game::hstudio_ui::{Input, Key, Mods, handle_screen};
+    let mut game = FakeGame::new("rbx-backquote");
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{UI}\nlocal UIS = game:GetService(\"UserInputService\")\nUIS.InputBegan:Connect(function(input) print(\"began \" .. input.KeyCode.Name) end)\n"
+    );
+    load(&mut game, &mut st, "shop", &src, 0.6);
+    hud(&mut st, &mut game);
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.accept_screen(), "the GUI's screen");
+    for c in [' ', '`'] {
+        let key = Key::Char(c);
+        let mods = Mods::default();
+        handle_screen(
+            &mut st,
+            &mut game,
+            Input::Key {
+                key,
+                down: true,
+                repeat: false,
+                mods,
+            },
+        );
+        handle_screen(
+            &mut st,
+            &mut game,
+            Input::Key {
+                key,
+                down: false,
+                repeat: false,
+                mods,
+            },
+        );
+    }
+    run_for(&mut st, &mut game, 0.1);
+    let lines = printed(&st, "shop");
+    assert!(lines.contains(&"began Space".to_owned()), "{lines:?}");
+    assert!(lines.contains(&"began Backquote".to_owned()), "{lines:?}");
+}

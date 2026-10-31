@@ -764,6 +764,7 @@ fn screen_keycode(key: &str) -> Option<&'static str> {
         "pagedown" => Some("PageDown"),
         "escape" => Some("Escape"),
         " " => Some("Space"),
+        "`" => Some("Backquote"),
         k if k.chars().count() == 1 => keycode(&format!("key.keyboard.{}", k.to_ascii_lowercase())),
         _ => None,
     }
