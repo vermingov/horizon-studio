@@ -724,6 +724,22 @@ fn a_suggest_that_runs_too_long_is_turned_off() {
     assert_eq!(texts(&mut st, &mut game, "/slow o"), ["one"]);
     assert!(started.elapsed().as_secs_f64() < 0.5);
     assert_eq!(logged(&st, "/slow completions:").len(), 1);
+    // The console never reloads: its command's function comes back when
+    // command() registers the command again.
+    let spin = "command('spin', function() end, { args = { { name = 'a', options = { 'one' }, suggest = function() while true do end end } } })";
+    console(&mut st, &mut game, spin);
+    assert_eq!(texts(&mut st, &mut game, "/spin "), ["one"]);
+    let lines = logged(&st, "/spin completions:");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains("(its completions are off until command() registers it again)"),
+        "{lines:?}"
+    );
+    assert!(!lines[0].contains("reloads"), "{lines:?}");
+    let off = |st: &Studio| console_command(st, "spin").args.as_ref().unwrap()[0].suggest.is_none();
+    assert!(off(&st));
+    console(&mut st, &mut game, spin);
+    assert!(!off(&st), "registered again");
 }
 
 #[test]

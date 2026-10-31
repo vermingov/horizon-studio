@@ -2688,7 +2688,8 @@ impl Studio {
     /// index and name), or the command's own (None). Its completions, or
     /// none when it fails: an error is logged once, until another comes or
     /// the function works again, and the mod runs on; a function that runs
-    /// out of steps or memory is not called again until the mod reloads.
+    /// out of steps or memory is not called again until its command is
+    /// registered again (its mod reloads, or the console runs command()).
     fn call_suggest(
         &mut self,
         game: &mut dyn GameApi,
@@ -2734,9 +2735,15 @@ impl Studio {
             Some((msg, _, true)) => {
                 *slot = None;
                 c.serial = next_serial();
+                // The console never reloads: the function comes back only
+                // when command() registers its command again.
+                let until = match owner {
+                    Owner::Console => "command() registers it again",
+                    Owner::Mod(_) => "the mod reloads",
+                };
                 vec![(
                     LogKind::Error,
-                    format!("/{name} completions: {msg} (its completions are off until the mod reloads)"),
+                    format!("/{name} completions: {msg} (its completions are off until {until})"),
                 )]
             }
             Some((msg, trace, false)) => match slot.as_mut() {
