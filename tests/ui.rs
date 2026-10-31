@@ -1719,6 +1719,60 @@ fn the_editor_checks_a_module_file_with_its_siblings() {
 }
 
 #[test]
+fn a_big_modules_other_files_are_read_within_limits() {
+    let mut game = FakeGame::new("ui-big-module");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    let (big, many) = (game.mods_dir().join("big"), game.mods_dir().join("many"));
+    for dir in [&big, &many] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("main.lua"), "print('main')\n").unwrap();
+    }
+    // A file over 256 KiB, one under it, and 4 MiB in all: 16 files of
+    // 250 KB fit, after small.lua (main.lua, the file open, is not one).
+    let padded = |name: &str, len: usize| format!("{name} = 1\n-- {}\n", "x".repeat(len));
+    std::fs::write(big.join("huge.lua"), padded("hugename", 300 << 10)).unwrap();
+    std::fs::write(big.join("small.lua"), "smallname = 1\n").unwrap();
+    for n in 0..20 {
+        let name = format!("t{n:02}name");
+        let text = padded(&name, 250_000 - name.len() - 9);
+        assert_eq!(text.len(), 250_000);
+        std::fs::write(big.join(format!("t{n:02}.lua")), text).unwrap();
+    }
+    // And 256 files, however small.
+    for n in 0..300 {
+        std::fs::write(many.join(format!("m{n:03}.lua")), format!("m{n:03}name = 1\n")).unwrap();
+    }
+    run_for(&mut st, &mut game, 0.6);
+    let suggested = |st: &mut horizon_studio::game::hstudio::Studio, typed: &str| -> bool {
+        st.s.editor.set_text(typed);
+        st.s.editor.click(0, typed.len(), false);
+        horizon_studio::game::hstudio_ui::refresh_suggest(st);
+        st.s.ui
+            .suggest
+            .as_ref()
+            .is_some_and(|s| s.items.iter().any(|i| i.label.starts_with(typed)))
+    };
+    st.open_file(&big.join("main.lua"));
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    redraw(&mut st, &mut game);
+    assert!(suggested(&mut st, "smalln"));
+    assert!(!suggested(&mut st, "hugen"), "over 256 KiB: not read");
+    assert!(suggested(&mut st, "t00n") && suggested(&mut st, "t15n"));
+    assert!(!suggested(&mut st, "t16n"), "past 4 MiB: not read");
+    // A file not read is still the module's: requiring it is no problem.
+    st.s.editor
+        .set_text("local h = require('huge')\nlocal t = require('t19')\n");
+    redraw(&mut st, &mut game);
+    assert!(st.s.editor.problems.is_empty(), "{:?}", st.s.editor.problems);
+    st.open_file(&many.join("main.lua"));
+    redraw(&mut st, &mut game);
+    assert!(suggested(&mut st, "m255n"));
+    assert!(!suggested(&mut st, "m256n"), "past 256 files: not read");
+}
+
+#[test]
 fn a_mod_opens_from_the_library_though_saving_first_rescans() {
     let mut game = FakeGame::new("ui-edit-rescan");
     let mut st = studio(&mut game);

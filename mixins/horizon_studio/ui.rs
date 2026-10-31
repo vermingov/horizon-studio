@@ -2182,10 +2182,19 @@ pub(crate) struct SiblingCache {
     data: std::rc::Rc<super::hstudio_assist::Siblings>,
 }
 
+/// How much of a module's other files the live check reads, on the frame
+/// after any of them changes: a file up to 256 KiB, up to 256 files and
+/// 4 MiB in all (as an install takes 256 files). The others are listed,
+/// unread: the check is a help, not a build.
+const SIBLING_FILE_BYTES: u64 = 256 << 10;
+const SIBLING_FILES: usize = 256;
+const SIBLING_BYTES: u64 = 4 << 20;
+
 /// The other files of the module the editor's file is in, for its checks
 /// and suggestions (None outside a module), their lines as the editor shows
 /// a file (its indent for a tab), so a place found in one is that place
-/// once it opens. They are read again only when the scan saw the module's
+/// once it opens; within the limits above, main.lua and the first files
+/// by name first. They are read again only when the scan saw the module's
 /// files change (its stamp), and then the live check looks again, though
 /// the buffer didn't change.
 pub(crate) fn editor_siblings(st: &mut Studio) -> Option<std::rc::Rc<super::hstudio_assist::Siblings>> {
@@ -2205,21 +2214,25 @@ pub(crate) fn editor_siblings(st: &mut Studio) -> Option<std::rc::Rc<super::hstu
     {
         return Some(c.data.clone());
     }
-    // Large files are left out: the check is a help, not a build.
+    let (mut read, mut bytes) = (0, 0);
     let others = m
         .files()
         .into_iter()
         .filter(|f| *f != rel)
         .map(|f| {
             let p = super::hstudio_modfiles::path_in(&folder, &f);
-            let text = match std::fs::metadata(&p) {
-                Ok(meta) if meta.len() <= 512 << 10 => std::fs::read_to_string(&p).unwrap_or_default(),
-                _ => String::new(),
+            let len = std::fs::metadata(&p).map_or(u64::MAX, |meta| meta.len());
+            let text = if read < SIBLING_FILES && len <= SIBLING_FILE_BYTES && bytes + len <= SIBLING_BYTES {
+                read += 1;
+                bytes += len;
+                std::fs::read_to_string(&p).unwrap_or_default()
+            } else {
+                String::new()
             };
             (f, text.replace('\t', INDENT).lines().map(str::to_owned).collect())
         })
         .collect();
-    let data = std::rc::Rc::new(super::hstudio_assist::Siblings { file: rel, others });
+    let data = std::rc::Rc::new(super::hstudio_assist::Siblings::new(rel, others));
     st.s.ui.siblings = Some(SiblingCache {
         path,
         stamp: m.stamp.clone(),

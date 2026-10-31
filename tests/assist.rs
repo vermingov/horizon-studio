@@ -56,13 +56,13 @@ fn problems_in(src: &str, module: Option<&Siblings>) -> Vec<Found> {
 
 /// A module whose open file is `file`, with these other files.
 fn module(file: &str, others: &[(&str, &str)]) -> Siblings {
-    Siblings {
-        file: file.to_owned(),
-        others: others
+    Siblings::new(
+        file.to_owned(),
+        others
             .iter()
             .map(|(f, src)| ((*f).to_owned(), src.lines().map(str::to_owned).collect()))
             .collect(),
-    }
+    )
 }
 
 #[test]

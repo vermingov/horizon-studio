@@ -9,20 +9,60 @@
 
 use super::hstudio::{API, CONSOLE_API};
 use super::hstudio_modfiles::{require_name, require_path};
+use std::collections::HashSet;
 
 /// The module the open file is in, for its checks and suggestions: the
 /// file's own path in it ("lib.lua"), and every other `.lua` file of the
-/// module with its lines. A script, the scratch file and the console have
-/// none.
+/// module with its lines (none for a file not read). A script, the scratch
+/// file and the console have none. What the checks and suggestions take
+/// from the other files is read from them once, as this is made (`new`),
+/// not again at every key typed: what they define for the whole module,
+/// each one's names to suggest, and the members of the table each returns.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Siblings {
     pub file: String,
     pub others: Vec<(String, Vec<String>)>,
+    /// What the other files define for all of the module (`module_names`):
+    /// its globals, and the members they put in tables, by full name.
+    globals: HashSet<String>,
+    fields: HashSet<String>,
+    /// Each other file's globals worth suggesting, sorted, and the members
+    /// of the table it returns (`returned_members`), as `others` lists them.
+    words: Vec<Vec<String>>,
+    returns: Vec<Option<Members>>,
 }
 
 impl Siblings {
-    fn lines_of(&self, rel: &str) -> Option<&[String]> {
-        self.others.iter().find(|(f, _)| f == rel).map(|(_, l)| l.as_slice())
+    pub fn new(file: String, others: Vec<(String, Vec<String>)>) -> Siblings {
+        let (mut globals, mut fields) = (HashSet::new(), HashSet::new());
+        let mut words = Vec::with_capacity(others.len());
+        let mut returns = Vec::with_capacity(others.len());
+        for (_, lines) in &others {
+            let mut mine = HashSet::new();
+            module_names(lines, &mut mine, &mut fields);
+            let mut w: Vec<String> = mine
+                .iter()
+                .filter(|w| {
+                    w.len() >= 3 && !w.starts_with(|c: char| c.is_ascii_digit()) && !KEYWORDS.contains(&w.as_str())
+                })
+                .cloned()
+                .collect();
+            w.sort();
+            words.push(w);
+            globals.extend(mine);
+            returns.push(returned_members(lines));
+        }
+        Siblings {
+            file,
+            others,
+            globals,
+            fields,
+            words,
+            returns,
+        }
+    }
+    fn index_of(&self, rel: &str) -> Option<usize> {
+        self.others.iter().position(|(f, _)| f == rel)
     }
 }
 
@@ -922,19 +962,19 @@ pub fn suggest(
                     push(k, k, "", Kind::Keyword, &mut items);
                 }
             }
-            let mut known: Vec<String> = items.iter().map(|i| i.1.label.clone()).collect();
+            let mut known: HashSet<String> = items.iter().map(|i| i.1.label.clone()).collect();
             for w in buffer_words(lines) {
-                if !known.contains(&w) && w != typed {
+                if w != typed && known.insert(w.clone()) {
                     push(&w, "", "in this file", Kind::Word, &mut items);
-                    known.push(w);
                 }
             }
             // The names the module's other files define for all of it.
-            for (file, other) in module.map_or(&[][..], |m| m.others.as_slice()) {
-                for w in sibling_words(other) {
-                    if !known.contains(&w) && w != typed {
-                        push(&w, "", &format!("in {file}"), Kind::Word, &mut items);
-                        known.push(w);
+            if let Some(m) = module {
+                for ((file, _), words) in m.others.iter().zip(&m.words) {
+                    for w in words {
+                        if w != typed && known.insert(w.clone()) {
+                            push(w, "", &format!("in {file}"), Kind::Word, &mut items);
+                        }
                     }
                 }
             }
@@ -1196,7 +1236,7 @@ fn require_problems(lines: &[String], module: Option<&Siblings>) -> Vec<Problem>
                 )),
                 Some(rel) if rel == m.file => Some("a file can't require itself".to_owned()),
                 Some(rel) if rel == "main.lua" => Some("main.lua starts the module: it can't be required".to_owned()),
-                Some(rel) if m.lines_of(&rel).is_some() => None,
+                Some(rel) if m.index_of(&rel).is_some() => None,
                 Some(rel) => Some(format!("no {rel} in this module")),
             },
         };
@@ -1233,7 +1273,7 @@ fn bound_members(lines: &[String], owner: &str, module: &Siblings) -> Option<(St
             return None;
         }
         let rel = require_path(&name)?;
-        let members = returned_members(module.lines_of(&rel)?)?;
+        let members = module.returns[module.index_of(&rel)?].clone()?;
         Some((rel, members))
     })
 }
@@ -1334,7 +1374,7 @@ fn syntax_problem(e: &str, lines: &[String], chunk: &str, at: Option<usize>) -> 
 /// The names a file defines for itself: what follows `local`, `function`
 /// and `for`, every word before an `=` (assignments), and parameters and
 /// loop names.
-fn defined_names(lines: &[String], d: &mut std::collections::HashSet<String>) {
+fn defined_names(lines: &[String], d: &mut HashSet<String>) {
     for line in lines {
         let code = strip_strings(line);
         let words: Vec<&str> = code.split(|c: char| !is_word(c)).filter(|w| !w.is_empty()).collect();
@@ -1369,11 +1409,7 @@ fn defined_names(lines: &[String], d: &mut std::collections::HashSet<String>) {
 /// obj:m(` as `obj.m`, `cfg.x = `; `a.b.c` is `a.b` and `a.b.c`), into
 /// `fields`. Its parameters and loop names are its own, and so is a
 /// `local`.
-fn module_names(
-    lines: &[String],
-    globals: &mut std::collections::HashSet<String>,
-    fields: &mut std::collections::HashSet<String>,
-) {
+fn module_names(lines: &[String], globals: &mut HashSet<String>, fields: &mut HashSet<String>) {
     for line in lines {
         if line.trim_start().starts_with("local") {
             continue;
@@ -1435,19 +1471,6 @@ fn global_definitions(code: &str) -> Vec<String> {
     out
 }
 
-/// The names another file of the module defines for all of it (its
-/// globals), as suggestions: long enough to be worth one, no keywords.
-fn sibling_words(lines: &[String]) -> Vec<String> {
-    let (mut d, mut fields) = (std::collections::HashSet::new(), std::collections::HashSet::new());
-    module_names(lines, &mut d, &mut fields);
-    let mut words: Vec<String> = d
-        .into_iter()
-        .filter(|w| w.len() >= 3 && !w.starts_with(|c: char| c.is_ascii_digit()) && !KEYWORDS.contains(&w.as_str()))
-        .collect();
-    words.sort();
-    words
-}
-
 /// Uses of a library's member it doesn't have (`player.poss`), and of a
 /// table name nothing defines (`plyer.pos`), outside strings and comments.
 /// What a module's other files define for all of it counts as defined: a
@@ -1456,14 +1479,13 @@ fn sibling_words(lines: &[String]) -> Vec<String> {
 fn unknown_names(lines: &[String], module: Option<&Siblings>) -> Vec<Problem> {
     let ns = namespaces();
     let all = names(true);
-    let mut defined = std::collections::HashSet::new();
-    let mut fields = std::collections::HashSet::new();
-    defined_names(lines, &mut defined);
-    for (_, other) in module.map_or(&[][..], |m| m.others.as_slice()) {
-        module_names(other, &mut defined, &mut fields);
-    }
-    // The tables those members are put in are there, for `plyer.pos`.
-    let filled: std::collections::HashSet<&str> = fields.iter().filter_map(|f| f.split('.').next()).collect();
+    let mut mine = HashSet::new();
+    defined_names(lines, &mut mine);
+    let none = Siblings::default();
+    let m = module.unwrap_or(&none);
+    let defined = |n: &str| mine.contains(n) || m.globals.contains(n);
+    // The tables the other files put members in are there, for `plyer.pos`.
+    let filled: HashSet<&str> = m.fields.iter().filter_map(|f| f.split('.').next()).collect();
     let mut out = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         let code = strip_strings(line);
@@ -1483,8 +1505,8 @@ fn unknown_names(lines: &[String], module: Option<&Siblings>) -> Vec<Problem> {
                     .map_or(code.len(), |e| end + 1 + e);
                 let member = &code[end + 1..m_end];
                 let full = format!("{root}.{member}");
-                if ns.iter().any(|n| n == root) && !defined.contains(root) {
-                    if !member.is_empty() && !all.iter().any(|(n, ..)| n == &full) && !fields.contains(&full) {
+                if ns.iter().any(|n| n == root) && !defined(root) {
+                    if !member.is_empty() && !all.iter().any(|(n, ..)| n == &full) && !m.fields.contains(&full) {
                         out.push(Problem {
                             line: i + 1,
                             span: Some((end + 1, m_end)),
@@ -1492,7 +1514,7 @@ fn unknown_names(lines: &[String], module: Option<&Siblings>) -> Vec<Problem> {
                             error: false,
                         });
                     }
-                } else if !defined.contains(root)
+                } else if !defined(root)
                     && !filled.contains(root)
                     && !KEYWORDS.contains(&root)
                     && root != "self"

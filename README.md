@@ -143,7 +143,8 @@ Ctrl+1 to Ctrl+5 switch tabs. In chat: `/studio` opens it, `/studio reload` relo
   error still marks its line in red. In a module's file, what the other files define for all of it is known: their
   globals, and a member they add to a table as that member alone (their `function chat.shout` leaves `chat.sya` a
   typo; their parameters and loop names are their own). A `require("nope")` of a file the module lacks is marked
-  (*no nope.lua in this module*).
+  (*no nope.lua in this module*). The other files are read again only when one changes, and in a big module only up
+  to 256 KiB a file, 256 files and 4 MiB in all, so typing stays quick; a file past that is still the module's.
 - **Typing** keeps your indent, and Enter after `then`, `do`, `function(` or `repeat` indents the next line and
   closes the block below with its `end` (`end)` for a function passed to a call, `until` for `repeat`), unless it is
   already closed. Brackets and quotes close themselves, typing the closing one steps over it, and Backspace between
