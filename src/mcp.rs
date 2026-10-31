@@ -447,6 +447,8 @@ fn text_result(v: &Json, error: bool) -> Json {
     json!({ "content": [{ "type": "text", "text": text }], "isError": error })
 }
 
+/// `files` as (path, text) pairs: None when it isn't given. It may be
+/// empty ({}), as write_mod takes it beside `remove`.
 fn files_param(args: &Json) -> Result<Option<Vec<(String, String)>>, String> {
     match args.get("files") {
         None | Some(Json::Null) => Ok(None),
@@ -456,12 +458,17 @@ fn files_param(args: &Json) -> Result<Option<Vec<(String, String)>>, String> {
                 let text = v.as_str().ok_or_else(|| format!("files.{k} must be the file's text"))?;
                 files.push((k.clone(), text.to_owned()));
             }
-            if files.is_empty() {
-                return Err("files is empty".into());
-            }
             Ok(Some(files))
         }
         Some(_) => Err("files is an object of path -> text".into()),
+    }
+}
+
+/// `files` for check_mod and test_mod, which load what is given: not empty.
+fn files_to_load(args: &Json) -> Result<Option<Vec<(String, String)>>, String> {
+    match files_param(args)? {
+        Some(files) if files.is_empty() => Err("files is empty".into()),
+        files => Ok(files),
     }
 }
 
@@ -776,7 +783,7 @@ impl Server {
             }
             "check_mod" => {
                 let id = str_arg(args, "id")?;
-                let source = match files_param(args)? {
+                let source = match files_to_load(args)? {
                     Some(files) => given_files(id, files, dir().ok()),
                     None => Source::Installed {
                         mods_dir: dir()?,
@@ -792,12 +799,12 @@ impl Server {
                     .and_then(Json::as_array)
                     .ok_or("missing 'steps' (a list)")?;
                 if args.get("live").and_then(Json::as_bool) == Some(true) {
-                    if let Some(files) = files_param(args)? {
+                    if let Some(files) = files_to_load(args)? {
                         write_mod(&dir()?, id, &files)?;
                     }
                     return self.live_test(id, steps);
                 }
-                let source = match files_param(args)? {
+                let source = match files_to_load(args)? {
                     Some(files) => given_files(id, files, dir().ok()),
                     None => Source::Installed {
                         mods_dir: dir()?,

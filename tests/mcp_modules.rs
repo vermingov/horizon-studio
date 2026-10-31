@@ -210,3 +210,128 @@ fn list_mods_and_check_mod_say_kind_files_and_the_error_file() {
     assert!(!error, "{r:#}");
     assert_eq!(r["mod"]["files"], json!(["main.lua", "lib/util.lua"]));
 }
+
+#[test]
+fn a_path_refused_changes_nothing_on_disk() {
+    let mut s = server();
+    let studio = Folder::new("refused");
+    let mods = studio.mods();
+    let d = mods.to_str().unwrap();
+    let (_, error) = call(
+        &mut s,
+        "write_mod",
+        json!({ "id": "solo", "mods_dir": d, "files": { "solo.lua": "print('one file')\n" } }),
+    );
+    assert!(!error);
+    // A script made a module with a path that isn't one inside it, before
+    // main.lua or after it: refused before anything moves.
+    for files in [
+        json!({ "../evil.lua": "return 1\n", "main.lua": "print('module')\n" }),
+        json!({ "main.lua": "print('module')\n", "./lib.lua": "return 1\n" }),
+        json!({ "main.lua": "print('module')\n", "a/b/c/d/e.lua": "return 1\n" }),
+    ] {
+        let (r, error) = call(
+            &mut s,
+            "write_mod",
+            json!({ "id": "solo", "mods_dir": d, "files": files }),
+        );
+        assert!(error, "{files}: {r}");
+        assert!(r.as_str().unwrap_or("").contains("is not a path inside the mod"), "{r}");
+        assert_eq!(
+            std::fs::read_to_string(mods.join("solo.lua")).unwrap(),
+            "print('one file')\n"
+        );
+        assert!(!mods.join("solo").exists(), "{files}: no module, not even half of one");
+        assert!(!studio.0.join("trash").exists(), "{files}: nothing in the trash");
+    }
+    let (r, _) = call(&mut s, "list_mods", json!({ "mods_dir": d }));
+    assert_eq!(r["mods"][0]["id"], "solo", "{r:#}");
+    // An existing module: a bad path among good ones writes none of them.
+    let main = "print('kit')\n";
+    let (_, error) = call(
+        &mut s,
+        "write_mod",
+        json!({ "id": "kit", "mods_dir": d, "files": { "main.lua": main, "lib.lua": "return 1\n" } }),
+    );
+    assert!(!error);
+    std::fs::create_dir_all(mods.join("kit/data")).unwrap();
+    for (bad, why) in [
+        ("../x.lua", "is not a path inside the mod"),
+        ("data", "is a folder in the mod"),
+        ("lib.lua/x.lua", "would be inside lib.lua"),
+    ] {
+        let (r, error) = call(
+            &mut s,
+            "write_mod",
+            json!({ "id": "kit", "mods_dir": d, "files": {
+                "main.lua": "print('changed')\n",
+                bad: "return 2\n",
+                "new.lua": "return 3\n",
+            } }),
+        );
+        assert!(error && r.as_str().unwrap_or("").contains(why), "{bad}: {r}");
+        assert_eq!(
+            std::fs::read_to_string(mods.join("kit/main.lua")).unwrap(),
+            main,
+            "{bad}"
+        );
+        assert!(!mods.join("kit/new.lua").exists(), "{bad}");
+    }
+    // Written, a module leaves no hidden folder behind.
+    let (r, error) = call(
+        &mut s,
+        "write_mod",
+        json!({ "id": "solo", "mods_dir": d, "files": { "main.lua": "print('module')\n", "lib/util.lua": "return 1\n" } }),
+    );
+    assert!(!error, "{r:#}");
+    assert!(mods.join("solo/lib/util.lua").is_file() && !mods.join("solo.lua").exists());
+    assert!(studio.0.join("trash/solo.lua").is_file());
+    let hidden: Vec<String> = std::fs::read_dir(&mods)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with('.'))
+        .collect();
+    assert!(hidden.is_empty(), "{hidden:?}");
+}
+
+#[test]
+fn only_main_lua_for_a_script_moves_a_file_to_the_trash() {
+    let mut s = server();
+    let studio = Folder::new("stray");
+    let mods = studio.mods();
+    let d = mods.to_str().unwrap();
+    // A module with a file of its name beside it, which the module shadows.
+    std::fs::create_dir_all(mods.join("kit")).unwrap();
+    std::fs::write(mods.join("kit/main.lua"), "print('kit')\n").unwrap();
+    std::fs::write(mods.join("kit.lua"), "-- an older copy, kept by hand\n").unwrap();
+    let (r, error) = call(
+        &mut s,
+        "write_mod",
+        json!({ "id": "kit", "mods_dir": d, "files": { "lib.lua": "return 1\n" } }),
+    );
+    assert!(!error, "{r:#}");
+    assert!(mods.join("kit/lib.lua").is_file());
+    assert!(
+        mods.join("kit.lua").is_file(),
+        "a write of lib.lua leaves kit.lua alone"
+    );
+    assert!(!studio.0.join("trash").exists());
+    // `remove` beside an empty `files`: as `remove` alone.
+    let (r, error) = call(
+        &mut s,
+        "write_mod",
+        json!({ "id": "kit", "mods_dir": d, "files": {}, "remove": ["lib.lua"] }),
+    );
+    assert!(!error, "{r:#}");
+    assert_eq!(r["removed"], json!(["lib.lua"]));
+    assert!(!mods.join("kit/lib.lua").exists());
+    let (r, error) = call(&mut s, "write_mod", json!({ "id": "kit", "mods_dir": d, "files": {} }));
+    assert!(
+        error && r.as_str().unwrap_or("").contains("give 'files' to write"),
+        "{r}"
+    );
+    // check_mod still wants files to check, when it is given them.
+    let (r, error) = call(&mut s, "check_mod", json!({ "id": "kit", "mods_dir": d, "files": {} }));
+    assert!(error && r.as_str().unwrap_or("").contains("files is empty"), "{r}");
+}
