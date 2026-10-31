@@ -1437,8 +1437,9 @@ fn first_block(
     None
 }
 
-/// The Mouse's Hit, Target and UnitRay, worked out as a script reads them:
-/// where the pointer (or the crosshair) points, through the blocks.
+/// The Mouse's Hit, Target, UnitRay and Origin (the camera, looking along
+/// the ray), worked out as a script reads them: where the pointer (or the
+/// crosshair) points, through the blocks.
 pub fn mouse_refresh(env: &mut dyn Env) {
     let (free, px, py) = {
         let p = &env.rbx().pointer;
@@ -1465,6 +1466,7 @@ pub fn mouse_refresh(env: &mut dyn Env) {
     rbx.quiet_set(m, "Hit", cf(CFrame::from_position(hit)));
     rbx.quiet_set(m, "Target", target);
     rbx.quiet_set(m, "UnitRay", super::hstudio_rbx_values::wrap(Data::Ray(o, d)));
+    rbx.quiet_set(m, "Origin", cf(CFrame::look_at(o, o + d, Vector3::Y_AXIS)));
 }
 
 /// workspace:Raycast: through the world's blocks and the Workspace's parts;

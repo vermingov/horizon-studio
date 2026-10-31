@@ -2218,7 +2218,7 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
             env.rbx().inst(id).class.name
         )));
     };
-    if id == env.rbx().mouse && matches!(k.as_str(), "Hit" | "Target" | "UnitRay") {
+    if id == env.rbx().mouse && matches!(k.as_str(), "Hit" | "Target" | "UnitRay" | "Origin") {
         super::hstudio_rbx_draw::mouse_refresh(env);
     }
     if matches!(k.as_str(), "ViewportSize" | "ViewSizeX" | "ViewSizeY") {
@@ -2246,7 +2246,7 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
     if let Some(p) = find_prop(c, &k) {
         return one(inst.get(p.name));
     }
-    if let Some(v) = super::hstudio_rbx_world::alias(rbx, id, &k) {
+    if let Some(v) = super::hstudio_rbx_world::member(rbx, id, &k) {
         return one(v);
     }
     // Properties made of others.
@@ -2385,7 +2385,7 @@ fn newindex(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Result<(), Thro
             return rbx.set_parent(id, parent).map_err(|e| lua.rt_error(e));
         }
         "ClassName" => return Err(lua.rt_error("Unable to assign property ClassName. Property is read only")),
-        _ if super::hstudio_rbx_world::alias(rbx, id, &key).is_some() => {
+        _ if super::hstudio_rbx_world::member(rbx, id, &key).is_some() => {
             return Err(lua.rt_error(format!("Unable to assign property {key}. Property is read only")));
         }
         _ => {}

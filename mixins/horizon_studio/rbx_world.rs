@@ -243,14 +243,16 @@ pub fn take_teleport(rbx: &mut Rbx) -> Option<String> {
     Some(format!("/tp @s {:.3} {:.3} {:.3}", to.x, to.y, to.z))
 }
 
-/// Members Roblox and Horizon have under other names: game.LocalPlayer,
-/// Horizon's own shortcut for game.Players.LocalPlayer, and Roblox's older
-/// game.workspace and Players.localPlayer. They can't be set.
-pub fn alias(rbx: &Rbx, id: Id, key: &str) -> Option<Value> {
+/// Members that are read, not kept as properties: game.LocalPlayer,
+/// Horizon's own shortcut for game.Players.LocalPlayer, Roblox's older
+/// game.workspace and Players.localPlayer, and the Mouse's UnitRay and
+/// Origin, worked out as they are read. None of them can be set.
+pub fn member(rbx: &Rbx, id: Id, key: &str) -> Option<Value> {
     match key {
         "LocalPlayer" if id == rbx.game => Some(rbx.value(rbx.local_player)),
         "workspace" if id == rbx.game => Some(rbx.value(rbx.workspace)),
         "localPlayer" if id == rbx.players => Some(rbx.value(rbx.local_player)),
+        "UnitRay" | "Origin" if id == rbx.mouse => Some(rbx.raw_get(id, key)),
         _ => None,
     }
 }

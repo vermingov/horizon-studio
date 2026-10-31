@@ -27,9 +27,11 @@ fn load(game: &mut FakeGame, st: &mut Studio, id: &str, src: &str, seconds: f64)
     }
 }
 
-/// `v` printed with three decimals, as the scripts below print vectors.
+/// `v`, which the scripts below print vectors with: three decimals, and no
+/// sign on a zero.
 const FMT: &str = r#"
-    local function v(x) return string.format("%.3f %.3f %.3f", x.X, x.Y, x.Z) end
+    local function n(x) return (string.format("%.3f", x):gsub("^%-(0%.000)$", "%1")) end
+    local function v(x) return n(x.X) .. " " .. n(x.Y) .. " " .. n(x.Z) end
 "#;
 
 #[test]
@@ -447,4 +449,30 @@ fn humanoid_move_to_walks_only_you_and_says_when_it_is_done() {
     let p = printed(&st, "walker");
     assert_eq!(p[0], "npc false, me true, me true, me false");
     assert_eq!(p[1], "npc false, me true, me true, me false, me false");
+}
+
+#[test]
+fn the_mouse_has_its_unit_ray_and_origin() {
+    let mut game = FakeGame::new("rbxw-mouse");
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{FMT}{}",
+        r#"
+        local mouse = game.Players.LocalPlayer:GetMouse()
+        local ray = mouse.UnitRay
+        print(typeof(ray), v(ray.Origin), v(ray.Direction))
+        print(typeof(mouse.Origin), v(mouse.Origin.Position), v(mouse.Origin.LookVector))
+        print(pcall(function() mouse.UnitRay = ray end))
+    "#
+    );
+    load(&mut game, &mut st, "mouse", &src, 0.7);
+    let p = printed(&st, "mouse");
+    // From the camera at the eyes, through the crosshair: north (yaw 180).
+    assert_eq!(p[0], "Ray    10.500 65.620 -3.250    0.000 0.000 -1.000");
+    assert_eq!(p[1], "CFrame    10.500 65.620 -3.250    0.000 0.000 -1.000");
+    assert!(
+        p[2].starts_with("false") && p[2].contains("Property is read only"),
+        "{}",
+        p[2]
+    );
 }
