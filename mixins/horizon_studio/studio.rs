@@ -1,11 +1,13 @@
 // Horizon Studio: mods written in Lua inside the game. Script mods live in
-// `horizon-mods/.horizon-mod-data/horizon_studio/mods/`, one `name.lua` or a
-// `name/` folder with `main.lua`; the studio loads them, reloads one as soon
-// as a file of it changes on disk (from the in-game editor or any other), and
-// stops only that mod when it fails. The console runs a line of Lua at once,
-// in the running game, like a Lua executor. This module knows nothing of the
-// game itself: it reaches it through `GameApi`, which hstudio_bridge
-// implements over Horizon's `Game`, and the tests over a fake.
+// `horizon-mods/.horizon-mod-data/horizon_studio/mods/`: a script is one
+// file, `name.lua`, and a module is a `name/` folder whose main.lua loads its
+// other files with `require` (hstudio_modfiles has the rules). The studio
+// loads them, reloads one as soon as a file of it changes on disk (from the
+// in-game editor or any other), and stops only that mod when it fails. The
+// console runs a line of Lua at once, in the running game, like a Lua
+// executor. This module knows nothing of the game itself: it reaches it
+// through `GameApi`, which hstudio_bridge implements over Horizon's `Game`,
+// and the tests over a fake.
 
 use super::hstudio_examples::{EXAMPLES, WELCOME};
 use super::hstudio_lua::{
@@ -13,6 +15,7 @@ use super::hstudio_lua::{
     check_str, check_table, check_text, opt_num, opt_str,
 };
 use super::hstudio_lualib::{inspect, new_env, quote, text_of};
+use super::hstudio_modfiles::{lua_files, path_in, rel_in, require_path};
 use super::hstudio_ui::{Editor, ScriptScreen, Ui};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -603,7 +606,7 @@ pub struct ScriptMod {
     pub description: String,
     /// The file it starts from.
     pub main: PathBuf,
-    /// Its folder, for a folder mod (`require` reads other files there).
+    /// Its folder, for a module (`require` reads its other files there).
     pub folder: Option<PathBuf>,
     pub enabled: bool,
     pub state: ModState,
@@ -618,7 +621,12 @@ pub struct ScriptMod {
     pub main_fn: Option<Value>,
     pub panel: Option<(Corner, Vec<String>)>,
     pub zoom: Option<f32>,
+    /// What `require` returned for each of its files, by the file's path in
+    /// the module ("lib/util.lua"), however the name was written.
     pub modules: HashMap<String, Value>,
+    /// The files whose `require` is under way, outermost first: requiring
+    /// one of these again is a loop.
+    pub loading: Vec<String>,
     /// Agent replies to come, and the callbacks for them.
     pub pending: Vec<(Receiver<String>, Value)>,
     /// Callbacks with their results, for the next frame.
@@ -658,6 +666,7 @@ impl ScriptMod {
             panel: None,
             zoom: None,
             modules: HashMap::new(),
+            loading: Vec::new(),
             pending: Vec::new(),
             ready: Vec::new(),
             stamp: Vec::new(),
@@ -680,6 +689,7 @@ impl ScriptMod {
         self.panel = None;
         self.zoom = None;
         self.modules.clear();
+        self.loading.clear();
         self.pending.clear();
         self.ready.clear();
         self.models.clear();
@@ -694,6 +704,23 @@ impl ScriptMod {
             Some(_) => format!("{}/main.lua", self.id),
             None => format!("{}.lua", self.id),
         }
+    }
+    /// The chunk name of a module's file (`rel`, its path in the module), as
+    /// `require` loads it: `<id>/lib/util.lua`.
+    pub(crate) fn chunk_of(&self, rel: &str) -> String {
+        format!("{}/{rel}", self.id)
+    }
+    /// A module's `.lua` files by their paths in it, main.lua first, as the
+    /// last scan found them (nothing is read from disk); empty for a script.
+    pub fn files(&self) -> Vec<String> {
+        let Some(folder) = &self.folder else {
+            return Vec::new();
+        };
+        self.stamp.iter().filter_map(|(p, ..)| rel_in(folder, p)).collect()
+    }
+    /// How many files it has: a module's `.lua` files, or a script's one.
+    pub fn file_count(&self) -> usize {
+        if self.folder.is_some() { self.files().len() } else { 1 }
     }
 }
 
@@ -1056,40 +1083,21 @@ impl Studio {
         found
     }
 
-    /// Its files' sizes and times, to see when it changes.
+    /// Its files' sizes and times, to see when it changes: a script's file,
+    /// or every `.lua` file of a module (`lua_files`, main.lua first).
     fn stamp(main: &Path, folder: Option<&Path>) -> Vec<(PathBuf, Option<SystemTime>, u64)> {
-        let mut out = Vec::new();
-        let mut add = |p: &Path| {
-            let meta = std::fs::metadata(p).ok();
-            out.push((
-                p.to_path_buf(),
-                meta.as_ref().and_then(|m| m.modified().ok()),
-                meta.map_or(0, |m| m.len()),
-            ));
+        let paths = match folder {
+            None => vec![main.to_path_buf()],
+            Some(dir) => lua_files(dir).iter().map(|rel| path_in(dir, rel)).collect(),
         };
-        match folder {
-            None => add(main),
-            Some(dir) => {
-                let mut stack = vec![(dir.to_path_buf(), 0)];
-                let mut files = Vec::new();
-                while let Some((d, depth)) = stack.pop() {
-                    let Ok(entries) = std::fs::read_dir(&d) else { continue };
-                    for e in entries.flatten() {
-                        let p = e.path();
-                        if p.is_dir() && depth < 3 {
-                            stack.push((p, depth + 1));
-                        } else if p.extension().is_some_and(|x| x == "lua") {
-                            files.push(p);
-                        }
-                    }
-                }
-                files.sort();
-                for f in files {
-                    add(&f);
-                }
-            }
-        }
-        out
+        paths
+            .into_iter()
+            .map(|p| {
+                let meta = std::fs::metadata(&p).ok();
+                let time = meta.as_ref().and_then(|m| m.modified().ok());
+                (p, time, meta.map_or(0, |m| m.len()))
+            })
+            .collect()
     }
 
     /// Picks up new, changed and removed mods.
@@ -2449,7 +2457,10 @@ impl Studio {
         self.do_requests(game);
     }
 
-    /// Saves the editor's file; the scan then reloads its mod.
+    /// Saves the editor's file; the scan then reloads its mod. A syntax
+    /// error marks its line at once; otherwise a failure of the mod marks
+    /// the line of this file it failed at (for a module's file, where it
+    /// failed or the line that required the file that did).
     pub fn save_editor(&mut self, game: &mut dyn GameApi) {
         match self.s.editor.save() {
             Ok(path) => {
@@ -2462,6 +2473,9 @@ impl Studio {
                     Err(e) => error_line(&e),
                 };
                 self.scan(game);
+                if self.s.editor.error_line.is_none() {
+                    self.mark_failure();
+                }
             }
             Err(e) => self.s.log(LogKind::Error, format!("Could not save: {e}")),
         }
@@ -2475,14 +2489,55 @@ impl Studio {
     /// Opens mod `i`'s main file in the editor.
     pub fn edit_mod(&mut self, i: usize) {
         if let Some(m) = self.s.mods.get(i) {
-            let title = m.chunk();
             let path = m.main.clone();
-            self.s.editor.open(&path, &title);
-            self.s.editor.error_line = match &m.state {
-                ModState::Failed(msg, _) => error_line(msg),
-                _ => None,
+            self.open_file(&path);
+        }
+    }
+
+    /// The mod a file belongs to: a script's own file, or any file in a
+    /// module's folder.
+    pub fn mod_of_path(&self, path: &Path) -> Option<usize> {
+        self.s
+            .mods
+            .iter()
+            .position(|m| m.main == path || m.folder.as_deref().is_some_and(|f| path.starts_with(f)))
+    }
+
+    /// The editor's title for a file: the name its errors give it
+    /// (`<id>/lib/util.lua` for a module's file, `<id>.lua` for a script),
+    /// else its file name.
+    pub fn file_title(&self, path: &Path) -> String {
+        if let Some(m) = self.mod_of_path(path).map(|i| &self.s.mods[i]) {
+            return match m.folder.as_deref().and_then(|f| rel_in(f, path)) {
+                Some(rel) => m.chunk_of(&rel),
+                None => m.chunk(),
             };
         }
+        path.file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+    }
+
+    /// Opens a file in the editor, titled as its errors name it, with the
+    /// line its mod failed at marked when that is in this file.
+    pub fn open_file(&mut self, path: &Path) {
+        let title = self.file_title(path);
+        self.s.editor.open(path, &title);
+        self.mark_failure();
+    }
+
+    /// Marks the editor's error line from the failure of the mod its file
+    /// belongs to: the line of this file it failed at, if any.
+    fn mark_failure(&mut self) {
+        let ed = &self.s.editor;
+        let failed = ed
+            .path
+            .as_deref()
+            .and_then(|p| self.mod_of_path(p))
+            .and_then(|i| match &self.s.mods[i].state {
+                ModState::Failed(msg, trace) => error_line_in(msg, trace, &ed.title),
+                _ => None,
+            });
+        self.s.editor.error_line = failed;
     }
 }
 
@@ -2712,6 +2767,54 @@ pub fn error_line(msg: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
+/// Every `<file>.lua:<line>:` place in an error message, outermost first.
+/// A file `require` loaded that failed to compile reads
+/// "m/main.lua:2: m/lib.lua:3: ...": the require at main.lua's line 2,
+/// then the error at lib.lua's line 3. A place's file runs from the space
+/// before it (or the start).
+pub fn error_places(msg: &str) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(found) = msg[from..].find(".lua:") {
+        let dot = from + found;
+        let colon = dot + 4;
+        let start = msg[..dot]
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map_or(0, |(i, c)| i + c.len_utf8());
+        let digits: String = msg[colon + 1..].chars().take_while(char::is_ascii_digit).collect();
+        if start < dot
+            && !digits.is_empty()
+            && msg[colon + 1 + digits.len()..].starts_with(':')
+            && let Ok(line) = digits.parse()
+        {
+            out.push((msg[start..colon].to_owned(), line));
+        }
+        from = colon + 1;
+    }
+    out
+}
+
+/// The line of a failure in one file (`chunk`, as the editor titles it):
+/// the innermost place in the message that is in that file, else the
+/// first line of the traceback (innermost first) that is. With a module's
+/// main.lua open after lib.lua failed, that is the line that required lib.
+pub fn error_line_in(msg: &str, trace: &str, chunk: &str) -> Option<usize> {
+    if let Some((_, line)) = error_places(msg).into_iter().rev().find(|(c, _)| c == chunk) {
+        return Some(line);
+    }
+    trace.lines().find_map(|l| {
+        let rest = l.trim_start().strip_prefix(chunk)?.strip_prefix(':')?;
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if rest[digits.len()..].starts_with(':') {
+            digits.parse().ok()
+        } else {
+            None
+        }
+    })
+}
+
 /// An agent reply's JSON as script values: the table, or nil and the error.
 fn reply_values(text: &str) -> Vec<Value> {
     match serde_json::from_str::<serde_json::Value>(text) {
@@ -2784,16 +2887,6 @@ fn storage_key(lua: &Lua, args: &[Value]) -> Result<String, Throw> {
         return Err(lua.rt_error("storage keys are 1 to 64 letters, digits, '_', '-' or '.'"));
     }
     Ok(key)
-}
-
-/// A `require` name as a path in the mod's folder.
-fn module_path(name: &str) -> Option<String> {
-    if name.is_empty() || name.contains("..") || !name.chars().all(|c| c.is_ascii_alphanumeric() || "_-./".contains(c))
-    {
-        return None;
-    }
-    let rel = name.trim_end_matches(".lua").replace('.', "/");
-    Some(format!("{rel}.lua"))
 }
 
 pub fn color_arg(lua: &Lua, args: &[Value], i: usize, default: u32) -> Result<u32, Throw> {
@@ -3385,6 +3478,10 @@ pub const CONSOLE_API: &[(&str, u32, &str)] = &[
     ("new", 205, "new(name): make a new mod from the template and open it"),
 ];
 
+/// What `require` of a file says outside a module.
+const NOT_A_MODULE: &str =
+    "require works in modules (a folder with main.lua): a one-file script can't load other files";
+
 /// A running script's view of the studio and the game.
 pub(crate) struct Ctx<'a> {
     pub(crate) game: &'a mut dyn GameApi,
@@ -3475,6 +3572,55 @@ impl Ctx<'_> {
             _ => return Err(lua.rt_error("require: the module must return exactly one value")),
         };
         self.s.rbx.loaded_modules.push((m, v.clone()));
+        Ok(vec![v])
+    }
+    /// `require` of a file of the running module: `rel` is its path in the
+    /// module, `name` the name as the script wrote it (the file's `...`).
+    /// The file runs once, in the mod's globals, and what it returns is kept
+    /// for every later `require` of it, however that is spelt. A file that
+    /// requires one still loading is a loop, which is an error naming the
+    /// files.
+    fn require_file(&mut self, lua: &mut Lua, rel: &str, name: &str) -> Res {
+        if let Some(v) = self.me().modules.get(rel) {
+            return Ok(vec![v.clone()]);
+        }
+        let Some(folder) = self.me().folder.clone() else {
+            return Err(lua.rt_error(NOT_A_MODULE));
+        };
+        if rel == "main.lua" {
+            return Err(lua.rt_error(
+                "require: main.lua starts the module and runs once by itself; move what the other files need from it into a file they require",
+            ));
+        }
+        if self.me().loading.iter().any(|l| l == rel) {
+            let chain: Vec<String> = std::iter::once("main.lua".to_owned())
+                .chain(self.me().loading.iter().cloned())
+                .chain(std::iter::once(rel.to_owned()))
+                .collect();
+            return Err(lua.rt_error(format!(
+                "require: '{name}' is already loading ({}): two files can't require each other while they load; move what both need to a third file, or require it inside a function",
+                chain.join(" -> ")
+            )));
+        }
+        let Ok(src) = std::fs::read(path_in(&folder, rel)) else {
+            let files = self.me().files().join(", ");
+            return Err(lua.rt_error(format!("module '{name}' not found ({rel}; the module has {files})")));
+        };
+        let env = self
+            .me()
+            .env
+            .clone()
+            .ok_or_else(|| lua.rt_error("require: the mod is not running"))?;
+        let chunk = format!("{}/{rel}", self.s.owner_name(self.owner));
+        let f = lua.load_bytes(&src, &chunk, &env).map_err(|e| lua.rt_error(e))?;
+        self.me().loading.push(rel.to_owned());
+        let r = lua.call(self, &f, vec![Value::str(name)]);
+        self.me().loading.pop();
+        let v = match r?.into_iter().next() {
+            Some(v) if !v.is_nil() => v,
+            _ => Value::Bool(true),
+        };
+        self.me().modules.insert(rel.to_owned(), v.clone());
         Ok(vec![v])
     }
     fn storage_dir(&self) -> PathBuf {
@@ -4620,30 +4766,15 @@ impl Host for Ctx<'_> {
                     return self.require_module(lua, m);
                 }
                 let name = check_text(lua, &args, 0, "require")?;
-                if let Some(v) = self.me().modules.get(&name) {
-                    return Ok(vec![v.clone()]);
+                if self.me().folder.is_none() {
+                    return Err(lua.rt_error(NOT_A_MODULE));
                 }
-                let Some(folder) = self.me().folder.clone() else {
-                    return Err(lua.rt_error("require works in folder mods (a folder with main.lua)"));
-                };
-                let rel = module_path(&name).ok_or_else(|| lua.rt_error(format!("bad module name '{name}'")))?;
-                let path = folder.join(&rel);
-                let src =
-                    std::fs::read(&path).map_err(|_| lua.rt_error(format!("module '{name}' not found ({rel})")))?;
-                let env = self
-                    .me()
-                    .env
-                    .clone()
-                    .ok_or_else(|| lua.rt_error("require: the mod is not running"))?;
-                let chunk = format!("{}/{rel}", self.s.owner_name(self.owner));
-                let f = lua.load_bytes(&src, &chunk, &env).map_err(|e| lua.rt_error(e))?;
-                let r = lua.call(self, &f, vec![Value::str(&name)])?;
-                let v = match r.into_iter().next() {
-                    Some(v) if !v.is_nil() => v,
-                    _ => Value::Bool(true),
-                };
-                self.me().modules.insert(name, v.clone());
-                Ok(vec![v])
+                let rel = require_path(&name).ok_or_else(|| {
+                    lua.rt_error(format!(
+                        "bad module name '{name}': name a file of the module, as \"lib\" or \"lib.util\""
+                    ))
+                })?;
+                self.require_file(lua, &rel, &name)
             }
             7 => {
                 let c = |i: usize, d: f64| opt_num(lua, &args, i, "color", d).map(|v| v.clamp(0.0, 255.0) as u32);

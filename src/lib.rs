@@ -30,6 +30,8 @@ pub mod game {
     pub mod hstudio_meshes;
     #[path = "../../mixins/horizon_studio/models.rs"]
     pub mod hstudio_models;
+    #[path = "../../mixins/horizon_studio/modfiles.rs"]
+    pub mod hstudio_modfiles;
     #[path = "../../mixins/horizon_studio/net.rs"]
     pub mod hstudio_net;
     #[path = "../../mixins/horizon_studio/rbx.rs"]

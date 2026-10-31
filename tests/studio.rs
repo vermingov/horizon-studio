@@ -466,7 +466,219 @@ fn folder_mods_require_their_files() {
     run_for(&mut st, &mut game, 0.6);
     assert!(log(&st).contains(&"[big_mod] 420    true".to_owned()), "{:?}", log(&st));
     let out = console(&mut st, &mut game, "require('x')");
-    assert!(out[0].contains("require works in folder mods"), "{out:?}");
+    assert!(out[0].contains("require works in modules"), "{out:?}");
+}
+
+/// A module of `files` (path in it, text) in the mods folder.
+fn write_module(game: &FakeGame, id: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = game.mods_dir().join(id);
+    for (rel, text) in files {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    dir
+}
+
+fn failure(st: &Studio, id: &str) -> (String, String) {
+    match &st.s.mods[mod_index(st, id)].state {
+        ModState::Failed(msg, trace) => (msg.clone(), trace.clone()),
+        other => panic!("{id} is {other:?}, not failed"),
+    }
+}
+
+#[test]
+fn require_runs_a_file_once_whatever_the_spelling() {
+    let mut game = FakeGame::new("require-once");
+    let mut st = studio(&mut game);
+    write_module(
+        &game,
+        "spell",
+        &[
+            (
+                "main.lua",
+                "local a = require('lib.util')\nlocal b = require('lib/util')\nlocal c = require('lib/util.lua')\nprint(a == b, b == c, a.n, a.name)\n",
+            ),
+            ("lib/util.lua", "print('util runs')\nreturn { n = 7, name = ... }\n"),
+        ],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let lines = log(&st);
+    assert!(st.s.mods[mod_index(&st, "spell")].running(), "{lines:?}");
+    assert_eq!(
+        lines.iter().filter(|l| *l == "[spell] util runs").count(),
+        1,
+        "{lines:?}"
+    );
+    // `...` is the name as the first require wrote it.
+    assert!(
+        lines.contains(&"[spell] true    true    7    lib.util".to_owned()),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn requires_that_loop_say_which_files() {
+    let mut game = FakeGame::new("require-loop");
+    let mut st = studio(&mut game);
+    write_module(
+        &game,
+        "looped",
+        &[
+            ("main.lua", "require('a')\n"),
+            ("a.lua", "require('b')\nreturn {}\n"),
+            ("b.lua", "require('a')\nreturn {}\n"),
+        ],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let (msg, _) = failure(&st, "looped");
+    assert!(msg.contains("'a' is already loading"), "{msg}");
+    assert!(msg.contains("main.lua -> a.lua -> b.lua -> a.lua"), "{msg}");
+    assert!(!msg.contains("stack overflow"), "{msg}");
+    // main.lua runs once, by itself.
+    write_module(&game, "selfish", &[("main.lua", "require('main')\n")]);
+    run_for(&mut st, &mut game, 0.6);
+    assert!(failure(&st, "selfish").0.contains("main.lua starts the module"));
+}
+
+#[test]
+fn require_stays_inside_the_module() {
+    let mut game = FakeGame::new("require-sandbox");
+    let mut st = studio(&mut game);
+    let outside = game.dir.join("outside.lua");
+    std::fs::write(&outside, "print('escaped')\nreturn 1\n").unwrap();
+    let absolute = outside.to_string_lossy().trim_end_matches(".lua").to_owned();
+    write_module(&game, "abs", &[("main.lua", &format!("require([[{absolute}]])\n"))]);
+    write_module(&game, "dots", &[("main.lua", "require('.x')\n")]);
+    write_module(&game, "up", &[("main.lua", "require('../outside')\n")]);
+    run_for(&mut st, &mut game, 0.6);
+    for id in ["abs", "dots", "up"] {
+        let (msg, _) = failure(&st, id);
+        assert!(msg.contains("bad module name"), "{id}: {msg}");
+    }
+    assert!(!log(&st).iter().any(|l| l.contains("escaped")), "{:?}", log(&st));
+    // A missing file names the ones the module has.
+    write_module(
+        &game,
+        "lost",
+        &[("main.lua", "require('nope')\n"), ("util.lua", "return 1\n")],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let (msg, _) = failure(&st, "lost");
+    assert!(
+        msg.contains("module 'nope' not found (nope.lua; the module has main.lua, util.lua)"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn error_lines_belong_to_their_files() {
+    use horizon_studio::game::hstudio::{error_line_in, error_places};
+    let msg = "m/main.lua:2: m/lib.lua:3: unexpected symbol near 'x'";
+    assert_eq!(
+        error_places(msg),
+        [("m/main.lua".to_owned(), 2), ("m/lib.lua".to_owned(), 3)]
+    );
+    assert_eq!(error_line_in(msg, "", "m/lib.lua"), Some(3));
+    assert_eq!(error_line_in(msg, "", "m/main.lua"), Some(2));
+    assert_eq!(error_places("tick: m/lib.lua:7: y"), [("m/lib.lua".to_owned(), 7)]);
+    assert_eq!(error_line_in("tick: m/lib.lua:7: y", "", "m/lib.lua"), Some(7));
+    assert_eq!(error_line_in("tick: m/lib.lua:7: y", "", "m/main.lua"), None);
+    // The traceback, innermost first, gives the line in a file the message doesn't name.
+    let trace = "m/lib.lua:7: in f\nm/main.lua:12: in main chunk";
+    assert_eq!(error_line_in("tick: m/lib.lua:7: y", trace, "m/main.lua"), Some(12));
+    assert_eq!(error_line_in("tick: m/lib.lua:7: y", trace, "m/other.lua"), None);
+    assert!(error_places("no place here: lua 5").is_empty());
+}
+
+#[test]
+fn a_modules_files_are_listed_main_first() {
+    let mut game = FakeGame::new("module-files");
+    let mut st = studio(&mut game);
+    let dir = write_module(
+        &game,
+        "tree",
+        &[
+            ("shared.lua", "return {}\n"),
+            ("lib/util.lua", "return {}\n"),
+            ("main.lua", "print('tree')\n"),
+            ("lib.lua", "return {}\n"),
+            (".hidden.lua", "return {}\n"),
+            (".git/x.lua", "return {}\n"),
+            ("notes.txt", "not code\n"),
+        ],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let i = mod_index(&st, "tree");
+    assert_eq!(
+        st.s.mods[i].files(),
+        ["main.lua", "lib.lua", "lib/util.lua", "shared.lua"]
+    );
+    assert_eq!(st.s.mods[i].file_count(), 4);
+    assert!(
+        st.s.mods[mod_index(&st, "hello")].files().is_empty(),
+        "a script has none"
+    );
+    std::fs::write(dir.join("extra.lua"), "return {}\n").unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    assert_eq!(st.s.mods[i].files()[1], "extra.lua");
+}
+
+#[test]
+fn saving_any_file_of_a_module_reloads_it_and_marks_that_files_line() {
+    let mut game = FakeGame::new("module-save");
+    let mut st = studio(&mut game);
+    let dir = write_module(
+        &game,
+        "pair",
+        &[
+            (
+                "main.lua",
+                "-- name: Pair\nlocal lib = require('lib')\ncommand('pair', function() return lib.say() end)\n",
+            ),
+            (
+                "lib.lua",
+                "local lib = {}\nfunction lib.say() return 'one' end\nreturn lib\n",
+            ),
+        ],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let i = mod_index(&st, "pair");
+    assert!(st.s.mods[i].running(), "{:?}", st.s.mods[i].state);
+    st.open_file(&dir.join("lib.lua"));
+    assert_eq!(st.s.editor.title, "pair/lib.lua");
+    let reloads = st.s.mods[i].reloads;
+    st.s.editor
+        .set_text("local lib = {}\nfunction lib.say() return 'two, and longer' end\nreturn lib\n");
+    st.s.editor.dirty = true;
+    st.save_editor(&mut game);
+    assert_eq!(st.s.mods[i].reloads, reloads + 1);
+    assert!(
+        log(&st).iter().any(|l| l.starts_with("Reloaded pair")),
+        "{:?}",
+        log(&st)
+    );
+    st.command("pair");
+    st.frame(&mut game, 0.016);
+    assert_eq!(game.chats.last().map(String::as_str), Some("two, and longer"));
+    // A runtime error on lib.lua's line 3 marks that line there...
+    st.s.editor
+        .set_text("local lib = {}\nfunction lib.say() return 'x' end\nerror('broken lib')\nreturn lib\n");
+    st.s.editor.dirty = true;
+    st.save_editor(&mut game);
+    assert!(failure(&st, "pair").0.contains("pair/lib.lua:3: broken lib"));
+    assert_eq!(st.s.editor.error_line, Some(3));
+    // ...and in main.lua, the line that required it.
+    st.open_file(&dir.join("main.lua"));
+    assert_eq!(st.s.editor.title, "pair/main.lua");
+    assert_eq!(st.s.editor.error_line, Some(2));
+    // A syntax error in lib.lua: its own line there, the require in main.lua.
+    std::fs::write(dir.join("lib.lua"), "local lib = {}\n\nlocal = 1\nreturn lib\n").unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    st.edit_mod(i);
+    assert_eq!(st.s.editor.error_line, Some(2));
+    st.open_file(&dir.join("lib.lua"));
+    assert_eq!(st.s.editor.error_line, Some(3));
 }
 
 #[test]

@@ -531,7 +531,7 @@ Comment lines at the top of the main file name the mod in the Library. Blank lin
 
 1. **Load.** The main file runs once, top to bottom, with a budget of 10,000,000 steps. This is where a mod registers what it does: `on(event, fn)`, `command(name, fn)`, `after` and `every`, `hud.panel`, `model.attach`, `export`. A main file that returns a table exports it, unless it called `export`.
 2. **Running.** The game then calls what the mod registered, each call with a budget of 2,000,000 steps: ticks (20 a second in a world), frames, the HUD, the world as it draws, keys, chat lines, commands, timers, agent replies, screen callbacks.
-3. **Hot reload.** Every 0.5 s the studio looks at the mods folder. When a mod's files change (the size or modification time of a single-file mod, or of any `.lua` file up to 3 folders deep in a folder mod), it reloads that mod: its `unload` handlers run, everything it registered is dropped (handlers, commands, timers, its HUD panel and zoom, its models, its screen, its `require`d modules), and its main file runs again in a fresh environment. Then the mods that `import` it reload too. New mods load; mods whose files are deleted unload. Saving in the in-game Editor, in any editor, or with the MCP tool `write_mod` all work the same way.
+3. **Hot reload.** Every 0.5 s the studio looks at the mods folder. When a mod's files change (the size or modification time of a single-file mod, or of any `.lua` file up to 3 folders deep in a folder mod, names that start with `.` left out), it reloads that mod: its `unload` handlers run, everything it registered is dropped (handlers, commands, timers, its HUD panel and zoom, its models, its screen, its `require`d modules), and its main file runs again in a fresh environment. Then the mods that `import` it reload too. New mods load; mods whose files are deleted unload. Saving in the in-game Editor, in any editor, or with the MCP tool `write_mod` all work the same way.
 4. **Unload.** `on("unload", fn)` runs before a reload, when the mod is turned off in the Library, and when its file is deleted. It does not run when the mod fails.
 
 Each mod has its own global environment (`_G`), with the standard library and the API in it. A mod's globals are invisible to other mods and to the console: share values with `export` and `import`, or `emit` events.
@@ -1209,7 +1209,7 @@ end)
 
 ## require: files of a folder mod
 
-A folder mod (`<id>/main.lua`) loads its other files with `require("lib.util")` (`lib/util.lua`): the file runs in the mod's own globals with the module name as `...`, and its first result (or `true`) is kept, so the next `require` of the same name returns it without running the file again. Any change to a `.lua` file of the folder reloads the whole mod.
+A folder mod (`<id>/main.lua`) loads its other files with `require("lib.util")` (`lib/util.lua`): the file runs in the mod's own globals with the module name as `...`, and its first result (or `true`) is kept, so every later `require` of that file returns it without running the file again, however the name is written. Any change to a `.lua` file of the folder reloads the whole mod.
 
 ## The bundled uikit library
 
@@ -1960,8 +1960,10 @@ Errors have the form `<file>:<line>: <message>`; in a handler the event's name c
 | `'x' exports nothing: it needs export(...) or to return a table` | the library neither called `export` nor returned a table | add `export({...})` or `return M` |
 | `library 'x' failed: ...` / `library 'x' is turned off` | the library is broken or off | fix or turn on the library; this mod reloads with it |
 | `library 'x' isn't loaded yet (do they import each other?)` | an import cycle, or an import the load-order scan missed | break the cycle; use `import("x")` with a literal id |
-| `require works in folder mods (a folder with main.lua)` | `require` in a single-file mod | make the mod a folder with `main.lua` |
-| `module 'lib.x' not found (lib/x.lua)` / `bad module name '../x'` | no such file in the mod's folder / `..` or other characters | the path inside the folder, with `.` or `/` |
+| `require works in modules (a folder with main.lua): a one-file script can't load other files` | `require` of a file in a one-file script, or in the console | make the mod a module: a folder with `main.lua` |
+| `module 'lib.x' not found (lib/x.lua; the module has main.lua, util.lua)` / `bad module name '../x': ...` | no such file in the module / a name with `..`, a leading `/` or `.`, or other characters | a file of the module, with `.` or `/` between folders |
+| `require: 'lib' is already loading (main.lua -> lib.lua -> shared.lua -> lib.lua): ...` | two files require each other while they load | move what both need to a third file, or `require` inside a function that runs later |
+| `require: main.lua starts the module and runs once by itself; ...` | a file requires `main` | move what the other files need from main.lua into a file they require |
 | `storage keys are 1 to 64 letters, digits, '_', '-' or '.'` | a key with spaces or symbols | use a simple key |
 | `functions cannot be stored` / `value too large to store` / `tables nested too deep to store (or a cycle)` | storing what storage cannot keep | store plain data |
 | `this mod stores too many keys (256)` | over 256 keys | keep one table under one key |
@@ -2122,14 +2124,14 @@ after(5, function() cancel(blink) end)
         r##"
 `require(name)`
 
-Loads another file of a folder mod (`<id>/main.lua` and its other files) and returns its result. The file runs in the mod's own globals with `name` as its `...`; its first result is kept (`true` when it returns nothing), and the next `require` of the same name returns the kept value without running the file again. The cache key is the name as written: `require("lib.util")` and `require("lib/util")` load the same file twice.
+Loads another file of a module (a folder `<id>/` that starts at `main.lua`) and returns its result. The file runs once, in the mod's own globals, with `name` as its `...`; its first result is kept (`true` when it returns nothing), and every later `require` of that file returns the kept value without running it again, however the name is written: `require("lib.util")`, `require("lib/util")` and `require("lib/util.lua")` are the same file and give the same value.
 
-- `name` (string): a path inside the mod's folder, with `.` or `/` between folders, without or with `.lua`: `"util"` is `util.lua`, `"lib.util"` and `"lib/util"` are `lib/util.lua`. Letters, digits, `_`, `-`, `.` and `/`; no `..`.
-- Returns: the module's value.
-- Where: anywhere in a folder mod (usually at load).
-- Errors: `require works in folder mods (a folder with main.lua)`; `bad module name '../x'`; `module 'lib.x' not found (lib/x.lua)`; the file's own syntax or runtime errors (`mymod/lib/util.lua:3: ...`).
+- `name` (string): a file of the module, with `.` or `/` between folders, without or with `.lua`: `"util"` is `util.lua`, `"lib.util"` and `"lib/util"` are `lib/util.lua`. Each part is letters, digits, `_` and `-`, at most three folders deep, so a name never reaches outside the module's folder.
+- Returns: the file's value.
+- Where: anywhere in a module (usually at the top of a file). A required file's top level runs inside the `require` call, so it can't wait (`task.wait`).
+- Errors: `require works in modules (a folder with main.lua): a one-file script can't load other files`; `bad module name '../x': name a file of the module, as "lib" or "lib.util"`; `module 'lib.x' not found (lib/x.lua; the module has main.lua, shared.lua)`; `require: 'lib' is already loading (main.lua -> lib.lua -> shared.lua -> lib.lua): ...` when two files require each other while they load; `require: main.lua starts the module and runs once by itself; ...`; the file's own syntax or runtime errors (`mymod/lib/util.lua:3: ...`).
 
-A change to any `.lua` file of the folder reloads the whole mod. For code shared between mods, use a library (`export`/`import`).
+A change to any `.lua` file of the module reloads the whole module. For code shared between mods, use a library (`export`/`import`).
 
 ```lua
 -- mymod/main.lua
