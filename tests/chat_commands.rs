@@ -792,3 +792,37 @@ fn studio_help_lists_the_commands() {
     st.frame(&mut game, 0.016);
     assert!(game.chats.last().unwrap().contains("/studio help"), "{:?}", game.chats);
 }
+
+#[test]
+fn the_waypoints_example_completes_its_actions_and_names() {
+    let waypoints = horizon_studio::game::hstudio_examples::EXAMPLES
+        .iter()
+        .find(|e| e.id == "waypoints")
+        .unwrap();
+    let mut game = FakeGame::new("chat-waypoints");
+    let mut st = studio(&mut game);
+    game.write_mod("waypoints.lua", waypoints.source);
+    run_for(&mut st, &mut game, 0.6);
+    let c = &st.s.mods[mod_index(&st, "waypoints")].commands[0];
+    assert_eq!(c.usage_line(), "[<action>] [<name>]");
+    assert!(c.help.starts_with("Waypoints: /wp add <name>"));
+    assert_eq!(
+        texts(&mut st, &mut game, "/wp "),
+        [
+            "add (Adds one where you stand)",
+            "clear (Removes every waypoint)",
+            "remove (Removes one)"
+        ]
+    );
+    for line in ["wp add home", "wp add the base"] {
+        assert!(st.command(line));
+        st.frame(&mut game, 0.016);
+    }
+    assert_eq!(texts(&mut st, &mut game, "/wp remove "), ["home", "the base"]);
+    assert_eq!(texts(&mut st, &mut game, "/wp remove th"), ["the base"]);
+    assert!(texts(&mut st, &mut game, "/wp add ").is_empty(), "a new name is typed");
+    // Its function still gets the words as typed.
+    assert!(st.command("wp remove the base"));
+    st.frame(&mut game, 0.016);
+    assert_eq!(game.chats.last().map(String::as_str), Some("Waypoint the base removed"));
+}

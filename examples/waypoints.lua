@@ -77,4 +77,19 @@ command("wp", function(args, words)
     return "Waypoints cleared"
   end
   return "Usage: /wp, /wp add <name>, /wp remove <name>, /wp clear"
-end, "Waypoints: /wp add <name>, /wp remove <name>, /wp clear, /wp for a menu")
+end, {
+  description = "Waypoints: /wp add <name>, /wp remove <name>, /wp clear, /wp for a menu",
+  -- The chat shows /wp [<action>] [<name>] and completes both.
+  args = {
+    { name = "action", optional = true, options = {
+      { text = "add", tooltip = "Adds one where you stand" },
+      { text = "remove", tooltip = "Removes one" },
+      { text = "clear", tooltip = "Removes every waypoint" },
+    } },
+    { name = "name", kind = "text", optional = true, suggest = function(rest, words)
+      -- After remove, the waypoints there are; after add, a new name.
+      if words[1] == "remove" then return names() end
+      return {}
+    end },
+  },
+})
