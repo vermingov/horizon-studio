@@ -1227,6 +1227,9 @@ pub struct Inst {
     /// The GUI epoch its layout's outputs (AbsoluteSize, TextBounds...) were
     /// worked out at; 0 before they ever were.
     pub laid_out: u64,
+    /// The GUI epoch a read beside it worked out where it is at (its
+    /// AbsolutePosition, AbsoluteSize and AbsoluteRotation, not its text).
+    pub placed_at: u64,
 }
 
 impl Inst {
@@ -1363,9 +1366,10 @@ pub struct Rbx {
     pub workspace_dir: std::path::PathBuf,
     pub screen_images: super::hstudio_sunc::ImageCache,
     /// Counts the changes that move the GUI's layout (a GUI instance's
-    /// property, any Parent, the screen's size, the TextBox focus), so that
-    /// a read of AbsoluteSize, TextBounds and the like lays out again only
-    /// when one came since its value was worked out.
+    /// property, the Parent of what holds one, the screen's size, the
+    /// TextBox focus), so that a read of AbsoluteSize, TextBounds and the
+    /// like lays out again only when one came since its value was worked
+    /// out.
     pub gui_epoch: u64,
     /// The screen size in dp the GUI was last laid out for.
     pub gui_view: (f32, f32),
@@ -1617,6 +1621,7 @@ impl Rbx {
                 revealed: HashSet::new(),
                 gui: is_a(c, "GuiBase2d") || is_a(c, "UIComponent"),
                 laid_out: 0,
+                placed_at: 0,
             },
         );
         id
@@ -1688,10 +1693,19 @@ impl Rbx {
     /// ValueBase's Changed is for its Value only, with the value).
     pub fn changed(&mut self, id: Id, name: &str, v: &Value) {
         // Every change the layout can see goes through here (properties,
-        // Parent, Name), except the layout's own outputs. Any Parent counts:
-        // a Folder of GuiObjects moves them too.
+        // Parent, Name), except the layout's own outputs and what only the
+        // drawing reads. A Parent counts when a GUI instance is in what
+        // moved: a Folder of GuiObjects moves them, and a part a
+        // BillboardGui is in moves it.
         let gui = self.insts.get(&id).is_some_and(|i| i.gui);
-        if name == "Parent" || gui && !super::hstudio_rbx_draw::OUTPUTS.contains(&name) {
+        let moves = match name {
+            "Parent" => self.holds_gui(id),
+            _ => {
+                gui && !super::hstudio_rbx_draw::OUTPUTS.contains(&name)
+                    && !super::hstudio_rbx_draw::DRAWN.contains(&name)
+            }
+        };
+        if moves {
             self.gui_epoch += 1;
         }
         let value_base = self.insts.get(&id).is_some_and(|i| is_a(i.class, "ValueBase"));
@@ -1732,6 +1746,19 @@ impl Rbx {
             stack.extend(self.children(n).iter().rev().copied());
         }
         out
+    }
+
+    /// Whether `id` or something under it is a GUI instance.
+    pub fn holds_gui(&self, id: Id) -> bool {
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            let Some(inst) = self.insts.get(&n) else { continue };
+            if inst.gui {
+                return true;
+            }
+            stack.extend(inst.children.iter().copied());
+        }
+        false
     }
 
     pub fn is_descendant_of(&self, id: Id, ancestor: Id) -> bool {
@@ -2478,7 +2505,7 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
     // when the GUI changed since; the nodes laid out count as steps.
     if super::hstudio_rbx_draw::OUTPUTS.contains(&k.as_str()) && find_prop(env.rbx().inst(id).class, &k).is_some() {
         let (rbx, game) = env.rbx_and_game();
-        let nodes = super::hstudio_rbx_draw::fresh_layout(rbx, game, id);
+        let nodes = super::hstudio_rbx_draw::fresh_output(rbx, game, id, &k);
         lua.charge(nodes * 16)?;
     }
     let rbx = env.rbx();

@@ -646,6 +646,49 @@ pub const OUTPUTS: &[&str] = &[
     "AbsoluteCellCount",
 ];
 
+/// The outputs of where an object is. A read in a list works them out for
+/// the list's other items too, and they stay fresh until the GUI moves.
+pub const PLACE: &[&str] = &["AbsolutePosition", "AbsoluteSize", "AbsoluteRotation"];
+
+/// Properties only the drawing reads: colours, transparencies, images and
+/// a TextBox's caret. A change to one doesn't move the layout either.
+pub const DRAWN: &[&str] = &[
+    "BackgroundColor3",
+    "BackgroundTransparency",
+    "BorderColor3",
+    "BorderSizePixel",
+    "Transparency",
+    "Color",
+    "Offset",
+    "TextColor3",
+    "TextTransparency",
+    "TextStrokeColor3",
+    "TextStrokeTransparency",
+    "PlaceholderColor3",
+    "Image",
+    "ImageColor3",
+    "ImageTransparency",
+    "HoverImage",
+    "PressedImage",
+    "ImageRectOffset",
+    "ImageRectSize",
+    "ScaleType",
+    "SliceCenter",
+    "SliceScale",
+    "TileSize",
+    "ResampleMode",
+    "ScrollBarImageColor3",
+    "ScrollBarImageTransparency",
+    "TopImage",
+    "MidImage",
+    "BottomImage",
+    "GroupColor3",
+    "GroupTransparency",
+    "AutoButtonColor",
+    "CursorPosition",
+    "SelectionStart",
+];
+
 /// The screen's size in dp; a new size moves the GUI's layout.
 fn see_view(rbx: &mut Rbx, game: &mut dyn GameApi) -> (f32, f32) {
     let (w, h, _) = game.dp();
@@ -661,11 +704,7 @@ fn see_view(rbx: &mut Rbx, game: &mut dyn GameApi) -> (f32, f32) {
 /// BillboardGui's top left corner inside it, the screen's elsewhere.
 fn outputs(rbx: &Rbx, p: &layout::Placed, id: Id, origin: Vector2, writes: &mut Vec<(Id, &'static str, Value, bool)>) {
     let c = rbx.inst(id).class;
-    if is_a(c, "GuiBase2d") {
-        writes.push((id, "AbsolutePosition", v2(p.position - origin), true));
-        writes.push((id, "AbsoluteSize", v2(p.size), true));
-        writes.push((id, "AbsoluteRotation", Value::Num(p.rotation), false));
-    }
+    place_outputs(rbx, p, id, origin, writes);
     if let Some(t) = &p.text {
         writes.push((id, "TextBounds", v2(t.bounds), true));
         writes.push((id, "TextFits", Value::Bool(t.fits), false));
@@ -686,6 +725,21 @@ fn outputs(rbx: &Rbx, p: &layout::Placed, id: Id, origin: Vector2, writes: &mut 
     }
 }
 
+/// The outputs of where a laid-out instance is (`PLACE`), as `outputs`.
+fn place_outputs(
+    rbx: &Rbx,
+    p: &layout::Placed,
+    id: Id,
+    origin: Vector2,
+    writes: &mut Vec<(Id, &'static str, Value, bool)>,
+) {
+    if is_a(rbx.inst(id).class, "GuiBase2d") {
+        writes.push((id, "AbsolutePosition", v2(p.position - origin), true));
+        writes.push((id, "AbsoluteSize", v2(p.size), true));
+        writes.push((id, "AbsoluteRotation", Value::Num(p.rotation), false));
+    }
+}
+
 fn write_outputs(rbx: &mut Rbx, writes: Vec<(Id, &'static str, Value, bool)>) {
     for (id, k, v, loud) in writes {
         if loud {
@@ -700,9 +754,9 @@ fn write_outputs(rbx: &mut Rbx, writes: Vec<(Id, &'static str, Value, bool)>) {
 /// before a script reads one, as Roblox works them out when they are read:
 /// when the GUI moved since they were last worked out, its ScreenGui is
 /// laid out again, though only as far as `id` needs (the way down to it,
-/// and the sizes of what a layout on the way arranges). Returns the nodes
-/// laid out, none when its values were fresh or it isn't in a ScreenGui
-/// that draws.
+/// and the sizes of what a layout on the way arranges, whose places it
+/// writes too). Returns the nodes laid out, none when its values were
+/// fresh or it isn't in a ScreenGui that draws.
 pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
     if !rbx.try_inst(id).is_some_and(|i| i.gui) {
         return 0;
@@ -752,6 +806,7 @@ pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
     };
     let mut writes = Vec::new();
     let mut fresh = Vec::new();
+    let mut placed = Vec::new();
     let origin = tree
         .roots()
         .first()
@@ -762,6 +817,15 @@ pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
             if let Some(p) = lay.get(n) {
                 outputs(rbx, p, i, origin, &mut writes);
             }
+        } else if tree[n].size_only
+            && tree[n].class.is_gui_object()
+            && let Some(p) = lay.get(n)
+        {
+            // Beside the way, where the way's object put it (the items of
+            // its layout, say): its place is the whole layout's, its text
+            // and what it holds aren't laid out.
+            placed.push(i);
+            place_outputs(rbx, p, i, origin, &mut writes);
         }
     }
     write_outputs(rbx, writes);
@@ -769,9 +833,25 @@ pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
     for i in fresh {
         rbx.inst_mut(i).laid_out = epoch;
     }
+    for i in placed {
+        rbx.inst_mut(i).placed_at = epoch;
+    }
     rbx.fresh_layouts += 1;
     rbx.fresh_nodes += node_inst.len() as u64;
     node_inst.len()
+}
+
+/// `fresh_layout` for a read of `key`, one of `id`'s outputs: where an
+/// object is, when a read beside it worked that out since the GUI last
+/// moved, is fresh already.
+pub fn fresh_output(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id, key: &str) -> usize {
+    if PLACE.contains(&key) && rbx.try_inst(id).is_some_and(|i| i.gui) {
+        see_view(rbx, game);
+        if rbx.inst(id).placed_at == rbx.gui_epoch {
+            return 0;
+        }
+    }
+    fresh_layout(rbx, game, id)
 }
 
 /// The instances from the ScreenGui that draws `id` down to it, if one does.
@@ -865,12 +945,13 @@ impl Partial<'_> {
                 continue;
             }
             if !cc.is_gui_object() && cc != Class::Folder {
-                // A UI component: a sized node needs only its size constraints.
+                // A UI component: a sized node needs only its size
+                // constraints, and its UIScale for where it is drawn.
                 if on_path
                     || auto
                     || matches!(
                         cc,
-                        Class::UISizeConstraint | Class::UIAspectRatioConstraint | Class::UIFlexItem
+                        Class::UISizeConstraint | Class::UIAspectRatioConstraint | Class::UIFlexItem | Class::UIScale
                     )
                 {
                     self.add(c, Some(n), false, false);
@@ -894,6 +975,7 @@ fn fill_size(node: &mut layout::Node, inst: &super::hstudio_rbx::Inst) {
     node.position = as_udim2(&inst.get("Position")).unwrap_or_default();
     node.size = as_udim2(&inst.get("Size")).unwrap_or_default();
     node.anchor_point = as_v2(&inst.get("AnchorPoint")).unwrap_or_default();
+    node.rotation = num(inst, "Rotation");
     node.visible = flag(inst, "Visible");
     node.layout_order = num(inst, "LayoutOrder") as i32;
     node.size_constraint = match enum_name(&inst.get("SizeConstraint")) {

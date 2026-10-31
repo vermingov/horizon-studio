@@ -417,7 +417,7 @@ pub struct Node {
     pub active: bool,
     pub interactable: bool,
     /// Only its size is wanted (a partial layout's node): it is sized for
-    /// its parent's layout, but neither it nor what is under it is placed.
+    /// its parent's layout, and only its rectangle is placed, nothing under it.
     pub size_only: bool,
 
     // TextLabel, TextButton, TextBox
@@ -2368,21 +2368,44 @@ impl<'a> Pass<'a> {
         for (child, area) in areas {
             if !self.node(child).size_only {
                 self.place(child, area, ctx);
+            } else {
+                self.place_sized(child, area, ctx);
             }
         }
+    }
+
+    /// The space a GuiObject at `area` is drawn in: its parent's, scaled by
+    /// its UIScale about its AnchorPoint.
+    fn own_space(&self, id: NodeId, area: Area, parent: Context) -> Context {
+        let anchor = self.node(id).anchor_point;
+        match self.component(id, Class::UIScale).map(|c| c.scale) {
+            Some(s) if s != 1.0 => {
+                let pivot = Vector2::new(area.x + anchor.x * area.w, area.y + anchor.y * area.h);
+                parent.scaled(s, pivot)
+            }
+            _ => parent,
+        }
+    }
+
+    /// A node only sized, at `area`: where it is, how large and how turned,
+    /// as `place` has them, and nothing under it.
+    fn place_sized(&mut self, id: NodeId, area: Area, parent: Context) {
+        let ctx = self.own_space(id, area, parent);
+        let node = self.node(id);
+        self.placed[id] = Some(Placed {
+            class: Some(node.class),
+            position: ctx.rect(area).min,
+            size: area.size() * ctx.k,
+            rotation: parent.rotation + node.rotation,
+            scale: ctx.k,
+            ..Placed::default()
+        });
     }
 
     /// One GuiObject at `area` (in its parent's space), then its subtree.
     fn place(&mut self, id: NodeId, area: Area, parent: Context) {
         let node = self.node(id);
-        let anchor = node.anchor_point;
-        let mut ctx = parent;
-        if let Some(s) = self.component(id, Class::UIScale).map(|c| c.scale)
-            && s != 1.0
-        {
-            let pivot = Vector2::new(area.x + anchor.x * area.w, area.y + anchor.y * area.h);
-            ctx = ctx.scaled(s, pivot);
-        }
+        let mut ctx = self.own_space(id, area, parent);
         let rect = ctx.rect(area);
         let rotation = parent.rotation + node.rotation;
         ctx.shown = parent.shown && node.visible;

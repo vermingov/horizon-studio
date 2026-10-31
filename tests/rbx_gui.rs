@@ -14,7 +14,7 @@ use common::{FakeGame, log, mod_index, run_for, studio};
 use horizon_studio::game::hstudio::{ModState, Studio};
 use horizon_studio::game::hstudio_look::draw_screen;
 use horizon_studio::game::hstudio_rbx_draw::{
-    OUTPUTS, fresh_layout, lay_out, objects_at, pointer_button, pointer_moved, wheel,
+    OUTPUTS, PLACE, fresh_layout, fresh_output, lay_out, objects_at, pointer_button, pointer_moved, wheel,
 };
 use horizon_studio::game::hstudio_rbx_values::get;
 use horizon_studio::game::hstudio_ui::{Input, Key, Mods, UiResult, handle_screen};
@@ -418,6 +418,55 @@ fn a_container_read_leaves_its_layout_right() {
 }
 
 #[test]
+fn reads_of_a_lists_rows_after_a_change_lay_out_once() {
+    // One change, then where each of a list's rows is: the first read works
+    // out where every row is, and the others are fresh by then. Colours,
+    // transparencies and parts in the Workspace don't move the GUI at all.
+    let mut game = FakeGame::new("rbx-rows");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local list = Instance.new("Frame", gui)
+        list.Size = UDim2.fromOffset(200, 400)
+        Instance.new("UIListLayout", list)
+        local rows = {}
+        for i = 1, 100 do
+            local row = Instance.new("TextLabel", list)
+            row.Size = UDim2.new(1, 0, 0, 10)
+            row.Text = "row " .. i
+            rows[i] = row
+        end
+        command("grow", function()
+            rows[1].Size = UDim2.new(1, 0, 0, 30)
+            local bottom = 0
+            for _, row in rows do
+                bottom = math.max(bottom, row.AbsolutePosition.Y + row.AbsoluteSize.Y)
+            end
+            return bottom
+        end)
+        command("look", function()
+            rows[1].BackgroundColor3 = Color3.new(1, 0, 0)
+            rows[2].TextTransparency = 0.5
+            rows[3].Transparency = 0.5
+            local part = Instance.new("Part", workspace)
+            part.Parent = nil
+            return rows[100].AbsolutePosition.Y
+        end)
+    "#;
+    load(&mut game, &mut st, "rows", src, 0.6);
+    hud(&mut st, &mut game);
+    let (layouts, nodes) = (st.s.rbx.fresh_layouts, st.s.rbx.fresh_nodes);
+    assert_eq!(say(&mut st, &mut game, "grow"), "1020");
+    assert_eq!(st.s.rbx.fresh_layouts, layouts + 1);
+    // The ScreenGui, the list, its layout and its rows.
+    assert_eq!(st.s.rbx.fresh_nodes, nodes + 103);
+    let epoch = st.s.rbx.gui_epoch;
+    assert_eq!(say(&mut st, &mut game, "look"), "1010");
+    assert_eq!(st.s.rbx.gui_epoch, epoch);
+    assert_eq!(st.s.rbx.fresh_layouts, layouts + 1);
+}
+
+#[test]
 fn reads_while_a_gui_is_built_lay_out_only_their_way() {
     // A UI library builds rows and reads each one's place as it goes. Each
     // read lays out the way down to its row, and in a list only the sizes
@@ -481,7 +530,13 @@ fn reported(rbx: &horizon_studio::game::hstudio_rbx::Rbx, ids: &[u32]) -> Vec<Ve
         .map(|&id| {
             OUTPUTS
                 .iter()
-                .map(|k| format!("{k} {:?}", get(&rbx.raw_get(id, k))))
+                .map(|k| {
+                    let v = rbx.raw_get(id, k);
+                    match get(&v) {
+                        Some(d) => format!("{k} {d:?}"),
+                        None => format!("{k} {}", v.plain_text()),
+                    }
+                })
                 .collect()
         })
         .collect()
@@ -491,7 +546,8 @@ fn reported(rbx: &horizon_studio::game::hstudio_rbx::Rbx, ids: &[u32]) -> Vec<Ve
 /// after something moved, writes nothing but what laying out the whole GUI
 /// gives, nor does reading them all in turn with nothing moved between.
 /// Then, after the mod's `change` command, every value a read marks fresh
-/// is what laying out the whole GUI gives then.
+/// (all of an instance's, or only where it is) is what laying out the
+/// whole GUI gives then.
 fn reads_agree_with_the_whole_layout(st: &mut Studio, game: &mut FakeGame, ids: &[u32], change: &str) {
     let rbx = &mut st.s.rbx;
     rbx.gui_epoch += 1;
@@ -522,14 +578,24 @@ fn reads_agree_with_the_whole_layout(st: &mut Studio, game: &mut FakeGame, ids: 
     say(st, game, change);
     let rbx = &mut st.s.rbx;
     let epoch = rbx.gui_epoch;
-    // Each instance's values whenever a read has marked them fresh.
+    let place: Vec<usize> = (0..OUTPUTS.len()).filter(|&k| PLACE.contains(&OUTPUTS[k])).collect();
+    // Each instance's values whenever a read has marked them fresh: first
+    // reads of where each is, then of all its values.
     let mut fresh: Vec<(usize, Vec<String>, u32)> = Vec::new();
-    for &id in ids {
-        fresh_layout(rbx, game, id);
-        let now = reported(rbx, ids);
-        for (i, &j) in ids.iter().enumerate() {
-            if rbx.inst(j).laid_out == epoch {
-                fresh.push((i, now[i].clone(), id));
+    for all in [false, true] {
+        for &id in ids {
+            if all {
+                fresh_layout(rbx, game, id);
+            } else {
+                fresh_output(rbx, game, id, "AbsolutePosition");
+            }
+            let now = reported(rbx, ids);
+            for (i, &j) in ids.iter().enumerate() {
+                if rbx.inst(j).laid_out == epoch {
+                    fresh.push((i, now[i].clone(), id));
+                } else if rbx.inst(j).placed_at == epoch {
+                    fresh.push((i, place.iter().map(|&k| now[i][k].clone()).collect(), id));
+                }
             }
         }
     }
@@ -538,9 +604,14 @@ fn reads_agree_with_the_whole_layout(st: &mut Studio, game: &mut FakeGame, ids: 
     lay_out(rbx, game);
     let whole = reported(rbx, ids);
     for (i, got, after) in fresh {
+        let want: Vec<String> = if got.len() == whole[i].len() {
+            whole[i].clone()
+        } else {
+            place.iter().map(|&k| whole[i][k].clone()).collect()
+        };
         assert_eq!(
             got,
-            whole[i],
+            want,
             "{} after the change and a read of {}",
             rbx.full_name(ids[i]),
             rbx.full_name(after)
@@ -576,11 +647,15 @@ fn a_read_lays_out_as_the_whole_gui_does() {
         local row = Instance.new("Frame", panel)
         row.Size = UDim2.new(1, 0, 0, 30)
         Instance.new("UIListLayout", row).FillDirection = Enum.FillDirection.Horizontal
+        row.Rotation = 3
         for i = 1, 3 do
-            local b = Instance.new("TextButton", row)
-            b.Size = UDim2.fromOffset(0, 30)
-            b.AutomaticSize = Enum.AutomaticSize.X
-            b.Text = string.rep("b", i * 3)
+            local b = Instance.new(i == 2 and "Frame" or "TextButton", row)
+            b.Size = UDim2.fromOffset(40, 30)
+            b.Rotation = 4 * i
+            if i ~= 2 then
+                b.AutomaticSize = Enum.AutomaticSize.X
+                b.Text = string.rep("b", i * 3)
+            end
         end
         local folder = Instance.new("Folder", panel)
         local loose = Instance.new("Frame", folder)
@@ -837,6 +912,9 @@ fn clicks_and_drags_place_the_caret_and_select() {
     load(&mut game, &mut st, "select", &src, 0.6);
     focus_box(&mut st, &mut game);
     let state = |st: &mut Studio, game: &mut FakeGame| say(st, game, "state");
+    // Moving the caret and selecting don't move the layout: the text is
+    // where it was.
+    let epoch = st.s.rbx.gui_epoch;
     // A press nearer the end of "hello" than the start of the space.
     handle_screen(&mut st, &mut game, Input::Mouse(32.0, 15.0));
     handle_screen(&mut st, &mut game, Input::Button { left: true, down: true });
@@ -852,6 +930,7 @@ fn clicks_and_drags_place_the_caret_and_select() {
         },
     );
     assert_eq!(state(&mut st, &mut game), "hello world|12|6");
+    assert_eq!(st.s.rbx.gui_epoch, epoch);
     // The selection is drawn behind the text, and the caret at its end.
     st.s.now = 10.0;
     game.drawn.clear();
