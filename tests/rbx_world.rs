@@ -332,6 +332,7 @@ fn the_humanoid_follows_the_game() {
             print(table.concat(states, " "), table.concat(jumps, " "), table.concat(runs, " "), turns)
         end)
         command("fast", function() hum.WalkSpeed = 50 end)
+        command("state", function() print(hum:GetState().Name) end)
     "#
     );
     load(&mut game, &mut st, "hum", &src, 0.7);
@@ -370,6 +371,25 @@ fn the_humanoid_follows_the_game() {
     run_for(&mut st, &mut game, 0.1);
     say(&mut st, &mut game, "moving");
     say(&mut st, &mut game, "events");
+    // Swimming, flying (creative flight, then an elytra), asleep in a bed, and
+    // back on the ground.
+    for (pose, flying) in [
+        ("swimming", false),
+        ("standing", true),
+        ("gliding", false),
+        ("sleeping", false),
+    ] {
+        game.pose = Some(PlayerPose {
+            pose: pose.into(),
+            flying,
+            ..PlayerPose::default()
+        });
+        run_for(&mut st, &mut game, 0.1);
+        say(&mut st, &mut game, "state");
+    }
+    game.pose = pose(true);
+    run_for(&mut st, &mut game, 0.1);
+    say(&mut st, &mut game, "events");
     let p = printed(&st, "hum");
     assert_eq!(p[0], "4.3178    8.4000    1.2522    32    100");
     assert_eq!(p[1], "0.000 0.000 0.000    0.000 0.000 0.000    Running    Grass");
@@ -382,6 +402,11 @@ fn the_humanoid_follows_the_game() {
     assert_eq!(
         p[8],
         "Running>Jumping Jumping>Freefall Freefall>Landed Landed>Running    true false    4.3000 0.0000    2"
+    );
+    assert_eq!(p[9..13], ["Swimming", "Flying", "Flying", "Seated"]);
+    assert_eq!(
+        p[13],
+        "Running>Jumping Jumping>Freefall Freefall>Landed Landed>Running Running>Swimming Swimming>Flying Flying>Seated Seated>Running    true false    4.3000 0.0000    2"
     );
 }
 
@@ -767,9 +792,14 @@ fn the_world_is_mirrored_once_looked_at() {
         local size = workspace.CurrentCamera.ViewportSize
         local char = Players.LocalPlayer.Character
         print(size.X, char.Humanoid.Health, workspace.Gravity, workspace.Terrain.Name)
+        -- The Workspace's own children by name, and what is out of the tree.
+        print(workspace.Camera.ViewportSize.X, workspace[char.Name] == char, #getnilinstances() > 0)
     "#;
     load(&mut game, &mut st, "ui", ui, 0.6);
-    assert_eq!(printed(&st, "ui"), ["960    100    32    Terrain"]);
+    assert_eq!(
+        printed(&st, "ui"),
+        ["960    100    32    Terrain", "960    true    true"]
+    );
     assert_eq!(game.entity_asks, 0, "a UI script doesn't have the world mirrored");
     // A look: the zombie is there at once, and ChildAdded doesn't fire for it.
     let src = r#"
@@ -974,7 +1004,8 @@ fn players_join_leave_and_show_their_characters() {
         print(Players:GetPlayerByUserId(alex.UserId) == alex, Players:GetNameFromUserIdAsync(alex.UserId), Players:GetUserIdFromNameAsync("alex") == alex.UserId, alex:GetAttribute("UUID"))
         print(pcall(function() return Players:GetNameFromUserIdAsync(5) end))
         print(pcall(function() return Players:GetUserIdFromNameAsync("Notch") end))
-        print(alex:GetNetworkPing(), Players.LocalPlayer:GetNetworkPing(), Players.MaxPlayers, alex.Character.Humanoid.Health)
+        local h = alex.Character.Humanoid
+        print(alex:GetNetworkPing(), Players.LocalPlayer:GetNetworkPing(), Players.MaxPlayers, h.Health, string.format("%.4f %.4f", h.JumpPower, h.JumpHeight))
         command("log", function() print(table.concat(log, ", "), "|", names(Players:GetPlayers()), Players.MaxPlayers) end)
     "#;
     load(&mut game, &mut st, "players", src, 0.6);
@@ -1010,7 +1041,7 @@ fn players_join_leave_and_show_their_characters() {
     assert_eq!(p[1], "true    Alex    true    00000000-0000-0000-0000-000000000042");
     assert!(p[2].starts_with("false") && p[2].contains("UserId 5"), "{}", p[2]);
     assert!(p[3].starts_with("false") && p[3].contains("Notch"), "{}", p[3]);
-    assert_eq!(p[4], "0.12    0.03    2    100");
+    assert_eq!(p[4], "0.12    0.03    2    100    8.4000 1.2522");
     assert_eq!(
         p[5],
         "joined Kim, Kim near true, Kim away Kim nil, left Kim, joined Bo, Bo near true    |    Steve Alex Bo    3"
@@ -1191,6 +1222,8 @@ fn bounds_queries_find_entities() {
         params.MaxParts = 1
         print(#workspace:GetPartBoundsInBox(CFrame.new(centre), Vector3.new(2, 2, 2), params))
         print(workspace:FindPartOnRayWithWhitelist(ray, { probe }) == probe, workspace:FindPartOnRay(ray, probe).Name)
+        print(pcall(function() workspace:FindPartOnRay(Vector3.zero) end))
+        print(pcall(function() workspace:GetPartsInPart(z) end))
     "#
     );
     load(&mut game, &mut st, "bounds", &src, 0.6);
@@ -1208,6 +1241,12 @@ fn bounds_queries_find_entities() {
     assert_eq!(p[5], p[0]);
     assert_eq!(p[6], "1");
     assert_eq!(p[7], "true    Head");
+    assert!(p[8].starts_with("false") && p[8].contains("Ray expected"), "{}", p[8]);
+    assert!(
+        p[9].starts_with("false") && p[9].contains("BasePart expected"),
+        "{}",
+        p[9]
+    );
 }
 
 #[test]
@@ -1228,6 +1267,9 @@ fn terrain_reads_the_map() {
         print(terrain:WorldToCell(Vector3.new(1.5, 64.2, -0.5)) == Vector3.new(1, 64, -1), terrain:CellCenterToWorld(1, 64, -1), terrain:CellCornerToWorld(1, 64, -1))
         print(pcall(function() terrain:FillBlock(CFrame.new(), Vector3.one, Enum.Material.Grass) end))
         print(pcall(function() terrain:ReadVoxels(Region3.new(Vector3.zero, Vector3.new(100, 100, 100)), 1) end))
+        print(pcall(function() terrain:ReadVoxels(Region3.new(Vector3.new(3e9, 0, 0), Vector3.new(3e9 + 8, 8, 8)), 4) end))
+        print(pcall(function() terrain:ReadVoxels(Region3.new(Vector3.zero, Vector3.one), 0) end))
+        print(pcall(function() terrain:ReadVoxels(Vector3.zero, 4) end))
     "#;
     load(&mut game, &mut st, "terrain", src, 0.6);
     let p = printed(&st, "terrain");
@@ -1248,6 +1290,18 @@ fn terrain_reads_the_map() {
         p[5].starts_with("false") && p[5].contains("at most 4096 cells"),
         "{}",
         p[5]
+    );
+    // Past the world's edge is an error, not a read that wraps around.
+    assert!(
+        p[6].starts_with("false") && p[6].contains("30000000 blocks out"),
+        "{}",
+        p[6]
+    );
+    assert!(p[7].starts_with("false") && p[7].contains("1 to 64 blocks"), "{}", p[7]);
+    assert!(
+        p[8].starts_with("false") && p[8].contains("Region3 expected"),
+        "{}",
+        p[8]
     );
     // Reading the map doesn't mirror the world's entities.
     assert_eq!(game.entity_asks, 0);
@@ -1626,4 +1680,34 @@ fn rays_see_what_a_script_just_moved_and_the_mouse_points_once_a_frame() {
             "Wall    3.50"
         ]
     );
+}
+
+#[test]
+fn the_local_ping_needs_no_look_at_the_world() {
+    let mut game = FakeGame::new("rbxw-ping");
+    game.players = Some(vec![listed("Steve", 1, None, 80, true)]);
+    game.entities = vec![zombie(5, 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    // A UI script's ping counter: the list is read for it, the world isn't.
+    let src = r#"
+        local me = game.Players.LocalPlayer
+        command("ping", function() print(me:GetNetworkPing()) end)
+    "#;
+    load(&mut game, &mut st, "ping", src, 0.6);
+    let ping = |st: &mut Studio, game: &mut FakeGame| {
+        assert!(st.command("ping"));
+        run_for(st, game, 0.05);
+    };
+    ping(&mut st, &mut game);
+    // Read again at most every half second.
+    game.players.as_mut().unwrap()[0].latency = 120;
+    ping(&mut st, &mut game);
+    run_for(&mut st, &mut game, 0.6);
+    ping(&mut st, &mut game);
+    // While the list can't be read, the last ping stays.
+    game.players = None;
+    run_for(&mut st, &mut game, 0.6);
+    ping(&mut st, &mut game);
+    assert_eq!(printed(&st, "ping"), ["0.08", "0.08", "0.12", "0.12"]);
+    assert_eq!(game.entity_asks, 0);
 }

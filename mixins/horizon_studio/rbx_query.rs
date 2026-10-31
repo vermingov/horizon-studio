@@ -20,6 +20,8 @@ const MAX_RAY: f64 = 5000.0;
 /// The most cells, and blocks in them, one Terrain:ReadVoxels reads.
 pub const MAX_CELLS: usize = 4096;
 pub const MAX_BLOCKS: usize = 65536;
+/// How far out from 0, 0 the world's blocks go, each way.
+const WORLD_EDGE: f64 = 30_000_000.0;
 
 // ---------------------------------------------------------------- filters
 
@@ -582,7 +584,8 @@ pub fn terrain_method(env: &mut dyn Env, lua: &mut Lua, name: &str, args: &[Valu
 /// cells each way). The region is first grown out to the grid of the cells.
 /// A cell's material is its most common solid block's (Air when it has
 /// none; water is Water) and its occupancy how much of it is solid. At most
-/// 4096 cells and 65536 blocks are read at once, charged to the script.
+/// 4096 cells and 65536 blocks are read at once, charged to the script, and
+/// none past the world's edge.
 fn read_voxels(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
     let name = "ReadVoxels";
     let Some(Data::Region3(region)) = args.get(1).and_then(get) else {
@@ -593,6 +596,12 @@ fn read_voxels(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
         return Err(bad_arg(lua, 2, name, "a resolution of 1 to 64 blocks expected"));
     }
     let r = region.expand_to_grid(res);
+    let inside = |v: Vector3| [v.x, v.y, v.z].iter().all(|c| c.abs() <= WORLD_EDGE);
+    if !(inside(r.min) && inside(r.max)) {
+        return Err(lua.rt_error(format!(
+            "Terrain:ReadVoxels reads the world's blocks, which go {WORLD_EDGE:.0} blocks out from 0, 0 each way: this region goes past them"
+        )));
+    }
     let count = |a: f64, b: f64| ((b - a) / res).round().max(0.0) as usize;
     let (nx, ny, nz) = (
         count(r.min.x, r.max.x),

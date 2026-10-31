@@ -57,6 +57,8 @@ pub const HEALTH_SCALE: f64 = 5.0;
 pub const SPEED_SCALE: f64 = 43.178;
 /// Ticks a second: jump_strength is blocks a tick.
 pub const TICKS: f64 = 20.0;
+/// The game's jump_strength for a player and most mobs, in blocks a tick.
+const JUMP: f64 = 0.42;
 /// Moving slower than this, in blocks a second, a Humanoid isn't walking.
 const WALKING: f64 = 0.5;
 /// How long Humanoid:MoveTo walks before it gives up, in seconds (Roblox's).
@@ -115,9 +117,11 @@ pub struct World {
     /// The other players on the server, in the order they joined.
     pub others: Vec<Other>,
     /// When the player list is read next, and the local player's ping in
-    /// milliseconds as it said (negative while unknown).
+    /// milliseconds as it said (negative while unknown), and when it is read
+    /// next for the ping alone.
     pub next_list: f64,
     pub ping: i32,
+    pub next_ping: f64,
     /// The Workspace's parts as rays and queries meet them (hstudio_rbx_query).
     pub boxes: super::hstudio_rbx_query::Boxes,
     /// The frames the layer has followed the game, and when the Mouse was
@@ -148,6 +152,7 @@ impl Default for World {
             others: Vec::new(),
             next_list: 0.0,
             ping: -1,
+            next_ping: 0.0,
             boxes: Default::default(),
             frames: 0,
             mouse_at: None,
@@ -235,6 +240,9 @@ pub fn build_character(rbx: &mut Rbx, name: &str) -> Rig {
     rbx.raw_set(humanoid, "RigType", enum_value(enum_item("HumanoidRigType", "R6")));
     // The root part's bottom off the ground: the legs.
     rbx.raw_set(humanoid, "HipHeight", Value::Num(12.0 * PX));
+    // A player's jump, until the game says the local player's (`speeds`).
+    rbx.raw_set(humanoid, "JumpPower", Value::Num(JUMP * TICKS));
+    rbx.raw_set(humanoid, "JumpHeight", Value::Num(jump_height(JUMP)));
     let _ = rbx.set_parent(humanoid, Some(model));
     rbx.raw_set(model, "PrimaryPart", root_v);
     let limbs = LIMBS.map(|(limb, width, _, _)| rig_part(rbx, model, limb, Vector3::new(width, 12.0, 4.0) * PX));
@@ -700,8 +708,8 @@ fn build_mirror(rbx: &mut Rbx, e: &EntityInfo) {
             rbx.raw_set(humanoid, "RigType", enum_value(enum_item("HumanoidRigType", "R6")));
             // The root part stands on the ground: no legs under it.
             rbx.raw_set(humanoid, "HipHeight", Value::Num(0.0));
-            rbx.raw_set(humanoid, "JumpPower", Value::Num(0.42 * TICKS));
-            rbx.raw_set(humanoid, "JumpHeight", Value::Num(jump_height(0.42)));
+            rbx.raw_set(humanoid, "JumpPower", Value::Num(JUMP * TICKS));
+            rbx.raw_set(humanoid, "JumpHeight", Value::Num(jump_height(JUMP)));
             let _ = rbx.set_parent(humanoid, Some(model));
             rbx.raw_set(model, "PrimaryPart", root_v);
             set_attribute(rbx, model, "Baby", Value::Bool(e.baby));
@@ -959,6 +967,7 @@ fn sync_players(rbx: &mut Rbx, game: &mut dyn GameApi, looking: bool) {
         return;
     };
     rbx.world.next_list = rbx.now + PLAYERS_EVERY;
+    rbx.world.next_ping = rbx.world.next_list;
     if let Some(me) = list.iter().find(|e| e.local) {
         rbx.world.ping = me.latency;
         if !me.display_name.is_empty() {
@@ -1038,6 +1047,23 @@ fn remove_player(rbx: &mut Rbx, uuid: u128) {
     rbx.fire(players, "PlayerRemoving", vec![pv]);
     rbx.destroy(o.player);
     count_players(rbx);
+}
+
+/// The local player's ping, from the server's list as it is now: read for
+/// it at most every PLAYERS_EVERY (sync_players reads it while a script
+/// looks), so that a UI script's ping counter needs no look at the world.
+/// While the list can't be read, the last ping stays.
+fn local_ping(rbx: &mut Rbx, game: &mut dyn GameApi) {
+    if rbx.now < rbx.world.next_ping {
+        return;
+    }
+    let Some(list) = game.players() else {
+        return;
+    };
+    rbx.world.next_ping = rbx.now + PLAYERS_EVERY;
+    if let Some(me) = list.iter().find(|e| e.local) {
+        rbx.world.ping = me.latency;
+    }
 }
 
 /// Players.MaxPlayers: at least as many as are on the server.
@@ -1183,16 +1209,18 @@ pub fn player_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, args:
                 .map_or(0.0, |c| (at - c.position()).magnitude());
             one(Value::Num(d))
         }
+        "GetNetworkPing" if local => {
+            let (rbx, game) = env.rbx_and_game();
+            local_ping(rbx, game);
+            one(Value::Num(f64::from(rbx.world.ping.max(0)) / 1000.0))
+        }
         "GetNetworkPing" => {
-            let ms = if local {
-                rbx.world.ping
-            } else {
-                rbx.world
-                    .others
-                    .iter()
-                    .find(|o| o.player == id)
-                    .map_or(0, |o| o.latency)
-            };
+            let ms = rbx
+                .world
+                .others
+                .iter()
+                .find(|o| o.player == id)
+                .map_or(0, |o| o.latency);
             one(Value::Num(f64::from(ms.max(0)) / 1000.0))
         }
         _ => Err(lua.rt_error(format!("{name} is not available here"))),
@@ -1237,7 +1265,8 @@ pub fn before_read(env: &mut dyn Env, id: Id, key: &str) {
         let m = floor(rbx, game);
         rbx.quiet_set(id, "FloorMaterial", enum_value(enum_item("Material", m)));
     }
-    if reaches_world(env.rbx(), id, key) {
+    let owner = env.owner();
+    if reaches_world(env.rbx(), owner, id, key) {
         look(env);
     }
 }
@@ -1259,9 +1288,12 @@ fn mouse_once_a_frame(env: &mut dyn Env) {
 /// Whether reading `key` of `id` reaches the world's entities: anything of
 /// Players but the LocalPlayer, the Workspace's ChildAdded, ChildRemoved and
 /// descendant events and a child by its name, and game's descendant events.
-/// The Workspace's CurrentCamera, Terrain, Gravity and the like don't, so a
-/// UI script never has the world mirrored.
-fn reaches_world(rbx: &Rbx, id: Id, key: &str) -> bool {
+/// The Workspace's CurrentCamera, Terrain, Gravity and the like don't, nor
+/// does a child by its name that is the Workspace's own (`workspace.Camera`,
+/// the character, a script's part), so a UI script never has the world
+/// mirrored. (For a script that looks already, any child is a look: it
+/// keeps the console's going, and its children aren't searched twice.)
+fn reaches_world(rbx: &Rbx, owner: Owner, id: Id, key: &str) -> bool {
     if id == rbx.players {
         !matches!(key, "LocalPlayer" | "localPlayer")
     } else if id == rbx.game {
@@ -1271,9 +1303,17 @@ fn reaches_world(rbx: &Rbx, id: Id, key: &str) -> bool {
             key,
             "ChildAdded" | "ChildRemoved" | "DescendantAdded" | "DescendantRemoving"
         ) || !super::hstudio_rbx::is_member(rbx.inst(id).class, key)
+            && (rbx.world.lookers.contains(&owner) || !own_child(rbx, key))
     } else {
         false
     }
+}
+
+/// Whether the Workspace's child named `name` (the first, as a read finds
+/// it) is there of its own, not an entity's mirror.
+fn own_child(rbx: &Rbx, name: &str) -> bool {
+    rbx.child_named(rbx.workspace, name)
+        .is_some_and(|c| !rbx.world.mirrors.values().any(|m| m.model == c))
 }
 
 /// What a call of `name` on `id` needs first: the world's entities mirrored,
