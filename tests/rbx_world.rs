@@ -263,3 +263,92 @@ fn a_tween_of_the_root_part_teleports_and_a_teleport_waits_for_a_send() {
     let later: Vec<&String> = game.sent[mark..].iter().filter(|l| l.starts_with('/')).collect();
     assert_eq!(later, ["/tp @s 1.000 68.945 2.000"]);
 }
+
+/// The player's pose on the fake game: standing, on the ground or not.
+fn pose(on_ground: bool) -> Option<PlayerPose> {
+    Some(PlayerPose {
+        pose: "standing".into(),
+        on_ground,
+        ..PlayerPose::default()
+    })
+}
+
+#[test]
+fn the_humanoid_follows_the_game() {
+    let mut game = FakeGame::new("rbxw-humanoid");
+    game.blocks.insert((10, 63, -4), "minecraft:grass_block".into());
+    game.pose = pose(true);
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{FMT}{}",
+        r#"
+        local char = game.Players.LocalPlayer.Character
+        local hum, root = char.Humanoid, char.HumanoidRootPart
+        local function r(x) return string.format("%.4f", x) end
+        local states, jumps, runs, turns = {}, {}, {}, 0
+        hum.StateChanged:Connect(function(old, new) table.insert(states, old.Name .. ">" .. new.Name) end)
+        hum.Jumping:Connect(function(on) table.insert(jumps, tostring(on)) end)
+        hum.Running:Connect(function(speed) table.insert(runs, r(speed)) end)
+        hum:GetPropertyChangedSignal("MoveDirection"):Connect(function() turns += 1 end)
+        command("speeds", function()
+            print(r(hum.WalkSpeed), r(hum.JumpPower), r(hum.JumpHeight), workspace.Gravity, hum.MaxHealth)
+        end)
+        command("moving", function()
+            print(v(hum.MoveDirection), v(root.AssemblyLinearVelocity), hum:GetState().Name, hum.FloorMaterial.Name)
+        end)
+        command("events", function()
+            print(table.concat(states, " "), table.concat(jumps, " "), table.concat(runs, " "), turns)
+        end)
+        command("fast", function() hum.WalkSpeed = 50 end)
+    "#
+    );
+    load(&mut game, &mut st, "hum", &src, 0.7);
+    let say = |st: &mut Studio, game: &mut FakeGame, cmd: &str| {
+        assert!(st.command(cmd));
+        run_for(st, game, 0.05);
+    };
+    // The game's walking speed and jump, in blocks.
+    say(&mut st, &mut game, "speeds");
+    say(&mut st, &mut game, "moving");
+    // A script's own WalkSpeed stays until the game's speed changes (it sprints).
+    say(&mut st, &mut game, "fast");
+    say(&mut st, &mut game, "speeds");
+    game.player.as_mut().unwrap().speed = Some(0.13);
+    run_for(&mut st, &mut game, 0.05);
+    say(&mut st, &mut game, "speeds");
+    // A speed the game can't read now leaves it alone.
+    game.player.as_mut().unwrap().speed = None;
+    run_for(&mut st, &mut game, 0.05);
+    say(&mut st, &mut game, "speeds");
+    // Walking east, then stopping.
+    game.player.as_mut().unwrap().velocity = [4.3, 0.0, 0.0];
+    run_for(&mut st, &mut game, 0.1);
+    say(&mut st, &mut game, "moving");
+    game.player.as_mut().unwrap().velocity = [0.0; 3];
+    run_for(&mut st, &mut game, 0.1);
+    // A jump: rising, falling, landing.
+    game.pose = pose(false);
+    game.player.as_mut().unwrap().velocity = [0.0, 8.0, 0.0];
+    run_for(&mut st, &mut game, 0.1);
+    say(&mut st, &mut game, "moving");
+    game.player.as_mut().unwrap().velocity = [0.0, -5.0, 0.0];
+    run_for(&mut st, &mut game, 0.1);
+    game.pose = pose(true);
+    game.player.as_mut().unwrap().velocity = [0.0; 3];
+    run_for(&mut st, &mut game, 0.1);
+    say(&mut st, &mut game, "moving");
+    say(&mut st, &mut game, "events");
+    let p = printed(&st, "hum");
+    assert_eq!(p[0], "4.3178    8.4000    1.2522    32    100");
+    assert_eq!(p[1], "0.000 0.000 0.000    0.000 0.000 0.000    Running    Grass");
+    assert_eq!(p[2], "50.0000    8.4000    1.2522    32    100");
+    assert_eq!(p[3], "5.6131    8.4000    1.2522    32    100");
+    assert_eq!(p[4], p[3]);
+    assert_eq!(p[5], "1.000 0.000 0.000    4.300 0.000 0.000    Running    Grass");
+    assert_eq!(p[6], "0.000 0.000 0.000    0.000 8.000 0.000    Jumping    Air");
+    assert_eq!(p[7], "0.000 0.000 0.000    0.000 0.000 0.000    Running    Grass");
+    assert_eq!(
+        p[8],
+        "Running>Jumping Jumping>Freefall Freefall>Landed Landed>Running    true false    4.3000 0.0000    2"
+    );
+}

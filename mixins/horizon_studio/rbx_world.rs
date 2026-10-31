@@ -2,13 +2,13 @@
 // Minecraft world. Players.LocalPlayer is the player playing, and its
 // Character follows them each frame: an R6 rig as Roblox's, in blocks (a
 // stud is a block), whose HumanoidRootPart is the torso's box, whose Head
-// is at the eyes and whose Humanoid is the player's. Moving the root part
-// teleports the player with /tp. hstudio_rbx_draw's sync hands the player
-// over to it every frame.
+// is at the eyes and whose Humanoid is the player's: their health, the
+// game's speeds and how they move. Moving the root part teleports the player
+// with /tp. hstudio_rbx_draw's sync hands the player over to it every frame.
 
 use super::hstudio::{GameApi, PlayerInfo, PlayerPose};
 use super::hstudio_lua::Value;
-use super::hstudio_rbx::{Id, Rbx};
+use super::hstudio_rbx::{Env, Id, Rbx};
 use super::hstudio_rbx_types::{CFrame, Vector3};
 use super::hstudio_rbx_values::{as_cf, cf, enum_item, enum_value, v3};
 
@@ -24,6 +24,13 @@ pub const EYES_Y: f64 = 1.62;
 pub const HEIGHT: f64 = 1.8;
 /// Health in the layer is the game's times this (the game's 20 is 100).
 pub const HEALTH_SCALE: f64 = 5.0;
+/// Blocks a second for a movement_speed of 1: the game's 0.1 walks 4.3178
+/// blocks a second, sprinting's 0.13 runs 5.6131.
+pub const SPEED_SCALE: f64 = 43.178;
+/// Ticks a second: jump_strength is blocks a tick.
+pub const TICKS: f64 = 20.0;
+/// Moving slower than this, in blocks a second, a Humanoid isn't walking.
+const WALKING: f64 = 0.5;
 /// The LocalPlayer's name until the game says the player's.
 pub const NO_NAME: &str = "Player1";
 
@@ -37,6 +44,15 @@ pub struct World {
     /// Where the last move of the root part this frame puts the player's
     /// feet: the /tp to send.
     pub teleport: Option<Vector3>,
+    /// The game's speeds the Humanoid was last given: a script's own
+    /// WalkSpeed stays until the game's changes.
+    pub speed: Option<f64>,
+    pub jump: Option<f64>,
+    /// The local Humanoid's state (a HumanoidStateType's name), whether the
+    /// player stood on the ground, and the speed Running last said.
+    pub state: &'static str,
+    pub on_ground: bool,
+    pub running: f64,
 }
 
 impl Default for World {
@@ -46,8 +62,74 @@ impl Default for World {
             name: NO_NAME.into(),
             uuid: 0,
             teleport: None,
+            speed: None,
+            jump: None,
+            state: "Running",
+            on_ground: true,
+            running: 0.0,
         }
     }
+}
+
+/// How high a jump of `jump` blocks a tick goes, as the game moves the
+/// player: up by the speed each tick, which gravity then slows by 0.08 and
+/// the air by 2%. The game's 0.42 goes 1.2522 blocks.
+pub fn jump_height(jump: f64) -> f64 {
+    let (mut y, mut v) = (0.0, jump);
+    for _ in 0..1000 {
+        if v <= 0.0 {
+            break;
+        }
+        y += v;
+        v = (v - 0.08) * 0.98;
+    }
+    y
+}
+
+/// A Humanoid's state: the local one's as the game has the player, and
+/// another's from its health.
+pub fn state_of(rbx: &Rbx, humanoid: Id) -> &'static str {
+    if humanoid == rbx.humanoid {
+        return rbx.world.state;
+    }
+    if rbx.raw_get(humanoid, "Health").to_num().is_some_and(|h| h <= 0.0) {
+        "Dead"
+    } else {
+        "Running"
+    }
+}
+
+/// What a read of `key` on `id` needs from the game first: the local
+/// Humanoid's FloorMaterial is the block under the player, looked up only
+/// when a script asks.
+pub fn before_read(env: &mut dyn Env, id: Id, key: &str) {
+    if key == "FloorMaterial" && id == env.rbx().humanoid {
+        let (rbx, game) = env.rbx_and_game();
+        let m = floor(rbx, game);
+        rbx.quiet_set(id, "FloorMaterial", enum_value(enum_item("Material", m)));
+    }
+}
+
+/// The Roblox material of what the player stands on: the block under the
+/// middle or a corner of their box; Air off the ground, Water swimming.
+fn floor(rbx: &Rbx, game: &mut dyn GameApi) -> &'static str {
+    use super::hstudio_rbx_draw::{block_material, passable};
+    let Some(p) = game.player() else { return "Air" };
+    let at = |game: &mut dyn GameApi, x: f64, y: f64, z: f64| {
+        game.block(x.floor() as i32, y.floor() as i32, z.floor() as i32)
+    };
+    if !rbx.world.on_ground {
+        let wet = at(game, p.x, p.y, p.z).is_some_and(|b| b.contains("water"));
+        return if wet { "Water" } else { "Air" };
+    }
+    for (dx, dz) in [(0.0, 0.0), (-0.3, -0.3), (0.3, -0.3), (-0.3, 0.3), (0.3, 0.3)] {
+        if let Some(b) = at(game, p.x + dx, p.y - 0.05, p.z + dz)
+            && !passable(&b)
+        {
+            return block_material(&b);
+        }
+    }
+    "Air"
 }
 
 /// The player's box height and eyes for a pose, as the game has them.
@@ -221,7 +303,8 @@ pub fn sync(rbx: &mut Rbx, game: &mut dyn GameApi) {
 
 /// The LocalPlayer is the player, and its character follows them: its root
 /// part on the torso, its head at the eyes facing where they look (both as
-/// low as the pose has them), its Humanoid's health.
+/// low as the pose has them), its Humanoid's health, speeds, motion and
+/// state.
 fn sync_local(rbx: &mut Rbx, p: &PlayerInfo, pose: Option<&PlayerPose>) {
     identity(rbx, p);
     let yaw = f64::from(p.yaw).to_radians();
@@ -247,5 +330,102 @@ fn sync_local(rbx: &mut Rbx, p: &PlayerInfo, pose: Option<&PlayerPose>) {
             rbx.fire(hum, "Died", Vec::new());
         }
         rbx.last_health = Some(p.health);
+    }
+    speeds(rbx, p);
+    let speed = motion(rbx, p);
+    rbx.world.on_ground = pose.is_none_or(|q| q.on_ground);
+    let state = next_state(rbx.world.state, p, pose);
+    set_state(rbx, state, speed);
+}
+
+/// The Humanoid's WalkSpeed, JumpPower and JumpHeight from the game's
+/// attributes, in blocks (sprinting is in the speed), set when the game's
+/// value changes: a script's own value stays until then, and changes
+/// nothing in the game.
+fn speeds(rbx: &mut Rbx, p: &PlayerInfo) {
+    let hum = rbx.humanoid;
+    if let Some(speed) = p.speed
+        && rbx.world.speed != Some(speed)
+    {
+        rbx.world.speed = Some(speed);
+        rbx.raw_set(hum, "WalkSpeed", Value::Num(speed * SPEED_SCALE));
+    }
+    if let Some(jump) = p.jump
+        && rbx.world.jump != Some(jump)
+    {
+        rbx.world.jump = Some(jump);
+        rbx.raw_set(hum, "JumpPower", Value::Num(jump * TICKS));
+        rbx.raw_set(hum, "JumpHeight", Value::Num(jump_height(jump)));
+    }
+}
+
+/// How the player moves, as the game has it: the root part's velocity (set
+/// quietly, as physics sets it) and the Humanoid's MoveDirection, the way
+/// they walk. Returns how fast they go along the ground.
+fn motion(rbx: &mut Rbx, p: &PlayerInfo) -> f64 {
+    let v = Vector3::new(p.velocity[0], p.velocity[1], p.velocity[2]);
+    let rp = rbx.root_part;
+    rbx.quiet_set(rp, "AssemblyLinearVelocity", v3(v));
+    rbx.quiet_set(rp, "Velocity", v3(v));
+    let flat = Vector3::new(v.x, 0.0, v.z);
+    let speed = flat.magnitude();
+    let way = if speed >= WALKING { flat / speed } else { Vector3::ZERO };
+    let hum = rbx.humanoid;
+    rbx.raw_set(hum, "MoveDirection", v3(way));
+    speed
+}
+
+/// The local Humanoid's state after `was`, from the player's health, pose
+/// and motion: Dead, Swimming, Flying (creative flight, an elytra), Seated
+/// (in a bed), Jumping while rising off the ground, Freefall, Landed for a
+/// frame back on it, then Running.
+fn next_state(was: &str, p: &PlayerInfo, pose: Option<&PlayerPose>) -> &'static str {
+    if p.health <= 0.0 {
+        return "Dead";
+    }
+    let Some(pose) = pose else { return "Running" };
+    match pose.pose.as_str() {
+        "swimming" => return "Swimming",
+        "gliding" => return "Flying",
+        "sleeping" => return "Seated",
+        _ if pose.flying => return "Flying",
+        _ => {}
+    }
+    if !pose.on_ground {
+        if p.velocity[1] > 0.0 && was != "Freefall" {
+            "Jumping"
+        } else {
+            "Freefall"
+        }
+    } else if matches!(was, "Jumping" | "Freefall") {
+        "Landed"
+    } else {
+        "Running"
+    }
+}
+
+/// Moves the local Humanoid to `state`, with StateChanged(old, new) and
+/// Jumping(true) and (false) as it enters and leaves Jumping; and Running
+/// with the speed along the ground as it changes while running, 0 when it
+/// stops.
+fn set_state(rbx: &mut Rbx, state: &'static str, speed: f64) {
+    let hum = rbx.humanoid;
+    let was = rbx.world.state;
+    if was != state {
+        rbx.world.state = state;
+        let item = |s: &str| enum_value(enum_item("HumanoidStateType", s));
+        rbx.fire(hum, "StateChanged", vec![item(was), item(state)]);
+        if state == "Jumping" || was == "Jumping" {
+            rbx.fire(hum, "Jumping", vec![Value::Bool(state == "Jumping")]);
+        }
+    }
+    let running = if state == "Running" && speed >= WALKING {
+        speed
+    } else {
+        0.0
+    };
+    if (running - rbx.world.running).abs() > 0.1 || (running == 0.0 && rbx.world.running != 0.0) {
+        rbx.world.running = running;
+        rbx.fire(hum, "Running", vec![Value::Num(running)]);
     }
 }

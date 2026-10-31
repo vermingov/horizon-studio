@@ -789,7 +789,10 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             none()
         }
         ("Humanoid", "ChangeState") => none(),
-        ("Humanoid", "GetState") => one(enum_value(enum_item("HumanoidStateType", "Running"))),
+        ("Humanoid", "GetState") => {
+            let state = super::hstudio_rbx_world::state_of(env.rbx(), id);
+            one(enum_value(enum_item("HumanoidStateType", state)))
+        }
         ("Humanoid", "UnequipTools") => none(),
         ("Humanoid", "GetPlayingAnimationTracks") => one(Value::table(Table::new())),
         ("BindableEvent", "Fire") => {

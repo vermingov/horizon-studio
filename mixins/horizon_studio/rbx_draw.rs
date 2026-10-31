@@ -1342,7 +1342,7 @@ fn ray_through(cam: &super::hstudio::Camera, x: f64, y: f64, w: f64, h: f64) -> 
 }
 
 /// The Roblox material a block looks most like.
-fn block_material(id: &str) -> &'static str {
+pub fn block_material(id: &str) -> &'static str {
     let b = id.trim_start_matches("minecraft:");
     match b {
         _ if b.contains("water") => "Water",
@@ -1369,7 +1369,7 @@ fn block_material(id: &str) -> &'static str {
     }
 }
 
-fn passable(id: &str) -> bool {
+pub fn passable(id: &str) -> bool {
     let b = id.trim_start_matches("minecraft:");
     b == "air"
         || b == "cave_air"

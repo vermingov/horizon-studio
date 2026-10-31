@@ -309,7 +309,8 @@ pub static CLASSES: &[C] = &[
     service(
         "Workspace",
         &[
-            p("Gravity", Num, N(196.2)),
+            // Minecraft's, in blocks a second each second (0.08 a tick each tick).
+            p("Gravity", Num, N(32.0)),
             p("CurrentCamera", Obj, D::Nil),
             ro("Terrain", Obj, D::Nil),
             ro("DistributedGameTime", Num, N(0.0)),
@@ -2218,6 +2219,7 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
         let snap = env_snapshot(env);
         env.rbx().refresh(id, &k, snap.as_ref());
     }
+    super::hstudio_rbx_world::before_read(env, id, &k);
     let rbx = env.rbx();
     let inst = rbx.inst(id);
     let c = inst.class;
