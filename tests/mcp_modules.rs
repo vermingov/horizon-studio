@@ -419,3 +419,56 @@ fn only_main_lua_for_a_script_moves_a_file_to_the_trash() {
     let (r, error) = call(&mut s, "check_mod", json!({ "id": "kit", "mods_dir": d, "files": {} }));
     assert!(error && r.as_str().unwrap_or("").contains("files is empty"), "{r}");
 }
+
+#[test]
+fn an_id_another_file_of_the_mods_folder_holds_is_refused() {
+    let mut s = server();
+    let studio = Folder::new("held");
+    let mods = studio.mods();
+    let d = mods.to_str().unwrap();
+    // "Night Light.lua" is the mod night_light, as the studio lists it.
+    std::fs::write(mods.join("Night Light.lua"), "print('the one the game runs')\n").unwrap();
+    let (r, error) = call(&mut s, "list_mods", json!({ "mods_dir": d }));
+    assert!(!error, "{r:#}");
+    assert_eq!(r["mods"].as_array().map(Vec::len), Some(1), "{r:#}");
+    assert_eq!(
+        (&r["mods"][0]["id"], &r["mods"][0]["kind"]),
+        (&json!("night_light"), &json!("script"))
+    );
+    assert!(
+        r["mods"][0]["main"].as_str().unwrap_or("").ends_with("Night Light.lua"),
+        "{r:#}"
+    );
+    let (r, error) = call(&mut s, "read_mod", json!({ "id": "night_light", "mods_dir": d }));
+    assert!(!error, "{r:#}");
+    assert_eq!(r["files"]["night_light.lua"], "print('the one the game runs')\n");
+    // A module or a script written under that id would never load: refused,
+    // naming the file that has it, and nothing is written.
+    for files in [
+        json!({ "main.lua": "print('a module')\n" }),
+        json!({ "night_light.lua": "print('a script')\n" }),
+    ] {
+        let (r, error) = call(
+            &mut s,
+            "write_mod",
+            json!({ "id": "night_light", "mods_dir": d, "files": files }),
+        );
+        assert!(error, "{files}: {r:#}");
+        assert!(
+            r.as_str()
+                .unwrap_or("")
+                .contains("night_light is \"Night Light.lua\" in the mods folder"),
+            "{r}"
+        );
+        assert!(!mods.join("night_light").exists() && !mods.join("night_light.lua").exists());
+    }
+    // A mod's own file is written as before.
+    for text in ["print('lamp')\n", "print('lamp, again')\n"] {
+        let (r, error) = call(
+            &mut s,
+            "write_mod",
+            json!({ "id": "lamp", "mods_dir": d, "files": { "lamp.lua": text } }),
+        );
+        assert!(!error, "{r:#}");
+    }
+}

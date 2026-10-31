@@ -682,37 +682,17 @@ impl Server {
             },
             "list_mods" => {
                 let dir = dir()?;
-                let mut out = Vec::new();
-                if let Ok(entries) = std::fs::read_dir(&dir) {
-                    let mut names: Vec<String> = entries
-                        .flatten()
-                        .filter_map(|e| {
-                            let n = e.file_name().to_string_lossy().into_owned();
-                            if n.starts_with('.') {
-                                return None;
-                            }
-                            if e.path().join("main.lua").is_file() {
-                                Some(n)
-                            } else {
-                                n.strip_suffix(".lua").map(str::to_owned)
-                            }
-                        })
-                        .collect();
-                    names.sort();
-                    names.dedup();
-                    out = names
-                        .into_iter()
-                        .map(|id| {
-                            let folder = dir.join(&id);
-                            if folder.join("main.lua").is_file() {
-                                let files = crate::game::hstudio_modfiles::lua_files(&folder);
-                                json!({ "id": id, "kind": "module", "files": files })
-                            } else {
-                                json!({ "id": id, "kind": "script", "files": [] })
-                            }
-                        })
-                        .collect();
-                }
+                // As the studio lists them: "Night Light.lua" is night_light.
+                let mut out: Vec<Json> = crate::game::hstudio_modfiles::find_mods(&dir)
+                    .into_iter()
+                    .map(|(id, main, folder)| match folder {
+                        Some(folder) => {
+                            let files = crate::game::hstudio_modfiles::lua_files(&folder);
+                            json!({ "id": id, "kind": "module", "files": files, "main": main })
+                        }
+                        None => json!({ "id": id, "kind": "script", "files": [], "main": main }),
+                    })
+                    .collect();
                 if let Ok(live) = self.live("mods", json!({})) {
                     for m in &mut out {
                         if let Some(l) = live.as_array().and_then(|a| a.iter().find(|l| l["id"] == m["id"])) {

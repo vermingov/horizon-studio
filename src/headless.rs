@@ -367,10 +367,25 @@ pub enum Source {
     },
 }
 
-/// A mod's files as (path in the mod, text).
+/// The mod a mods folder has under `id`, as the studio lists it
+/// (`find_mods`: "Night Light.lua" is night_light, and of two names with one
+/// id the first): its main file, and its folder for a module.
+pub fn find_mod(mods_dir: &Path, id: &str) -> Option<(PathBuf, Option<PathBuf>)> {
+    crate::game::hstudio_modfiles::find_mods(mods_dir)
+        .into_iter()
+        .find(|f| f.0 == id)
+        .map(|(_, main, folder)| (main, folder))
+}
+
+/// A mod's files as (path in the mod, text): the mod the studio has under
+/// that id, whatever its file is called (a script's file is `<id>.lua`).
 pub fn read_mod(mods_dir: &Path, id: &str) -> Result<Vec<(String, String)>, String> {
-    let folder = mods_dir.join(id);
-    if folder.join("main.lua").is_file() {
+    let (main, folder) = find_mod(mods_dir, id).unwrap_or_else(|| {
+        let folder = mods_dir.join(id);
+        let module = folder.join("main.lua").is_file();
+        (mods_dir.join(format!("{id}.lua")), module.then_some(folder))
+    });
+    if let Some(folder) = folder {
         let mut files = Vec::new();
         let mut stack = vec![(folder.clone(), 0)];
         while let Some((dir, depth)) = stack.pop() {
@@ -390,8 +405,7 @@ pub fn read_mod(mods_dir: &Path, id: &str) -> Result<Vec<(String, String)>, Stri
         files.sort();
         return Ok(files);
     }
-    let file = mods_dir.join(format!("{id}.lua"));
-    match std::fs::read_to_string(&file) {
+    match std::fs::read_to_string(&main) {
         Ok(text) => Ok(vec![(format!("{id}.lua"), text)]),
         Err(_) => Err(format!("no mod '{id}' in {}", mods_dir.display())),
     }
@@ -404,11 +418,25 @@ pub fn read_mod(mods_dir: &Path, id: &str) -> Result<Vec<(String, String)>, Stri
 /// goes to the studio's trash, beside the mods folder, once the module is
 /// written. Every path is checked before anything on disk changes, and a
 /// module's files are written beside it first, so a path refused or a
-/// write that fails leaves the mod as it was.
+/// write that fails leaves the mod as it was. An id that another file of
+/// the mods folder has ("Night Light.lua" is night_light's) is refused.
 pub fn write_mod(mods_dir: &Path, id: &str, files: &[(String, String)]) -> Result<PathBuf, String> {
     check_id(id)?;
     let dir = mods_dir.join(id);
     let script = mods_dir.join(format!("{id}.lua"));
+    // The studio lists one mod an id: what is written here would be passed
+    // over for another file that has it.
+    if let Some((main, folder)) = find_mod(mods_dir, id) {
+        let held = folder.unwrap_or(main);
+        if held != dir && held != script {
+            let name = held
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            return Err(format!(
+                "{id} is \"{name}\" in the mods folder: rename that file or choose another id"
+            ));
+        }
+    }
     let exists = dir.join("main.lua").is_file();
     if !exists && !files.iter().any(|(p, _)| p == "main.lua") {
         let [(name, text)] = files else {
