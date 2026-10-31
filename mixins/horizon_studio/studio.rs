@@ -1678,8 +1678,7 @@ impl Studio {
             _ => Rc::new(std::cell::RefCell::new(Table::new())),
         };
         rbx.adopt_game_table(&game);
-        g.set_str("game", Value::Table(game.clone()));
-        g.set_str("Game", Value::Table(game));
+        g.set_str("game", Value::Table(game));
         let ws = rbx.value(rbx.workspace);
         g.set_str("workspace", ws.clone());
         g.set_str("Workspace", ws);

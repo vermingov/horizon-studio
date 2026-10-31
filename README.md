@@ -604,6 +604,39 @@ end)
 Not there: a server (RemoteEvents go nowhere), physics, animations, Roblox's assets (images, meshes and sounds by
 id), BillboardGuis and SurfaceGuis. The MCP's `roblox` topic (`docs`) lists every class, member and difference.
 
+### Executor functions (sUNC)
+
+The functions of the [sUNC](https://docs.sunc.io) executor standard are there too, so scripts written for Roblox
+executors run as mods:
+
+- **Closures:** `hookfunction`, `restorefunction`, `hookmetamethod` (Instances and `game` share one metatable, as in
+  Roblox), `newcclosure` (it can still wait), `clonefunction`, `getfunctionhash`, `iscclosure`, `islclosure`,
+  `isexecutorclosure`, `checkcaller`, `loadstring`.
+- **Debug:** Luau's `debug.info` and `debug.traceback`, and `debug.getconstant(s)`, `setconstant`, `getproto(s)`,
+  `getstack`, `setstack`, `getupvalue(s)`, `setupvalue`.
+- **Metatables:** `getrawmetatable`, `setrawmetatable`, `setreadonly`, `isreadonly`, `getnamecallmethod`.
+- **Environments and the collector:** `getgenv` (shared by every mod; each mod's globals fall back to it),
+  `getrenv` (Roblox's globals), `getfenv`, `setfenv`, `getgc`, `filtergc`, `getreg`.
+- **Encoding:** `base64encode`, `base64decode`, `lz4compress`, `lz4decompress`.
+- **Files**, in the studio's `workspace` folder: `writefile`, `readfile`, `appendfile`, `isfile`, `isfolder`,
+  `makefolder`, `delfile`, `delfolder`, `listfiles`, `loadfile`, `dofile`, `getcustomasset` (an ImageLabel draws its
+  PNG).
+- **Network**, the internet only: `request` (it waits for the answer), `game:HttpGet`, `game:HttpPost`, HttpService's
+  `GetAsync`, `PostAsync` and `RequestAsync`, and `WebSocket.connect` with `Send`, `Close`, `OnMessage`, `OnClose`.
+- **Drawing:** `Drawing.new` with Line, Text, Image, Circle, Square, Quad and Triangle, drawn over the HUD in dp;
+  `cleardrawcache`, `getrenderproperty`, `setrenderproperty`, `isrenderobj`.
+- **Instances and signals:** `cloneref`, `compareinstances`, `gethui`, `getinstances`, `getnilinstances`,
+  `fireclickdetector`, `fireproximityprompt`, `firetouchinterest`, `getcallbackvalue`, `getconnections`,
+  `firesignal`; `replicatesignal` errors (there is no server).
+- **Scripts and reflection:** `getscripts`, `getrunningscripts`, `getloadedmodules`, `getsenv`, `getscriptclosure`,
+  `getscriptbytecode`, `getscripthash`, `getcallingscript`, `getscriptfromthread`, `gethiddenproperty`,
+  `sethiddenproperty`, `isscriptable`, `setscriptable`, `getthreadidentity`, `setthreadidentity`,
+  `identifyexecutor`.
+
+As every script here is a mod, all code is the executor's: `checkcaller()` is always true and
+`getcallingscript()` nil. `getgc` and `filtergc` see what was made once the studio started tracking objects (from the
+first mod that names them). The MCP's `executor` topic (`docs`) has each function's details.
+
 ### Examples
 
 The Library installs these; their source is in [`examples/`](examples).
@@ -632,8 +665,13 @@ The Library installs these; their source is in [`examples/`](examples).
 
 ## Safety
 
-Scripts run in the studio's interpreter and can do only what the API above offers. They have no file access
-(besides their own `storage`), no network, no processes and no way into the game's memory. Each call gets a step
+Scripts run in the studio's interpreter and can do only what the API above offers. Their files are their own
+`storage` and the executor functions' `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`),
+which no path can leave and where executable and archive files can't be written. Their network (`request`,
+`game:HttpGet`, WebSockets) reaches the internet only: every address is checked, so a script can't reach this
+computer, the studio's AI link or anything on your network. They have no processes and no way into the game's memory.
+Executor functions such as `hookfunction` and `getgenv` reach across mods: a hook one mod sets changes the function for
+all of them. Each call gets a step
 budget (10 million to load, 2 million per event, 20 million per console line), nested calls are capped by the stack
 they use, strings by 4 MiB and tables by a million entries. When a script goes past one, that script stops.
 Commands and chat a script sends are rate limited, and the agent commands exclude anything that saves, quits or
@@ -661,6 +699,9 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `rbx_values.rs` (`hstudio_rbx_values`) | Roblox's data types and `Enum` for scripts |
 | `rbx.rs`, `rbx_methods.rs` (`hstudio_rbx`, `hstudio_rbx_methods`) | The Roblox layer: the DataModel, Instances, their properties, events and methods, services, signals, tweens |
 | `rbx_draw.rs` (`hstudio_rbx_draw`) | The Roblox layer on the game: ScreenGuis drawn and clicked, input, Parts in the world, raycasts, each frame's step |
+| `exec.rs` (`hstudio_exec`) | The executor (sUNC) functions that need only the interpreter: hooks, newcclosure, debug, metatables, encoding, getgc |
+| `sunc.rs` (`hstudio_sunc`) | The executor functions on the studio: environments, files, HTTP, WebSockets, Drawing, Instances, signals, scripts |
+| `net.rs`, `crypt.rs` (`hstudio_net`, `hstudio_crypt`) | HTTP and WebSockets for scripts (the internet only); hashes, Base64 and LZ4 |
 | `studio.rs` (`hstudio`) | Script mods, hot reloading, events, timers, the API, the console |
 | `ui.rs` (`hstudio_ui`) | The screen: console, editor, library, docs, settings; input, the window's moving and sizing |
 | `assist.rs` (`hstudio_assist`) | The editor's and console's suggestions, and the live check of a script (syntax, unknown names) |

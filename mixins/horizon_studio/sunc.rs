@@ -1342,10 +1342,10 @@ impl Ctx<'_> {
         // A value of the property's own type (a number for a Font index too).
         let ok = match (&slot.1, &v) {
             (Value::Num(_), Value::Num(_)) | (Value::Bool(_), Value::Bool(_)) | (Value::Str(_), Value::Str(_)) => true,
-            (a, b) => match (get(a), get(b)) {
-                (Some(Data::V2(_)), Some(Data::V2(_))) | (Some(Data::C3(_)), Some(Data::C3(_))) => true,
-                _ => false,
-            },
+            (a, b) => matches!(
+                (get(a), get(b)),
+                (Some(Data::V2(_)), Some(Data::V2(_))) | (Some(Data::C3(_)), Some(Data::C3(_)))
+            ),
         };
         if !ok {
             return Err(lua.rt_error(format!(

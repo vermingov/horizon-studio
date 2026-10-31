@@ -26,7 +26,7 @@ fn api_names() -> BTreeSet<String> {
 /// An entry named like an API function: not an event, a widget, the
 /// standard library or Roblox's data types.
 fn api_like(e: &Entry) -> bool {
-    e.topic != "stdlib" && e.topic != "roblox" && !e.name.contains(':')
+    !["stdlib", "roblox", "executor"].contains(&e.topic) && !e.name.contains(':')
 }
 
 /// A mod run headless; what it printed, without the `[m] ` in front.
@@ -129,8 +129,12 @@ fn every_function_a_mod_reaches_has_an_entry_and_every_stdlib_entry_exists() {
     // The mod's globals and the tables in them, as names: f:string.format, v:math.pi.
     let lines = printed(
         r#"
-        local names = {}
-        for k, v in pairs(_G) do
+        local names, seen = {}, {}
+        local all = {}
+        for _, env in { getrenv(), getgenv(), _G } do
+          for k, v in pairs(env) do all[k] = v end
+        end
+        for k, v in pairs(all) do
           if type(v) == "function" then
             names[#names + 1] = "f:" .. k
           elseif type(v) == "table" and k ~= "_G" then
@@ -161,7 +165,7 @@ fn every_function_a_mod_reaches_has_an_entry_and_every_stdlib_entry_exists() {
     }
     let gone: Vec<&str> = ENTRIES
         .iter()
-        .filter(|e| (e.topic == "stdlib" || e.topic == "roblox") && !present.contains(e.name) && e.name != "_G")
+        .filter(|e| ["stdlib", "roblox", "executor"].contains(&e.topic) && !present.contains(e.name) && e.name != "_G")
         .map(|e| e.name)
         .collect();
     assert!(gone.is_empty(), "stdlib entries for what mods don't have: {gone:?}");

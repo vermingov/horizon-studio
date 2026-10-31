@@ -132,6 +132,11 @@ pub const TOPICS: &[Topic] = &[
         summary: "The Roblox API on Horizon: game and its services, Instance.new and the Instance tree, signals, ScreenGuis drawn in game, the mouse, UserInputService, the character and Camera, Parts, Raycast, TweenService, Enum and every data type.",
     },
     Topic {
+        id: "executor",
+        title: "Executor functions (sUNC): hooks, debug, files, HTTP, Drawing",
+        summary: "The sUNC standard's functions: hookfunction, newcclosure, hookmetamethod, the debug library, getrawmetatable, getgenv and getrenv, getgc and filtergc, Base64 and LZ4, the workspace file system, request and WebSocket, Drawing, cloneref, getconnections, getsenv and hidden properties, and how they differ from a Roblox executor's.",
+    },
+    Topic {
         id: "errors",
         title: "Error messages",
         summary: "Common errors a script gets, what each means and the fix.",
@@ -164,6 +169,7 @@ fn topic_text(id: &str) -> &'static str {
         "limits" => LIMITS,
         "errors" => ERRORS,
         "roblox" => ROBLOX,
+        "executor" => EXECUTOR,
         _ => "",
     }
 }
@@ -674,7 +680,7 @@ end)
 "##;
 
 const LANGUAGE: &str = r##"
-Horizon Studio runs its own Lua interpreter, written in Rust, with the syntax and semantics of Lua 5.3 except where this page says otherwise. Mods are sandboxed: no files, no network, no other processes, only the functions the studio gives them.
+Horizon Studio runs its own Lua interpreter, written in Rust, with the syntax and semantics of Lua 5.3 except where this page says otherwise. Mods are sandboxed: no other processes and only the functions the studio gives them; their files are their storage and the executor functions' `workspace` folder, and their network the internet only (see the `executor` topic).
 
 ## Statements
 
@@ -1885,6 +1891,42 @@ end)
 **`Enum`** has every enum these classes use (KeyCode, UserInputType, UserInputState, EasingStyle, EasingDirection, Font, FontWeight, Material, PartType, the GUI ones, CameraType, HumanoidStateType, CoreGuiType, RaycastFilterType, RenderPriority...): `Enum.KeyCode.E` with `Name`, `Value`, `EnumType`, `IsA`; `Enum.KeyCode:GetEnumItems()`, `FromName`, `FromValue`.
 
 **Not here:** a server (RemoteEvents go nowhere), physics, animations, Roblox assets (images, meshes, sounds by id), BillboardGuis and SurfaceGuis, and `require` of a ModuleScript Instance (use `require` of a folder mod's file, or `import`).
+"##;
+
+const EXECUTOR: &str = r##"
+Horizon Studio has the executor functions of the [sUNC](https://docs.sunc.io) standard, so scripts written for Roblox executors run as mods: closures and hooks, the debug library, metatables, Base64 and LZ4, the collector, environments, a file system, HTTP and WebSockets, the Drawing library, Instances, signals, scripts and hidden properties. Each has an entry here.
+
+```lua
+local old
+old = hookmetamethod(game, "__namecall", function(self, ...)
+  if getnamecallmethod() == "Destroy" and self == workspace then
+    return warn("not destroying the workspace")
+  end
+  return old(self, ...)
+end)
+
+writefile("hello.txt", "Hello from " .. identifyexecutor())
+local box = Drawing.new("Square")
+box.Size = Vector2.new(120, 40)
+box.Position = Vector2.new(20, 20)
+box.Filled = true
+box.Visible = true
+```
+
+**Environments.** A mod's globals are its own table; names it doesn't have come from `getgenv()` (the executor's: the studio's API and this library, shared by every mod), and from there from `getrenv()` (Roblox's: the standard library, `game`, `workspace`, `Instance`, the data types, `task`). `getgenv().x = 1` gives every mod an `x`; `getrenv().game = nil` takes `game` from them all.
+
+**What is different from a Roblox executor**, because the scripts are mods and the game is Minecraft:
+
+- Every Lua function and thread is the executor's: there are no game scripts. `checkcaller()` is always true, `getcallingscript()` and `getscriptfromthread()` are nil, and `filtergc`'s `IgnoreExecutor` (true by default) skips every Lua function: pass `IgnoreExecutor = false`.
+- `getgc`, `filtergc`, `getreg` and live protos see what was made after the studio began tracking objects: from the load of the first mod whose source names one of them (or their first call), as tracking costs a little on every function and table made.
+- Hooks are global: `hookfunction(print, ...)` changes `print` for every mod. They stay until `restorefunction` (or the game restarts), even after the mod that made them stops.
+- `getscriptbytecode` is the studio's own dump of a mod's compiled main file, not Luau bytecode; `getscripthash` hashes that. A ModuleScript runs under `require` from its hidden `Source` (set with `sethiddenproperty`).
+- `replicatesignal` errors: there is no server. `fireclickdetector`, `fireproximityprompt` and `firetouchinterest` fire the events here, deferred like every signal.
+- Files live in the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), which scripts can't leave. `request`, `game:HttpGet` and WebSockets reach the internet only, never this computer or its network.
+- Drawings are in dp, Horizon's logical pixels (the Camera's ViewportSize), over the HUD and the mods' GUIs. Images (Drawing's `Data` and ImageLabels with a `getcustomasset` id) are PNGs drawn as blocks of colour, up to 48 x 48 of them.
+- There is no `crypt` library (sUNC warns when one exists): `base64encode`, `base64decode`, `lz4compress` and `lz4decompress` are globals.
+
+These functions widen what a script can do (see the `limits` topic): run a script from someone you trust.
 "##;
 
 const ERRORS: &str = r##"
@@ -7178,6 +7220,1439 @@ A copy of an Instance's properties, without its children.
 
 ```lua
 local copy = Instance.fromExisting(workspace.CurrentCamera)
+```
+"##
+    ),
+    e!(
+        "hookfunction",
+        "executor",
+        r##"
+`hookfunction(target, hook)`
+
+Calls of `target` (a Lua function, a `newcclosure` or a built-in such as `print`) run `hook` from now on, everywhere it is used. Returns a function that runs `target` as it was, for the hook to call.
+
+```lua
+local old
+old = hookfunction(print, function(...) return old("[hooked]", ...) end)
+```
+"##
+    ),
+    e!(
+        "replaceclosure",
+        "executor",
+        r##"
+`replaceclosure(target, hook)`
+
+The same function as `hookfunction`, under the name other executors use.
+
+```lua
+print(replaceclosure == hookfunction)
+```
+"##
+    ),
+    e!(
+        "restorefunction",
+        "executor",
+        r##"
+`restorefunction(f)`
+
+Undoes every `hookfunction` of `f`. Errors `restorefunction: function is not hooked` for one that isn't.
+
+```lua
+local function f() end
+hookfunction(f, function() end)
+restorefunction(f)
+```
+"##
+    ),
+    e!(
+        "hookmetamethod",
+        "executor",
+        r##"
+`hookmetamethod(object, name, hook)`
+
+Hooks the metamethod `name` (`"__index"`, `"__namecall"`, `"__newindex"`...) of the object's raw metatable and returns the original. Instances and `game` share one metatable, as in Roblox, so hooking `game`'s hooks every Instance's. A `__namecall` hook gets every method call; `getnamecallmethod()` names the method.
+
+```lua
+local old
+old = hookmetamethod(game, "__namecall", function(self, ...)
+  if getnamecallmethod() == "Kick" then return end
+  return old(self, ...)
+end)
+```
+"##
+    ),
+    e!(
+        "newcclosure",
+        "executor",
+        r##"
+`newcclosure(f)`
+
+`f` wrapped as a C function (`iscclosure` is true, it has no upvalues). It can still wait (`task.wait`) and returns what `f` returns.
+
+```lua
+local wrapped = newcclosure(function(x) return x * 2 end)
+print(wrapped(21), iscclosure(wrapped))
+```
+"##
+    ),
+    e!(
+        "clonefunction",
+        "executor",
+        r##"
+`clonefunction(f)`
+
+A new function that behaves as `f` does, with the same globals; hooking `f` later leaves the clone as it was.
+
+```lua
+local copy = clonefunction(print)
+```
+"##
+    ),
+    e!(
+        "getfunctionhash",
+        "executor",
+        r##"
+`getfunctionhash(f)`
+
+The SHA-384, in hex (96 characters), of a Lua function's constants and code: equal for functions with the same code. Errors on C closures.
+
+```lua
+print(getfunctionhash(function() end))
+```
+"##
+    ),
+    e!(
+        "checkcaller",
+        "executor",
+        r##"
+`checkcaller()`
+
+Whether the code calling is the executor's: always `true` here, since every script is a mod (there are no game scripts).
+
+```lua
+print(checkcaller())
+```
+"##
+    ),
+    e!(
+        "iscclosure",
+        "executor",
+        r##"
+`iscclosure(f)`
+
+Whether `f` is a C function: a built-in, a studio function or a `newcclosure`.
+
+```lua
+print(iscclosure(print))
+```
+"##
+    ),
+    e!(
+        "islclosure",
+        "executor",
+        r##"
+`islclosure(f)`
+
+Whether `f` is a Lua function.
+
+```lua
+print(islclosure(function() end))
+```
+"##
+    ),
+    e!(
+        "isexecutorclosure",
+        "executor",
+        r##"
+`isexecutorclosure(f)`
+
+Whether `f` is the executor's: any Lua function (every script is a mod's), the executor library's and the studio's functions, and `newcclosure`s; not Roblox's (`print`, `game`'s methods).
+
+```lua
+print(isexecutorclosure(getgenv), isexecutorclosure(print))
+```
+"##
+    ),
+    e!(
+        "checkclosure",
+        "executor",
+        r##"
+`checkclosure(f)`
+
+The same function as `isexecutorclosure`, under the name other executors use.
+
+```lua
+print(checkclosure == isexecutorclosure)
+```
+"##
+    ),
+    e!(
+        "isourclosure",
+        "executor",
+        r##"
+`isourclosure(f)`
+
+The same function as `isexecutorclosure`, under the name other executors use.
+
+```lua
+print(isourclosure == isexecutorclosure)
+```
+"##
+    ),
+    e!(
+        "loadstring",
+        "executor",
+        r##"
+`loadstring(source[, chunkname])`
+
+Compiles Luau into a function with the caller's globals. On a syntax error it returns `nil` and the message (`[string "chunkname"]:1: ...`) instead of erroring.
+
+```lua
+local f, err = loadstring("return 1 + 1")
+print(f())
+```
+"##
+    ),
+    e!(
+        "debug.info",
+        "executor",
+        r##"
+`debug.info(f_or_level, options)`
+
+Luau's: for each letter of `options`, `s` the source (`[C]` for a C function), `l` the line (where it was defined, or the level's current line), `n` the name, `a` the parameter count and whether it is vararg, `f` the function.
+
+```lua
+print(debug.info(print, "s"), debug.info(1, "l"))
+```
+"##
+    ),
+    e!(
+        "debug.traceback",
+        "executor",
+        r##"
+`debug.traceback([message])`
+
+The message and the calls in progress, one a line.
+
+```lua
+print(debug.traceback("here"))
+```
+"##
+    ),
+    e!(
+        "debug.getinfo",
+        "executor",
+        r##"
+`debug.getinfo(f_or_level)`
+
+A table: `source`, `short_src`, `currentline`, `linedefined`, `name`, `what` (`"Lua"` or `"C"`), `nups`, `numparams`, `is_vararg`, `func`.
+
+```lua
+print(debug.getinfo(print).what)
+```
+"##
+    ),
+    e!(
+        "debug.getconstants",
+        "executor",
+        r##"
+`debug.getconstants(f_or_level)`
+
+A Lua function's constants as Luau numbers them (strings, numbers, booleans; nil where Luau keeps an import or a closure). Errors on C closures.
+
+```lua
+for i, c in debug.getconstants(function() print("hi") end) do print(i, c) end
+```
+"##
+    ),
+    e!(
+        "debug.getconstant",
+        "executor",
+        r##"
+`debug.getconstant(f_or_level, index)`
+
+One constant (from 1), or nil.
+
+```lua
+print(debug.getconstant(function() print("hi") end, 1))
+```
+"##
+    ),
+    e!(
+        "debug.setconstant",
+        "executor",
+        r##"
+`debug.setconstant(f_or_level, index, value)`
+
+Replaces a constant (a number, string, boolean or nil) in that function: `game.Name` with "Name" set to "Players" reads `game.Players`.
+
+```lua
+local function f() return "a" end
+local i = table.find(debug.getconstants(f), "a")
+if i then debug.setconstant(f, i, "b") end
+```
+"##
+    ),
+    e!(
+        "debug.getprotos",
+        "executor",
+        r##"
+`debug.getprotos(f_or_level)`
+
+The functions defined inside a Lua function, as closures that can't be called (inactive protos: for `debug.info` and the like).
+
+```lua
+print(#debug.getprotos(function() local function inner() end end))
+```
+"##
+    ),
+    e!(
+        "debug.getproto",
+        "executor",
+        r##"
+`debug.getproto(f_or_level, index[, activated])`
+
+One nested function by index (from 1); with `activated` = true, a list of its live closures instead (those `getgc` sees), which can be called.
+
+```lua
+local function outer() return function() return 1 end end
+local live = debug.getproto(outer, 1, true)
+```
+"##
+    ),
+    e!(
+        "debug.getstack",
+        "executor",
+        r##"
+`debug.getstack(level[, index])`
+
+A register of the function `level` calls up (1: the caller), from 1, or all of them as a list. Errors for a level that isn't a Lua function.
+
+```lua
+local a = 5
+print(debug.getstack(1, 1))
+```
+"##
+    ),
+    e!(
+        "debug.setstack",
+        "executor",
+        r##"
+`debug.setstack(level, index, value)`
+
+Sets that register (a captured local's cell too).
+
+```lua
+local x = 1
+debug.setstack(1, 1, 2)
+```
+"##
+    ),
+    e!(
+        "debug.getupvalues",
+        "executor",
+        r##"
+`debug.getupvalues(f_or_level)`
+
+A Lua function's upvalues, in order. A local that is never assigned after a constant value is folded into its uses and isn't an upvalue here.
+
+```lua
+local n = 0
+local function f() n += 1 end
+print(debug.getupvalues(f)[1])
+```
+"##
+    ),
+    e!(
+        "debug.getupvalue",
+        "executor",
+        r##"
+`debug.getupvalue(f_or_level, index)`
+
+One upvalue (from 1); errors when out of range or on a C closure.
+
+```lua
+local n = 0
+local function f() n += 1 end
+print(debug.getupvalue(f, 1))
+```
+"##
+    ),
+    e!(
+        "debug.setupvalue",
+        "executor",
+        r##"
+`debug.setupvalue(f_or_level, index, value)`
+
+Replaces an upvalue: what the function and every other closure sharing that local see.
+
+```lua
+local n = 0
+local function f() n += 1 return n end
+debug.setupvalue(f, 1, 99)
+```
+"##
+    ),
+    e!(
+        "debug.getmetatable",
+        "executor",
+        r##"
+`debug.getmetatable(value)`
+
+The raw metatable, as `getrawmetatable`.
+
+```lua
+print(debug.getmetatable(game) ~= nil)
+```
+"##
+    ),
+    e!(
+        "debug.setmetatable",
+        "executor",
+        r##"
+`debug.setmetatable(value, mt)`
+
+As `setrawmetatable`.
+
+```lua
+debug.setmetatable({}, {})
+```
+"##
+    ),
+    e!(
+        "debug.getregistry",
+        "executor",
+        r##"
+`debug.getregistry()`
+
+As `getreg`.
+
+```lua
+print(type(debug.getregistry()))
+```
+"##
+    ),
+    e!(
+        "debug.profilebegin",
+        "executor",
+        r##"
+`debug.profilebegin(label)`
+
+Does nothing (Roblox's profiler isn't here).
+
+```lua
+debug.profilebegin("work")
+```
+"##
+    ),
+    e!(
+        "debug.profileend",
+        "executor",
+        r##"
+`debug.profileend()`
+
+Does nothing.
+
+```lua
+debug.profileend()
+```
+"##
+    ),
+    e!(
+        "debug.setmemorycategory",
+        "executor",
+        r##"
+`debug.setmemorycategory(name)`
+
+Does nothing.
+
+```lua
+debug.setmemorycategory("ui")
+```
+"##
+    ),
+    e!(
+        "debug.resetmemorycategory",
+        "executor",
+        r##"
+`debug.resetmemorycategory()`
+
+Does nothing.
+
+```lua
+debug.resetmemorycategory()
+```
+"##
+    ),
+    e!(
+        "getrawmetatable",
+        "executor",
+        r##"
+`getrawmetatable(value)`
+
+A table's or userdata's metatable, even when `__metatable` hides it (Instances' is read only).
+
+```lua
+local mt = getrawmetatable(game)
+```
+"##
+    ),
+    e!(
+        "setrawmetatable",
+        "executor",
+        r##"
+`setrawmetatable(value, mt)`
+
+Sets a table's or userdata's metatable past `__metatable`; returns the value.
+
+```lua
+local t = setrawmetatable({}, { __index = { x = 1 } })
+```
+"##
+    ),
+    e!(
+        "setreadonly",
+        "executor",
+        r##"
+`setreadonly(t, on)`
+
+Makes a table read only (writes error `attempt to modify a readonly table`) or writable again.
+
+```lua
+local mt = getrawmetatable(game)
+setreadonly(mt, false)
+setreadonly(mt, true)
+```
+"##
+    ),
+    e!(
+        "isreadonly",
+        "executor",
+        r##"
+`isreadonly(t)`
+
+Whether a table is read only (`table.freeze` or `setreadonly`).
+
+```lua
+print(isreadonly(getrawmetatable(game)))
+```
+"##
+    ),
+    e!(
+        "getnamecallmethod",
+        "executor",
+        r##"
+`getnamecallmethod()`
+
+The method name of the `obj:Method(...)` call in progress, inside a `__namecall` hook.
+
+```lua
+print(getnamecallmethod())
+```
+"##
+    ),
+    e!(
+        "getgenv",
+        "executor",
+        r##"
+`getgenv()`
+
+The executor's globals, shared by every mod: the studio's API and the executor library, and what scripts put there (`getgenv().x = 1` makes `x` a global of every mod that hasn't its own). Each mod's own globals fall back to it.
+
+```lua
+getgenv().shared_setting = true
+```
+"##
+    ),
+    e!(
+        "getrenv",
+        "executor",
+        r##"
+`getrenv()`
+
+Roblox's globals: the standard library, `game`, `workspace`, `Instance`, the data types, `task`. `getgenv()` falls back to it, so changing it changes what every mod sees.
+
+```lua
+print(getrenv().game == game)
+```
+"##
+    ),
+    e!(
+        "getfenv",
+        "executor",
+        r##"
+`getfenv([f_or_level])`
+
+A Lua function's globals (by default the caller's).
+
+```lua
+print(getfenv() == _G)
+```
+"##
+    ),
+    e!(
+        "setfenv",
+        "executor",
+        r##"
+`setfenv(f_or_level, globals)`
+
+Gives a Lua function other globals; returns it.
+
+```lua
+local f = function() return x end
+setfenv(f, { x = 1 })
+```
+"##
+    ),
+    e!(
+        "getgc",
+        "executor",
+        r##"
+`getgc([includeTables])`
+
+The live functions (and tables, with `true`) made since the studio started tracking them: from the load of the first mod whose source names `getgc`, `filtergc`, `getreg` or `getproto` (or the first call to one).
+
+```lua
+for _, f in getgc() do end
+```
+"##
+    ),
+    e!(
+        "filtergc",
+        "executor",
+        r##"
+`filtergc(kind, options[, returnOne])`
+
+`getgc` filtered: `kind` `"function"` with `Name`, `Hash` (getfunctionhash), `Constants` and `Upvalues` (every item must be there) and `IgnoreExecutor` (true by default, which skips every Lua function here: they are all mods'), or `"table"` with `Keys`, `Values`, `KeyValuePairs` and `Metatable`. A list, or the first match with `returnOne`.
+
+```lua
+local f = filtergc("function", { Name = "update", IgnoreExecutor = false }, true)
+```
+"##
+    ),
+    e!(
+        "getreg",
+        "executor",
+        r##"
+`getreg()`
+
+The live threads and functions the studio tracks (see `getgc`), as a list.
+
+```lua
+for _, v in getreg() do end
+```
+"##
+    ),
+    e!(
+        "newproxy",
+        "executor",
+        r##"
+`newproxy([withMetatable])`
+
+An empty userdata, with an empty metatable of its own when asked.
+
+```lua
+local p = newproxy(true)
+```
+"##
+    ),
+    e!(
+        "identifyexecutor",
+        "executor",
+        r##"
+`identifyexecutor()`
+
+`"Horizon Studio"` and the studio's version.
+
+```lua
+print(identifyexecutor())
+```
+"##
+    ),
+    e!(
+        "getexecutorname",
+        "executor",
+        r##"
+`getexecutorname()`
+
+The same function as `identifyexecutor`, under the name other executors use.
+
+```lua
+print(getexecutorname == identifyexecutor)
+```
+"##
+    ),
+    e!(
+        "getthreadidentity",
+        "executor",
+        r##"
+`getthreadidentity()`
+
+The running thread's identity: 8 unless `setthreadidentity` set another.
+
+```lua
+print(getthreadidentity())
+```
+"##
+    ),
+    e!(
+        "setthreadidentity",
+        "executor",
+        r##"
+`setthreadidentity(level)`
+
+Sets the running thread's identity (0 to 8). Below 3, `game:GetService("CoreGui")` gives nil.
+
+```lua
+setthreadidentity(8)
+```
+"##
+    ),
+    e!(
+        "getidentity",
+        "executor",
+        r##"
+`getidentity()`
+
+The same function as `getthreadidentity`, under the name other executors use.
+
+```lua
+print(getidentity == getthreadidentity)
+```
+"##
+    ),
+    e!(
+        "setidentity",
+        "executor",
+        r##"
+`setidentity(level)`
+
+The same function as `setthreadidentity`, under the name other executors use.
+
+```lua
+print(setidentity == setthreadidentity)
+```
+"##
+    ),
+    e!(
+        "base64encode",
+        "executor",
+        r##"
+`base64encode(data)`
+
+`data` (any bytes) as Base64 text.
+
+```lua
+print(base64encode("hi")) -- aGk=
+```
+"##
+    ),
+    e!(
+        "base64decode",
+        "executor",
+        r##"
+`base64decode(text)`
+
+Base64 text back to its bytes; errors on bad Base64.
+
+```lua
+print(base64decode("aGk="))
+```
+"##
+    ),
+    e!(
+        "lz4compress",
+        "executor",
+        r##"
+`lz4compress(data)`
+
+An LZ4 block of `data`.
+
+```lua
+local packed = lz4compress(string.rep("ab", 100))
+```
+"##
+    ),
+    e!(
+        "lz4decompress",
+        "executor",
+        r##"
+`lz4decompress(block[, size])`
+
+An LZ4 block's bytes (`size`, if given, is the most it may make).
+
+```lua
+print(lz4decompress(lz4compress("hello")))
+```
+"##
+    ),
+    e!(
+        "writefile",
+        "executor",
+        r##"
+`writefile(path, data)`
+
+Writes a file (and the folders on its way), replacing it. Paths are relative to the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), with `/` between folders; absolute paths and `..` are refused (`... is outside the workspace folder`). Files are 16 MiB at most, and executable or archive extensions (`.exe`, `.bat`, `.js`, `.zip`, ...) are refused.
+
+```lua
+writefile("notes.txt", "hello")
+```
+"##
+    ),
+    e!(
+        "readfile",
+        "executor",
+        r##"
+`readfile(path)`
+
+A file's bytes; errors when there is none. Paths are relative to the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), with `/` between folders; absolute paths and `..` are refused (`... is outside the workspace folder`).
+
+```lua
+local text = readfile("notes.txt")
+```
+"##
+    ),
+    e!(
+        "appendfile",
+        "executor",
+        r##"
+`appendfile(path, data)`
+
+Adds to the end of a file, making it if needed. Paths are relative to the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), with `/` between folders; absolute paths and `..` are refused (`... is outside the workspace folder`).
+
+```lua
+appendfile("log.txt", "line\n")
+```
+"##
+    ),
+    e!(
+        "isfile",
+        "executor",
+        r##"
+`isfile(path)`
+
+Whether a file is there.
+
+```lua
+print(isfile("notes.txt"))
+```
+"##
+    ),
+    e!(
+        "isfolder",
+        "executor",
+        r##"
+`isfolder(path)`
+
+Whether a folder is there.
+
+```lua
+print(isfolder("saves"))
+```
+"##
+    ),
+    e!(
+        "makefolder",
+        "executor",
+        r##"
+`makefolder(path)`
+
+Makes a folder (and those on its way).
+
+```lua
+makefolder("saves")
+```
+"##
+    ),
+    e!(
+        "delfile",
+        "executor",
+        r##"
+`delfile(path)`
+
+Deletes a file, if there is one.
+
+```lua
+delfile("notes.txt")
+```
+"##
+    ),
+    e!(
+        "delfolder",
+        "executor",
+        r##"
+`delfolder(path)`
+
+Deletes a folder and what is in it (not the workspace folder itself).
+
+```lua
+delfolder("saves")
+```
+"##
+    ),
+    e!(
+        "listfiles",
+        "executor",
+        r##"
+`listfiles([path])`
+
+The files and folders in a folder, as paths from the workspace folder (`"saves/a.txt"`), sorted.
+
+```lua
+for _, p in listfiles("") do print(p) end
+```
+"##
+    ),
+    e!(
+        "loadfile",
+        "executor",
+        r##"
+`loadfile(path)`
+
+Compiles a file of Luau into a function with the caller's globals; a syntax error errors.
+
+```lua
+writefile("m.lua", "return 1")
+print(loadfile("m.lua")())
+```
+"##
+    ),
+    e!(
+        "dofile",
+        "executor",
+        r##"
+`dofile(path)`
+
+Runs a file of Luau and returns what it returns.
+
+```lua
+writefile("m.lua", "return 1")
+print(dofile("m.lua"))
+```
+"##
+    ),
+    e!(
+        "getcustomasset",
+        "executor",
+        r##"
+`getcustomasset(path)`
+
+An asset id (`rbxasset://horizon-studio/<path>`) for a workspace file. An ImageLabel or ImageButton with it as its `Image` draws the PNG (in blocks of up to 48 x 48).
+
+```lua
+local img = Instance.new("ImageLabel")
+img.Image = getcustomasset("icon.png")
+```
+"##
+    ),
+    e!(
+        "request",
+        "executor",
+        r##"
+`request(options)`
+
+An HTTP request, waiting (the thread yields) for the answer: `options` has `Url`, `Method` (`GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `OPTIONS`, `PATCH`), and optional `Body`, `Headers` and `Cookies`. Returns `{Success, StatusCode, StatusMessage, Headers, Body}`; a request that got no answer has `StatusCode` 0 and the reason in `StatusMessage`. It reaches the internet only: addresses on this computer or its network are refused. It sends `User-Agent: Horizon Studio` and the `Horizon-Studio-User-Identifier` and `Horizon-Studio-Fingerprint` headers (a value made from the studio's folder, not the machine). `game:HttpGet(url)`, `game:HttpPost(url, data[, contentType])` and HttpService's `GetAsync`, `PostAsync` and `RequestAsync` use it and error when there is no answer.
+
+```lua
+local r = request({ Url = "https://httpbin.org/get", Method = "GET" })
+print(r.StatusCode)
+```
+"##
+    ),
+    e!(
+        "http_request",
+        "executor",
+        r##"
+`http_request(options)`
+
+The same function as `request`, under the name other executors use.
+
+```lua
+print(http_request == request)
+```
+"##
+    ),
+    e!(
+        "http.request",
+        "executor",
+        r##"
+`http.request(options)`
+
+The same function as `request`.
+
+```lua
+print(http.request == request)
+```
+"##
+    ),
+    e!(
+        "WebSocket.connect",
+        "executor",
+        r##"
+`WebSocket.connect(url)`
+
+Opens a `ws://` or `wss://` WebSocket, waiting until it is open (errors if it can't). The object has `Send(message)`, `Close()`, and the events `OnMessage(message)` and `OnClose()`. The internet only, as `request`.
+
+```lua
+local ws = WebSocket.connect("wss://ws.postman-echo.com/raw")
+ws.OnMessage:Connect(print)
+ws:Send("Hello")
+```
+"##
+    ),
+    e!(
+        "WebSocket.Connect",
+        "executor",
+        r##"
+`WebSocket.Connect(url)`
+
+The same function as `WebSocket.connect`.
+
+```lua
+print(WebSocket.Connect == WebSocket.connect)
+```
+"##
+    ),
+    e!(
+        "Drawing.new",
+        "executor",
+        r##"
+`Drawing.new(kind)`
+
+A drawing over the HUD, in screen dp (the Camera's ViewportSize): `Line` (`From`, `To`, `Thickness`), `Text` (`Text`, `Size`, `Position`, `Center`, `Outline`, `OutlineColor`, `Font` from `Drawing.Fonts`, read-only `TextBounds`), `Image` (`Data`: a PNG's bytes, `Size`, `Position`), `Circle` (`Position` its centre, `Radius`, `NumSides`, `Thickness`, `Filled`), `Square` (`Position`, `Size`, `Thickness`, `Filled`), `Quad` (`PointA` to `PointD`) and `Triangle` (`PointA` to `PointC`), each with `Thickness` and `Filled`. All have `Visible` (false at first), `ZIndex`, `Color`, `Transparency` (0 opaque, 1 invisible), `__OBJECT_EXISTS` and `Destroy()` (or `Remove()`). They go when their mod stops.
+
+```lua
+local c = Drawing.new("Circle")
+c.Radius = 30
+c.Position = workspace.CurrentCamera.ViewportSize / 2
+c.Visible = true
+```
+"##
+    ),
+    e!(
+        "Drawing.clear",
+        "executor",
+        r##"
+`Drawing.clear()`
+
+The same function as `cleardrawcache`.
+
+```lua
+Drawing.clear()
+```
+"##
+    ),
+    e!(
+        "cleardrawcache",
+        "executor",
+        r##"
+`cleardrawcache()`
+
+Destroys every Drawing.
+
+```lua
+cleardrawcache()
+```
+"##
+    ),
+    e!(
+        "getrenderproperty",
+        "executor",
+        r##"
+`getrenderproperty(drawing, property)`
+
+`drawing[property]`.
+
+```lua
+local c = Drawing.new("Circle")
+print(getrenderproperty(c, "Radius"))
+```
+"##
+    ),
+    e!(
+        "setrenderproperty",
+        "executor",
+        r##"
+`setrenderproperty(drawing, property, value)`
+
+`drawing[property] = value`.
+
+```lua
+local c = Drawing.new("Circle")
+setrenderproperty(c, "Radius", 10)
+```
+"##
+    ),
+    e!(
+        "isrenderobj",
+        "executor",
+        r##"
+`isrenderobj(value)`
+
+Whether the value is a Drawing.
+
+```lua
+print(isrenderobj(Drawing.new("Line")))
+```
+"##
+    ),
+    e!(
+        "cloneref",
+        "executor",
+        r##"
+`cloneref(instance)`
+
+Another reference to the Instance: it works the same but isn't `==` to the first (compare with `compareinstances`).
+
+```lua
+local p = cloneref(game.Players.LocalPlayer)
+```
+"##
+    ),
+    e!(
+        "compareinstances",
+        "executor",
+        r##"
+`compareinstances(a, b)`
+
+Whether two values are the same Instance, clonerefs included.
+
+```lua
+print(compareinstances(game, cloneref(game)))
+```
+"##
+    ),
+    e!(
+        "gethui",
+        "executor",
+        r##"
+`gethui()`
+
+A Folder outside the DataModel for GUIs: ScreenGuis parented there draw like the PlayerGui's, and nothing under `game` finds them.
+
+```lua
+local gui = Instance.new("ScreenGui")
+gui.Parent = gethui()
+```
+"##
+    ),
+    e!(
+        "getinstances",
+        "executor",
+        r##"
+`getinstances()`
+
+Every Instance that exists (destroyed ones aside), in or out of the DataModel.
+
+```lua
+print(#getinstances())
+```
+"##
+    ),
+    e!(
+        "getnilinstances",
+        "executor",
+        r##"
+`getnilinstances()`
+
+The Instances with no parent (besides `game` and `gethui()`).
+
+```lua
+print(#getnilinstances())
+```
+"##
+    ),
+    e!(
+        "fireclickdetector",
+        "executor",
+        r##"
+`fireclickdetector(detector[, distance[, event]])`
+
+Fires a ClickDetector's `MouseClick` (or `RightMouseClick`, `MouseHoverEnter`, `MouseHoverLeave`) with the LocalPlayer.
+
+```lua
+local cd = Instance.new("ClickDetector")
+fireclickdetector(cd)
+```
+"##
+    ),
+    e!(
+        "fireproximityprompt",
+        "executor",
+        r##"
+`fireproximityprompt(prompt)`
+
+Triggers a ProximityPrompt at once: PromptButtonHoldBegan, Triggered, PromptButtonHoldEnded and TriggerEnded, with the LocalPlayer.
+
+```lua
+local p = Instance.new("ProximityPrompt")
+fireproximityprompt(p)
+```
+"##
+    ),
+    e!(
+        "firetouchinterest",
+        "executor",
+        r##"
+`firetouchinterest(part1, part2, toggle)`
+
+Fires each part's `Touched` with the other (`toggle` true or 0), or `TouchEnded` (false or 1).
+
+```lua
+local a, b = Instance.new("Part"), Instance.new("Part")
+firetouchinterest(a, b, true)
+```
+"##
+    ),
+    e!(
+        "getcallbackvalue",
+        "executor",
+        r##"
+`getcallbackvalue(instance, property)`
+
+A callback property's function (`OnInvoke`, `OnClientInvoke`...), or nil.
+
+```lua
+local bf = Instance.new("BindableFunction")
+print(getcallbackvalue(bf, "OnInvoke"))
+```
+"##
+    ),
+    e!(
+        "getconnections",
+        "executor",
+        r##"
+`getconnections(signal)`
+
+A signal's connections, each a table: `Enabled`, `ForeignState` (false), `LuaConnection` (true), `Function`, `Thread` (that connected it), and `Fire(...)`, `Defer(...)`, `Disconnect()`, `Disable()`, `Enable()`.
+
+```lua
+for _, c in getconnections(workspace.ChildAdded) do c:Disable() end
+```
+"##
+    ),
+    e!(
+        "firesignal",
+        "executor",
+        r##"
+`firesignal(signal, ...)`
+
+Runs every enabled connection of the signal now, each in a thread of its own, with these arguments.
+
+```lua
+firesignal(workspace.ChildAdded, workspace)
+```
+"##
+    ),
+    e!(
+        "replicatesignal",
+        "executor",
+        r##"
+`replicatesignal(signal, ...)`
+
+Errors: there is no Roblox server here to replicate to.
+
+```lua
+print(pcall(replicatesignal, workspace.ChildAdded))
+```
+"##
+    ),
+    e!(
+        "getscripts",
+        "executor",
+        r##"
+`getscripts()`
+
+Every LocalScript, Script and ModuleScript Instance, including each mod's `script`.
+
+```lua
+print(#getscripts())
+```
+"##
+    ),
+    e!(
+        "getrunningscripts",
+        "executor",
+        r##"
+`getrunningscripts()`
+
+The `script` of every running mod.
+
+```lua
+print(#getrunningscripts())
+```
+"##
+    ),
+    e!(
+        "getloadedmodules",
+        "executor",
+        r##"
+`getloadedmodules()`
+
+The ModuleScripts `require` has run.
+
+```lua
+print(#getloadedmodules())
+```
+"##
+    ),
+    e!(
+        "getcallingscript",
+        "executor",
+        r##"
+`getcallingscript()`
+
+nil: the code calling is always the executor's here (every script is a mod).
+
+```lua
+print(getcallingscript())
+```
+"##
+    ),
+    e!(
+        "getscriptfromthread",
+        "executor",
+        r##"
+`getscriptfromthread(thread)`
+
+nil, as every thread is the executor's here.
+
+```lua
+print(getscriptfromthread(coroutine.running()))
+```
+"##
+    ),
+    e!(
+        "getsenv",
+        "executor",
+        r##"
+`getsenv(script)`
+
+A running mod's own globals, by its `script`; errors for a script that isn't running.
+
+```lua
+print(getsenv(script) == getfenv())
+```
+"##
+    ),
+    e!(
+        "getscriptclosure",
+        "executor",
+        r##"
+`getscriptclosure(script)`
+
+A new function of a running mod's main file (not the one running), or nil.
+
+```lua
+local main = getscriptclosure(script)
+```
+"##
+    ),
+    e!(
+        "getscriptfunction",
+        "executor",
+        r##"
+`getscriptfunction(script)`
+
+The same function as `getscriptclosure`, under the name other executors use.
+
+```lua
+print(getscriptfunction == getscriptclosure)
+```
+"##
+    ),
+    e!(
+        "getscriptbytecode",
+        "executor",
+        r##"
+`getscriptbytecode(script)`
+
+A running mod's compiled main file, as the studio's own text dump of its bytecode (it is not Luau bytecode), or nil.
+
+```lua
+print(#getscriptbytecode(script))
+```
+"##
+    ),
+    e!(
+        "dumpstring",
+        "executor",
+        r##"
+`dumpstring(script)`
+
+The same function as `getscriptbytecode`, under the name other executors use.
+
+```lua
+print(dumpstring == getscriptbytecode)
+```
+"##
+    ),
+    e!(
+        "getscripthash",
+        "executor",
+        r##"
+`getscripthash(script)`
+
+The SHA-384, in hex, of `getscriptbytecode(script)`, or nil.
+
+```lua
+print(getscripthash(script))
+```
+"##
+    ),
+    e!(
+        "gethiddenproperty",
+        "executor",
+        r##"
+`gethiddenproperty(instance, property)`
+
+A property's value and whether it is hidden: Roblox's properties here give `false`; others are hidden ones, kept per Instance (nil until set). A ModuleScript's hidden `Source` is what `require` runs.
+
+```lua
+print(gethiddenproperty(Instance.new("Part"), "Name"))
+```
+"##
+    ),
+    e!(
+        "sethiddenproperty",
+        "executor",
+        r##"
+`sethiddenproperty(instance, property, value)`
+
+Sets a property, hidden or not; returns whether it was hidden.
+
+```lua
+local m = Instance.new("ModuleScript")
+sethiddenproperty(m, "Source", "return 1")
+print(require(m))
+```
+"##
+    ),
+    e!(
+        "isscriptable",
+        "executor",
+        r##"
+`isscriptable(instance, property)`
+
+Whether scripts can read and write a property (nil when there is no such property).
+
+```lua
+print(isscriptable(Instance.new("Part"), "Name"))
+```
+"##
+    ),
+    e!(
+        "setscriptable",
+        "executor",
+        r##"
+`setscriptable(instance, property, on)`
+
+Makes a property unreadable to scripts (false), or a hidden one readable (true); returns whether it was scriptable before.
+
+```lua
+local p = Instance.new("Part")
+setscriptable(p, "Name", false)
 ```
 "##
     ),
