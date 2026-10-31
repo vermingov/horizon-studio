@@ -9,7 +9,9 @@
 
 use crate::game::hstudio::VERSION;
 use crate::game::hstudio_examples::EXAMPLES;
-use crate::headless::{Run, STEPS_HELP, Source, check_id, read_mod, removable, remove_files, run_steps, write_mod};
+use crate::headless::{
+    OldScript, Run, STEPS_HELP, Source, check_id, read_mod, removable, remove_files, run_steps, write_mod,
+};
 use crate::mcp_docs::{self, Reference};
 use serde_json::{Value as Json, json};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -348,9 +350,10 @@ pub fn tools() -> Json {
             "write_mod",
             "Creates or changes a script mod: a script's one file, or a module's files (for a module that \
               exists, only the files given are written, the others kept, and `remove` deletes files). main.lua \
-              for an existing script makes it a module (the old file goes to the trash). It is checked headless \
-              first, as it will be on disk (loads, registers, errors with their file and line); while the game is \
-              linked it then reloads there and its live state is returned.",
+              for an existing script makes it a module (the old file goes to the studio's trash, or is deleted \
+              when the mods folder is not the studio's: `trashed` or `deleted` in the reply says which). It is \
+              checked headless first, as it will be on disk (loads, registers, errors with their file and line); \
+              while the game is linked it then reloads there and its live state is returned.",
             json!({ "id": id, "files": files_schema(), "remove": remove_schema(), "mods_dir": mods_dir }),
             &["id"]
         ),
@@ -728,16 +731,17 @@ impl Server {
                 })
                 .map(|(r, _)| r)
                 .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
-                let path = if files.is_empty() {
-                    dir.join(id)
+                let (path, old_script) = if files.is_empty() {
+                    (dir.join(id), None)
                 } else {
-                    write_mod(&dir, id, &files)?
+                    let w = write_mod(&dir, id, &files)?;
+                    (w.path, w.old_script)
                 };
                 let removed = remove_files(&dir, id, &remove)?;
                 let live = self
                     .live("reload", json!({ "id": id }))
                     .map(|mods| mods.as_array().and_then(|a| a.iter().find(|m| m["id"] == id)).cloned());
-                Ok(json!({
+                let mut reply = json!({
                     "ok": check["ok"] == true,
                     "written": path,
                     "removed": removed,
@@ -746,7 +750,14 @@ impl Server {
                         Ok(state) => state.unwrap_or(json!("not found in the game")),
                         Err(e) => json!(format!("not linked: {e}")),
                     },
-                }))
+                });
+                // A script made a module: where its file went.
+                match old_script {
+                    Some(OldScript::Trashed(to)) => reply["trashed"] = json!(to),
+                    Some(OldScript::Deleted(_)) => reply["deleted"] = json!(format!("{id}.lua")),
+                    None => {}
+                }
+                Ok(reply)
             }
             "delete_mod" => {
                 let id = str_arg(args, "id")?;

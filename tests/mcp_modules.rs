@@ -29,7 +29,8 @@ fn call(server: &mut Server, name: &str, args: Json) -> (Json, bool) {
     (serde_json::from_str(&text).unwrap_or(Json::String(text)), error)
 }
 
-/// A studio folder of its own with a mods folder in it, gone at the end.
+/// A studio folder of its own with a mods folder in it (and the studio.txt
+/// the game writes there), gone at the end.
 struct Folder(PathBuf);
 
 impl Folder {
@@ -37,6 +38,7 @@ impl Folder {
         let dir = std::env::temp_dir().join(format!("hstudio-mcp-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("mods")).unwrap();
+        std::fs::write(dir.join("studio.txt"), "seen:uikit\n").unwrap();
         Folder(dir)
     }
     fn mods(&self) -> PathBuf {
@@ -133,6 +135,7 @@ fn write_mod_changes_some_files_of_a_module_and_removes_others() {
     assert!(mods.join("solo/main.lua").is_file());
     assert!(!mods.join("solo.lua").exists());
     assert!(studio.0.join("trash/solo.lua").is_file());
+    assert_eq!(r["trashed"], json!(studio.0.join("trash/solo.lua")), "{r:#}");
     // A script can't lose files: remove is for modules.
     let (_, error) = call(
         &mut s,
@@ -471,4 +474,34 @@ fn an_id_another_file_of_the_mods_folder_holds_is_refused() {
         );
         assert!(!error, "{r:#}");
     }
+}
+
+#[test]
+fn a_script_made_a_module_outside_a_studio_folder_is_deleted() {
+    let mut s = server();
+    // A mods folder in a project: its parent is no studio's folder.
+    let project = std::env::temp_dir().join(format!("hstudio-mcp-project-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&project);
+    let mods = project.join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    let d = mods.to_str().unwrap();
+    let (_, error) = call(
+        &mut s,
+        "write_mod",
+        json!({ "id": "solo", "mods_dir": d, "files": { "solo.lua": "print('one file')\n" } }),
+    );
+    assert!(!error);
+    let (r, error) = call(
+        &mut s,
+        "write_mod",
+        json!({ "id": "solo", "mods_dir": d, "files": { "main.lua": "print('a module now')\n" } }),
+    );
+    assert!(!error, "{r:#}");
+    assert!(mods.join("solo/main.lua").is_file() && !mods.join("solo.lua").exists());
+    // Deleted for good, as delete_mod and remove delete, and the reply says
+    // so: no trash folder appears beside the project's mods folder.
+    assert!(!project.join("trash").exists());
+    assert_eq!(r["deleted"], "solo.lua", "{r:#}");
+    assert!(r.get("trashed").is_none(), "{r:#}");
+    let _ = std::fs::remove_dir_all(&project);
 }

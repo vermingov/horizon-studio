@@ -411,16 +411,36 @@ pub fn read_mod(mods_dir: &Path, id: &str) -> Result<Vec<(String, String)>, Stri
     }
 }
 
+/// What `write_mod` wrote: the mod's file, or its module's folder, and for
+/// a script it made a module, where the script's file went.
+#[derive(Debug)]
+pub struct Written {
+    pub path: PathBuf,
+    pub old_script: Option<OldScript>,
+}
+
+/// Where the file of a script made a module went.
+#[derive(Debug, PartialEq)]
+pub enum OldScript {
+    /// To the studio's trash, at this path: the mods folder is the studio's.
+    Trashed(PathBuf),
+    /// Deleted for good, as delete_mod deletes a mod: the mods folder is in
+    /// a folder that is not the studio's, which gets no trash of its own.
+    Deleted(PathBuf),
+}
+
 /// Writes a mod's files into a mods folder: a module when there is a
 /// `main.lua` or the module exists already (then only the files given are
 /// written, the others kept), else the single file of a script. A
-/// `main.lua` for an existing script makes it a module: the script's file
-/// goes to the studio's trash, beside the mods folder, once the module is
-/// written. Every path is checked before anything on disk changes, and a
-/// module's files are written beside it first, so a path refused or a
-/// write that fails leaves the mod as it was. An id that another file of
-/// the mods folder has ("Night Light.lua" is night_light's) is refused.
-pub fn write_mod(mods_dir: &Path, id: &str, files: &[(String, String)]) -> Result<PathBuf, String> {
+/// `main.lua` for an existing script makes it a module: once the module is
+/// written, the script's file goes to the studio's trash when the mods
+/// folder is the studio's (its folder has the studio.txt the game writes),
+/// and is deleted otherwise. Every path is checked before anything on disk
+/// changes, and a module's files are written beside it first, so a path
+/// refused or a write that fails leaves the mod as it was. An id that
+/// another file of the mods folder has ("Night Light.lua" is
+/// night_light's) is refused.
+pub fn write_mod(mods_dir: &Path, id: &str, files: &[(String, String)]) -> Result<Written, String> {
     check_id(id)?;
     let dir = mods_dir.join(id);
     let script = mods_dir.join(format!("{id}.lua"));
@@ -452,7 +472,10 @@ pub fn write_mod(mods_dir: &Path, id: &str, files: &[(String, String)]) -> Resul
         }
         std::fs::create_dir_all(mods_dir).map_err(|e| e.to_string())?;
         std::fs::write(&script, text).map_err(|e| e.to_string())?;
-        return Ok(script);
+        return Ok(Written {
+            path: script,
+            old_script: None,
+        });
     }
     if exists && matches!(files, [(name, _)] if *name == format!("{id}.lua")) {
         return Err(format!(
@@ -483,12 +506,20 @@ pub fn write_mod(mods_dir: &Path, id: &str, files: &[(String, String)]) -> Resul
     });
     let _ = std::fs::remove_dir_all(&stage);
     moved?;
+    let mut old_script = None;
     if !exists && script.is_file() {
-        let trash = mods_dir.parent().unwrap_or(mods_dir).join("trash");
-        crate::game::hstudio_modfiles::to_trash(&trash, mods_dir, &script)
-            .map_err(|e| format!("{id} is a module now, but {id}.lua is still beside it: {e}"))?;
+        let left = |e: String| format!("{id} is a module now, but {id}.lua is still beside it: {e}");
+        old_script = Some(match mods_dir.parent().filter(|d| d.join("studio.txt").is_file()) {
+            Some(studio) => OldScript::Trashed(
+                crate::game::hstudio_modfiles::to_trash(&studio.join("trash"), mods_dir, &script).map_err(left)?,
+            ),
+            None => {
+                std::fs::remove_file(&script).map_err(|e| left(e.to_string()))?;
+                OldScript::Deleted(script)
+            }
+        });
     }
-    Ok(dir)
+    Ok(Written { path: dir, old_script })
 }
 
 /// The paths of a module's files about to be written, all checked before
