@@ -11,13 +11,16 @@
 
 use super::hstudio::{Font as StudioFont, GameApi};
 use super::hstudio_lua::{Lua, Res, Table, Throw, Value, check_num, check_text};
+use super::hstudio_quads::Shade;
 use super::hstudio_rbx::{Env, Id, Rbx, Wait, is_a};
 use super::hstudio_rbx_layout::{
     self as layout, AspectType, AutomaticSize, Class, DominantAxis, FillDirection, HorizontalAlignment, Layout, NodeId,
     ScrollBarInset, ScrollingDirection, SizeConstraint, SortOrder, StartCorner, TextXAlignment, TextYAlignment, Tree,
     VerticalAlignment, VerticalScrollBarPosition, Viewport, ZIndexBehavior,
 };
-use super::hstudio_rbx_types::{CFrame, Color3, Font, FontWeight, Rect, UDim2, Vector2, Vector3};
+use super::hstudio_rbx_types::{
+    CFrame, Color3, ColorSequence, Font, FontWeight, NumberSequence, Rect, UDim2, Vector2, Vector3,
+};
 use super::hstudio_rbx_values::{
     Data, EnumItem, as_c3, as_cf, as_font, as_item, as_udim, as_udim2, as_v2, as_v3, cf, enum_item, enum_value, get,
     v2, v3,
@@ -668,7 +671,7 @@ pub fn draw(
         while let Some((sf, _, _, _)) = bars_over.last()
             && !rbx.is_descendant_of(frame.node_inst[n], *sf)
         {
-            draw_bars(game, bars_over.pop());
+            draw_bars(rbx, game, frame, bars_over.pop());
         }
         let Some(p) = frame.layout.get(n) else { continue };
         if !p.shown {
@@ -681,14 +684,22 @@ pub fn draw(
             continue;
         }
         let ga = group_alpha(rbx, id);
+        let gc = group_color(rbx, id);
+        // A mark where the game can still cut, turn and colour the drawing:
+        // then the object is drawn whole, and changed once it is drawn.
+        let mark = game.dp_mark();
         let radius = p.corner_radius as f32;
         let hover = rbx.pointer.hover.first() == Some(&id);
         let pressed = rbx.pointer.pressed.is_some_and(|(b, _)| b == id);
         let auto = find(inst.class, "AutoButtonColor") && inst.get("AutoButtonColor").truthy();
-        // The background, tinted by a gradient's middle and a button's state.
+        // The background, tinted by a button's state (and by a gradient's
+        // middle where the drawing can't be coloured once drawn).
         let mut bg = color(inst, "BackgroundColor3");
         let mut bg_alpha = (1.0 - inst.get("BackgroundTransparency").to_num().unwrap_or(0.0)) * ga;
-        if let Some(g) = component(rbx, id, "UIGradient") {
+        let gradient = component(rbx, id, "UIGradient");
+        if mark.is_none()
+            && let Some(g) = gradient
+        {
             let gi = rbx.inst(g);
             if let Some(Data::ColorSeq(seq)) = get(&gi.get("Color")) {
                 let mid = seq.value_at(0.5);
@@ -705,7 +716,9 @@ pub fn draw(
                 bg = mix(bg, Color3::new(0.0, 0.0, 0.0), 0.15);
             }
         }
-        let r = rect4(vis);
+        let bg = times(bg, gc);
+        let r = rect4(if mark.is_some() { p.rect() } else { vis });
+        let mut extent = p.rect();
         if bg_alpha > 0.0 {
             game.dp_rect(r, radius, argb(bg, bg_alpha));
         }
@@ -720,7 +733,7 @@ pub fn draw(
             match file {
                 Some(bytes) if ia > 0.0 => images.draw(game, &bytes, r, ia),
                 _ if !img.is_empty() && ia > 0.0 => {
-                    game.dp_rect(r, radius, argb(color(inst, "ImageColor3"), ia * 0.18))
+                    game.dp_rect(r, radius, argb(times(color(inst, "ImageColor3"), gc), ia * 0.18))
                 }
                 _ => {}
             }
@@ -728,43 +741,63 @@ pub fn draw(
         // The border, and a UIStroke on the edge.
         let border = inst.get("BorderSizePixel").to_num().unwrap_or(0.0);
         if border >= 1.0 && bg_alpha > 0.0 && radius == 0.0 {
-            let c = argb(color(inst, "BorderColor3"), bg_alpha);
+            let c = argb(times(color(inst, "BorderColor3"), gc), bg_alpha);
             let b = border.min(8.0) as f32;
+            extent = grown(extent, f64::from(b));
             let [x, y, w, h] = r;
             game.dp_rect([x - b, y - b, w + 2.0 * b, b], 0.0, c);
             game.dp_rect([x - b, y + h, w + 2.0 * b, b], 0.0, c);
             game.dp_rect([x - b, y, b, h], 0.0, c);
             game.dp_rect([x + w, y, b, h], 0.0, c);
         }
-        let stroke = component(rbx, id, "UIStroke").map(|s| {
+        // The object's own UIGradient colours what it drew, its UIStroke
+        // aside: a UIGradient in the UIStroke colours that.
+        let own = mark.and(gradient).and_then(|g| gradient_shade(rbx, g, p.rect()));
+        if let (Some(m), Some(s)) = (mark, &own) {
+            game.dp_shade(m, s);
+        }
+        let stroke_id = component(rbx, id, "UIStroke");
+        let stroke = stroke_id.map(|s| {
             let si = rbx.inst(s);
             let alpha = (1.0 - si.get("Transparency").to_num().unwrap_or(0.0)) * ga;
             let thick = si.get("Thickness").to_num().unwrap_or(1.0);
             let border = enum_name(&si.get("ApplyStrokeMode")) == "Border";
-            (argb(color(si, "Color"), alpha), thick, border)
+            (argb(times(color(si, "Color"), gc), alpha), thick, border)
         });
+        let stroke_shade = mark
+            .and(stroke_id)
+            .and_then(|s| component(rbx, s, "UIGradient"))
+            .and_then(|g| gradient_shade(rbx, g, p.rect()));
         let text_object = p.text.is_some();
         if let Some((c, thick, border_mode)) = stroke
             && (border_mode || !text_object)
             && thick > 0.0
         {
             let t = thick.min(16.0) as f32;
+            let sm = stroke_shade.as_ref().and_then(|_| game.dp_mark());
             for i in 0..t.ceil() as i32 {
                 let o = i as f32 + 0.5;
                 let [x, y, w, h] = r;
                 game.dp_border([x - o, y - o, w + 2.0 * o, h + 2.0 * o], radius + o, c);
             }
+            if let (Some(m), Some(s)) = (sm, &stroke_shade) {
+                game.dp_shade(m, s);
+            }
+            extent = grown(extent, f64::from(t.ceil()) + 1.0);
         }
         // Text.
         if let Some(t) = &p.text {
             let placeholder = inst.class.name == "TextBox"
                 && inst.get("Text").as_text().is_none_or(|s| s.is_empty())
                 && rbx.pointer.focus != Some(id);
-            let tc = if placeholder {
-                color(inst, "PlaceholderColor3")
-            } else {
-                color(inst, "TextColor3")
-            };
+            let tc = times(
+                if placeholder {
+                    color(inst, "PlaceholderColor3")
+                } else {
+                    color(inst, "TextColor3")
+                },
+                gc,
+            );
             let ta = (1.0 - inst.get("TextTransparency").to_num().unwrap_or(0.0)) * ga;
             let font = studio_font(&as_font(&inst.get("FontFace")).unwrap_or_default());
             let size = t.size as f32;
@@ -776,13 +809,21 @@ pub fn draw(
                     Some((c, thick, false)) if thick > 0.0 => Some((c, thick as f32)),
                     _ => {
                         let st = inst.get("TextStrokeTransparency").to_num().unwrap_or(1.0);
-                        (st < 1.0).then(|| (argb(color(inst, "TextStrokeColor3"), (1.0 - st) * ta), 1.0))
+                        (st < 1.0).then(|| (argb(times(color(inst, "TextStrokeColor3"), gc), (1.0 - st) * ta), 1.0))
                     }
                 }
             } else {
                 None
             };
             let clip = p.clip;
+            // A UIStroke round the text is coloured by the UIStroke's
+            // gradient; TextStroke's outline is the text's, and the text's
+            // own gradient colours it.
+            let outline_shade = match stroke {
+                Some((_, thick, false)) if text_object && thick > 0.0 => &stroke_shade,
+                _ => &own,
+            };
+            let upright = p.turns.is_empty() || mark.is_none();
             // A TextBox being edited: its selection, behind the text.
             let edit = (rbx.pointer.focus == Some(id) && !placeholder).then(|| edit_of(rbx, id));
             if let Some((a, b)) = edit.as_ref().and_then(LineEdit::selection) {
@@ -800,19 +841,39 @@ pub fn draw(
             }
             for line in &t.lines {
                 let at = [line.position.x as f32, line.position.y as f32 - lift];
-                if let Some(c) = clip
+                // A line wholly outside the clip goes (a turned one may turn into it).
+                if upright
+                    && let Some(c) = clip
                     && (line.position.y + t.size < c.min.y || line.position.y > c.max.y)
                 {
                     continue;
                 }
-                if let Some((c, o)) = outline {
-                    for (dx, dy) in [(-o, 0.0), (o, 0.0), (0.0, -o), (0.0, o)] {
+                let mut o = 0.0;
+                if let Some((c, thick)) = outline {
+                    o = thick;
+                    let om = outline_shade.as_ref().and_then(|_| game.dp_mark());
+                    for (dx, dy) in [(-thick, 0.0), (thick, 0.0), (0.0, -thick), (0.0, thick)] {
                         game.dp_text(&line.text, [at[0] + dx, at[1] + dy], size, font, c);
+                    }
+                    if let (Some(m), Some(s)) = (om, outline_shade) {
+                        game.dp_shade(m, s);
                     }
                 }
                 if ta > 0.0 {
+                    let tm = own.as_ref().and_then(|_| game.dp_mark());
                     game.dp_text(&line.text, at, size, font, argb(tc, ta));
+                    if let (Some(m), Some(s)) = (tm, &own) {
+                        game.dp_shade(m, s);
+                    }
                 }
+                // Geist's line box is 1.45 times the size, about the line.
+                let o = f64::from(o) + 1.0;
+                let (x, y) = (line.position.x, f64::from(at[1]));
+                let line_box = Rect::new(
+                    Vector2::new(x - o, y - o),
+                    Vector2::new(x + line.width + o, y + t.size * 1.45 + o),
+                );
+                extent = Rect::new(extent.min.min(line_box.min), extent.max.max(line_box.max));
             }
             // The caret, blinking, where CursorPosition has it.
             if rbx.pointer.focus == Some(id) && (now * 2.0).fract() < 0.6 {
@@ -827,30 +888,177 @@ pub fn draw(
                 game.dp_rect([cx as f32 + 1.0, cy as f32, 1.5, size], 0.0, argb(tc, ta));
             }
         }
+        // Once it is drawn: the gradients of the groups it is in, its turns
+        // and its clip.
+        if let Some(m) = mark {
+            finish(rbx, game, frame, id, p, m, extent);
+        }
         // A ScrollingFrame's bars, over what it holds.
         if inst.class.name == "ScrollingFrame" {
             let bars = scroll_bars(inst, p);
             if let Some(b) = bars.first() {
                 let ca = (1.0 - inst.get("ScrollBarImageTransparency").to_num().unwrap_or(0.0)) * ga;
-                let c = argb(color(inst, "ScrollBarImageColor3"), ca * 0.7);
+                let c = argb(times(color(inst, "ScrollBarImageColor3"), gc), ca * 0.7);
                 let thumbs = bars.iter().map(|b| rect4(b.thumb)).collect();
                 bars_over.push((id, thumbs, (b.thickness / 2.0) as f32, c));
             }
         }
     }
     while let Some(bars) = bars_over.pop() {
-        draw_bars(game, Some(bars));
+        draw_bars(rbx, game, frame, Some(bars));
     }
 }
 
 /// Draws a ScrollingFrame's thumbs: (the frame, the thumbs, their corner
-/// radius and colour).
-fn draw_bars(game: &mut dyn GameApi, bars: Option<(Id, Vec<[f32; 4]>, f32, u32)>) {
-    let Some((_, thumbs, radius, c)) = bars else {
+/// radius and colour), turned and cut as the frame is.
+fn draw_bars(rbx: &Rbx, game: &mut dyn GameApi, frame: &Frame, bars: Option<(Id, Vec<[f32; 4]>, f32, u32)>) {
+    let Some((id, thumbs, radius, c)) = bars else {
         return;
     };
+    let mark = game.dp_mark();
+    let mut extent: Option<Rect> = None;
     for r in thumbs {
         game.dp_rect(r, radius, c);
+        let at = Rect::new(
+            Vector2::new(f64::from(r[0]), f64::from(r[1])),
+            Vector2::new(f64::from(r[0] + r[2]), f64::from(r[1] + r[3])),
+        );
+        extent = Some(extent.map_or(at, |e| Rect::new(e.min.min(at.min), e.max.max(at.max))));
+    }
+    if let (Some(m), Some(extent)) = (mark, extent)
+        && let Some(p) = frame.inst_node.get(&id).and_then(|&n| frame.layout.get(n))
+    {
+        finish(rbx, game, frame, id, p, m, extent);
+    }
+}
+
+/// How the CanvasGroups above `id` (and `id`, if it is one) colour it:
+/// their GroupColor3s multiplied.
+fn group_color(rbx: &Rbx, id: Id) -> Color3 {
+    let mut c = Color3::new(1.0, 1.0, 1.0);
+    let mut at = Some(id);
+    while let Some(i) = at {
+        let inst = rbx.inst(i);
+        if inst.class.name == "CanvasGroup" {
+            c = times(c, as_c3(&inst.get("GroupColor3")).unwrap_or(Color3::new(1.0, 1.0, 1.0)));
+        }
+        at = inst.parent;
+    }
+    c
+}
+
+/// Two colours multiplied, channel by channel.
+fn times(a: Color3, b: Color3) -> Color3 {
+    Color3::new(a.r * b.r, a.g * b.g, a.b * b.b)
+}
+
+/// `r` grown by `by` on every side.
+fn grown(r: Rect, by: f64) -> Rect {
+    Rect::new(r.min - Vector2::new(by, by), r.max + Vector2::new(by, by))
+}
+
+/// Whether `inner` lies within `outer`.
+fn within(inner: Rect, outer: Rect) -> bool {
+    inner.min.x >= outer.min.x && inner.min.y >= outer.min.y && inner.max.x <= outer.max.x && inner.max.y <= outer.max.y
+}
+
+/// A sequence's value on either side of `t`: two keypoints at one time are
+/// a hard edge, the first's value before it and the last's after.
+fn sides<T: Copy>(keys: &[(f64, T)], t: f64, at: impl Fn(f64) -> T) -> (T, T) {
+    match (keys.iter().position(|k| k.0 == t), keys.iter().rposition(|k| k.0 == t)) {
+        (Some(a), Some(b)) => (keys[a].1, keys[b].1),
+        _ => (at(t), at(t)),
+    }
+}
+
+/// A UIGradient as the colours it gives what an object at `rect` draws.
+/// Its line runs left to right turned clockwise by its Rotation, through
+/// the object's own unit square (so a turn of 45 runs corner to corner on a
+/// square), moved by its Offset (a fraction of the object's size); its
+/// Color's and its Transparency's keypoints are the stops.
+fn gradient_shade(rbx: &Rbx, g: Id, rect: Rect) -> Option<Shade> {
+    let gi = rbx.inst(g);
+    let (w, h) = (rect.width(), rect.height());
+    if !(w > 0.0 && h > 0.0) {
+        return None;
+    }
+    let colors = match get(&gi.get("Color")) {
+        Some(Data::ColorSeq(s)) => s,
+        _ => ColorSequence::constant(Color3::new(1.0, 1.0, 1.0)),
+    };
+    let fades = match get(&gi.get("Transparency")) {
+        Some(Data::NumSeq(s)) => s,
+        _ => NumberSequence::constant(0.0),
+    };
+    let turn = gi.get("Rotation").to_num().unwrap_or(0.0).to_radians();
+    let offset = as_v2(&gi.get("Offset")).unwrap_or_default();
+    let (dx, dy) = (turn.cos(), turn.sin());
+    // t = ((p - min) / size - 0.5 - offset) · (dx, dy) + 0.5
+    let axis = [(dx / w) as f32, (dy / h) as f32];
+    let base = 0.5 - dx * (rect.min.x / w + 0.5 + offset.x) - dy * (rect.min.y / h + 0.5 + offset.y);
+    let color_keys: Vec<(f64, Color3)> = colors.keypoints().iter().map(|k| (k.time, k.value)).collect();
+    let fade_keys: Vec<(f64, f64)> = fades.keypoints().iter().map(|k| (k.time, k.value)).collect();
+    let mut ts: Vec<f64> = color_keys
+        .iter()
+        .map(|k| k.0)
+        .chain(fade_keys.iter().map(|k| k.0))
+        .collect();
+    ts.sort_by(f64::total_cmp);
+    ts.dedup();
+    let mut stops = Vec::with_capacity(ts.len() + 2);
+    for t in ts {
+        let (c0, c1) = sides(&color_keys, t, |t| colors.value_at(t));
+        let (f0, f1) = sides(&fade_keys, t, |t| fades.value_at(t));
+        stops.push((t as f32, argb(c0, 1.0 - f0)));
+        if (c0, f0) != (c1, f1) {
+            stops.push((t as f32, argb(c1, 1.0 - f1)));
+        }
+    }
+    Some(Shade {
+        axis,
+        base: base as f32,
+        stops,
+    })
+}
+
+/// The UIGradient of CanvasGroup `group`, as the colours it gives what is
+/// drawn in the group (a CanvasGroup's gradient colours all it holds).
+fn group_gradient(rbx: &Rbx, frame: &Frame, group: Id) -> Option<Shade> {
+    let g = component(rbx, group, "UIGradient")?;
+    let p = frame.layout.get(*frame.inst_node.get(&group)?)?;
+    gradient_shade(rbx, g, p.rect())
+}
+
+/// What an object's drawing since `mark` gets once it is all drawn: the
+/// gradients of the CanvasGroups it is in, its rotation and its turned
+/// ancestors' (innermost first, so a group's gradient turns with the group),
+/// then the cut to what clips it, when its `extent` reaches out of that.
+fn finish(rbx: &Rbx, game: &mut dyn GameApi, frame: &Frame, id: Id, p: &layout::Placed, mark: usize, extent: Rect) {
+    let mut turns = p.turns.iter().peekable();
+    let mut at = Some(id);
+    while let Some(a) = at {
+        let inst = rbx.inst(a);
+        if is_a(inst.class, "LayerCollector") {
+            break;
+        }
+        if a != id
+            && inst.class.name == "CanvasGroup"
+            && let Some(s) = group_gradient(rbx, frame, a)
+        {
+            game.dp_shade(mark, &s);
+        }
+        if let Some(t) = turns.next_if(|t| frame.node_inst.get(t.node) == Some(&a)) {
+            game.dp_rotate(mark, [t.centre.x as f32, t.centre.y as f32], t.degrees as f32);
+        }
+        at = inst.parent;
+    }
+    for t in turns {
+        game.dp_rotate(mark, [t.centre.x as f32, t.centre.y as f32], t.degrees as f32);
+    }
+    if let Some(c) = p.clip
+        && (!p.turns.is_empty() || !within(extent, c))
+    {
+        game.dp_clip(mark, rect4(c));
     }
 }
 

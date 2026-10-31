@@ -637,8 +637,9 @@ end)
   Roblox's are by default.
 - **ScreenGuis** in the PlayerGui (or CoreGui) are laid out as Roblox lays them out (UDim2 sizes and positions,
   AnchorPoint, UIListLayout, UIGridLayout, UIPadding, UIScale, the constraints, ScrollingFrames, AutomaticSize,
-  ZIndex) and drawn on the HUD with Horizon's shapes and Geist fonts, UICorner, UIStroke and borders included. A GUI
-  pixel is a dp. The GUI takes the mouse while a visible button has `Modal = true` or a TextBox has focus, or after
+  ZIndex) and drawn on the HUD with Horizon's shapes and Geist fonts, UICorner, UIStroke, borders and UIGradients
+  (every keypoint, turned and moved) included; `ClipsDescendants` cuts exactly, `Rotation` turns an object and what it
+  holds, and a CanvasGroup tints and fades all it holds. A GUI pixel is a dp. The GUI takes the mouse while a visible button has `Modal = true` or a TextBox has focus, or after
   **Left Alt**; Escape gives it back (first letting go of a TextBox). Then hovers, clicks (`MouseButton1Click`,
   `Activated`), TextBoxes (a caret, selecting with Shift or a drag, the clipboard, `MultiLine`), scrolling (the wheel
   each way `ScrollingDirection` allows, and both bars, which drag) and dragging work.

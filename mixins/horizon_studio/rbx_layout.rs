@@ -13,9 +13,10 @@
 // UIListLayout and UIGridLayout with their alignment, padding and SortOrder,
 // ScrollingFrame canvases (CanvasSize, AutomaticCanvasSize, scroll bar
 // insets, CanvasPosition clamped), ClipsDescendants, ZIndexBehavior Global
-// and Sibling, and ScreenGui's DisplayOrder and IgnoreGuiInset. Rotation is
-// kept but turns nothing: layout, clipping (which a rotation switches off,
-// as in Roblox) and hits treat objects as upright. Coordinates are Roblox's
+// and Sibling, and ScreenGui's DisplayOrder and IgnoreGuiInset. Rotation
+// leaves the layout upright, as Roblox's is (and switches clipping off
+// under it); each object gets the turns it is drawn with, and hits treat
+// objects as upright. Coordinates are Roblox's
 // GUI coordinates: the origin is under the top bar, so an IgnoreGuiInset
 // ScreenGui starts at -inset.
 
@@ -333,7 +334,7 @@ pub struct Node {
     pub position: UDim2,
     pub size: UDim2,
     pub anchor_point: Vector2,
-    /// Degrees clockwise; kept only.
+    /// Degrees clockwise about its centre: it turns the drawing, not the layout.
     pub rotation: f64,
     pub visible: bool,
     pub z_index: i32,
@@ -723,6 +724,15 @@ pub struct TextLayout {
     pub lines: Vec<TextLine>,
 }
 
+/// A rotation an object is drawn with: `node`'s Rotation, by `degrees`
+/// clockwise about `centre`, the middle of that node's upright rectangle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Turn {
+    pub node: NodeId,
+    pub centre: Vector2,
+    pub degrees: f64,
+}
+
 /// Where a node ended up. Sizes and positions are on screen, with UIScale
 /// applied. Layout nodes (UIListLayout, UIGridLayout) fill in only
 /// `content_size` and the cell fields.
@@ -735,6 +745,10 @@ pub struct Placed {
     pub size: Vector2,
     /// AbsoluteRotation: its Rotation and its ancestors', in degrees.
     pub rotation: f64,
+    /// The rotations it is drawn with, innermost first: its own Rotation
+    /// about its centre, then each turned ancestor's about that one's. Its
+    /// rectangle is upright, as Roblox lays it out; these turn its drawing.
+    pub turns: Vec<Turn>,
     /// Whether it is drawn: it and its ancestors Visible, under an enabled ScreenGui.
     pub shown: bool,
     /// The area its ancestors' ClipsDescendants leave it; None when nothing clips it.
@@ -872,6 +886,8 @@ struct Context {
     clip: Option<Rect>,
     shown: bool,
     rotation: f64,
+    /// The GuiObject whose turns the subtree is drawn with too.
+    turned_by: Option<NodeId>,
 }
 
 impl Context {
@@ -1305,6 +1321,7 @@ impl<'a> Pass<'a> {
             clip: None,
             shown,
             rotation: 0.0,
+            turned_by: None,
         };
         let content = area.inset(self.padding(id, area.size()));
         self.placed[id] = Some(Placed {
@@ -1382,11 +1399,16 @@ impl<'a> Pass<'a> {
             });
         }
 
+        let turns = self.turns(id, rect, parent.turned_by);
+        if !turns.is_empty() {
+            ctx.turned_by = Some(id);
+        }
         let mut placed = Placed {
             class: Some(node.class),
             position: rect.min,
             size: area.size() * ctx.k,
             rotation,
+            turns,
             shown: ctx.shown,
             clip: parent.clip,
             scale: ctx.k,
@@ -1412,6 +1434,24 @@ impl<'a> Pass<'a> {
         }
         self.placed[id] = Some(placed);
         self.place_children(id, content, ctx);
+    }
+
+    /// The turns a GuiObject at `rect` is drawn with: its own Rotation about
+    /// its centre, then those of the turned object it is in.
+    fn turns(&self, id: NodeId, rect: Rect, turned_by: Option<NodeId>) -> Vec<Turn> {
+        let degrees = self.node(id).rotation;
+        let mut turns = Vec::new();
+        if degrees != 0.0 && degrees.is_finite() {
+            turns.push(Turn {
+                node: id,
+                centre: (rect.min + rect.max) / 2.0,
+                degrees,
+            });
+        }
+        if let Some(p) = turned_by.and_then(|n| self.placed[n].as_ref()) {
+            turns.extend(p.turns.iter().copied());
+        }
+        turns
     }
 
     /// A ScrollingFrame's canvas, as the area its children go in: CanvasSize

@@ -92,6 +92,12 @@ name = "hstudio_modfiles"
 source = "modfiles.rs"
 
 [[module]]
+id = "quads"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_quads"
+source = "quads.rs"
+
+[[module]]
 id = "studio"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio"

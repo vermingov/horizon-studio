@@ -16,6 +16,7 @@ use super::hstudio_lua::{
 };
 use super::hstudio_lualib::{inspect, new_env, quote, text_of};
 use super::hstudio_modfiles::{TEMPLATE, file_name, lua_files, path_in, prune_empty, rel_in, require_path, to_trash};
+pub use super::hstudio_quads::Shade;
 use super::hstudio_ui::{Editor, ScriptScreen, Ui};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -287,6 +288,28 @@ pub trait GameApi {
     /// `at`; returns its width.
     fn dp_text(&mut self, text: &str, at: [f32; 2], size: f32, font: Font, argb: u32) -> f32;
     fn dp_measure(&mut self, text: &str, size: f32, font: Font) -> f32;
+    /// A mark in what the frame has drawn so far: `dp_clip`, `dp_rotate` and
+    /// `dp_shade` change what was drawn after it. None where a drawing can't
+    /// be changed once drawn (the Roblox GUI is then drawn as best it can be
+    /// without: cut to whole shapes and lines, upright, one colour for a
+    /// gradient).
+    fn dp_mark(&mut self) -> Option<usize> {
+        None
+    }
+    /// Cuts what was drawn since `mark` to the rectangle `r` (dp): shapes,
+    /// text and images, at its edges exactly.
+    fn dp_clip(&mut self, mark: usize, r: [f32; 4]) {
+        let _ = (mark, r);
+    }
+    /// Turns what was drawn since `mark` by `degrees` clockwise about `centre` (dp).
+    fn dp_rotate(&mut self, mark: usize, centre: [f32; 2], degrees: f32) {
+        let _ = (mark, centre, degrees);
+    }
+    /// Colours what was drawn since `mark` by a gradient over it (dp): the
+    /// gradient's colour multiplies what is drawn at each point.
+    fn dp_shade(&mut self, mark: usize, shade: &Shade) {
+        let _ = (mark, shade);
+    }
     /// ViaHorizon: whether joins go through ViaProxy, as which version, and
     /// what it is doing.
     fn via(&self) -> ViaInfo {

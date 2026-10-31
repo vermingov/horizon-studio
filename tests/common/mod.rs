@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 use horizon_studio::game::hstudio::{Camera, Corner, Font, GameApi, PlayerInfo, Reply, Studio, ViaInfo};
+use horizon_studio::game::hstudio_quads::Shade;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,6 +31,10 @@ pub struct FakeGame {
     pub quads: Vec<([[f32; 2]; 4], u32)>,
     pub sounds: Vec<(String, Option<[f64; 3]>, f32, f32)>,
     pub particles: Vec<Particle>,
+    /// The gradients the GUI was coloured with (`dp_shade`), with their marks.
+    pub shades: Vec<(usize, Shade)>,
+    /// The game can't change what it drew (no `dp_mark`), as the headless one.
+    pub no_marks: bool,
     /// ViaHorizon, as the bridge reports it (the real one is the game's).
     pub via: ViaInfo,
 }
@@ -86,6 +91,8 @@ impl FakeGame {
             quads: Vec::new(),
             sounds: Vec::new(),
             particles: Vec::new(),
+            shades: Vec::new(),
+            no_marks: false,
             via: ViaInfo {
                 enabled: true,
                 version: "auto".into(),
@@ -223,6 +230,20 @@ impl GameApi for FakeGame {
     }
     fn dp_measure(&mut self, text: &str, _size: f32, _font: Font) -> f32 {
         6.0 * text.chars().count() as f32
+    }
+    // A mark is where the next drawing goes in `drawn`.
+    fn dp_mark(&mut self) -> Option<usize> {
+        (!self.no_marks).then_some(self.drawn.len())
+    }
+    fn dp_clip(&mut self, mark: usize, r: [f32; 4]) {
+        self.drawn.push(format!("clip {mark} {r:?}"));
+    }
+    fn dp_rotate(&mut self, mark: usize, centre: [f32; 2], degrees: f32) {
+        self.drawn.push(format!("rotate {mark} {centre:?} {degrees}"));
+    }
+    fn dp_shade(&mut self, mark: usize, shade: &Shade) {
+        self.drawn.push(format!("shade {mark}"));
+        self.shades.push((mark, shade.clone()));
     }
     fn via(&self) -> ViaInfo {
         self.via.clone()

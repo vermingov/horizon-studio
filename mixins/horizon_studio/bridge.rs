@@ -14,8 +14,9 @@ use super::{Game, Screen};
 use horizon_client::clipboard::Clipboard as _;
 use horizon_client::extras::Corner as GameCorner;
 use horizon_client::extras_hud::Corners;
-use horizon_client::hud::HudBatch;
+use horizon_client::hud::{HudBatch, HudVertex};
 use horizon_client::mesher::Vertex;
+use super::hstudio_quads::{self as quads, Shade};
 use horizon_client::ui_theme::hstudio_paint as paint;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -173,6 +174,62 @@ fn gui(game: &Game<'_>) -> (f32, f32, f32) {
         .map_or([1280, 720], |r| [r.config.width, r.config.height]);
     let b = HudBatch::new(size);
     (b.width, b.height, b.scale)
+}
+
+/// Whether what was drawn since `mark` is whole quads the studio may change
+/// (a clip, a turn or a gradient): none of it in a run of another blend, or
+/// in the blurred background of a screen.
+fn ours_since(b: &HudBatch, mark: usize) -> bool {
+    mark <= b.vertices.len()
+        && (b.vertices.len() - mark).is_multiple_of(6)
+        && b.blends.iter().all(|(r, _)| r.end as usize <= mark)
+        && b.blur_at as usize <= mark
+}
+
+/// Whether a quad (its six vertices, as `HudBatch::quad` pushes them) is a
+/// rectangle on the screen's axes in one colour: one the HUD's own
+/// `clip_since` cuts exactly, texture and all.
+fn plain(q: &[HudVertex]) -> bool {
+    let corners = [q[0], q[1], q[2], q[5]];
+    let (mut x0, mut x1, mut y0, mut y1) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+    for v in &corners {
+        x0 = x0.min(v.pos[0]);
+        x1 = x1.max(v.pos[0]);
+        y0 = y0.min(v.pos[1]);
+        y1 = y1.max(v.pos[1]);
+    }
+    let found = |x: f32, y: f32| corners.iter().any(|v| v.pos == [x, y]);
+    q.iter().all(|v| v.color == q[0].color) && found(x0, y0) && found(x1, y0) && found(x1, y1) && found(x0, y1)
+}
+
+/// The quads drawn since `mark`, as hstudio_quads has them: each one's
+/// corners are its vertices 0, 1, 2 and 5.
+fn quads_since(b: &HudBatch, mark: usize) -> Vec<quads::Quad> {
+    b.vertices[mark..]
+        .chunks_exact(6)
+        .map(|q| {
+            [q[0], q[1], q[2], q[5]].map(|v| quads::Corner {
+                at: v.pos,
+                uv: v.uv,
+                argb: hud_color(v.color),
+            })
+        })
+        .collect()
+}
+
+/// Quads drawn as `HudBatch::quad` draws them, each corner in its own colour.
+fn push_quads(b: &mut HudBatch, list: &[quads::Quad]) {
+    for q in list {
+        for i in [0, 1, 2, 0, 2, 3] {
+            b.vertices.push(HudVertex {
+                pos: q[i].at,
+                uv: q[i].uv,
+                color: hud_color(q[i].argb),
+                depth: 0.0,
+                glint_uv: [0.0, 0.0],
+            });
+        }
+    }
 }
 
 impl GameApi for Host<'_, '_> {
@@ -390,6 +447,70 @@ impl GameApi for Host<'_, '_> {
                 paint::measure_at(&game.gui.atlas, density, paint_font(font), size, text)
             }
         }
+    }
+    fn dp_mark(&mut self) -> Option<usize> {
+        self.batch.as_deref().map(|b| b.vertices.len())
+    }
+    fn dp_clip(&mut self, mark: usize, r: [f32; 4]) {
+        let game = match &self.game {
+            GameRef::Mut(g) => &**g,
+            GameRef::Shared(g) => *g,
+        };
+        let Some(b) = self.batch.as_deref_mut() else {
+            return;
+        };
+        if !ours_since(b, mark) {
+            return;
+        }
+        // The rectangle in GUI pixels, its edges on the screen's pixels.
+        let (_, _, k) = paint::size(&game.gui.atlas, b);
+        let scale = b.scale;
+        let density = scale / k;
+        let px = |v: f32| (v * density).round() / scale;
+        let (x0, y0, x1, y1) = (px(r[0]), px(r[1]), px(r[0] + r[2]), px(r[1] + r[3]));
+        if b.vertices[mark..].chunks_exact(6).all(plain) {
+            b.clip_since(mark, x0, y0, x1, y1);
+        } else {
+            // Turned or shaded quads: cut with their texture and colours.
+            let cut = quads::clip(&quads_since(b, mark), [x0, y0, x1, y1]);
+            b.vertices.truncate(mark);
+            push_quads(b, &cut);
+        }
+    }
+    fn dp_rotate(&mut self, mark: usize, centre: [f32; 2], degrees: f32) {
+        let game = match &self.game {
+            GameRef::Mut(g) => &**g,
+            GameRef::Shared(g) => *g,
+        };
+        let Some(b) = self.batch.as_deref_mut() else {
+            return;
+        };
+        if !ours_since(b, mark) {
+            return;
+        }
+        let (_, _, k) = paint::size(&game.gui.atlas, b);
+        let centre = [centre[0] / k, centre[1] / k];
+        let sc = degrees.to_radians().sin_cos();
+        for v in &mut b.vertices[mark..] {
+            v.pos = quads::turned(v.pos, centre, sc);
+        }
+    }
+    fn dp_shade(&mut self, mark: usize, shade: &Shade) {
+        let game = match &self.game {
+            GameRef::Mut(g) => &**g,
+            GameRef::Shared(g) => *g,
+        };
+        let Some(b) = self.batch.as_deref_mut() else {
+            return;
+        };
+        if !ours_since(b, mark) {
+            return;
+        }
+        // The batch's points are GUI pixels, `k` dp each.
+        let (_, _, k) = paint::size(&game.gui.atlas, b);
+        let shaded = quads::shade(&quads_since(b, mark), &shade.in_units(k));
+        b.vertices.truncate(mark);
+        push_quads(b, &shaded);
     }
     fn via(&self) -> ViaInfo {
         via_info()
