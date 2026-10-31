@@ -125,10 +125,13 @@ prebuilt() {
     [ "${HORIZON_STUDIO_BUILD:-}" != 1 ] || return 1
     dir="$cache/prebuilt"
     rm -rf "$dir" && mkdir -p "$dir" || return 1
-    say "Downloading Horizon Studio, built for $target..."
     asset="horizon-studio-game-$target.tar.gz"
     url=${HORIZON_STUDIO_RELEASE_URL:-https://github.com/$REPO/releases/latest/download}
-    curl -fL --progress-bar -o "$dir/$asset" "$url/$asset" || { say "No prebuilt game to download."; return 1; }
+    # Looked for quietly first: a release from before prebuilt games, or a build that failed, has none.
+    curl -fsIL -o /dev/null "$url/$asset" 2>/dev/null \
+        || { say "The latest release has no prebuilt game for $target."; return 1; }
+    say "Downloading Horizon Studio, built for $target..."
+    curl -fL --progress-bar -o "$dir/$asset" "$url/$asset" || { say "Could not download $asset."; return 1; }
     curl -fsSL -o "$dir/SHA256SUMS" "$url/SHA256SUMS" || { say "The release has no checksums."; return 1; }
     want=$(awk -v f="$asset" '$2 == f { print $1 }' "$dir/SHA256SUMS")
     got=$(sha256 < "$dir/$asset")
