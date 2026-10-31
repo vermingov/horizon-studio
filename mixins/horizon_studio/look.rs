@@ -2580,7 +2580,15 @@ fn coach_row(
         let c = tone_color(m.tone);
         let open = coach.open_mark == Some(m.id);
         // A lesson's other steps are fainter than the one it is on.
-        let k = if m.step.is_some() && !open { 0.5 } else { 1.0 };
+        let current = coach
+            .lesson
+            .as_ref()
+            .is_some_and(|l| l.steps.get(l.at).is_some_and(|s| s.mark == m.id));
+        let k = if m.step.is_some() && !open && !current {
+            0.5
+        } else {
+            1.0
+        };
         p.rect(
             [px + 6.0, ly, pw - 12.0, code_line()],
             0.0,

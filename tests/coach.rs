@@ -2199,6 +2199,10 @@ fn a_lesson_opens_its_file_only_when_it_may_and_says_what_is_wrong() {
             json!({ "title": "T", "steps": [{ "start_line": 1, "note": "N", "file": "nope.lua" }] }),
             "step 1: kit has no file nope.lua",
         ),
+        (
+            json!({ "title": "T", "steps": [{ "start_line": 1, "note": "N" }], "id": "gone" }),
+            "step 1: no script mod 'gone'",
+        ),
     ] {
         let e = ask(&mut st, &mut game, "lesson", params.clone()).unwrap_err();
         assert!(e.contains(says), "{params}: {e}");
@@ -2450,4 +2454,50 @@ fn a_change_on_disk_to_the_open_file_is_typed_in() {
     }
     assert_eq!(st.s.editor.text(), TEN);
     assert!(!st.s.editor.dirty);
+    // A file without a last line break, a line put after it.
+    std::fs::write(&path, "print(1)").unwrap();
+    look_at_disk(&mut st, &mut game);
+    while st.s.ui.coach.typing.is_some() {
+        frame(&mut st, &mut game);
+    }
+    assert_eq!(st.s.editor.text(), "print(1)");
+    std::fs::write(&path, "print(1)\nprint(2)").unwrap();
+    look_at_disk(&mut st, &mut game);
+    assert!(st.s.ui.coach.typing.is_some());
+    while st.s.ui.coach.typing.is_some() {
+        frame(&mut st, &mut game);
+    }
+    assert_eq!(st.s.editor.text(), "print(1)\nprint(2)");
+}
+
+#[test]
+fn an_agents_unsaved_edits_follow_their_file_when_it_is_renamed() {
+    let (mut game, mut st) = with_module("coach-unsaved-renamed");
+    let util = game.mods_dir().join("kit/lib/util.lua");
+    st.open_file(&util);
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "return 2", "new_text": "return 3", "typing": false }),
+    )
+    .unwrap();
+    assert_eq!(coach::summary(&st)["unsaved"]["file"], "kit/lib/util.lua");
+    // The player renames the file (the file has no marks).
+    run_for(&mut st, &mut game, 0.05);
+    st.rename_file(&mut game, &util, "lib/helpers").unwrap();
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(st.s.editor.title, "kit/lib/helpers.lua");
+    let unsaved = &coach::summary(&st)["unsaved"];
+    assert_eq!(unsaved["file"], "kit/lib/helpers.lua", "{unsaved}");
+    // save_script knows they are the agent's own.
+    let r = ask(&mut st, &mut game, "save", json!({})).unwrap();
+    assert_eq!(r["saved"], true, "{r}");
+    assert!(
+        std::fs::read_to_string(game.mods_dir().join("kit/lib/helpers.lua"))
+            .unwrap()
+            .contains("return 3")
+    );
 }

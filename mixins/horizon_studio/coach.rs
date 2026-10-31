@@ -1828,12 +1828,12 @@ pub struct Mark {
     text: Vec<String>,
 }
 
-/// The editor's file as the marks last followed it: its revision and its
-/// lines' hashes.
+/// The editor's file as the marks last followed it: its revision, and its
+/// lines' hashes while it has marks.
 struct Followed {
     path: PathBuf,
     rev: u64,
-    hashes: Vec<u64>,
+    hashes: Option<Vec<u64>>,
 }
 
 /// "no notes", "1 note", "3 notes".
@@ -2208,7 +2208,7 @@ fn track(st: &mut Studio) {
     st.s.ui.coach.followed = ed.path.clone().map(|path| Followed {
         path,
         rev: ed.revision,
-        hashes: hashes(&ed.lines),
+        hashes: Some(hashes(&ed.lines)),
     });
 }
 
@@ -2243,26 +2243,26 @@ pub fn follow_marks(st: &mut Studio) {
         }
         _ => {}
     }
-    if !c.marks.iter().any(|m| m.path == path) {
-        c.followed = None;
-        return;
-    }
-    let now = hashes(&ed.lines);
-    let change = c
-        .followed
-        .as_ref()
-        .filter(|f| f.path == path)
-        .map(|f| changed_rows(&f.hashes, &now));
-    for m in c.marks.iter_mut().filter(|m| m.path == path) {
-        match change {
-            Some(change) => {
-                let first = change.row(m.first);
-                m.last = change.row(m.last).max(first);
-                m.first = first;
+    // The lines are compared only while the file has marks.
+    let now = c.marks.iter().any(|m| m.path == path).then(|| hashes(&ed.lines));
+    if let Some(now) = &now {
+        let change = c
+            .followed
+            .as_ref()
+            .filter(|f| f.path == path)
+            .and_then(|f| f.hashes.as_ref())
+            .map(|old| changed_rows(old, now));
+        for m in c.marks.iter_mut().filter(|m| m.path == path) {
+            match change {
+                Some(change) => {
+                    let first = change.row(m.first);
+                    m.last = change.row(m.last).max(first);
+                    m.first = first;
+                }
+                None => refind(m, &ed.lines),
             }
-            None => refind(m, &ed.lines),
+            settle(m, &ed.lines);
         }
-        settle(m, &ed.lines);
     }
     c.followed = Some(Followed {
         path,
@@ -2521,7 +2521,8 @@ pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -
             .iter()
             .any(|k| p.get(*k).is_some_and(|v| !v.is_null()))
     };
-    let base = target(st, params, false)?;
+    // The lesson's file, for the steps that don't name their own.
+    let base = target(st, params, false);
     follow_marks(st);
     // Each file read once, the one open as the editor has it.
     let mut read: Vec<(PathBuf, Vec<String>)> = Vec::new();
@@ -2539,7 +2540,7 @@ pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -
             }
             target(st, &asked, false).map_err(|e| format!("step {n}: {e}"))?
         } else {
-            base.clone()
+            base.clone().map_err(|e| format!("step {n}: {e}"))?
         };
         let lines = match read.iter().find(|(p, _)| *p == t.path) {
             Some((_, lines)) => lines.clone(),
@@ -3048,7 +3049,7 @@ pub fn saved(st: &mut Studio) {
     };
     let file = st.s.editor.title.clone();
     let m = mod_state(st, &path);
-    let did = format!("The player s{}", &saved_text(&file, &m)[1..]);
+    let did = format!("The player {}", saved_text(&file, &m).replacen("Saved", "saved", 1));
     push_event(st, "saved", json!({ "file": file, "mod": m, "did": did }));
 }
 
@@ -3105,23 +3106,12 @@ pub fn sync_disk(st: &mut Studio) -> bool {
     if rows == 0 || rows > TYPED_RELOAD {
         return st.s.editor.sync_disk();
     }
-    // The rows that changed, cut down to what differs in them.
+    // What differs: all between what the two texts share at their start
+    // and at their end.
     let (old, now_text) = (ed.text(), new.join("\n"));
-    let start_of = |lines: &[String], text: &str, row: usize| {
-        if row < lines.len() {
-            row_start(lines, row)
-        } else {
-            text.len()
-        }
-    };
-    let (a, b) = (
-        row_start(&ed.lines, change.start),
-        start_of(&ed.lines, &old, change.old_end),
-    );
-    let (na, nb) = (row_start(&new, change.start), start_of(&new, &now_text, change.new_end));
-    let (pre, suf) = shared_ends(&old[a..b], &now_text[na..nb]);
-    let (a, b) = (a + pre, b - suf);
-    let ins = now_text[na + pre..nb - suf].to_owned();
+    let (pre, suf) = shared_ends(&old, &now_text);
+    let (a, b) = (pre, old.len() - suf);
+    let ins = now_text[pre..now_text.len() - suf].to_owned();
     let now = st.s.now;
     let page = st.s.ui.page.max(1);
     let ed = &mut st.s.editor;
