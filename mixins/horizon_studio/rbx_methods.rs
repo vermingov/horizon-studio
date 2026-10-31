@@ -680,8 +680,17 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
                 Some(Value::Table(t)) => Some(t.clone()),
                 _ => None,
             };
-            one(super::hstudio_rbx_draw::raycast(env, origin, dir, params.as_ref()))
+            one(super::hstudio_rbx_query::raycast(env, origin, dir, params.as_ref()))
         }
+        (
+            "Workspace",
+            "GetPartBoundsInRadius"
+            | "GetPartBoundsInBox"
+            | "GetPartsInPart"
+            | "FindPartOnRay"
+            | "FindPartOnRayWithIgnoreList"
+            | "FindPartOnRayWithWhitelist",
+        ) => super::hstudio_rbx_query::workspace_method(env, lua, name, args),
         ("Workspace", "GetServerTimeNow") => one(Value::Num(now)),
         ("Camera", "WorldToViewportPoint" | "WorldToScreenPoint") => {
             let p = args

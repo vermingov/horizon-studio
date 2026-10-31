@@ -1123,14 +1123,14 @@ pub fn player_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, args:
 
 /// Members that are read, not kept as properties: game.LocalPlayer,
 /// Horizon's own shortcut for game.Players.LocalPlayer, Roblox's older
-/// game.workspace and Players.localPlayer, and the Mouse's UnitRay and
-/// Origin, worked out as they are read. None of them can be set.
+/// game.workspace and Players.localPlayer, and the Mouse's UnitRay, Origin
+/// and TargetSurface, worked out as they are read. None of them can be set.
 pub fn member(rbx: &Rbx, id: Id, key: &str) -> Option<Value> {
     match key {
         "LocalPlayer" if id == rbx.game => Some(rbx.value(rbx.local_player)),
         "workspace" if id == rbx.game => Some(rbx.value(rbx.workspace)),
         "localPlayer" if id == rbx.players => Some(rbx.value(rbx.local_player)),
-        "UnitRay" | "Origin" if id == rbx.mouse => Some(rbx.raw_get(id, key)),
+        "UnitRay" | "Origin" | "TargetSurface" if id == rbx.mouse => Some(rbx.raw_get(id, key)),
         _ => None,
     }
 }
@@ -1142,7 +1142,11 @@ pub fn member(rbx: &Rbx, id: Id, key: &str) -> Option<Value> {
 /// (`reaches_world`) has them mirrored.
 pub fn before_read(env: &mut dyn Env, id: Id, key: &str) {
     if id == env.rbx().mouse {
-        if matches!(key, "Hit" | "Target" | "UnitRay" | "Origin") {
+        // Where the Mouse points can be an entity's part.
+        if matches!(key, "Hit" | "Target" | "TargetSurface") {
+            look(env);
+        }
+        if matches!(key, "Hit" | "Target" | "TargetSurface" | "UnitRay" | "Origin") {
             super::hstudio_rbx_draw::mouse_refresh(env);
         }
         return;
@@ -1193,6 +1197,12 @@ pub fn before_call(env: &mut dyn Env, id: Id, name: &str, args: &[Value]) {
                 | "FindFirstDescendant"
                 | "WaitForChild"
                 | "Raycast"
+                | "GetPartBoundsInRadius"
+                | "GetPartBoundsInBox"
+                | "GetPartsInPart"
+                | "FindPartOnRay"
+                | "FindPartOnRayWithIgnoreList"
+                | "FindPartOnRayWithWhitelist"
         )
     } else if id == rbx.game {
         matches!(name, "GetDescendants" | "FindFirstDescendant")

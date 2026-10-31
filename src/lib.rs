@@ -44,6 +44,8 @@ pub mod game {
     pub mod hstudio_rbx_layout;
     #[path = "../../mixins/horizon_studio/rbx_methods.rs"]
     pub mod hstudio_rbx_methods;
+    #[path = "../../mixins/horizon_studio/rbx_query.rs"]
+    pub mod hstudio_rbx_query;
     #[path = "../../mixins/horizon_studio/rbx_types.rs"]
     pub mod hstudio_rbx_types;
     #[path = "../../mixins/horizon_studio/rbx_values.rs"]

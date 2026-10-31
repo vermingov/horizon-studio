@@ -1073,3 +1073,124 @@ fn another_players_character_finds_room_at_the_cap() {
     run_for(&mut st, &mut game, 0.05);
     assert_eq!(printed(&st, "room"), ["removed 355, added Alex    259"]);
 }
+
+#[test]
+fn raycasts_and_the_mouse_hit_mobs_not_yourself() {
+    let mut game = FakeGame::new("rbxw-rays");
+    // Five blocks north of the player, facing them.
+    game.entities = vec![zombie(5, 10.5, -8.25)];
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{FMT}{}",
+        r#"
+        local z = workspace:WaitForChild("Zombie")
+        local eyes = Vector3.new(10.5, 65.62, -3.25)
+        local function hit(r) return r and (r.Instance.Name .. " " .. string.format("%.3f", r.Distance)) end
+        local mouse = game.Players.LocalPlayer:GetMouse()
+        command("rays", function()
+            -- At its eyes, its head; at its knees, its root part.
+            print(hit(workspace:Raycast(eyes, Vector3.new(0, 0, -10))))
+            print(hit(workspace:Raycast(Vector3.new(10.5, 64.5, -3.25), Vector3.new(0, 0, -10))))
+            -- One's own character only when an Include filter names it.
+            print(workspace:Raycast(Vector3.new(10.5, 70, -3.25), Vector3.new(0, -10, 0)))
+            local only = RaycastParams.new()
+            only.FilterType = Enum.RaycastFilterType.Include
+            only.FilterDescendantsInstances = { game.Players.LocalPlayer.Character }
+            print(hit(workspace:Raycast(Vector3.new(10.5, 70, -3.25), Vector3.new(0, -10, 0), only)))
+            print(mouse.Target.Name, mouse.Target.Parent == z, mouse.TargetSurface, v(mouse.Hit.Position))
+            mouse.TargetFilter = z
+            print(mouse.Target)
+            mouse.TargetFilter = nil
+        end)
+        command("walled", function()
+            local only = RaycastParams.new()
+            only.FilterType = Enum.RaycastFilterType.Include
+            only.FilterDescendantsInstances = { z }
+            print(hit(workspace:Raycast(eyes, Vector3.new(0, 0, -10))), hit(workspace:Raycast(eyes, Vector3.new(0, 0, -10), only)))
+            print(mouse.Target.Name, mouse.TargetSurface)
+        end)
+    "#
+    );
+    load(&mut game, &mut st, "rays", &src, 0.6);
+    assert!(st.command("rays"));
+    run_for(&mut st, &mut game, 0.05);
+    // A wall between: an Include filter that doesn't name the Terrain goes through it.
+    game.blocks.insert((10, 65, -6), "minecraft:stone".into());
+    assert!(st.command("walled"));
+    run_for(&mut st, &mut game, 0.05);
+    let p = printed(&st, "rays");
+    assert_eq!(p[0], "Head 4.750");
+    assert_eq!(p[1], "HumanoidRootPart 4.700");
+    assert_eq!(p[2], "nil");
+    assert_eq!(p[3], "Head 4.146");
+    assert_eq!(p[4], "Head    true    Enum.NormalId.Front    10.500 65.620 -8.000");
+    assert_eq!(p[5], "nil");
+    assert_eq!(p[6], "Terrain 1.750    Head 4.750");
+    assert_eq!(p[7], "Terrain    Enum.NormalId.Back");
+}
+
+#[test]
+fn the_mouse_target_looks_at_the_world() {
+    let mut game = FakeGame::new("rbxw-target");
+    game.entities = vec![zombie(5, 10.5, -8.25)];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local mouse = game.Players.LocalPlayer:GetMouse()
+        print(mouse.Target and mouse.Target.Parent.Name)
+    "#;
+    load(&mut game, &mut st, "target", src, 0.6);
+    assert_eq!(printed(&st, "target"), ["Zombie"]);
+}
+
+#[test]
+fn bounds_queries_find_entities() {
+    let mut game = FakeGame::new("rbxw-bounds");
+    game.entities = vec![zombie(5, 10.5, -8.25), dropped(7, "minecraft:diamond", 1, 20.5, 10.5)];
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{FMT}{}",
+        r#"
+        local z = workspace:WaitForChild("Zombie")
+        local function names(list)
+            local out = {}
+            for _, p in list do table.insert(out, p.Parent.Name .. "." .. p.Name) end
+            table.sort(out)
+            return table.concat(out, " ")
+        end
+        local centre = Vector3.new(10.5, 65, -8.25)
+        print(names(workspace:GetPartBoundsInRadius(centre, 1)))
+        local params = OverlapParams.new()
+        params.FilterDescendantsInstances = { z }
+        print(#workspace:GetPartBoundsInRadius(centre, 1, params))
+        print(names(workspace:GetPartBoundsInBox(CFrame.new(centre), Vector3.new(2, 2, 2))))
+        local ray = Ray.new(Vector3.new(10.5, 65.62, -3.25), Vector3.new(0, 0, -10))
+        local part, at, normal, material = workspace:FindPartOnRay(ray)
+        print(part.Name, v(at), v(normal), material)
+        print(workspace:FindPartOnRayWithIgnoreList(ray, { z }))
+        local probe = Instance.new("Part")
+        probe.Size = Vector3.new(2, 2, 2)
+        probe.CFrame = CFrame.new(centre)
+        probe.Parent = workspace
+        print(names(workspace:GetPartsInPart(probe)))
+        params.FilterDescendantsInstances = {}
+        params.MaxParts = 1
+        print(#workspace:GetPartBoundsInBox(CFrame.new(centre), Vector3.new(2, 2, 2), params))
+        print(workspace:FindPartOnRayWithWhitelist(ray, { probe }) == probe, workspace:FindPartOnRay(ray, probe).Name)
+    "#
+    );
+    load(&mut game, &mut st, "bounds", &src, 0.6);
+    let p = printed(&st, "bounds");
+    // Near the zombie: its two parts, not the item far off nor the player.
+    assert_eq!(p[0], "Zombie.Head Zombie.HumanoidRootPart");
+    assert_eq!(p[1], "0");
+    assert_eq!(p[2], p[0]);
+    assert_eq!(
+        p[3],
+        "Head    10.500 65.620 -8.000    0.000 0.000 1.000    Enum.Material.Plastic"
+    );
+    // Vector3s print as Roblox has them, in single precision.
+    assert_eq!(p[4], "nil    10.5, 65.6200027, -13.25    0, 0, 0    Enum.Material.Air");
+    assert_eq!(p[5], p[0]);
+    assert_eq!(p[6], "1");
+    assert_eq!(p[7], "true    Head");
+}
