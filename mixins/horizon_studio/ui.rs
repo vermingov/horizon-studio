@@ -3572,7 +3572,9 @@ pub fn agent_ask(st: &mut Studio, text: &str) {
     if st.s.editor.dirty && st.s.editor.path.is_some() {
         match st.s.editor.save() {
             Ok(path) => {
-                st.s.log(LogKind::Info, format!("Saved {} for the agent", path.display()))
+                st.s.log(LogKind::Info, format!("Saved {} for the agent", path.display()));
+                // What an agent left unsaved in it is saved now.
+                super::hstudio_coach::written(st);
             }
             Err(e) => {
                 st.s.ui

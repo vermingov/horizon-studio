@@ -478,9 +478,10 @@ pub fn tools() -> Json {
               start_line - 1 puts lines in before start_line, start_line one past the last line adds them at the end, \
               new_text \"\" removes them), or text (the whole file). It is one undo step for the player, and lands at \
               once while they are typing or nobody sees the editor. It stays unsaved unless save is true (save_script \
-              saves it), but with the studio closed it is saved. A file the editor doesn't have open is written to \
-              disk at once instead, and its mod reloads. Returns the lines it covers and the live check's problems. \
-              Live only.",
+              saves it), but with the studio closed it is saved, unless the player has unsaved edits in the file. A \
+              file the editor doesn't have open is written to disk at once instead, and its mod reloads: open_script \
+              it first to type into it as the player watches. Returns the lines it covers and the live check's \
+              problems. Live only.",
             script_props(json!({
                 "old_text": { "type": "string", "description": "The code to replace, as it is now (read_script)." },
                 "new_text": { "type": "string", "description": "What comes in its place (or in start_line's)." },
@@ -488,7 +489,7 @@ pub fn tools() -> Json {
                 "end_line": { "type": "integer", "description": "The last (default start_line; start_line - 1 inserts)." },
                 "text": { "type": "string", "description": "The whole file's new text." },
                 "typing": { "type": "boolean", "description": "Type it in as the player watches (default true); false puts it in at once." },
-                "save": { "type": "boolean", "description": "Save it afterwards, and the mod reloads (default false while the studio is open)." },
+                "save": { "type": "boolean", "description": "Save it afterwards, and the mod reloads (default false while the studio is open; while it is closed, true unless the player has unsaved edits in the file)." },
             })),
             &[]
         ),

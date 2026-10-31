@@ -464,10 +464,19 @@ fn mod_file(st: &Studio, id: &str, file: Option<&str>, create: bool) -> Result<T
 
 // ----------------------------------------------------------------- reading
 
+/// A file's text as it is on disk.
+fn disk_text(path: &Path, file: &str) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|e| format!("could not read {file}: {e}"))
+}
+
+/// A file's text as the editor's lines (`Editor::normal`).
+fn editor_lines(text: &str) -> Vec<String> {
+    Editor::normal(text).split('\n').map(str::to_owned).collect()
+}
+
 /// A file's lines as the editor would have them.
 fn disk_lines(path: &Path, file: &str) -> Result<Vec<String>, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("could not read {file}: {e}"))?;
-    Ok(Editor::normal(&text).split('\n').map(str::to_owned).collect())
+    Ok(editor_lines(&disk_text(path, file)?))
 }
 
 /// Why an agent can't have file `path` through the editor, when the editor
@@ -785,6 +794,23 @@ struct Change {
     removed: Option<(usize, usize)>,
 }
 
+/// Where `old` is in `text`, places that overlap included ("end\nend" is
+/// in "end\nend\nend" twice), at most 10.
+fn places(text: &str, old: &str) -> Vec<usize> {
+    let mut found = Vec::new();
+    let mut from = 0;
+    while found.len() < 10 {
+        let Some(i) = text[from..].find(old) else {
+            break;
+        };
+        let at = from + i;
+        found.push(at);
+        // The next may start inside this one, a character on.
+        from = at + text[at..].chars().next().map_or(1, char::len_utf8);
+    }
+    found
+}
+
 /// The lines (from 1) text `new` covers once it starts on line `first`: a
 /// line break at its end starts no line of its own.
 fn span_of(first: usize, new: &str) -> (usize, usize) {
@@ -821,7 +847,7 @@ fn change_of(lines: &[String], file: &str, params: &Json) -> Result<Change, Stri
         if old.is_empty() {
             return Err("old_text is empty: give the code to replace, or start_line to put lines in".into());
         }
-        let found: Vec<usize> = text.match_indices(&old).map(|(i, _)| i).take(10).collect();
+        let found = places(&text, &old);
         match found.as_slice() {
             [] => {
                 return Err(format!(
@@ -1075,9 +1101,10 @@ fn did_text(removed: Option<(usize, usize)>, lines: (usize, usize), animated: bo
 /// in at once: with Motion off or `typing: false`, while nobody sees the
 /// editor, and while the player is typing there (their view and cursor
 /// stay). Either way it is one undo step, and stays unsaved unless `save`
-/// is given (it is by default while the studio is closed). A file the
-/// editor doesn't have open is changed on disk and its mod reloads; the
-/// player's file and tab stay as they are.
+/// is given (it is by default while the studio is closed, unless the
+/// buffer has unsaved edits of the player's: nothing of theirs is saved
+/// unasked). A file the editor doesn't have open is changed on disk and
+/// its mod reloads; the player's file and tab stay as they are.
 pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> Result<Json, String> {
     finish_typing(st, "another edit came");
     let t = target(st, params, false)?;
@@ -1085,27 +1112,30 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
         return Err(why);
     }
     let open = st.s.editor.path.as_deref() == Some(t.path.as_path());
-    let lines = if open {
-        st.s.editor.lines.clone()
-    } else {
-        disk_lines(&t.path, &t.file)?
+    // A file the editor doesn't have open: its text on disk, and its lines
+    // as the editor would have them (what the edit is found in).
+    let raw = if open { None } else { Some(disk_text(&t.path, &t.file)?) };
+    let lines = match &raw {
+        Some(raw) => editor_lines(raw),
+        None => st.s.editor.lines.clone(),
     };
     let change = change_of(&lines, &t.file, params)?;
     let in_run = in_run(st, by);
-    if !open {
-        return edit_on_disk(st, game, (by, in_run), &t, &lines, change);
+    if let Some(raw) = raw {
+        return edit_on_disk(st, game, (by, in_run), &t, (&raw, &lines), change);
     }
     let now = st.s.now;
     let ui = &st.s.ui;
     let seen = ui.open && ui.tab == Tab::Editor && !ui.collapsed;
     let hands_off = ui.coach.player_editing(now);
     let animated = seen && !hands_off && ui.look.motion && flag(params, "typing") != Some(false);
-    let save = flag(params, "save").unwrap_or(!ui.open);
     let page = ui.page.max(1);
     let player_edits = match &ui.coach.unsaved {
         Some(u) if st.s.editor.path.as_ref() == Some(&u.path) && u.rev == st.s.editor.revision => u.player_edits,
         _ => st.s.editor.dirty,
     };
+    let asked = flag(params, "save");
+    let save = asked.unwrap_or(!ui.open && !player_edits);
     let ed = &mut st.s.editor;
     let text = ed.text();
     let span = change.span;
@@ -1189,30 +1219,78 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     let mut result = land(st, &typing, None);
     if save {
         save_into(st, game, &typing, &mut result);
+    } else if asked.is_none() && !st.s.ui.open {
+        result["why"] = json!(format!(
+            "not saved: the player has unsaved edits in {} (save_script saves them with yours)",
+            t.file
+        ));
     }
     keep_result(st, id, &result);
     Ok(result)
 }
 
-/// An edit to a file the editor doesn't have open: written to disk at
-/// once, and its mod reloads; a note over the code says so, and shows it.
+/// Byte `at` of a file's text as the editor has it (`Editor::normal`:
+/// "\r\n" as "\n", a tab as the indent's spaces) in its text on disk,
+/// `raw`: the byte of `raw` it comes from, and the editor's byte that one
+/// is (`at` itself; inside a tab's spaces the tab's start, or with `up`
+/// its end).
+fn on_disk(raw: &str, at: usize, up: bool) -> (usize, usize) {
+    let tab = Editor::normal("\t").len();
+    let mut n = 0;
+    let mut chars = raw.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        let (len, width) = match c {
+            '\r' if chars.peek().is_some_and(|&(_, d)| d == '\n') => {
+                chars.next();
+                (2, 1)
+            }
+            '\t' => (1, tab),
+            c => (c.len_utf8(), c.len_utf8()),
+        };
+        if at < n + width {
+            return if at == n || !up { (i, n) } else { (i + len, n + width) };
+        }
+        n += width;
+    }
+    (raw.len(), n)
+}
+
+/// A file's text on disk (`raw`) with a change put in that was asked of its
+/// lines as the editor has them (`lines`): only what the change replaces
+/// is written anew, so the rest keeps its tabs and line ends, and what it
+/// puts in takes the file's line ends. The file ends with a line break.
+fn with_change(raw: &str, lines: &[String], change: &Change) -> String {
+    let text = lines.join("\n");
+    let (ra, na) = on_disk(raw, change.a, false);
+    let (rb, nb) = on_disk(raw, change.b, true);
+    let mut new = format!("{}{}{}", &text[na..change.a], change.new, &text[change.b..nb]);
+    let crlf = raw.contains("\r\n");
+    if crlf {
+        new = new.replace('\n', "\r\n");
+    }
+    let mut out = format!("{}{new}{}", &raw[..ra], &raw[rb..]);
+    if !out.ends_with('\n') {
+        out.push_str(if crlf { "\r\n" } else { "\n" });
+    }
+    out
+}
+
+/// An edit to a file the editor doesn't have open (its text on disk, and
+/// its lines as the editor would have them): written to disk at once, and
+/// its mod reloads; a note over the code says so, and shows it.
 fn edit_on_disk(
     st: &mut Studio,
     game: &mut dyn GameApi,
     (by, in_run): (&By, bool),
     t: &Target,
-    lines: &[String],
+    (raw, lines): (&str, &[String]),
     change: Change,
 ) -> Result<Json, String> {
-    let mut text = lines.join("\n");
     let span = change.span;
-    text.replace_range(change.a..change.b, &change.new);
-    if !text.ends_with('\n') {
-        text.push('\n');
-    }
+    let text = with_change(raw, lines, &change);
     std::fs::write(&t.path, &text).map_err(|e| format!("could not write {}: {e}", t.file))?;
     // Its marks move with its lines.
-    let new: Vec<String> = text.split('\n').map(str::to_owned).collect();
+    let new = editor_lines(&text);
     shift_marks(&mut st.s.ui.coach.marks, &t.path, lines, &new);
     st.scan(game);
     let lines = new;
@@ -1603,12 +1681,17 @@ fn save_now(st: &mut Studio, game: &mut dyn GameApi, by: &By, in_run: bool) -> R
 }
 
 /// An edit's save, as it asked: its result says whether it was saved, and
-/// how the mod is, or why not.
+/// how the mod is, or why not, and when the player's own unsaved edits in
+/// the file were saved with it (`player_edits`).
 fn save_into(st: &mut Studio, game: &mut dyn GameApi, t: &Typing, result: &mut Json) {
     match save_now(st, game, &t.by, t.in_run) {
         Ok(m) => {
             result["saved"] = json!(true);
+            result["dirty"] = json!(st.s.editor.dirty);
             result["mod"] = m;
+            if t.player_edits {
+                result["player_edits"] = json!(true);
+            }
         }
         Err(why) => result["why"] = json!(format!("not saved: {why}")),
     }
@@ -1732,7 +1815,8 @@ pub fn typed(st: &Studio, params: &Json) -> Result<Json, String> {
 
 /// The link's `save`: the editor's file saved, as Ctrl+S saves it (its mod
 /// reloads), unless the player is typing in it (then it waits) or it
-/// changed on disk since the editor read it.
+/// changed on disk since the editor read it. The player's own unsaved edits
+/// in it are saved too, and the answer says so (`player_edits`).
 pub fn save(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> Result<Json, String> {
     finish_typing(st, "save_script came");
     let t = target(st, params, false)?;
@@ -1760,18 +1844,23 @@ pub fn save(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
         return Ok(busy(format!("the player is typing in {}", t.file)));
     }
     let in_run = in_run(st, by);
+    let theirs = !agents_only(st);
     let m = save_now(st, game, by, in_run)?;
     let siblings = super::hstudio_ui::editor_siblings(st);
     let ed = &st.s.editor;
     let problems = super::hstudio_assist::check(&ed.lines, &ed.title, siblings.as_deref());
-    Ok(json!({
+    let mut out = json!({
         "ok": true,
         "saved": true,
         "did": saved_text(&t.file, &m),
         "file": t.file,
         "mod": m,
         "problems": problems_json(&problems),
-    }))
+    });
+    if theirs {
+        out["player_edits"] = json!(true);
+    }
+    Ok(out)
 }
 
 // ----------------------------------------------------------------- the link's methods
@@ -3129,10 +3218,21 @@ pub fn reply(st: &mut Studio, text: &str) {
     push_event(st, "message", json!({ "text": text, "did": did }));
 }
 
+/// The editor's file was written (saved, by the player or for them): an
+/// agent's edits in it are saved now.
+pub fn written(st: &mut Studio) {
+    let ed = &st.s.editor;
+    let c = &mut st.s.ui.coach;
+    if c.unsaved.as_ref().is_some_and(|u| ed.path.as_ref() == Some(&u.path)) {
+        c.unsaved = None;
+    }
+}
+
 /// The player saved the editor's file (Ctrl+S, Save, Save File, a switch):
-/// an agent waiting for them, or giving a lesson, hears of it. The coach's
-/// own saves aren't the player's.
+/// an agent's edits in it are saved now, and an agent waiting for them, or
+/// giving a lesson, hears of it. The coach's own saves aren't the player's.
 pub fn saved(st: &mut Studio) {
+    written(st);
     let c = &st.s.ui.coach;
     if c.saving || (c.lesson.is_none() && !waiting(st)) {
         return;

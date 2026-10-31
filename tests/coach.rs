@@ -844,6 +844,7 @@ fn saving_or_switching_files_never_saves_half_typed_code() {
         run_for(&mut st, &mut game, 0.4);
         horizon_studio::game::hstudio_ui::agent_ask(&mut st, "is it right?");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), whole);
+        assert!(coach::summary(&st)["unsaved"].is_null(), "saved, by whoever");
     }
 }
 
@@ -905,6 +906,71 @@ fn edits_find_their_place_or_say_why() {
     // Asking for what is there already changes nothing.
     let r = edit(&mut st, json!({ "old_text": "end", "new_text": "end" })).unwrap();
     assert_eq!(r["changed"], false);
+    // Text that is there twice, overlapping itself, is there twice.
+    edit(&mut st, json!({ "text": "end\nend\nend\n" })).unwrap();
+    let e = edit(&mut st, json!({ "old_text": "end\nend", "new_text": "X" })).unwrap_err();
+    assert!(e.contains("at lines 1 and 2"), "{e}");
+    assert_eq!(st.s.editor.text(), "end\nend\nend\n");
+}
+
+#[test]
+fn an_edit_on_disk_changes_its_text_alone_and_keeps_the_files_tabs_and_line_ends() {
+    let (mut game, mut st) = editing("coach-disk-raw", "open", "print('open')\n");
+    let tabs = game.mods_dir().join("tabs.lua");
+    // A tab inside a string is code: it stays a tab, and the line ends stay Windows'.
+    std::fs::write(&tabs, "local sep = \"a\tb\"\r\nlocal n = 1\r\nreturn n\r\n").unwrap();
+    st.scan(&mut game);
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "id": "tabs", "old_text": "local n = 1", "new_text": "local n = 2\nlocal m = 3" }),
+    )
+    .unwrap();
+    assert_eq!(
+        r["did"],
+        "Changed lines 2-3 in tabs.lua (on disk: the editor has open.lua open)"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&tabs).unwrap(),
+        "local sep = \"a\tb\"\r\nlocal n = 2\r\nlocal m = 3\r\nreturn n\r\n"
+    );
+    // Lines taken out, with their line ends.
+    ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "id": "tabs", "start_line": 3, "new_text": "" }),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&tabs).unwrap(),
+        "local sep = \"a\tb\"\r\nlocal n = 2\r\nreturn n\r\n"
+    );
+    // A change found in a tab's spaces (as read_script shows it) takes the tab's place.
+    let indented = game.mods_dir().join("indented.lua");
+    std::fs::write(&indented, "if x then\n\ty()\nend\n").unwrap();
+    st.scan(&mut game);
+    ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "id": "indented", "old_text": " y()", "new_text": " z()" }),
+    )
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&indented).unwrap(), "if x then\n  z()\nend\n");
+    // A file with no last line break gets one, as the editor saves files.
+    let bare = game.mods_dir().join("bare.lua");
+    std::fs::write(&bare, "local a = 1").unwrap();
+    st.scan(&mut game);
+    ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "id": "bare", "old_text": "1", "new_text": "2" }),
+    )
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&bare).unwrap(), "local a = 2\n");
 }
 
 #[test]
@@ -992,8 +1058,9 @@ fn motion_off_or_nobody_watching_puts_edits_in_at_once() {
         json!({ "old_text": "return n", "new_text": "return n + 1" }),
     )
     .unwrap();
-    assert_eq!(r["saved"], true, "{r}");
+    assert_eq!((&r["saved"], &r["dirty"]), (&json!(true), &json!(false)), "{r}");
     assert_eq!(r["mod"]["state"], "running");
+    assert!(r.get("player_edits").is_none(), "{r}");
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         "local n = 1\nprint('hi')\nreturn n + 1\n"
@@ -1007,6 +1074,67 @@ fn motion_off_or_nobody_watching_puts_edits_in_at_once() {
     .unwrap();
     assert_eq!(r["saved"], false);
     assert!(st.s.editor.dirty);
+}
+
+#[test]
+fn with_the_studio_closed_an_edit_saves_nothing_of_the_players() {
+    let (mut game, mut st) = editing("coach-closed-theirs", "greet", GREET);
+    let path = st.s.editor.path.clone().unwrap();
+    // The player half wrote a line, paused, and closed the studio.
+    st.s.editor.click(0, 0, false);
+    handle(&mut st, &mut game, Input::Text("local half = (".into()));
+    st.s.now += 3.0;
+    st.s.ui.open = false;
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "return n", "new_text": "return n + 1" }),
+    )
+    .unwrap();
+    assert_eq!(r["saved"], false, "{r}");
+    assert!(
+        r["why"]
+            .as_str()
+            .unwrap()
+            .contains("the player has unsaved edits in greet.lua"),
+        "{r}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), GREET, "nothing written");
+    assert_eq!(
+        st.s.editor.text(),
+        "local half = (local n = 0\nprint('hi')\nreturn n + 1\n"
+    );
+    // Asked to, it saves the file as it is, theirs too, and says so.
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "n + 1", "new_text": "n + 2", "save": true }),
+    )
+    .unwrap();
+    assert_eq!(
+        (&r["saved"], &r["player_edits"], &r["dirty"]),
+        (&json!(true), &json!(true), &json!(false)),
+        "{r}"
+    );
+    assert!(std::fs::read_to_string(&path).unwrap().starts_with("local half = ("));
+    // save_script too; and only the agent's edits say nothing of the player's.
+    st.s.ui.open = true;
+    handle(&mut st, &mut game, Input::Text("1)".into()));
+    st.s.now += 3.0;
+    let r = ask(&mut st, &mut game, "save", json!({})).unwrap();
+    assert_eq!((&r["saved"], &r["player_edits"]), (&json!(true), &json!(true)), "{r}");
+    ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "n + 2", "new_text": "n + 3", "typing": false }),
+    )
+    .unwrap();
+    let r = ask(&mut st, &mut game, "save", json!({})).unwrap();
+    assert_eq!(r["saved"], true, "{r}");
+    assert!(r.get("player_edits").is_none(), "{r}");
 }
 
 #[test]
@@ -1401,6 +1529,27 @@ fn the_agent_panel_shows_what_the_agent_did_and_goes_there() {
     assert_eq!(st.s.editor.title, "long.lua", "selecting went nowhere");
 }
 
+#[test]
+fn whoever_saves_an_agents_edits_they_are_saved() {
+    let (mut game, mut st) = editing("coach-saved-by-player", "greet", GREET);
+    let unsaved = |st: &Studio| coach::summary(st)["unsaved"].clone();
+    ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "print('hi')", "new_text": "print('fixed')", "typing": false }),
+    )
+    .unwrap();
+    assert_eq!(unsaved(&st)["by"], "Claude Code");
+    // The player saves them, then types: what isn't saved now is theirs.
+    handle(&mut st, &mut game, key(Key::Char('s'), CTRL));
+    assert!(unsaved(&st).is_null());
+    st.s.editor.click(2, 8, false);
+    handle(&mut st, &mut game, Input::Text(" + 1".into()));
+    assert!(st.s.editor.dirty);
+    assert!(unsaved(&st).is_null(), "{}", coach::summary(&st));
+}
+
 /// A fake Claude Code for the game's own agent: it prints `lines` (its
 /// stream), waits a moment (its turn going on), then prints `end`.
 #[cfg(unix)]
@@ -1529,6 +1678,26 @@ fn a_turn_that_failed_or_found_the_file_changed_leaves_the_edits_unsaved() {
         "{}",
         last(&st)
     );
+    // The player saved the agent's edit (Ctrl+S), then typed: what isn't
+    // saved is theirs, and the turn's end says nothing of the agent's.
+    let (mut game, mut st) = editing("coach-turn-saved", "greet", GREET);
+    let path = st.s.editor.path.clone().unwrap();
+    fake_claude(&mut st, "saved", &[INIT], GOOD);
+    agent_ask(&mut st, "fix it");
+    ask(&mut st, &mut game, "edit", edit.clone()).unwrap();
+    handle(&mut st, &mut game, key(Key::Char('s'), CTRL));
+    st.s.editor.click(2, 8, false);
+    handle(&mut st, &mut game, Input::Text(" + 1".into()));
+    let before = st.s.ui.agent.lines.len();
+    until_done(&mut st, &mut game);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "local n = 0\nprint('half done')\nreturn n\n"
+    );
+    assert!(st.s.editor.dirty, "the player's own edit stays theirs");
+    assert!(coach::summary(&st)["unsaved"].is_null());
+    let since = said(&st, before);
+    assert!(!since.iter().any(|(_, t)| t.contains("aren't saved")), "{since:#?}");
     // The file changed on disk meanwhile: it isn't written over.
     let (mut game, mut st) = editing("coach-turn-disk", "greet", GREET);
     let path = st.s.editor.path.clone().unwrap();
