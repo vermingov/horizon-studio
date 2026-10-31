@@ -880,7 +880,7 @@ The studio reads the table again every frame: change a field (or a widget's `tex
 
 ## Keys on a screen
 
-`key(key, down)` gets short names, not the `key.keyboard.*` names of `on("key")`: `"enter"`, `"backspace"`, `"delete"`, `"tab"`, `"left"`, `"right"`, `"up"`, `"down"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, a lowercase letter `"a"`..`"z"` or digit `"0"`..`"9"`, `"/"`, `" "` (Space), `"`"` (the backquote), and `"other"` for the rest (the Menu key too). Escape and the studio's key (F8) close the screen when pressed, so `key` only sees them released (`"escape"`, `"toggle"`). `text(t)` gets typed characters (not while Control is held). Function keys stay with the game.
+`key(key, down)` gets short names, not the `key.keyboard.*` names of `on("key")`: `"enter"`, `"backspace"`, `"delete"`, `"tab"`, `"left"`, `"right"`, `"up"`, `"down"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, a lowercase letter `"a"`..`"z"` or digit `"0"`..`"9"`, `"/"`, `" "` (Space), `` "`" `` (the backquote), and `"other"` for the rest (the Menu key too). Escape and the studio's key (F8) close the screen when pressed, so `key` only sees them released (`"escape"`, `"toggle"`). `text(t)` gets typed characters (not while Control is held). Function keys stay with the game.
 
 ## Focus
 
@@ -3609,7 +3609,7 @@ Shows a screen: a centred panel of widgets, or a canvas the mod draws itself. It
 - `release(x, y, button)`: a button released.
 - `move(x, y)`: the pointer moved.
 - `wheel(steps)`: the wheel turned (positive up), unless over a slider.
-- `key(key, down)`: a key, while no input has focus: `"enter"`, `"backspace"`, `"delete"`, `"tab"`, `"left"`, `"right"`, `"up"`, `"down"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, `"a"`..`"z"`, `"0"`..`"9"`, `"/"`, `" "`, `"`"`, `"other"`; `"escape"` and `"toggle"` only on release (pressing them closes the screen).
+- `key(key, down)`: a key, while no input has focus: `"enter"`, `"backspace"`, `"delete"`, `"tab"`, `"left"`, `"right"`, `"up"`, `"down"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, `"a"`..`"z"`, `"0"`..`"9"`, `"/"`, `" "`, `` "`" ``, `"other"`; `"escape"` and `"toggle"` only on release (pressing them closes the screen).
 - `text(t)`: typed text, while no input has focus.
 - `close()`: the player closed the screen (Escape or F8); not called by `ui.close()`.
 
