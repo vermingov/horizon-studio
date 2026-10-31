@@ -7,8 +7,10 @@ mod common;
 
 use common::{FakeGame, log, mod_index, run_for, studio};
 use horizon_studio::game::hstudio::{ModState, Studio};
+use horizon_studio::game::hstudio_look::draw_screen;
 use horizon_studio::game::hstudio_rbx_draw::{OUTPUTS, fresh_layout, lay_out, pointer_button, pointer_moved};
 use horizon_studio::game::hstudio_rbx_values::get;
+use horizon_studio::game::hstudio_ui::{Input, Key, Mods, UiResult, handle_screen};
 
 fn printed(st: &Studio, id: &str) -> Vec<String> {
     let prefix = format!("[{id}] ");
@@ -498,4 +500,222 @@ fn a_read_lays_out_as_the_whole_gui_does() {
     for (i, &id) in ids.iter().enumerate() {
         assert_eq!(alone[i], outputs(rbx, id), "{}", rbx.full_name(id));
     }
+}
+
+const NONE: Mods = Mods {
+    ctrl: false,
+    shift: false,
+    alt: false,
+};
+const CTRL: Mods = Mods { ctrl: true, ..NONE };
+const SHIFT: Mods = Mods { shift: true, ..NONE };
+
+/// A key pressed and let go on the screen up (the GUI's, here).
+fn press(st: &mut Studio, game: &mut FakeGame, key: Key, mods: Mods) {
+    for down in [true, false] {
+        handle_screen(
+            st,
+            game,
+            Input::Key {
+                key,
+                down,
+                repeat: false,
+                mods,
+            },
+        );
+    }
+}
+
+fn typed(st: &mut Studio, game: &mut FakeGame, text: &str) {
+    handle_screen(st, game, Input::Text(text.into()));
+}
+
+/// Focuses the TextBox `box` with CaptureFocus (the mod's `focus` command)
+/// and lets the GUI's screen open, as it does for a focused TextBox.
+fn focus_box(st: &mut Studio, game: &mut FakeGame) {
+    say(st, game, "focus");
+    // The HUD lays the GUI out each frame, which is when it asks.
+    hud(st, game);
+    st.frame(game, 0.016);
+    assert!(st.accept_screen(), "the focused TextBox asked for the pointer");
+}
+
+const BOX: &str = r#"
+    local UIS = game:GetService("UserInputService")
+    local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+    box = Instance.new("TextBox", gui)
+    box.Size = UDim2.fromOffset(300, 30)
+    box.Text = ""
+    box.TextXAlignment = Enum.TextXAlignment.Left
+    box.FocusLost:Connect(function(enter) print("lost", enter, box.Text) end)
+    UIS.InputBegan:Connect(function(input, processed)
+        if input.KeyCode == Enum.KeyCode.Left then print("left", processed) end
+    end)
+    command("focus", function() box:CaptureFocus() end)
+    command("state", function() return box.Text .. "|" .. box.CursorPosition .. "|" .. box.SelectionStart end)
+"#;
+
+#[test]
+fn text_boxes_edit_like_text_fields() {
+    let mut game = FakeGame::new("rbx-edit");
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{BOX}\ncommand('caret', function() box.CursorPosition = 3 box.SelectionStart = 1 end)\ncommand('multi', function() box.MultiLine = true end)\n"
+    );
+    load(&mut game, &mut st, "edit", &src, 0.6);
+    let state = |st: &mut Studio, game: &mut FakeGame| say(st, game, "state");
+    assert_eq!(state(&mut st, &mut game), "|1|-1");
+    focus_box(&mut st, &mut game);
+    typed(&mut st, &mut game, "hello");
+    assert_eq!(state(&mut st, &mut game), "hello|6|-1");
+    press(&mut st, &mut game, Key::Left, NONE);
+    press(&mut st, &mut game, Key::Left, NONE);
+    typed(&mut st, &mut game, "X");
+    assert_eq!(state(&mut st, &mut game), "helXlo|5|-1");
+    press(&mut st, &mut game, Key::Home, NONE);
+    press(&mut st, &mut game, Key::Delete, NONE);
+    assert_eq!(state(&mut st, &mut game), "elXlo|1|-1");
+    press(&mut st, &mut game, Key::End, NONE);
+    assert_eq!(state(&mut st, &mut game), "elXlo|6|-1");
+    // Shift selects; Control+C copies; typing replaces the selection.
+    press(&mut st, &mut game, Key::Left, SHIFT);
+    press(&mut st, &mut game, Key::Left, SHIFT);
+    assert_eq!(state(&mut st, &mut game), "elXlo|4|6");
+    press(&mut st, &mut game, Key::Char('c'), CTRL);
+    assert_eq!(game.clipboard, "lo");
+    typed(&mut st, &mut game, "!");
+    assert_eq!(state(&mut st, &mut game), "elX!|5|-1");
+    // Control+A, then typing replaces everything; Control+Backspace takes a word.
+    press(&mut st, &mut game, Key::Char('a'), CTRL);
+    assert_eq!(state(&mut st, &mut game), "elX!|5|1");
+    typed(&mut st, &mut game, "hello world");
+    press(&mut st, &mut game, Key::Backspace, CTRL);
+    assert_eq!(state(&mut st, &mut game), "hello |7|-1");
+    // Control+V pastes; Shift+Home and Control+X cut everything.
+    game.clipboard = "there".into();
+    press(&mut st, &mut game, Key::Char('v'), CTRL);
+    assert_eq!(state(&mut st, &mut game), "hello there|12|-1");
+    press(&mut st, &mut game, Key::Home, SHIFT);
+    assert_eq!(state(&mut st, &mut game), "hello there|1|12");
+    press(&mut st, &mut game, Key::Char('x'), CTRL);
+    assert_eq!(game.clipboard, "hello there");
+    assert_eq!(state(&mut st, &mut game), "|1|-1");
+    // A script's CursorPosition and SelectionStart move the caret and select.
+    typed(&mut st, &mut game, "abcdef");
+    say(&mut st, &mut game, "caret");
+    typed(&mut st, &mut game, "Z");
+    assert_eq!(state(&mut st, &mut game), "Zcdef|2|-1");
+    // Enter ends a single line's editing.
+    press(&mut st, &mut game, Key::Enter, NONE);
+    run_for(&mut st, &mut game, 0.05);
+    assert!(st.s.screen.is_none(), "nothing else wants the pointer");
+    assert_eq!(state(&mut st, &mut game), "Zcdef|-1|-1");
+    // MultiLine: Enter is a new line and the box keeps the focus.
+    say(&mut st, &mut game, "multi");
+    focus_box(&mut st, &mut game);
+    typed(&mut st, &mut game, "a");
+    press(&mut st, &mut game, Key::Enter, NONE);
+    typed(&mut st, &mut game, "b");
+    assert_eq!(state(&mut st, &mut game), "a\nb|4|-1");
+    // Escape lets go of the box first, and the screen stays for that press.
+    let r = handle_screen(
+        &mut st,
+        &mut game,
+        Input::Key {
+            key: Key::Escape,
+            down: true,
+            repeat: false,
+            mods: NONE,
+        },
+    );
+    assert_eq!(r, UiResult::Used);
+    run_for(&mut st, &mut game, 0.05);
+    let p = printed(&st, "edit");
+    assert!(
+        p.contains(&"left    true".to_owned()),
+        "keys typed are the GUI's: {p:#?}"
+    );
+    // (The console shows the second text's two lines apart.)
+    let lost: Vec<&String> = p.iter().filter(|l| l.starts_with("lost")).collect();
+    assert_eq!(lost, ["lost    true    Zcdef", "lost    false    a"]);
+    assert!(st.s.screen.is_none());
+}
+
+#[test]
+fn up_and_down_move_a_drawn_line() {
+    let mut game = FakeGame::new("rbx-lines");
+    let mut st = studio(&mut game);
+    // Ten characters of 6 dp a line: "aaaa bbbb" over "cccc".
+    let src = format!(
+        "{BOX}\nbox.MultiLine = true box.TextWrapped = true box.ClearTextOnFocus = false\nbox.TextYAlignment = Enum.TextYAlignment.Top box.Size = UDim2.fromOffset(60, 100)\nbox.Text = 'aaaa bbbb cccc'\n"
+    );
+    load(&mut game, &mut st, "lines", &src, 0.6);
+    focus_box(&mut st, &mut game);
+    let state = |st: &mut Studio, game: &mut FakeGame| say(st, game, "state");
+    assert_eq!(state(&mut st, &mut game), "aaaa bbbb cccc|15|-1");
+    // Up keeps the caret's x, four characters in.
+    press(&mut st, &mut game, Key::Up, NONE);
+    assert_eq!(state(&mut st, &mut game), "aaaa bbbb cccc|5|-1");
+    press(&mut st, &mut game, Key::Down, SHIFT);
+    assert_eq!(state(&mut st, &mut game), "aaaa bbbb cccc|15|5");
+    // Past the last line is the end, and above the first the start.
+    press(&mut st, &mut game, Key::Down, NONE);
+    assert_eq!(state(&mut st, &mut game), "aaaa bbbb cccc|15|-1");
+    press(&mut st, &mut game, Key::Up, NONE);
+    press(&mut st, &mut game, Key::Up, NONE);
+    assert_eq!(state(&mut st, &mut game), "aaaa bbbb cccc|1|-1");
+}
+
+#[test]
+fn clicks_and_drags_place_the_caret_and_select() {
+    let mut game = FakeGame::new("rbx-select");
+    let mut st = studio(&mut game);
+    let src = format!("{BOX}\nbox.ClearTextOnFocus = false\nbox.Text = 'hello world'\n");
+    load(&mut game, &mut st, "select", &src, 0.6);
+    focus_box(&mut st, &mut game);
+    let state = |st: &mut Studio, game: &mut FakeGame| say(st, game, "state");
+    // A press nearer the end of "hello" than the start of the space.
+    handle_screen(&mut st, &mut game, Input::Mouse(32.0, 15.0));
+    handle_screen(&mut st, &mut game, Input::Button { left: true, down: true });
+    assert_eq!(state(&mut st, &mut game), "hello world|6|-1");
+    // Dragging to the end selects " world".
+    handle_screen(&mut st, &mut game, Input::Mouse(70.0, 15.0));
+    handle_screen(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    assert_eq!(state(&mut st, &mut game), "hello world|12|6");
+    // The selection is drawn behind the text, and the caret at its end.
+    st.s.now = 10.0;
+    game.drawn.clear();
+    draw_screen(&mut st, &mut game);
+    assert!(
+        game.drawn
+            .contains(&"rect [30.0, 11.0, 36.0, 8.0] r0 730078d7".to_owned()),
+        "{:#?}",
+        game.drawn
+    );
+    assert!(
+        game.drawn.iter().any(|d| d.starts_with("rect [67.0, 11.0, 1.5, 8.0]")),
+        "{:#?}",
+        game.drawn
+    );
+    press(&mut st, &mut game, Key::Char('c'), CTRL);
+    assert_eq!(game.clipboard, " world");
+    // A press in the box without a drag drops the selection.
+    handle_screen(&mut st, &mut game, Input::Mouse(1.0, 15.0));
+    handle_screen(&mut st, &mut game, Input::Button { left: true, down: true });
+    handle_screen(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    assert_eq!(state(&mut st, &mut game), "hello world|1|-1");
 }

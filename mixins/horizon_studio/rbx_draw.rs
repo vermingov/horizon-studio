@@ -22,6 +22,7 @@ use super::hstudio_rbx_values::{
     Data, EnumItem, as_c3, as_cf, as_font, as_item, as_udim, as_udim2, as_v2, as_v3, cf, enum_item, enum_value, get,
     v2, v3,
 };
+use super::hstudio_ui::{Key, LineEdit, Mods};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -31,6 +32,8 @@ pub struct Frame {
     pub node_inst: Vec<Id>,
     pub inst_node: HashMap<Id, NodeId>,
     pub view: (f64, f64),
+    /// The GUI epoch it was laid out at.
+    pub epoch: u64,
 }
 
 // ---------------------------------------------------------------- the layout
@@ -95,7 +98,9 @@ fn fill(node: &mut layout::Node, inst: &super::hstudio_rbx::Inst, focused: bool)
     }
     if find(c, "Text") {
         let mut text = inst.get("Text").as_text().unwrap_or_default();
-        if flag(inst, "RichText") {
+        // A TextBox being edited shows its text as it is, tags and all, so
+        // the caret goes where the text has it.
+        if flag(inst, "RichText") && !(c.name == "TextBox" && focused) {
             text = strip_tags(&text);
         }
         if c.name == "TextBox" && text.is_empty() && !focused {
@@ -359,6 +364,7 @@ pub fn lay_out(rbx: &mut Rbx, game: &mut dyn GameApi) {
         node_inst,
         inst_node,
         view: (f64::from(w), f64::from(h)),
+        epoch,
     });
 }
 
@@ -769,6 +775,21 @@ pub fn draw(
                 None
             };
             let clip = p.clip;
+            // A TextBox being edited: its selection, behind the text.
+            let edit = (rbx.pointer.focus == Some(id) && !placeholder).then(|| edit_of(rbx, id));
+            if let Some((a, b)) = edit.as_ref().and_then(LineEdit::selection) {
+                let band = argb(Color3::from_rgb(0.0, 120.0, 215.0), 0.45 * ga);
+                for line in &t.lines {
+                    let (from, to) = (a.max(line.start), b.min(line.start + line.text.len()));
+                    if from >= to {
+                        continue;
+                    }
+                    let x0 = width_to(game, t, line, from - line.start, p.scale, font);
+                    let x1 = width_to(game, t, line, to - line.start, p.scale, font);
+                    let at = [(line.position.x + x0) as f32, line.position.y as f32];
+                    game.dp_rect([at[0], at[1], (x1 - x0) as f32, size], 0.0, band);
+                }
+            }
             for line in &t.lines {
                 let at = [line.position.x as f32, line.position.y as f32 - lift];
                 if let Some(c) = clip
@@ -785,11 +806,12 @@ pub fn draw(
                     game.dp_text(&line.text, at, size, font, argb(tc, ta));
                 }
             }
-            // The caret, blinking.
+            // The caret, blinking, where CursorPosition has it.
             if rbx.pointer.focus == Some(id) && (now * 2.0).fract() < 0.6 {
-                let (cx, cy) = match t.lines.last() {
-                    Some(l) if !placeholder => (l.position.x + l.width, l.position.y),
-                    _ => (
+                let caret = edit.as_ref().and_then(|e| caret_at(game, t, e.cursor, p.scale, font));
+                let (cx, cy) = match caret {
+                    Some((i, x)) => (x, t.lines[i].position.y),
+                    None => (
                         p.content.min.x,
                         p.content.min.y + (p.content.height() - t.size).max(0.0) / 2.0,
                     ),
@@ -1080,6 +1102,10 @@ pub fn focus(rbx: &mut Rbx, id: Option<Id>) {
     if rbx.raw_get(id, "ClearTextOnFocus").truthy() && rbx.raw_get(id, "TextEditable").truthy() {
         rbx.raw_set(id, "Text", Value::str(""));
     }
+    // The caret starts at the end, nothing selected.
+    let end = rbx.raw_get(id, "Text").as_bytes().map_or(0, <[u8]>::len);
+    rbx.raw_set(id, "CursorPosition", Value::Num(end as f64 + 1.0));
+    rbx.raw_set(id, "SelectionStart", Value::Num(-1.0));
     rbx.fire(id, "Focused", Vec::new());
     let uis = rbx.service("UserInputService").unwrap_or(rbx.game);
     let v = rbx.value(id);
@@ -1089,6 +1115,10 @@ pub fn focus(rbx: &mut Rbx, id: Option<Id>) {
 pub fn unfocus(rbx: &mut Rbx, enter: bool) {
     let Some(id) = rbx.pointer.focus.take() else { return };
     rbx.gui_epoch += 1;
+    rbx.pointer.selecting = None;
+    // Not being edited, a TextBox has no caret.
+    rbx.raw_set(id, "CursorPosition", Value::Num(-1.0));
+    rbx.raw_set(id, "SelectionStart", Value::Num(-1.0));
     let input = input_object(
         rbx,
         Some(if enter { "Return" } else { "Unknown" }),
@@ -1127,16 +1157,31 @@ pub fn screen_call(env: &mut dyn Env, lua: &mut Lua, which: u32, args: &[Value])
         // move(x, y)
         1 => {
             let (x, y) = xy(lua, args)?;
-            pointer_moved(env.rbx(), x, y);
+            let (rbx, game) = env.rbx_and_game();
+            pointer_moved(rbx, x, y);
+            // A press in a TextBox being dragged selects its text.
+            if let Some(s) = rbx.pointer.selecting
+                && rbx.pointer.focus == Some(s)
+            {
+                caret_to_pointer(rbx, game, s, true);
+            }
             Ok(Vec::new())
         }
         // click(x, y, button)
         2 => {
             let (x, y) = xy(lua, args)?;
             let left = args.get(2).and_then(Value::as_text).is_none_or(|b| b == "left");
-            let rbx = env.rbx();
+            let (rbx, game) = env.rbx_and_game();
             pointer_moved(rbx, x, y);
             pointer_button(rbx, left, true);
+            // A press in the focused TextBox puts its caret there.
+            if left
+                && let Some(f) = rbx.pointer.focus
+                && hits(rbx).0 == Some(f)
+            {
+                rbx.pointer.selecting = Some(f);
+                caret_to_pointer(rbx, game, f, false);
+            }
             Ok(Vec::new())
         }
         // release(x, y, button)
@@ -1146,24 +1191,24 @@ pub fn screen_call(env: &mut dyn Env, lua: &mut Lua, which: u32, args: &[Value])
             let rbx = env.rbx();
             pointer_moved(rbx, x, y);
             pointer_button(rbx, left, false);
+            if left {
+                rbx.pointer.selecting = None;
+            }
             Ok(Vec::new())
         }
-        // key(key, down)
+        // key(key, down, mods)
         4 => {
             let key = check_text(lua, args, 0, "key")?;
             let down = args.get(1).is_some_and(Value::truthy);
-            let rbx = env.rbx();
+            let mods = mods_arg(args.get(2));
+            let (rbx, game) = env.rbx_and_game();
             if let Some(f) = rbx.pointer.focus {
+                // Keys typed into a TextBox are the GUI's: gameProcessedEvent.
+                if let Some(k) = screen_keycode(&key) {
+                    key_input(rbx, k, down, true);
+                }
                 if down {
-                    match key.as_str() {
-                        "enter" => unfocus(rbx, true),
-                        "backspace" if rbx.raw_get(f, "TextEditable").truthy() => {
-                            let mut t = rbx.raw_get(f, "Text").as_text().unwrap_or_default();
-                            t.pop();
-                            rbx.raw_set(f, "Text", Value::str(&t));
-                        }
-                        _ => {}
-                    }
+                    textbox_key(rbx, game, f, &key, mods);
                 }
                 return Ok(Vec::new());
             }
@@ -1175,16 +1220,7 @@ pub fn screen_call(env: &mut dyn Env, lua: &mut Lua, which: u32, args: &[Value])
         // text(t)
         5 => {
             let t = check_text(lua, args, 0, "text")?;
-            let rbx = env.rbx();
-            if let Some(f) = rbx.pointer.focus
-                && rbx.raw_get(f, "TextEditable").truthy()
-            {
-                let mut s = rbx.raw_get(f, "Text").as_text().unwrap_or_default();
-                if s.len() + t.len() <= 200_000 {
-                    s.push_str(&t);
-                    rbx.raw_set(f, "Text", Value::str(&s));
-                }
-            }
+            type_text(env.rbx(), &t);
             Ok(Vec::new())
         }
         // wheel(steps)
@@ -1192,6 +1228,14 @@ pub fn screen_call(env: &mut dyn Env, lua: &mut Lua, which: u32, args: &[Value])
             let steps = check_num(lua, args, 0, "wheel")?;
             wheel(env.rbx(), steps);
             Ok(Vec::new())
+        }
+        // escape(): a TextBox being edited lets go first, as in Roblox, and
+        // the screen stays (it goes by itself when nothing else wants it).
+        8 => {
+            let rbx = env.rbx();
+            let editing = rbx.pointer.focus.is_some();
+            unfocus(rbx, false);
+            Ok(vec![Value::Bool(editing)])
         }
         // close()
         _ => {
@@ -2006,11 +2050,260 @@ fn step_events(rbx: &mut Rbx, now: f64, dt: f64, frame_no: u64) {
     }
 }
 
-/// The screen's text input and Changed for a TextBox as one types (tests).
+/// Text typed into the focused TextBox (the screen's text input): at its
+/// caret, over its selection.
 pub fn type_text(rbx: &mut Rbx, text: &str) {
-    if let Some(f) = rbx.pointer.focus {
-        let mut s = rbx.raw_get(f, "Text").as_text().unwrap_or_default();
-        s.push_str(text);
-        rbx.raw_set(f, "Text", Value::str(&s));
+    let Some(f) = rbx.pointer.focus else { return };
+    if !rbx.raw_get(f, "TextEditable").truthy() {
+        return;
     }
+    let mut e = edit_of(rbx, f);
+    if e.text.len() + text.len() <= MAX_TEXT {
+        e.insert(text);
+        store_edit(rbx, f, &e);
+    }
+}
+
+// ---------------------------------------------------------------- TextBox editing
+
+/// The longest a TextBox's text gets by typing and pasting, in bytes.
+const MAX_TEXT: usize = 200_000;
+
+/// The modifier keys a screen's key(key, down, mods) gets.
+fn mods_arg(v: Option<&Value>) -> Mods {
+    let held = |k: &str| match v {
+        Some(Value::Table(t)) => t.borrow().get_str(k).truthy(),
+        _ => false,
+    };
+    Mods {
+        ctrl: held("ctrl"),
+        shift: held("shift"),
+        alt: held("alt"),
+    }
+}
+
+/// The byte offset a 1-based CursorPosition or SelectionStart stands for in
+/// `text`; None for -1.
+fn offset_of(text: &str, v: &Value) -> Option<usize> {
+    let n = v.to_num().filter(|n| *n >= 1.0)?;
+    let mut at = ((n - 1.0) as usize).min(text.len());
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    Some(at)
+}
+
+/// A TextBox's text, caret and selection, from its Text, CursorPosition and
+/// SelectionStart (so a script moves them by setting those).
+fn edit_of(rbx: &Rbx, id: Id) -> LineEdit {
+    let text = rbx.raw_get(id, "Text").as_text().unwrap_or_default();
+    let cursor = offset_of(&text, &rbx.raw_get(id, "CursorPosition")).unwrap_or(text.len());
+    let anchor = offset_of(&text, &rbx.raw_get(id, "SelectionStart")).filter(|&a| a != cursor);
+    LineEdit {
+        text,
+        cursor,
+        anchor,
+        multiline: rbx.raw_get(id, "MultiLine").truthy(),
+    }
+}
+
+/// An edit written back: Text, CursorPosition, and SelectionStart (-1 with
+/// nothing selected).
+fn store_edit(rbx: &mut Rbx, id: Id, e: &LineEdit) {
+    if rbx.raw_get(id, "Text").as_text().as_deref() != Some(e.text.as_str()) {
+        rbx.raw_set(id, "Text", Value::str(&e.text));
+    }
+    rbx.raw_set(id, "CursorPosition", Value::Num(e.cursor as f64 + 1.0));
+    let start = match (e.selection(), e.anchor) {
+        (Some(_), Some(a)) => a as f64 + 1.0,
+        _ => -1.0,
+    };
+    rbx.raw_set(id, "SelectionStart", Value::Num(start));
+}
+
+/// A key pressed in the focused TextBox `id`: the arrows, Home, End,
+/// Backspace and Delete as a text field has them (Control by word, Shift
+/// selecting), Control+A, C, X and V, Up and Down a line as it is drawn in
+/// MultiLine text, and Enter (a new line in MultiLine text, else the end of
+/// editing: FocusLost(true)). A TextBox that isn't TextEditable only moves
+/// its caret, selects and copies.
+fn textbox_key(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id, key: &str, mods: Mods) {
+    let editable = rbx.raw_get(id, "TextEditable").truthy();
+    let mut e = edit_of(rbx, id);
+    let k = match key {
+        "left" => Key::Left,
+        "right" => Key::Right,
+        "up" => Key::Up,
+        "down" => Key::Down,
+        "home" => Key::Home,
+        "end" => Key::End,
+        "backspace" => Key::Backspace,
+        "delete" => Key::Delete,
+        "enter" => Key::Enter,
+        k => {
+            let mut chars = k.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => Key::Char(c),
+                _ => Key::Other,
+            }
+        }
+    };
+    match k {
+        Key::Enter if e.multiline && editable => {
+            if e.text.len() < MAX_TEXT {
+                e.insert("\n");
+            }
+        }
+        Key::Enter => {
+            unfocus(rbx, true);
+            return;
+        }
+        Key::Char('c') if mods.ctrl => {
+            if !e.selected().is_empty() {
+                game.set_clipboard(e.selected());
+            }
+            return;
+        }
+        Key::Char('x') if mods.ctrl => {
+            if !e.selected().is_empty() {
+                game.set_clipboard(e.selected());
+                if editable {
+                    e.delete_selection();
+                }
+            }
+        }
+        Key::Char('v') if mods.ctrl => {
+            let clip = game.clipboard();
+            if editable && e.text.len() + clip.len() <= MAX_TEXT {
+                e.insert(&clip);
+            }
+        }
+        Key::Up | Key::Down if e.multiline => {
+            let down = k == Key::Down;
+            let to = drawn_line_move(rbx, game, id, e.cursor, down).unwrap_or_else(|| e.line_move(down));
+            e.move_cursor(to.min(e.text.len()), mods.shift);
+        }
+        Key::Backspace | Key::Delete if !editable => return,
+        k => {
+            if !e.edit_key(k, mods) {
+                return;
+            }
+        }
+    }
+    // A layout's offsets fall on the text's characters, but the text may
+    // have changed under them.
+    while !e.text.is_char_boundary(e.cursor) {
+        e.cursor -= 1;
+    }
+    store_edit(rbx, id, &e);
+}
+
+/// Lays the GUI out again if it moved since the last frame's layout (the
+/// caret's place needs the text as it is now).
+fn fresh_frame(rbx: &mut Rbx, game: &mut dyn GameApi) {
+    if rbx.layout.as_ref().is_none_or(|f| f.epoch != rbx.gui_epoch) {
+        lay_out(rbx, game);
+    }
+}
+
+/// A text object's text as last laid out, with its UIScale and font.
+fn laid_text(rbx: &Rbx, id: Id) -> Option<(layout::TextLayout, f64, StudioFont)> {
+    let f = rbx.layout.as_ref()?;
+    let p = f.layout.get(*f.inst_node.get(&id)?)?;
+    let font = studio_font(&as_font(&rbx.raw_get(id, "FontFace")).unwrap_or_default());
+    Some((p.text.clone()?, p.scale, font))
+}
+
+/// How wide the start of a laid-out line is, to byte `end` of it.
+fn width_to(
+    game: &mut dyn GameApi,
+    t: &layout::TextLayout,
+    line: &layout::TextLine,
+    end: usize,
+    scale: f64,
+    font: StudioFont,
+) -> f64 {
+    let size = (t.size / scale.max(1e-9)) as f32;
+    f64::from(game.dp_measure(&line.text[..end], size, font)) * scale
+}
+
+/// The line the caret at byte `cursor` is on, and its x.
+fn caret_at(
+    game: &mut dyn GameApi,
+    t: &layout::TextLayout,
+    cursor: usize,
+    scale: f64,
+    font: StudioFont,
+) -> Option<(usize, f64)> {
+    let i = t.lines.iter().rposition(|l| l.start <= cursor)?;
+    let line = &t.lines[i];
+    let mut end = (cursor - line.start).min(line.text.len());
+    while !line.text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some((i, line.position.x + width_to(game, t, line, end, scale, font)))
+}
+
+/// The byte of the text nearest `x` on laid-out line `i`.
+fn nearest(game: &mut dyn GameApi, t: &layout::TextLayout, i: usize, x: f64, scale: f64, font: StudioFont) -> usize {
+    let line = &t.lines[i];
+    let ends: Vec<usize> = line
+        .text
+        .char_indices()
+        .map(|(b, _)| b)
+        .chain(std::iter::once(line.text.len()))
+        .collect();
+    let mut at = |end: usize| line.position.x + width_to(game, t, line, end, scale, font);
+    // The first end at or past x; the one before it may be nearer.
+    let (mut lo, mut hi) = (0, ends.len() - 1);
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if at(ends[mid]) < x {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    let best = if lo > 0 && x - at(ends[lo - 1]) < at(ends[lo]) - x {
+        lo - 1
+    } else {
+        lo
+    };
+    line.start + ends[best]
+}
+
+/// Puts the focused TextBox `id`'s caret where the pointer is; `extend`
+/// keeps the other end of the selection where it was.
+fn caret_to_pointer(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id, extend: bool) {
+    fresh_frame(rbx, game);
+    let Some((t, scale, font)) = laid_text(rbx, id) else {
+        return;
+    };
+    if t.lines.is_empty() {
+        return;
+    }
+    let (x, y) = (rbx.pointer.x, rbx.pointer.y);
+    let i = t.lines.iter().rposition(|l| l.position.y <= y).unwrap_or(0);
+    let to = nearest(game, &t, i, x, scale, font);
+    let mut e = edit_of(rbx, id);
+    let mut to = to.min(e.text.len());
+    while !e.text.is_char_boundary(to) {
+        to -= 1;
+    }
+    e.move_cursor(to, extend);
+    store_edit(rbx, id, &e);
+}
+
+/// The caret a drawn line up or down from byte `cursor`, as far across as
+/// it is: the text's start above the first line, its end below the last.
+/// None without a layout of the box.
+fn drawn_line_move(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id, cursor: usize, down: bool) -> Option<usize> {
+    fresh_frame(rbx, game);
+    let (t, scale, font) = laid_text(rbx, id)?;
+    let (i, x) = caret_at(game, &t, cursor, scale, font)?;
+    let j = if down { i + 1 } else { i.checked_sub(1)? };
+    if j >= t.lines.len() {
+        return None;
+    }
+    Some(nearest(game, &t, j, x, scale, font))
 }

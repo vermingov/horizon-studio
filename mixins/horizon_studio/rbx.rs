@@ -45,9 +45,11 @@ const CONN_INDEX: u32 = 1004;
 const SIGNAL_TOSTRING: u32 = 1005;
 const INSTANCE_NEW: u32 = 1006;
 const INSTANCE_FROM_EXISTING: u32 = 1007;
-/// The GUI's screen: draw, move, click, release, key, text, wheel, close.
+/// The GUI's screen: draw, move, click, release, key, text, wheel, close,
+/// escape.
 const SCREEN_DRAW: u32 = 1010;
 const SCREEN_CLOSE: u32 = 1017;
+const SCREEN_ESCAPE: u32 = 1018;
 const METHOD_BASE: u32 = 1100;
 const SIGNAL_METHOD_BASE: u32 = 1700;
 const CONN_METHOD_BASE: u32 = 1750;
@@ -1119,6 +1121,8 @@ pub struct Pointer {
     pub focus: Option<Id>,
     /// A Draggable object being moved: it, and the pointer's last place.
     pub drag: Option<(Id, f64, f64)>,
+    /// The TextBox whose text the held button is selecting.
+    pub selecting: Option<Id>,
     pub held: HashSet<&'static str>,
     pub buttons: [bool; 3],
 }
@@ -2189,7 +2193,9 @@ pub fn call(env: &mut dyn Env, lua: &mut Lua, id: u32, args: Vec<Value>) -> Res 
             let id = rbx.clone_tree(src, owner, false);
             Ok(vec![rbx.value(id)])
         }
-        SCREEN_DRAW..=SCREEN_CLOSE => super::hstudio_rbx_draw::screen_call(env, lua, id - SCREEN_DRAW, &args),
+        SCREEN_DRAW..=SCREEN_CLOSE | SCREEN_ESCAPE => {
+            super::hstudio_rbx_draw::screen_call(env, lua, id - SCREEN_DRAW, &args)
+        }
         CONN_METHOD_BASE => {
             if let Some(c) = conn_ref(&args) {
                 let rbx = env.rbx();
@@ -2793,9 +2799,11 @@ pub fn screen_table(rbx: &mut Rbx) -> TableRef {
     let mut t = Table::new();
     t.set_str("canvas", Value::Bool(true));
     t.set_str("backdrop", Value::Bool(false));
-    for (i, name) in ["draw", "move", "click", "release", "key", "text", "wheel", "close"]
-        .iter()
-        .enumerate()
+    for (i, name) in [
+        "draw", "move", "click", "release", "key", "text", "wheel", "close", "escape",
+    ]
+    .iter()
+    .enumerate()
     {
         t.set_str(name, rbx.native(SCREEN_DRAW + i as u32, name));
     }

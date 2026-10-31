@@ -3543,7 +3543,7 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "ui",
         "open",
         130,
-        "ui.open(screen): show a screen: {title, width, widgets = {...}, draw(w, h), click(x, y, button), key(key, down), text(t), close()}; canvas = true draws it all yourself with gfx.* in dp, and adds move(x, y), release(x, y, button) and wheel(steps)",
+        "ui.open(screen): show a screen: {title, width, widgets = {...}, draw(w, h), click(x, y, button), key(key, down, mods), text(t), escape(), close()}; canvas = true draws it all yourself with gfx.* in dp, and adds move(x, y), release(x, y, button) and wheel(steps); mods is {ctrl, shift, alt}, and escape() returning true keeps the screen open on Escape",
     ),
     ("ui", "close", 131, "ui.close(): close this mod's screen"),
     ("ui", "is_open", 132, "ui.is_open(): whether this mod's screen shows"),

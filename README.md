@@ -489,7 +489,8 @@ changes the screen:
 | `title`, `width` | A panel with this title (220 GUI pixels wide unless given). |
 | `widgets` | The panel's rows, top to bottom (below). |
 | `draw(w, h)` | Called each frame after the panel: draw anything with `hud.text`, `hud.rect`... A screen with neither `title` nor `widgets` is yours alone to draw. |
-| `click(x, y, button)`, `key(key, down)`, `text(t)`, `wheel(steps)` | Input outside the widgets (`button` is `"left"` or `"right"`; `key` is `"enter"`, `"left"`, `"a"`...). |
+| `click(x, y, button)`, `key(key, down, mods)`, `text(t)`, `wheel(steps)` | Input outside the widgets (`button` is `"left"` or `"right"`; `key` is `"enter"`, `"left"`, `"a"`..., and `mods` is `{ctrl, shift, alt}`). |
+| `escape()` | Called when Escape is pressed: returning true keeps the screen open (a field of your own drops its focus), else it closes. |
 | `close()` | Called when the screen closes. |
 | `canvas` | `true`: the screen is yours to draw, in dp with `gfx.*`. `draw(w, h)` gets the size in dp, and the pointer calls come in dp too, with `move(x, y)` and `release(x, y, button)` added. `backdrop = false` drops the dimmed backdrop. |
 
@@ -638,8 +639,9 @@ end)
   AnchorPoint, UIListLayout, UIGridLayout, UIPadding, UIScale, the constraints, ScrollingFrames, AutomaticSize,
   ZIndex) and drawn on the HUD with Horizon's shapes and Geist fonts, UICorner, UIStroke and borders included. A GUI
   pixel is a dp. The GUI takes the mouse while a visible button has `Modal = true` or a TextBox has focus, or after
-  **Left Alt**; Escape gives it back. Then hovers, clicks (`MouseButton1Click`, `Activated`), TextBoxes, scrolling
-  and dragging work.
+  **Left Alt**; Escape gives it back (first letting go of a TextBox). Then hovers, clicks (`MouseButton1Click`,
+  `Activated`), TextBoxes (a caret, selecting with Shift or a drag, the clipboard, `MultiLine`), scrolling and dragging
+  work.
 - **Input.** Keys and mouse buttons fire UserInputService's `InputBegan` and `InputEnded` (`input.KeyCode`), and
   ContextActionService's actions; `UIS:IsKeyDown`, `Player:GetMouse()`.
 - **The world.** The LocalPlayer's Character follows the player (a stud is a block), `workspace.CurrentCamera`
