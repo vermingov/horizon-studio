@@ -13,7 +13,9 @@ mod common;
 use common::{FakeGame, log, mod_index, run_for, studio};
 use horizon_studio::game::hstudio::{ModState, Studio};
 use horizon_studio::game::hstudio_look::draw_screen;
-use horizon_studio::game::hstudio_rbx_draw::{OUTPUTS, fresh_layout, lay_out, pointer_button, pointer_moved, wheel};
+use horizon_studio::game::hstudio_rbx_draw::{
+    OUTPUTS, fresh_layout, lay_out, objects_at, pointer_button, pointer_moved, wheel,
+};
 use horizon_studio::game::hstudio_rbx_values::get;
 use horizon_studio::game::hstudio_ui::{Input, Key, Mods, UiResult, handle_screen};
 
@@ -1412,4 +1414,171 @@ fn rich_text_draws_its_runs() {
     // The mark, behind "marked".
     let marked = index_of(&drawn, "text marked @");
     assert_eq!(drawn[marked - 1], "rect [0.0, 20.0, 36.0, 8.0] r0 ff00ff00");
+}
+
+/// A drawn rectangle's x, y, width and height.
+fn rect_of(drawn: &str) -> [f32; 4] {
+    let inner = drawn.split('[').nth(1).and_then(|r| r.split(']').next()).unwrap_or("");
+    let n: Vec<f32> = inner.split(',').map(|v| v.trim().parse().unwrap()).collect();
+    [n[0], n[1], n[2], n[3]]
+}
+
+#[track_caller]
+fn near_rect(got: [f32; 4], want: [f32; 4]) {
+    assert!(
+        got.iter().zip(want).all(|(g, w)| (g - w).abs() < 0.01),
+        "{got:?} is not {want:?}"
+    );
+}
+
+#[test]
+fn billboard_guis_float_over_parts() {
+    let mut game = FakeGame::new("rbx-billboard");
+    let mut st = studio(&mut game);
+    // The camera is at the player's eyes (10.5, 65.62, -3.25) looking north
+    // (-z) with 70 degrees, on a 960 x 540 screen: the part is 10 ahead, at
+    // the screen's middle.
+    let src = r#"
+        local part = Instance.new("Part", workspace)
+        part.Size = Vector3.new(1, 1, 1)
+        part.Transparency = 1
+        part.CFrame = CFrame.new(10.5, 65.62, -13.25)
+        local board = Instance.new("BillboardGui", part)
+        board.Size = UDim2.fromOffset(100, 20)
+        local tag = Instance.new("Frame", board)
+        tag.Size = UDim2.fromScale(1, 1)
+        tag.BackgroundColor3 = Color3.new(1, 0, 0)
+        tag.BorderSizePixel = 0
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local over = Instance.new("Frame", gui)
+        over.Size = UDim2.fromOffset(10, 10)
+        over.BorderSizePixel = 0
+        local function set(target, props)
+            return function()
+                for k, v in props do
+                    target[k] = v
+                end
+                return tostring(tag.AbsolutePosition) .. " " .. tostring(tag.AbsoluteSize)
+            end
+        end
+        command("up", set(board, { StudsOffset = Vector3.new(0, 1, 0) }))
+        command("behind", set(part, { CFrame = CFrame.new(10.5, 65.62, 6.75) }))
+        command("back", set(part, { CFrame = CFrame.new(10.5, 65.62, -13.25) }))
+        command("far", set(board, { MaxDistance = 5 }))
+        command("near", set(board, { MaxDistance = math.huge }))
+        command("top", set(board, { AlwaysOnTop = true }))
+        command("studs", set(board, { StudsOffset = Vector3.zero, Size = UDim2.new(2, 0, 1, 0) }))
+        command("closer", set(part, { CFrame = CFrame.new(10.5, 65.62, -8.25) }))
+        command("hide", set(board, { PlayerToHideFrom = game.Players.LocalPlayer }))
+        command("show", function() board.PlayerToHideFrom = nil end)
+        command("away", function()
+            board.Size = UDim2.fromOffset(100, 20)
+            board.Adornee = part
+            board.Parent = game.Players.LocalPlayer.PlayerGui
+            local button = Instance.new("TextButton", board)
+            button.Size = UDim2.fromScale(1, 1)
+            button.BackgroundTransparency = 1
+            button.Text = ""
+        end)
+        command("active", set(board, { Active = true }))
+    "#;
+    load(&mut game, &mut st, "board", src, 0.6);
+    let tag = |st: &mut Studio, game: &mut FakeGame| -> Option<[f32; 4]> {
+        let drawn = hud(st, game);
+        let at = drawn.iter().position(|d| d.ends_with(" r0 ffff0000"))?;
+        // Billboards go under the ScreenGuis.
+        let over = index_of(&drawn, "rect [0.0, 0.0, 10.0, 10.0]");
+        assert!(at < over, "{drawn:#?}");
+        Some(rect_of(&drawn[at]))
+    };
+    near_rect(tag(&mut st, &mut game).unwrap(), [430.0, 260.0, 100.0, 20.0]);
+    // Inside a billboard, AbsolutePosition is from its corner.
+    assert_eq!(say(&mut st, &mut game, "up"), "0, 0 100, 20");
+    // A stud up, 10 away: 270 less 270 x tan(35) / 10 x ... in pixels.
+    let per_stud = 540.0 / (2.0 * 35f32.to_radians().tan() * 10.0);
+    near_rect(tag(&mut st, &mut game).unwrap(), [430.0, 260.0 - per_stud, 100.0, 20.0]);
+    // Behind the camera, or past MaxDistance, it isn't drawn.
+    say(&mut st, &mut game, "behind");
+    assert_eq!(tag(&mut st, &mut game), None);
+    say(&mut st, &mut game, "back");
+    assert!(tag(&mut st, &mut game).is_some());
+    say(&mut st, &mut game, "far");
+    assert_eq!(tag(&mut st, &mut game), None);
+    say(&mut st, &mut game, "near");
+    // A block between hides it, unless AlwaysOnTop.
+    game.blocks.insert((10, 65, -8), "minecraft:stone".into());
+    assert_eq!(tag(&mut st, &mut game), None);
+    say(&mut st, &mut game, "top");
+    assert!(tag(&mut st, &mut game).is_some());
+    game.blocks.clear();
+    // A Size in studs shrinks with the distance: twice as big at half of it.
+    say(&mut st, &mut game, "studs");
+    let far = tag(&mut st, &mut game).unwrap();
+    assert!(
+        (far[2] - 2.0 * per_stud).abs() < 0.01 && (far[3] - per_stud).abs() < 0.01,
+        "{far:?}"
+    );
+    say(&mut st, &mut game, "closer");
+    let near = tag(&mut st, &mut game).unwrap();
+    assert!((near[2] - 4.0 * per_stud).abs() < 0.01, "{near:?}");
+    // Hidden from this player.
+    say(&mut st, &mut game, "hide");
+    assert_eq!(tag(&mut st, &mut game), None);
+    say(&mut st, &mut game, "show");
+    say(&mut st, &mut game, "back");
+    // In the PlayerGui with an Adornee; Active ones take the pointer.
+    say(&mut st, &mut game, "away");
+    near_rect(tag(&mut st, &mut game).unwrap(), [430.0, 260.0, 100.0, 20.0]);
+    assert!(objects_at(&st.s.rbx, 480.0, 270.0).is_empty(), "not Active");
+    say(&mut st, &mut game, "active");
+    hud(&mut st, &mut game);
+    assert_eq!(objects_at(&st.s.rbx, 480.0, 270.0).len(), 2, "the button and the frame");
+}
+
+#[test]
+fn billboard_offsets_follow_the_adornee_box() {
+    let mut game = FakeGame::new("rbx-extents");
+    let mut st = studio(&mut game);
+    // A model of two parts, 10 ahead: its box runs from 64.12 to 67.12 up,
+    // its middle at the camera's height.
+    let src = r#"
+        local model = Instance.new("Model", workspace)
+        for _, y in { 64.62, 66.62 } do
+            local p = Instance.new("Part", model)
+            p.Size = Vector3.new(1, 1, 1)
+            p.Transparency = 1
+            p.CFrame = CFrame.new(10.5, y, -13.25)
+        end
+        local board = Instance.new("BillboardGui", model)
+        board.Size = UDim2.fromOffset(40, 10)
+        local f = Instance.new("Frame", board)
+        f.Size = UDim2.fromScale(1, 1)
+        f.BackgroundColor3 = Color3.new(0, 1, 0)
+        f.BorderSizePixel = 0
+        command("top", function() board.ExtentsOffset = Vector3.new(0, 1, 0) end)
+        command("world", function()
+            board.ExtentsOffset = Vector3.zero
+            board.StudsOffsetWorldSpace = Vector3.new(0, 2, 0)
+        end)
+        command("shift", function()
+            board.StudsOffsetWorldSpace = Vector3.zero
+            board.SizeOffset = Vector2.new(0.5, 0.5)
+        end)
+    "#;
+    load(&mut game, &mut st, "extents", src, 0.6);
+    let green = |st: &mut Studio, game: &mut FakeGame| {
+        let drawn = hud(st, game);
+        rect_of(&drawn[index_of(&drawn, "rect ")])
+    };
+    let per_stud = 540.0 / (2.0 * 35f32.to_radians().tan() * 10.0);
+    near_rect(green(&mut st, &mut game), [460.0, 265.0, 40.0, 10.0]);
+    // ExtentsOffset is in halves of the box: the top of the model.
+    say(&mut st, &mut game, "top");
+    near_rect(green(&mut st, &mut game), [460.0, 265.0 - 1.5 * per_stud, 40.0, 10.0]);
+    // StudsOffsetWorldSpace, in studs along the adornee's axes.
+    say(&mut st, &mut game, "world");
+    near_rect(green(&mut st, &mut game), [460.0, 265.0 - 2.0 * per_stud, 40.0, 10.0]);
+    // SizeOffset, in fractions of the billboard's size, y up.
+    say(&mut st, &mut game, "shift");
+    near_rect(green(&mut st, &mut game), [480.0, 260.0, 40.0, 10.0]);
 }

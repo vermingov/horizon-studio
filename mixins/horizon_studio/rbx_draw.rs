@@ -151,6 +151,15 @@ fn fill(node: &mut layout::Node, inst: &super::hstudio_rbx::Inst, focused: bool)
                 _ => VerticalScrollBarPosition::Right,
             };
         }
+        "BillboardGui" => {
+            node.enabled = flag(inst, "Enabled");
+            node.active = flag(inst, "Active");
+            node.clips_descendants = flag(inst, "ClipsDescendants");
+            node.z_index_behavior = match enum_name(&inst.get("ZIndexBehavior")) {
+                "Global" => ZIndexBehavior::Global,
+                _ => ZIndexBehavior::Sibling,
+            };
+        }
         "ScreenGui" => {
             node.enabled = flag(inst, "Enabled");
             node.ignore_gui_inset = flag(inst, "IgnoreGuiInset");
@@ -311,6 +320,185 @@ fn screen_guis(rbx: &Rbx) -> Vec<Id> {
     out
 }
 
+/// The BillboardGuis that may be drawn: those in the PlayerGui, CoreGui
+/// and gethui()'s folder, and those anywhere in the Workspace (not inside
+/// another GUI).
+fn billboard_guis(rbx: &Rbx) -> Vec<Id> {
+    let mut out = Vec::new();
+    for root in [rbx.player_gui, rbx.core_gui, rbx.hui] {
+        for &c in rbx.children(root) {
+            if rbx.inst(c).class.name == "BillboardGui" {
+                out.push(c);
+            }
+        }
+    }
+    out.extend(
+        rbx.descendants(rbx.workspace)
+            .into_iter()
+            .filter(|&d| rbx.inst(d).class.name == "BillboardGui" && board_root(rbx, d)),
+    );
+    out
+}
+
+/// Whether a BillboardGui is one `billboard_guis` draws.
+fn board_root(rbx: &Rbx, id: Id) -> bool {
+    let parent = rbx.try_inst(id).and_then(|i| i.parent);
+    if parent.is_some_and(|p| [rbx.player_gui, rbx.core_gui, rbx.hui].contains(&p)) {
+        return true;
+    }
+    let mut at = parent;
+    while let Some(p) = at {
+        if p == rbx.workspace {
+            return true;
+        }
+        let inst = rbx.inst(p);
+        if is_a(inst.class, "LayerCollector") {
+            return false;
+        }
+        at = inst.parent;
+    }
+    false
+}
+
+/// Where AbsolutePosition is measured from for a node under `root`: the
+/// BillboardGui's corner when the root is one, else the screen's.
+fn board_origin(lay: &Layout, (root, board): (NodeId, bool)) -> Vector2 {
+    match lay.get(root) {
+        Some(p) if board => p.position,
+        _ => Vector2::ZERO,
+    }
+}
+
+/// A BillboardGui's place this frame.
+struct Board {
+    /// Its box on screen (dp), and how far its point is from the camera.
+    rect: Rect,
+    distance: f64,
+    /// Whether it shows: no farther than MaxDistance, and no block in the
+    /// way unless AlwaysOnTop.
+    visible: bool,
+}
+
+/// Where a BillboardGui is drawn: over its Adornee (or the part, model or
+/// attachment it is in), moved by StudsOffset along the camera's right, up
+/// and back, StudsOffsetWorldSpace along the adornee's own axes, and
+/// ExtentsOffset and ExtentsOffsetWorldSpace the same ways, in halves of
+/// the adornee's size. Its Size's scales are studs, which shrink as it gets
+/// farther (between DistanceLowerLimit and DistanceUpperLimit, in steps of
+/// DistanceStep), and its offsets pixels; SizeOffset moves it by fractions
+/// of its size, up for y. None while it can't be drawn: its adornee isn't
+/// in the Workspace, it is behind the camera, or it is hidden from this
+/// player (PlayerToHideFrom).
+fn billboard(rbx: &Rbx, game: &mut dyn GameApi, id: Id) -> Option<Board> {
+    let inst = rbx.inst(id);
+    if rbx.id_of(&inst.get("PlayerToHideFrom")) == Some(rbx.local_player) {
+        return None;
+    }
+    let adornee = rbx.id_of(&inst.get("Adornee")).or(inst.parent)?;
+    let (frame, half) = adornee_box(rbx, adornee)?;
+    let cam = game.camera()?;
+    let (w, h, _) = game.dp();
+    let v = |a: [f64; 3]| Vector3::new(a[0], a[1], a[2]);
+    let [forward, up, right] = cam.basis().map(v);
+    let back = -forward;
+    let offset = |k: &str| as_v3(&inst.get(k)).unwrap_or(Vector3::ZERO);
+    let (studs, studs_world) = (offset("StudsOffset"), offset("StudsOffsetWorldSpace"));
+    let (extents, extents_world) = (offset("ExtentsOffset"), offset("ExtentsOffsetWorldSpace"));
+    // How far the adornee's box reaches along `d`.
+    let reach = |d: Vector3| {
+        let o = frame.vector_to_object(d);
+        o.x.abs() * half.x + o.y.abs() * half.y + o.z.abs() * half.z
+    };
+    let at = frame.position()
+        + frame.vector_to_world(studs_world)
+        + frame.vector_to_world(Vector3::new(
+            extents_world.x * half.x,
+            extents_world.y * half.y,
+            extents_world.z * half.z,
+        ))
+        + right * (studs.x + extents.x * reach(right))
+        + up * (studs.y + extents.y * reach(up))
+        + back * (studs.z + extents.z * reach(back));
+    let (sx, sy, depth) = cam.project([at.x, at.y, at.z], w, h)?;
+    let eye = v(cam.pos);
+    let distance = (at - eye).magnitude();
+    let lower = num(inst, "DistanceLowerLimit").max(0.0);
+    let upper = num(inst, "DistanceUpperLimit");
+    let mut d = depth.max(lower);
+    if upper >= 0.0 {
+        d = d.min(upper.max(lower));
+    }
+    let step = num(inst, "DistanceStep");
+    if step > 0.0 {
+        d = ((d / step).round() * step).max(step);
+    }
+    let per_stud = f64::from(h) / (2.0 * (f64::from(cam.fov) / 2.0).to_radians().tan() * d.max(0.05));
+    let size = as_udim2(&inst.get("Size")).unwrap_or_default();
+    let bw = (size.x.scale * per_stud + f64::from(size.x.offset)).max(0.0);
+    let bh = (size.y.scale * per_stud + f64::from(size.y.offset)).max(0.0);
+    let shift = as_v2(&inst.get("SizeOffset")).unwrap_or_default();
+    let min = Vector2::new(
+        f64::from(sx) - bw / 2.0 + shift.x * bw,
+        f64::from(sy) - bh / 2.0 - shift.y * bh,
+    );
+    let max_distance = inst.get("MaxDistance").to_num().unwrap_or(f64::INFINITY);
+    let blocked = !inst.get("AlwaysOnTop").truthy()
+        && distance > 0.0
+        && first_block(game, eye, (at - eye) / distance, (distance - 0.3).max(0.0), true).is_some();
+    Some(Board {
+        rect: Rect::new(min, min + Vector2::new(bw, bh)),
+        distance,
+        visible: distance <= max_distance && !blocked,
+    })
+}
+
+/// What a BillboardGui is drawn over, as a box: its frame and half its
+/// size. A part's own; a model's round all its parts (upright); an
+/// attachment's point on its part. None outside the Workspace.
+fn adornee_box(rbx: &Rbx, id: Id) -> Option<(CFrame, Vector3)> {
+    let inst = rbx.try_inst(id)?;
+    if !rbx.is_descendant_of(id, rbx.workspace) {
+        return None;
+    }
+    let part_box = |p: Id| {
+        let frame = as_cf(&rbx.raw_get(p, "CFrame")).unwrap_or_default();
+        (frame, as_v3(&rbx.raw_get(p, "Size")).unwrap_or(Vector3::ONE) / 2.0)
+    };
+    if is_a(inst.class, "BasePart") {
+        return Some(part_box(id));
+    }
+    if inst.class.name == "Attachment" {
+        let part = inst.parent.filter(|&p| is_a(rbx.inst(p).class, "BasePart"))?;
+        let local = match (inst.extra.get("CFrame"), inst.extra.get("Position")) {
+            (Some(c), _) if as_cf(c).is_some() => as_cf(c).unwrap_or_default(),
+            (_, Some(p)) => CFrame::from_position(as_v3(p).unwrap_or(Vector3::ZERO)),
+            _ => CFrame::default(),
+        };
+        return Some((part_box(part).0 * local, Vector3::ZERO));
+    }
+    if !is_a(inst.class, "Model") {
+        return None;
+    }
+    let mut corners = Vec::new();
+    for d in rbx.descendants(id) {
+        if is_a(rbx.inst(d).class, "BasePart") {
+            let (f, half) = part_box(d);
+            for i in 0..8 {
+                let pick = |bit: u32, a: f64| if i & bit == 0 { -a } else { a };
+                corners.push(f.point_to_world(Vector3::new(pick(1, half.x), pick(2, half.y), pick(4, half.z))));
+            }
+        }
+    }
+    let Some(&first) = corners.first() else {
+        let at = super::hstudio_rbx_methods::pivot(rbx, id).position();
+        return Some((CFrame::from_position(at), Vector3::ZERO));
+    };
+    let (lo, hi) = corners
+        .iter()
+        .fold((first, first), |(lo, hi), &c| (lo.min(c), hi.max(c)));
+    Some((CFrame::from_position((lo + hi) / 2.0), (hi - lo) / 2.0))
+}
+
 /// Lays out every ScreenGui for this frame, and writes back what Roblox
 /// reports (AbsolutePosition, AbsoluteSize, TextBounds...).
 pub fn lay_out(rbx: &mut Rbx, game: &mut dyn GameApi) {
@@ -322,17 +510,39 @@ pub fn lay_out(rbx: &mut Rbx, game: &mut dyn GameApi) {
     let mut node_inst: Vec<Id> = Vec::new();
     let mut inst_node: HashMap<Id, NodeId> = HashMap::new();
     let focus = rbx.pointer.focus;
-    for sg in screen_guis(rbx) {
+    // The BillboardGuis the camera sees, the farthest first, then the
+    // ScreenGuis; each node's root, for what is reported inside a billboard.
+    let mut boards: Vec<(Id, Board)> = billboard_guis(rbx)
+        .into_iter()
+        .filter_map(|b| billboard(rbx, game, b).map(|at| (b, at)))
+        .collect();
+    boards.sort_by(|a, b| b.1.distance.total_cmp(&a.1.distance));
+    let roots = boards
+        .into_iter()
+        .map(|(b, at)| (b, Some(at)))
+        .chain(screen_guis(rbx).into_iter().map(|s| (s, None)));
+    let mut node_root: Vec<(NodeId, bool)> = Vec::new();
+    for (sg, board) in roots {
         let mut stack: Vec<(Id, Option<NodeId>)> = vec![(sg, None)];
+        let mut root = 0;
         while let Some((id, parent)) = stack.pop() {
             let inst = rbx.inst(id);
             let class = layout_class(inst.class);
             let n = tree.add(class, parent);
             fill(&mut tree[n], inst, focus == Some(id));
+            if parent.is_none() {
+                root = n;
+                if let Some(b) = &board {
+                    tree[n].billboard = b.rect;
+                    tree[n].enabled &= b.visible;
+                }
+            }
             if node_inst.len() <= n {
                 node_inst.resize(n + 1, 0);
+                node_root.resize(n + 1, (0, false));
             }
             node_inst[n] = id;
+            node_root[n] = (root, board.is_some());
             inst_node.insert(id, n);
             for &c in inst.children.iter().rev() {
                 stack.push((c, Some(n)));
@@ -346,7 +556,7 @@ pub fn lay_out(rbx: &mut Rbx, game: &mut dyn GameApi) {
     let mut writes: Vec<(Id, &'static str, Value, bool)> = Vec::new();
     for (n, &id) in node_inst.iter().enumerate() {
         let Some(p) = lay.get(n) else { continue };
-        outputs(rbx, p, id, &mut writes);
+        outputs(rbx, p, id, board_origin(&lay, node_root[n]), &mut writes);
     }
     write_outputs(rbx, writes);
     let epoch = rbx.gui_epoch;
@@ -388,11 +598,12 @@ fn see_view(rbx: &mut Rbx, game: &mut dyn GameApi) -> (f32, f32) {
 }
 
 /// What Roblox reports of a laid-out instance: (instance, property, value,
-/// whether Changed fires for it).
-fn outputs(rbx: &Rbx, p: &layout::Placed, id: Id, writes: &mut Vec<(Id, &'static str, Value, bool)>) {
+/// whether Changed fires for it). AbsolutePosition is from `origin`: a
+/// BillboardGui's top left corner inside it, the screen's elsewhere.
+fn outputs(rbx: &Rbx, p: &layout::Placed, id: Id, origin: Vector2, writes: &mut Vec<(Id, &'static str, Value, bool)>) {
     let c = rbx.inst(id).class;
     if is_a(c, "GuiBase2d") {
-        writes.push((id, "AbsolutePosition", v2(p.position), true));
+        writes.push((id, "AbsolutePosition", v2(p.position - origin), true));
         writes.push((id, "AbsoluteSize", v2(p.size), true));
         writes.push((id, "AbsoluteRotation", Value::Num(p.rotation), false));
     }
@@ -441,6 +652,14 @@ pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
     let Some(path) = drawn_path(rbx, id) else {
         return 0;
     };
+    // A BillboardGui is laid out in the box the camera gives it, if it has one.
+    let board = match rbx.inst(path[0]).class.name {
+        "BillboardGui" => match billboard(rbx, game, path[0]) {
+            Some(b) => Some(b.rect),
+            None => return 0,
+        },
+        _ => None,
+    };
     let mut part = Partial {
         rbx,
         tree: Tree::new(),
@@ -448,7 +667,10 @@ pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
         path: &path,
     };
     part.add(path[0], None, true);
-    let (tree, node_inst) = (part.tree, part.node_inst);
+    let (mut tree, node_inst) = (part.tree, part.node_inst);
+    if let (Some(r), Some(&root)) = (board, tree.roots().first()) {
+        tree[root].billboard = r;
+    }
     let mut measure = |text: &str, size: f64, font: &Font| -> f64 {
         f64::from(game.dp_measure(text, size as f32, studio_font(font)))
     };
@@ -462,11 +684,15 @@ pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
     };
     let mut writes = Vec::new();
     let mut fresh = Vec::new();
+    let origin = tree
+        .roots()
+        .first()
+        .map_or(Vector2::ZERO, |&r| board_origin(&lay, (r, board.is_some())));
     for (n, &i) in node_inst.iter().enumerate() {
         if wanted(n) {
             fresh.push(i);
             if let Some(p) = lay.get(n) {
-                outputs(rbx, p, i, &mut writes);
+                outputs(rbx, p, i, origin, &mut writes);
             }
         }
     }
@@ -488,7 +714,9 @@ fn drawn_path(rbx: &Rbx, id: Id) -> Option<Vec<Id>> {
     loop {
         let inst = rbx.try_inst(at)?;
         let parent = inst.parent?;
-        if inst.class.name == "ScreenGui" && drawn.contains(&parent) {
+        if inst.class.name == "ScreenGui" && drawn.contains(&parent)
+            || inst.class.name == "BillboardGui" && board_root(rbx, at)
+        {
             path.reverse();
             return Some(path);
         }

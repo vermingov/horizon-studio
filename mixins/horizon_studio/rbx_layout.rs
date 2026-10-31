@@ -37,6 +37,8 @@ pub const TOP_BAR: f64 = 58.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Class {
     ScreenGui,
+    /// A root laid out in the box the camera gives it (`Node::billboard`).
+    BillboardGui,
     Frame,
     TextLabel,
     TextButton,
@@ -57,8 +59,9 @@ pub enum Class {
 }
 
 impl Class {
-    pub const ALL: [Class; 18] = [
+    pub const ALL: [Class; 19] = [
         Class::ScreenGui,
+        Class::BillboardGui,
         Class::Frame,
         Class::TextLabel,
         Class::TextButton,
@@ -82,6 +85,7 @@ impl Class {
     pub fn name(self) -> &'static str {
         match self {
             Class::ScreenGui => "ScreenGui",
+            Class::BillboardGui => "BillboardGui",
             Class::Frame => "Frame",
             Class::TextLabel => "TextLabel",
             Class::TextButton => "TextButton",
@@ -378,6 +382,8 @@ pub struct Node {
 
     // ScreenGui (and UIStroke's Enabled)
     pub enabled: bool,
+    /// A BillboardGui's box on screen, as the camera sees its adornee.
+    pub billboard: Rect,
     pub ignore_gui_inset: bool,
     pub display_order: i32,
     pub z_index_behavior: ZIndexBehavior,
@@ -476,6 +482,7 @@ impl Node {
             horizontal_scroll_bar_inset: ScrollBarInset::None,
             vertical_scroll_bar_position: VerticalScrollBarPosition::Right,
             enabled: true,
+            billboard: Rect::default(),
             ignore_gui_inset: false,
             display_order: 0,
             z_index_behavior: ZIndexBehavior::Global,
@@ -645,8 +652,9 @@ impl Tree {
         }
     }
 
-    /// Lays out every root ScreenGui on `view`. `measure(text, size, font)`
-    /// gives the width of one line of text at a text size.
+    /// Lays out every root ScreenGui on `view`, and every root BillboardGui
+    /// in its box. `measure(text, size, font)` gives the width of one line of
+    /// text at a text size.
     pub fn layout(&self, view: &Viewport, measure: &mut dyn FnMut(&str, f64, &Font) -> f64) -> Layout {
         let mut pass = Pass {
             tree: self,
@@ -654,8 +662,10 @@ impl Tree {
             placed: vec![None; self.slots.len()],
         };
         for &root in &self.roots {
-            if self[root].class == Class::ScreenGui {
-                pass.screen_gui(root, view);
+            match self[root].class {
+                Class::ScreenGui => pass.screen_gui(root, view),
+                Class::BillboardGui => pass.billboard_gui(root),
+                _ => {}
             }
         }
         let draw_order = pass.draw_order();
@@ -781,6 +791,8 @@ pub struct Placed {
     pub scale: f64,
     pub active: bool,
     pub interactable: bool,
+    /// In a BillboardGui that isn't Active: the pointer passes through it.
+    pub inert: bool,
     /// UICorner's radius in pixels, at most half the shorter side; 0 without one.
     pub corner_radius: f64,
     /// An enabled UIStroke's thickness in pixels; 0 without one.
@@ -840,7 +852,10 @@ impl Layout {
     /// first (LayerCollector:GetGuiObjectsAtPosition; MouseEnter and
     /// MouseLeave go by this, covered or not).
     pub fn objects_at(&self, point: Vector2) -> Vec<NodeId> {
-        let over = |id: &NodeId| self.get(*id).is_some_and(|p| contains(p.visible_rect(), point));
+        let over = |id: &NodeId| {
+            self.get(*id)
+                .is_some_and(|p| !p.inert && contains(p.visible_rect(), point))
+        };
         self.draw_order.iter().rev().copied().filter(over).collect()
     }
 
@@ -1375,6 +1390,8 @@ struct Context {
     rotation: f64,
     /// The GuiObject whose turns the subtree is drawn with too.
     turned_by: Option<NodeId>,
+    /// In a BillboardGui that takes no input.
+    inert: bool,
 }
 
 impl Context {
@@ -1809,6 +1826,7 @@ impl<'a> Pass<'a> {
             shown,
             rotation: 0.0,
             turned_by: None,
+            inert: false,
         };
         let content = area.inset(self.padding(id, area.size()));
         self.placed[id] = Some(Placed {
@@ -1816,6 +1834,43 @@ impl<'a> Pass<'a> {
             position: Vector2::new(area.x, area.y),
             size: area.size(),
             shown,
+            content: ctx.rect(content),
+            scale: 1.0,
+            ..Placed::default()
+        });
+        self.place_children(id, content, ctx);
+    }
+
+    /// A root BillboardGui: the box the camera gives it, its children
+    /// placed in it, cut to it with ClipsDescendants; one that isn't Active
+    /// lets the pointer through.
+    fn billboard_gui(&mut self, id: NodeId) {
+        let node = self.node(id);
+        let r = node.billboard;
+        let area = Area {
+            x: r.min.x,
+            y: r.min.y,
+            w: r.width(),
+            h: r.height(),
+        };
+        let shown = node.enabled;
+        let ctx = Context {
+            k: 1.0,
+            origin: Vector2::ZERO,
+            clip: node.clips_descendants.then_some(r),
+            shown,
+            rotation: 0.0,
+            turned_by: None,
+            inert: !node.active,
+        };
+        let content = area.inset(self.padding(id, area.size()));
+        self.placed[id] = Some(Placed {
+            class: Some(Class::BillboardGui),
+            position: r.min,
+            size: area.size(),
+            shown,
+            active: node.active,
+            inert: !node.active,
             content: ctx.rect(content),
             scale: 1.0,
             ..Placed::default()
@@ -1901,6 +1956,7 @@ impl<'a> Pass<'a> {
             scale: ctx.k,
             active: node.active,
             interactable: node.interactable,
+            inert: ctx.inert,
             ..Placed::default()
         };
         let mut content = area.inset(self.padding(id, area.size()));
@@ -2431,6 +2487,15 @@ impl<'a> Pass<'a> {
             .filter(|&r| self.node(r).class == Class::ScreenGui && self.node(r).enabled)
             .collect();
         roots.sort_by_key(|&r| self.node(r).display_order);
+        // BillboardGuis go under every ScreenGui, in the order they were
+        // added (the farthest first).
+        let boards = self
+            .tree
+            .roots
+            .iter()
+            .copied()
+            .filter(|&r| self.node(r).class == Class::BillboardGui && self.node(r).enabled);
+        let roots: Vec<NodeId> = boards.chain(roots).collect();
         let mut order = Vec::new();
         for root in roots {
             match self.node(root).z_index_behavior {

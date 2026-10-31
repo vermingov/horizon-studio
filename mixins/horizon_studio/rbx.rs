@@ -869,8 +869,36 @@ pub static CLASSES: &[C] = &[
         ],
         &[],
     ),
+    // Drawn over a part, a model or an attachment in the Workspace, and
+    // lenient as it was when only kept.
+    C {
+        lenient: true,
+        ..class(
+            "BillboardGui",
+            "LayerCollector",
+            &[
+                p("Adornee", Obj, D::Nil),
+                p("Size", K::UD2, D::UD2(0.0, 0.0, 0.0, 0.0)),
+                p("SizeOffset", K::V2, D::V2(0.0, 0.0)),
+                p("StudsOffset", K::V3, D::V3(0.0, 0.0, 0.0)),
+                p("StudsOffsetWorldSpace", K::V3, D::V3(0.0, 0.0, 0.0)),
+                p("ExtentsOffset", K::V3, D::V3(0.0, 0.0, 0.0)),
+                p("ExtentsOffsetWorldSpace", K::V3, D::V3(0.0, 0.0, 0.0)),
+                p("AlwaysOnTop", Bool, B(false)),
+                p("MaxDistance", Num, N(f64::INFINITY)),
+                p("DistanceLowerLimit", Num, N(0.0)),
+                p("DistanceUpperLimit", Num, N(-1.0)),
+                p("DistanceStep", Num, N(0.0)),
+                p("LightInfluence", Num, N(1.0)),
+                p("Brightness", Num, N(1.0)),
+                p("ClipsDescendants", Bool, B(false)),
+                p("Active", Bool, B(false)),
+                p("PlayerToHideFrom", Obj, D::Nil),
+            ],
+            &[],
+        )
+    },
     // Kept with whatever properties scripts give them; nothing draws them.
-    kept("BillboardGui", "LayerCollector"),
     kept("SurfaceGui", "LayerCollector"),
     // Laid out and drawn as Frames (what they show, a 3D view or a video,
     // isn't), and lenient as they were when only kept.

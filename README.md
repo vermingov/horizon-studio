@@ -641,7 +641,9 @@ end)
   (every keypoint, turned and moved) included; `ClipsDescendants` cuts exactly, `Rotation` turns an object and what it
   holds, a CanvasGroup tints and fades all it holds, `RichText`'s markup is drawn (colours, sizes, faces, bold,
   underline, strokes, marks, capitals), and a `getcustomasset` image is drawn as it is, with its `ScaleType` (Fit,
-  Crop, Tile, Slice), `ImageRectOffset`/`ImageRectSize` and `ImageColor3`. A GUI pixel is a dp. The GUI takes the mouse while a visible button has `Modal = true` or a TextBox has focus, or after
+  Crop, Tile, Slice), `ImageRectOffset`/`ImageRectSize` and `ImageColor3`. BillboardGuis float over the Workspace's
+  parts and models (name tags, health bars) with their offsets, studs-sized `Size`, `MaxDistance` and `AlwaysOnTop`.
+  A GUI pixel is a dp. The GUI takes the mouse while a visible button has `Modal = true` or a TextBox has focus, or after
   **Left Alt**; Escape gives it back (first letting go of a TextBox). Then hovers, clicks (`MouseButton1Click`,
   `Activated`), TextBoxes (a caret, selecting with Shift or a drag, the clipboard, `MultiLine`), scrolling (the wheel
   each way `ScrollingDirection` allows, and both bars, which drag) and dragging work.
@@ -660,7 +662,7 @@ end)
   methods and operators, and the Enum tree (`Enum.KeyCode.E`).
 
 Not there: a server (RemoteEvents go nowhere), physics, animations, Roblox's assets (images, meshes and sounds by
-id), BillboardGuis and SurfaceGuis. The MCP's `roblox` topic (`docs`) lists every class, member and difference.
+id), SurfaceGuis, and what ViewportFrames and VideoFrames show. The MCP's `roblox` topic (`docs`) lists every class, member and difference.
 
 ### Executor functions (sUNC)
 
