@@ -508,7 +508,7 @@ A script mod is Lua that Horizon Studio runs inside Horizon (Minecraft Java 26.3
 
 `<game folder>/horizon-mods/.horizon-mod-data/horizon_studio/mods/`
 
-On Linux, Horizon's default game folder is `~/.local/share/horizon` (`$HORIZON_HOME` changes it). The MCP server finds the folder by itself (see `mcp`). Beside `mods/`, the studio keeps `storage/` (what `storage.set` writes), `studio.txt` (mods turned off in the Library), `history.txt` and `scratch.lua` (the console's), and `trash/`, where the studio's Delete moves a file or a whole mod (as `trash/<its path in mods/>`: the newest copy of each file at its name, an older one beside it under a number, `test (2).lua`, then `test (3).lua`; a module deleted whole joins the files deleted from it before; nothing in the trash is deleted, and the studio never empties it).
+On Linux, Horizon's default game folder is `~/.local/share/horizon` (`$HORIZON_HOME` changes it). The MCP server finds the folder by itself (see `mcp`). Beside `mods/`, the studio keeps `storage/` (what `storage.set` writes), `studio.txt` (mods turned off in the Library; a mod deleted in the studio leaves it, and a mod made new there starts on), `history.txt` and `scratch.lua` (the console's), and `trash/`, where the studio's Delete moves a file or a whole mod (as `trash/<its path in mods/>`: the newest copy of each file at its name, an older one beside it under a number, `test (2).lua`, then `test (3).lua`; a module deleted whole joins the files deleted from it before; nothing in the trash is deleted, and the studio never empties it).
 
 ## Ids and files
 

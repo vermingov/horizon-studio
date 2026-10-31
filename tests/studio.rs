@@ -869,6 +869,48 @@ fn files_are_added_renamed_and_deleted_to_the_trash() {
 }
 
 #[test]
+fn a_mod_deleted_while_off_is_on_when_made_again() {
+    let mut game = FakeGame::new("off-deleted");
+    let mut st = studio(&mut game);
+    let (settings, mods) = (game.dir.join("studio.txt"), game.mods_dir());
+    let off = |id: &str| {
+        std::fs::read_to_string(&settings)
+            .unwrap()
+            .contains(&format!("off:{id}\n"))
+    };
+    game.write_mod("lamp.lua", "print('lamp')\n");
+    run_for(&mut st, &mut game, 0.6);
+    st.set_enabled(&mut game, mod_index(&st, "lamp"), false);
+    assert!(off("lamp"));
+    // Deleted in the studio: its off: line goes with it, and a new Lamp runs.
+    st.delete_path(&mut game, &mods.join("lamp.lua")).unwrap();
+    assert!(!off("lamp"));
+    st.create_mod(&mut game, "Lamp", None).unwrap();
+    let m = &st.s.mods[mod_index(&st, "lamp")];
+    assert!(m.enabled && m.running(), "{:?}", m.state);
+    // A module the same.
+    st.create_module(&mut game, "Kit").unwrap();
+    st.set_enabled(&mut game, mod_index(&st, "kit"), false);
+    st.delete_path(&mut game, &mods.join("kit")).unwrap();
+    assert!(!off("kit"));
+    st.create_module(&mut game, "Kit").unwrap();
+    let m = &st.s.mods[mod_index(&st, "kit")];
+    assert!(m.enabled && m.running(), "{:?}", m.state);
+    // Deleted elsewhere, its line stays (the file may come back), but a mod
+    // made new in the studio under that id starts on all the same.
+    game.write_mod("fan.lua", "print('fan')\n");
+    run_for(&mut st, &mut game, 0.6);
+    st.set_enabled(&mut game, mod_index(&st, "fan"), false);
+    std::fs::remove_file(mods.join("fan.lua")).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    assert!(off("fan"));
+    st.create_mod(&mut game, "Fan", None).unwrap();
+    let m = &st.s.mods[mod_index(&st, "fan")];
+    assert!(m.enabled && m.running(), "{:?}", m.state);
+    assert!(!off("fan"));
+}
+
+#[test]
 fn a_mod_made_again_and_deleted_again_keeps_both_copies_in_the_trash() {
     let mut game = FakeGame::new("trash-twice");
     let mut st = studio(&mut game);

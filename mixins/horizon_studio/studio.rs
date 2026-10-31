@@ -1605,8 +1605,9 @@ impl Studio {
         self.s.log(LogKind::Info, format!("Reloaded all: {n} running"));
     }
 
-    /// A new mod from the template: `<mods>/<id>.lua`, unless it exists.
-    /// A new script mod called `name`: the template, or `code` when given (Save File).
+    /// A new script mod called `name`: the template, or `code` when given
+    /// (Save File), as `<mods>/<id>.lua`, unless the id is taken. It starts
+    /// on, as every new mod does.
     pub fn create_mod(&mut self, game: &mut dyn GameApi, name: &str, code: Option<&str>) -> Result<PathBuf, String> {
         let id = mod_id(name.trim());
         let path = self.s.mods_dir().join(format!("{id}.lua"));
@@ -1620,24 +1621,34 @@ impl Studio {
             None => TEMPLATE.replace("{id}", &id).replace("{name}", name.trim()),
         };
         std::fs::write(&path, src).map_err(|e| e.to_string())?;
+        self.forget_off(&id);
         self.scan(game);
         self.s.log(LogKind::Info, format!("Created {}", path.display()));
         Ok(path)
     }
 
     /// A new module called `name`: `<mods>/<id>/` with main.lua, shared.lua
-    /// and lib.lua, unless that id is taken; the scan loads it. Returns its
-    /// main.lua.
+    /// and lib.lua, unless that id is taken; the scan loads it (it starts
+    /// on). Returns its main.lua.
     pub fn create_module(&mut self, game: &mut dyn GameApi, name: &str) -> Result<PathBuf, String> {
         let name = name.trim();
         let id = mod_id(name);
         let mods = self.s.mods_dir();
         std::fs::create_dir_all(&mods).map_err(|e| e.to_string())?;
         let main = super::hstudio_modfiles::write_module(&mods, &id, name)?;
+        self.forget_off(&id);
         self.scan(game);
         self.s
             .log(LogKind::Info, format!("Created {}", mods.join(&id).display()));
         Ok(main)
+    }
+
+    /// Drops a turned-off line for `id` that no mod has now (one deleted, in
+    /// the studio or elsewhere), so the next mod of that id starts on.
+    fn forget_off(&mut self, id: &str) {
+        if self.s.disabled.remove(id) {
+            self.save_settings();
+        }
     }
 
     /// The trash: what the studio deletes goes there, as
@@ -1690,13 +1701,15 @@ impl Studio {
 
     /// Moves a mod's file to the trash: one file of a module (not its
     /// main.lua, which starts it: the module goes instead), or a whole mod
-    /// (a script's file, or a module's folder). Edits the editor has not
-    /// saved go with it (when they can't be saved, nothing is deleted). The
-    /// editor then shows the module's main.lua, or the scratch file when the
-    /// whole mod went. Returns where it went.
+    /// (a script's file, or a module's folder), whose turned-off state goes
+    /// too. Edits the editor has not saved go with it (when they can't be
+    /// saved, nothing is deleted). The editor then shows the module's
+    /// main.lua, or the scratch file when the whole mod went. Returns where
+    /// it went.
     pub fn delete_path(&mut self, game: &mut dyn GameApi, path: &Path) -> Result<PathBuf, String> {
         let i = self.mod_of_path(path).ok_or("that is not a file of a mod")?;
         let m = &self.s.mods[i];
+        let id = m.id.clone();
         let (target, folder) = match &m.folder {
             None => (m.main.clone(), None),
             Some(f) if f == path => (f.clone(), None),
@@ -1715,8 +1728,9 @@ impl Studio {
                 .map_err(|e| format!("could not save {}: {e}; nothing was deleted", ed.title))?;
         }
         let moved = to_trash(&self.trash_dir(), &self.s.mods_dir(), &target)?;
-        if let Some(f) = &folder {
-            prune_empty(f, target.parent());
+        match &folder {
+            Some(f) => prune_empty(f, target.parent()),
+            None => self.forget_off(&id),
         }
         self.s.log(
             LogKind::Info,
