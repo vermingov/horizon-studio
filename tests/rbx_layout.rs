@@ -539,6 +539,74 @@ fn flex_shares_the_room_between_wrapped_lines() {
     assert_eq!(ys(&tree), [(20.0, 20.0), (60.0, 20.0)]);
 }
 
+/// A 200 x 100 frame with a UIPageLayout and three pages as large as it.
+fn book() -> (Tree, NodeId, [NodeId; 3]) {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    let f = frame(&mut tree, gui, px(0.0, 0.0), px(200.0, 100.0));
+    let pages = tree.add(Class::UIPageLayout, Some(f));
+    tree[pages].sort_order = SortOrder::LayoutOrder;
+    tree[pages].horizontal_alignment = HorizontalAlignment::Center;
+    tree[pages].vertical_alignment = VerticalAlignment::Center;
+    let mut list = [0; 3];
+    for (i, p) in list.iter_mut().enumerate() {
+        *p = frame(&mut tree, f, px(0.0, 0.0), UDim2::from_scale(1.0, 1.0));
+        tree[*p].layout_order = i as i32;
+    }
+    (tree, pages, list)
+}
+
+#[test]
+fn page_layout_lays_pages_side_by_side() {
+    let (mut tree, layout, pages) = book();
+    let xs = |tree: &Tree| -> Vec<f64> {
+        let l = run(tree);
+        pages.iter().map(|&p| l.get(p).unwrap().position.x).collect()
+    };
+    // On the first page, with the others after it.
+    assert_eq!(xs(&tree), [0.0, 200.0, 400.0]);
+    let l = run(&tree);
+    assert_eq!(l.get(layout).unwrap().page, Some(pages[0]));
+    assert_eq!(l.get(layout).unwrap().content_size, v(600.0, 100.0));
+    // On the second, and half way there from the first.
+    tree[layout].page = Some(pages[1]);
+    assert_eq!(xs(&tree), [-200.0, 0.0, 200.0]);
+    tree[layout].page_from = Some(pages[0]);
+    tree[layout].page_turn = 0.5;
+    assert_eq!(xs(&tree), [-100.0, 100.0, 300.0]);
+    tree[layout].page_from = None;
+    // Padding between them.
+    tree[layout].padding = UDim::new(0.0, 10.0);
+    assert_eq!(xs(&tree), [-210.0, 0.0, 210.0]);
+    tree[layout].padding = UDim::default();
+    // Circular: each page where it is nearest, and going on from the last
+    // page to the first, half way.
+    tree[layout].circular = true;
+    tree[layout].page = Some(pages[0]);
+    assert_eq!(xs(&tree), [0.0, 200.0, -200.0]);
+    tree[layout].page_from = Some(pages[2]);
+    tree[layout].page_turn = 0.5;
+    tree[layout].page_forward = true;
+    assert_eq!(xs(&tree), [100.0, 300.0, -100.0]);
+    let l = run(&tree);
+    assert!(matches!(l.get(layout).unwrap().page, Some(p) if p == pages[0] || p == pages[2]));
+    // A page smaller than the frame lines up as the alignments say.
+    tree[layout].circular = false;
+    tree[layout].page_from = None;
+    for &p in &pages {
+        tree[p].size = px(100.0, 50.0);
+    }
+    let l = run(&tree);
+    assert_rect(&l, pages[0], (50.0, 25.0, 100.0, 50.0));
+    assert_rect(&l, pages[1], (150.0, 25.0, 100.0, 50.0));
+    // Down, with FillDirection Vertical.
+    tree[layout].fill_direction = FillDirection::Vertical;
+    tree[layout].page = Some(pages[1]);
+    let l = run(&tree);
+    assert_rect(&l, pages[1], (50.0, 25.0, 100.0, 50.0));
+    assert_rect(&l, pages[2], (50.0, 75.0, 100.0, 50.0));
+}
+
 fn grid() -> (Tree, NodeId, Vec<NodeId>) {
     let mut tree = Tree::new();
     let gui = screen(&mut tree);

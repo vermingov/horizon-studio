@@ -1619,3 +1619,92 @@ fn flex_layouts_from_a_script() {
         ]
     );
 }
+
+#[test]
+fn page_layout_shows_one_page_and_jumps() {
+    let mut game = FakeGame::new("rbx-pages");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local book = Instance.new("Frame", gui)
+        book.Size = UDim2.fromOffset(200, 100)
+        book.ClipsDescendants = true
+        local pages = Instance.new("UIPageLayout", book)
+        pages.TweenTime = 0.2
+        pages.EasingStyle = Enum.EasingStyle.Linear
+        local list = {}
+        for i = 1, 3 do
+            local p = Instance.new("Frame", book)
+            p.Name = "Page" .. i
+            p.LayoutOrder = i
+            p.Size = UDim2.fromScale(1, 1)
+            list[i] = p
+        end
+        pages.PageEnter:Connect(function(p) print("enter", p.Name) end)
+        pages.PageLeave:Connect(function(p) print("leave", p.Name) end)
+        pages.Stopped:Connect(function(p) print("stopped", p.Name) end)
+        command("next", function() pages:Next() end)
+        command("prev", function() pages:Previous() end)
+        command("index", function() pages:JumpToIndex(2) end)
+        command("round", function()
+            pages.Circular = true
+            pages:Next()
+        end)
+        command("still", function()
+            pages.Animated = false
+            pages:JumpTo(list[2])
+        end)
+        command("where", function()
+            local current = pages.CurrentPage
+            return tostring(list[1].AbsolutePosition.X) .. " " .. (current and current.Name or "nil")
+        end)
+    "#;
+    load(&mut game, &mut st, "pages", src, 0.6);
+    hud(&mut st, &mut game);
+    // On the first page once laid out.
+    assert_eq!(say(&mut st, &mut game, "where"), "0 Page1");
+    let mark = printed(&st, "pages").len();
+    let events = |st: &Studio| printed(st, "pages")[mark..].to_vec();
+    // Next: it leaves and enters at once, turns, and stops on the page.
+    say(&mut st, &mut game, "next");
+    let mid: f64 = say(&mut st, &mut game, "where")
+        .split(' ')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(mid < 0.0 && mid > -200.0, "turning: {mid}");
+    run_for(&mut st, &mut game, 0.3);
+    assert_eq!(say(&mut st, &mut game, "where"), "-200 Page2");
+    assert_eq!(events(&st), ["leave    Page1", "enter    Page2", "stopped    Page2"]);
+    // JumpToIndex counts from 0; Next at the end stays.
+    say(&mut st, &mut game, "index");
+    run_for(&mut st, &mut game, 0.3);
+    assert_eq!(say(&mut st, &mut game, "where"), "-400 Page3");
+    let before = events(&st).len();
+    say(&mut st, &mut game, "next");
+    run_for(&mut st, &mut game, 0.3);
+    assert_eq!(events(&st).len(), before, "no page after the last");
+    // Circular: on from the last to the first, and back from the first to the last.
+    say(&mut st, &mut game, "round");
+    run_for(&mut st, &mut game, 0.3);
+    assert_eq!(say(&mut st, &mut game, "where"), "0 Page1");
+    say(&mut st, &mut game, "prev");
+    run_for(&mut st, &mut game, 0.3);
+    assert_eq!(say(&mut st, &mut game, "where"), "200 Page3");
+    // Not Animated: there at once, and Stopped at once.
+    let before = events(&st).len();
+    say(&mut st, &mut game, "still");
+    assert_eq!(say(&mut st, &mut game, "where"), "-200 Page2");
+    assert_eq!(
+        events(&st)[before..],
+        ["leave    Page3", "enter    Page2", "stopped    Page2"]
+    );
+    // The wheel over the book turns a page (ScrollWheelInputEnabled); still
+    // Circular, the first page comes after the third.
+    st.s.rbx.pointer.free = true;
+    hud(&mut st, &mut game);
+    pointer_moved(&mut st.s.rbx, 100.0, 50.0);
+    wheel(&mut st.s.rbx, -1.0);
+    assert_eq!(say(&mut st, &mut game, "where"), "200 Page3");
+}

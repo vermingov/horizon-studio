@@ -875,6 +875,31 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             start_tween(rbx, tid);
             one(Value::Bool(true))
         }
+        ("UIPageLayout", _) => {
+            let rbx = env.rbx();
+            let pages = super::hstudio_rbx_draw::pages(rbx, id);
+            let page = match name {
+                "JumpTo" => Some(
+                    args.get(1)
+                        .and_then(|v| rbx.id_of(v))
+                        .ok_or_else(|| bad_arg(lua, 1, name, "Instance expected"))?,
+                ),
+                "JumpToIndex" => {
+                    let i = check_num(lua, args, 1, name)?;
+                    (i >= 0.0).then(|| pages.get(i as usize).copied()).flatten()
+                }
+                _ => super::hstudio_rbx_draw::page_beside(rbx, id, &pages, name == "Next"),
+            };
+            if let Some(p) = page {
+                let forward = match name {
+                    "Next" => Some(true),
+                    "Previous" => Some(false),
+                    _ => None,
+                };
+                super::hstudio_rbx_draw::turn_page(rbx, id, p, forward);
+            }
+            none()
+        }
         ("PlayerGui" | "LayerCollector", "GetGuiObjectsAtPosition") => {
             let x = check_num(lua, args, 1, name)?;
             let y = check_num(lua, args, 2, name)?;

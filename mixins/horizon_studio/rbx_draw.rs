@@ -169,7 +169,7 @@ fn fill(node: &mut layout::Node, inst: &super::hstudio_rbx::Inst, focused: bool)
                 _ => ZIndexBehavior::Sibling,
             };
         }
-        "UIListLayout" | "UIGridLayout" => {
+        "UIListLayout" | "UIGridLayout" | "UIPageLayout" => {
             node.fill_direction = match enum_name(&inst.get("FillDirection")) {
                 "Vertical" => FillDirection::Vertical,
                 _ => FillDirection::Horizontal,
@@ -194,6 +194,11 @@ fn fill(node: &mut layout::Node, inst: &super::hstudio_rbx::Inst, focused: bool)
                 node.horizontal_flex = flex_alignment(&inst.get("HorizontalFlex"));
                 node.vertical_flex = flex_alignment(&inst.get("VerticalFlex"));
                 node.item_line_alignment = line_alignment(&inst.get("ItemLineAlignment"));
+            } else if c.name == "UIPageLayout" {
+                // Its pages, and how far it has turned, are linked once the
+                // tree is built (`link_pages`).
+                node.padding = as_udim(&inst.get("Padding")).unwrap_or_default();
+                node.circular = flag(inst, "Circular");
             } else {
                 node.cell_size = as_udim2(&inst.get("CellSize")).unwrap_or_default();
                 node.cell_padding = as_udim2(&inst.get("CellPadding")).unwrap_or_default();
@@ -586,6 +591,7 @@ pub fn lay_out(rbx: &mut Rbx, game: &mut dyn GameApi) {
             }
         }
     }
+    link_pages(rbx, &mut tree, &node_inst, &|i| inst_node.get(&i).copied());
     let mut measure = |text: &str, size: f64, font: &Font| -> f64 {
         f64::from(game.dp_measure(text, size as f32, studio_font(font)))
     };
@@ -594,6 +600,13 @@ pub fn lay_out(rbx: &mut Rbx, game: &mut dyn GameApi) {
     for (n, &id) in node_inst.iter().enumerate() {
         let Some(p) = lay.get(n) else { continue };
         outputs(rbx, p, id, board_origin(&lay, node_root[n]), &mut writes);
+        // A UIPageLayout is on its first page until it turns to another.
+        if let Some(page) = p.page
+            && tree[n].page != Some(page)
+            && !rbx.page_turns.iter().any(|t| t.layout == id)
+        {
+            writes.push((id, "CurrentPage", rbx.value(node_inst[page]), true));
+        }
     }
     write_outputs(rbx, writes);
     let epoch = rbx.gui_epoch;
@@ -652,7 +665,10 @@ fn outputs(rbx: &Rbx, p: &layout::Placed, id: Id, origin: Vector2, writes: &mut 
         writes.push((id, "AbsoluteCanvasSize", v2(p.canvas_size), true));
         writes.push((id, "AbsoluteWindowSize", v2(p.window_size), true));
     }
-    if matches!(c.name, "UIListLayout" | "UIGridLayout") {
+    if matches!(
+        c.name,
+        "UIListLayout" | "UIGridLayout" | "UIPageLayout" | "UITableLayout"
+    ) {
         writes.push((id, "AbsoluteContentSize", v2(p.content_size), true));
         if c.name == "UIGridLayout" {
             writes.push((id, "AbsoluteCellSize", v2(p.cell_size), false));
@@ -708,6 +724,8 @@ pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
     if let (Some(r), Some(&root)) = (board, tree.roots().first()) {
         tree[root].billboard = r;
     }
+    let nodes: HashMap<Id, NodeId> = node_inst.iter().enumerate().map(|(n, &i)| (i, n)).collect();
+    link_pages(rbx, &mut tree, &node_inst, &|i| nodes.get(&i).copied());
     let mut measure = |text: &str, size: f64, font: &Font| -> f64 {
         f64::from(game.dp_measure(text, size as f32, studio_font(font)))
     };
@@ -716,8 +734,10 @@ pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
     // layouts that arrange it.
     let wanted = |n: NodeId| {
         path.contains(&node_inst[n])
-            || matches!(tree[n].class, Class::UIListLayout | Class::UIGridLayout)
-                && tree.parent(n).is_some_and(|p| path.contains(&node_inst[p]))
+            || matches!(
+                tree[n].class,
+                Class::UIListLayout | Class::UIGridLayout | Class::UIPageLayout
+            ) && tree.parent(n).is_some_and(|p| path.contains(&node_inst[p]))
     };
     let mut writes = Vec::new();
     let mut fresh = Vec::new();
@@ -803,7 +823,7 @@ impl Partial<'_> {
         let arranged = inst
             .children
             .iter()
-            .any(|&c| matches!(rbx.inst(c).class.name, "UIListLayout" | "UIGridLayout"));
+            .any(|&c| matches!(rbx.inst(c).class.name, "UIListLayout" | "UIGridLayout" | "UIPageLayout"));
         for &c in &inst.children {
             if Some(c) == next {
                 self.add(c, Some(n), true);
@@ -855,6 +875,184 @@ fn fill_size(node: &mut layout::Node, inst: &super::hstudio_rbx::Inst) {
         "RelativeYY" => SizeConstraint::RelativeYY,
         _ => SizeConstraint::RelativeXY,
     };
+}
+
+// ---------------------------------------------------------------- pages
+
+/// A UIPageLayout turning from one page to another, over its TweenTime with
+/// its easing.
+pub struct PageTurn {
+    pub layout: Id,
+    pub from: Id,
+    pub to: Id,
+    /// Going on to the next pages (else back), which counts with Circular.
+    pub forward: bool,
+    pub elapsed: f64,
+    pub time: f64,
+    pub style: super::hstudio_rbx_types::EasingStyle,
+    pub direction: super::hstudio_rbx_types::EasingDirection,
+}
+
+impl PageTurn {
+    /// How far it has turned, eased, from 0 to 1.
+    fn eased(&self) -> f64 {
+        super::hstudio_rbx_types::ease(self.style, self.direction, self.elapsed / self.time.max(1e-9))
+    }
+}
+
+/// A UIPageLayout's pages, in its SortOrder: its container's visible GuiObjects.
+pub fn pages(rbx: &Rbx, layout: Id) -> Vec<Id> {
+    let Some(parent) = rbx.try_inst(layout).and_then(|i| i.parent) else {
+        return Vec::new();
+    };
+    let mut pages: Vec<Id> = rbx
+        .children(parent)
+        .iter()
+        .copied()
+        .filter(|&c| {
+            let i = rbx.inst(c);
+            is_a(i.class, "GuiObject") && i.get("Visible").truthy()
+        })
+        .collect();
+    match enum_name(&rbx.raw_get(layout, "SortOrder")) {
+        "Name" => pages.sort_by(|a, b| rbx.inst(*a).name.cmp(&rbx.inst(*b).name)),
+        _ => pages.sort_by_key(|&c| num(rbx.inst(c), "LayoutOrder") as i64),
+    }
+    pages
+}
+
+/// The page it is on: CurrentPage, or the first page.
+fn current_page(rbx: &Rbx, layout: Id, pages: &[Id]) -> Option<Id> {
+    rbx.id_of(&rbx.raw_get(layout, "CurrentPage"))
+        .filter(|p| pages.contains(p))
+        .or(pages.first().copied())
+}
+
+/// The page after (or before) the one it is on; past the ends, round to
+/// the other end with Circular, else none.
+pub fn page_beside(rbx: &Rbx, layout: Id, pages: &[Id], next: bool) -> Option<Id> {
+    let at = pages
+        .iter()
+        .position(|&p| Some(p) == current_page(rbx, layout, pages))?;
+    let n = pages.len();
+    let to = match (next, at) {
+        (true, _) if at + 1 < n => at + 1,
+        (false, _) if at > 0 => at - 1,
+        _ if !rbx.raw_get(layout, "Circular").truthy() => return None,
+        (true, _) => 0,
+        (false, _) => n - 1,
+    };
+    pages.get(to).copied()
+}
+
+/// Turns a UIPageLayout to `page`, one of its pages: PageLeave fires for
+/// the page it leaves and PageEnter for this one, CurrentPage becomes it,
+/// and it turns there over TweenTime with its easing when Animated (else at
+/// once); Stopped fires once it is there. `forward` says which way it goes
+/// round with Circular (by default the way the page lies).
+pub fn turn_page(rbx: &mut Rbx, layout: Id, page: Id, forward: Option<bool>) {
+    let pages = pages(rbx, layout);
+    let (Some(to), Some(from)) = (pages.iter().position(|&p| p == page), current_page(rbx, layout, &pages)) else {
+        return;
+    };
+    let at = pages.iter().position(|&p| p == from).unwrap_or(0);
+    if from == page && !rbx.page_turns.iter().any(|t| t.layout == layout) {
+        return;
+    }
+    let time = rbx.raw_get(layout, "TweenTime").to_num().unwrap_or(1.0);
+    let animated = rbx.raw_get(layout, "Animated").truthy() && time > 0.0;
+    let style = as_item(&rbx.raw_get(layout, "EasingStyle"))
+        .and_then(|i| super::hstudio_rbx_types::EasingStyle::from_name(i.name))
+        .unwrap_or(super::hstudio_rbx_types::EasingStyle::Back);
+    let direction = as_item(&rbx.raw_get(layout, "EasingDirection"))
+        .and_then(|i| super::hstudio_rbx_types::EasingDirection::from_name(i.name))
+        .unwrap_or(super::hstudio_rbx_types::EasingDirection::Out);
+    rbx.page_turns.retain(|t| t.layout != layout);
+    if animated {
+        rbx.page_turns.push(PageTurn {
+            layout,
+            from,
+            to: page,
+            forward: forward.unwrap_or(to >= at),
+            elapsed: 0.0,
+            time,
+            style,
+            direction,
+        });
+    }
+    let (left, entered) = (rbx.value(from), rbx.value(page));
+    if from != page {
+        rbx.fire(layout, "PageLeave", vec![left]);
+    }
+    rbx.raw_set(layout, "CurrentPage", entered.clone());
+    rbx.fire(layout, "PageEnter", vec![entered.clone()]);
+    if !animated {
+        rbx.fire(layout, "Stopped", vec![entered]);
+    }
+    rbx.gui_epoch += 1;
+}
+
+/// The page turns' frame: each moves on, and Stopped fires as one ends.
+fn step_pages(rbx: &mut Rbx, dt: f64) {
+    if rbx.page_turns.is_empty() {
+        return;
+    }
+    rbx.gui_epoch += 1;
+    let mut stopped = Vec::new();
+    for t in &mut rbx.page_turns {
+        t.elapsed += dt;
+        if t.elapsed >= t.time {
+            stopped.push((t.layout, t.to));
+        }
+    }
+    rbx.page_turns.retain(|t| t.elapsed < t.time);
+    for (layout, page) in stopped {
+        let v = rbx.value(page);
+        rbx.fire(layout, "Stopped", vec![v]);
+    }
+}
+
+/// Gives each UIPageLayout node of `tree` its page (CurrentPage), the page
+/// it turns from and how far it has turned, as nodes (`node_of` finds an
+/// instance's).
+fn link_pages(rbx: &Rbx, tree: &mut Tree, nodes: &[Id], node_of: &dyn Fn(Id) -> Option<NodeId>) {
+    for (n, &id) in nodes.iter().enumerate() {
+        if tree.get(n).is_none_or(|t| t.class != Class::UIPageLayout) {
+            continue;
+        }
+        tree[n].page = rbx.id_of(&rbx.raw_get(id, "CurrentPage")).and_then(node_of);
+        let (from, turn, forward) = match rbx.page_turns.iter().find(|t| t.layout == id) {
+            Some(t) => (node_of(t.from), t.eased(), t.forward),
+            None => (None, 1.0, true),
+        };
+        tree[n].page_from = from;
+        tree[n].page_turn = turn;
+        tree[n].page_forward = forward;
+    }
+}
+
+/// The wheel over a UIPageLayout's container (or one of its pages), when
+/// ScrollWheelInputEnabled, turns a page: down to the next, up to the one
+/// before. Whether it did.
+fn wheel_pages(rbx: &mut Rbx, over: &[Id], steps: f64) -> bool {
+    let layout = over.iter().find_map(|&o| {
+        let inst = rbx.try_inst(o)?;
+        let with = |i: Id| {
+            rbx.children(i)
+                .iter()
+                .copied()
+                .find(|&c| rbx.inst(c).class.name == "UIPageLayout")
+        };
+        with(o).or_else(|| inst.parent.and_then(with))
+    });
+    let Some(layout) = layout.filter(|&l| rbx.raw_get(l, "ScrollWheelInputEnabled").truthy()) else {
+        return false;
+    };
+    let pages = pages(rbx, layout);
+    if let Some(p) = page_beside(rbx, layout, &pages, steps < 0.0) {
+        turn_page(rbx, layout, p, Some(steps < 0.0));
+    }
+    true
 }
 
 // ---------------------------------------------------------------- drawing
@@ -2231,6 +2429,9 @@ pub fn wheel(rbx: &mut Rbx, steps: f64) {
             args,
         );
     }
+    if wheel_pages(rbx, &over, steps) {
+        return;
+    }
     // The topmost ScrollingFrame under the pointer scrolls.
     let Some(sf) = over
         .iter()
@@ -2779,6 +2980,7 @@ fn step_events(rbx: &mut Rbx, now: f64, dt: f64, frame_no: u64) {
         rbx.deferred.push((owner, f, vec![Value::Num(dt)]));
     }
     super::hstudio_rbx_methods::step_tweens(rbx, dt);
+    step_pages(rbx, dt);
     // Debris whose time came.
     let due: Vec<Id> = rbx.debris.iter().filter(|d| d.1 <= now).map(|d| d.0).collect();
     rbx.debris.retain(|d| d.1 > now);

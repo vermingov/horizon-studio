@@ -48,6 +48,7 @@ pub enum Class {
     ScrollingFrame,
     UIListLayout,
     UIGridLayout,
+    UIPageLayout,
     UIPadding,
     UIAspectRatioConstraint,
     UISizeConstraint,
@@ -60,7 +61,7 @@ pub enum Class {
 }
 
 impl Class {
-    pub const ALL: [Class; 20] = [
+    pub const ALL: [Class; 21] = [
         Class::ScreenGui,
         Class::BillboardGui,
         Class::Frame,
@@ -72,6 +73,7 @@ impl Class {
         Class::ScrollingFrame,
         Class::UIListLayout,
         Class::UIGridLayout,
+        Class::UIPageLayout,
         Class::UIPadding,
         Class::UIAspectRatioConstraint,
         Class::UISizeConstraint,
@@ -97,6 +99,7 @@ impl Class {
             Class::ScrollingFrame => "ScrollingFrame",
             Class::UIListLayout => "UIListLayout",
             Class::UIGridLayout => "UIGridLayout",
+            Class::UIPageLayout => "UIPageLayout",
             Class::UIPadding => "UIPadding",
             Class::UIAspectRatioConstraint => "UIAspectRatioConstraint",
             Class::UISizeConstraint => "UISizeConstraint",
@@ -452,6 +455,15 @@ pub struct Node {
     pub flex_mode: FlexMode,
     pub grow_ratio: f64,
     pub shrink_ratio: f64,
+
+    // UIPageLayout: the page it is on (CurrentPage), the one it turns from
+    // and how far it has turned (0 to 1, eased), which way, and whether the
+    // pages go round.
+    pub page: Option<NodeId>,
+    pub page_from: Option<NodeId>,
+    pub page_turn: f64,
+    pub page_forward: bool,
+    pub circular: bool,
     pub cell_size: UDim2,
     pub cell_padding: UDim2,
     /// 0 is no limit.
@@ -558,6 +570,11 @@ impl Node {
             flex_mode: FlexMode::None,
             grow_ratio: 1.0,
             shrink_ratio: 1.0,
+            page: None,
+            page_from: None,
+            page_turn: 1.0,
+            page_forward: true,
+            circular: false,
             cell_size: UDim2::from_offset(100.0, 100.0),
             cell_padding: UDim2::from_offset(5.0, 5.0),
             fill_direction_max_cells: 0,
@@ -869,6 +886,8 @@ pub struct Placed {
     /// UIGridLayout: AbsoluteCellSize, and AbsoluteCellCount (cells across, rows down).
     pub cell_size: Vector2,
     pub cell_count: Vector2,
+    /// UIPageLayout: the page it shows (the one it is nearest while it turns).
+    pub page: Option<NodeId>,
 }
 
 impl Placed {
@@ -1494,6 +1513,8 @@ struct Arranged {
     /// UIGridLayout's AbsoluteCellSize and AbsoluteCellCount.
     cell_size: Vector2,
     cell_count: Vector2,
+    /// UIPageLayout's page shown.
+    page: Option<NodeId>,
 }
 
 struct Pass<'a> {
@@ -1516,7 +1537,7 @@ impl<'a> Pass<'a> {
 
     /// The UIListLayout or UIGridLayout that arranges this container's children.
     fn arranger(&self, id: NodeId) -> Option<NodeId> {
-        let layouts = [Class::UIListLayout, Class::UIGridLayout];
+        let layouts = [Class::UIListLayout, Class::UIGridLayout, Class::UIPageLayout];
         self.node(id)
             .children
             .iter()
@@ -1738,6 +1759,9 @@ impl<'a> Pass<'a> {
         if self.node(layout).class == Class::UIGridLayout {
             return self.arrange_grid(layout, &items, area);
         }
+        if self.node(layout).class == Class::UIPageLayout {
+            return self.arrange_pages(layout, &items, area);
+        }
         let mut sizes: Vec<Vector2> = items.iter().map(|&c| self.size_of(c, area.size())).collect();
         let l = self.node(layout);
         let vertical = l.fill_direction == FillDirection::Vertical;
@@ -1880,6 +1904,7 @@ impl<'a> Pass<'a> {
             content_size,
             cell_size: Vector2::ZERO,
             cell_count: Vector2::ZERO,
+            page: None,
         }
     }
 
@@ -1954,6 +1979,97 @@ impl<'a> Pass<'a> {
             content_size: block,
             cell_size: cell,
             cell_count,
+            page: None,
+        }
+    }
+
+    /// UIPageLayout: the pages one after another along FillDirection, with
+    /// Padding between, moved so that the page it is at (part of the way
+    /// between two while it turns) lines up in the container as the
+    /// alignments say. With Circular the pages go round, each where it is
+    /// nearest that place.
+    fn arrange_pages(&mut self, layout: NodeId, items: &[NodeId], area: Area) -> Arranged {
+        let sizes: Vec<Vector2> = items.iter().map(|&c| self.size_of(c, area.size())).collect();
+        let l = self.node(layout);
+        let horizontal = l.fill_direction == FillDirection::Horizontal;
+        let main = |v: Vector2| if horizontal { v.x } else { v.y };
+        let cross = |v: Vector2| if horizontal { v.y } else { v.x };
+        let (main_len, cross_len) = if horizontal { (area.w, area.h) } else { (area.h, area.w) };
+        let (main_align, cross_align) = if horizontal {
+            (h_fraction(l.horizontal_alignment), v_fraction(l.vertical_alignment))
+        } else {
+            (v_fraction(l.vertical_alignment), h_fraction(l.horizontal_alignment))
+        };
+        let gap = l.padding.resolve(main_len);
+        let n = items.len();
+        if n == 0 {
+            return Arranged {
+                items: Vec::new(),
+                content_size: Vector2::ZERO,
+                cell_size: Vector2::ZERO,
+                cell_count: Vector2::ZERO,
+                page: None,
+            };
+        }
+        // Where each page starts along the axis, and how long a round is.
+        let mut starts = Vec::with_capacity(n);
+        let mut round = 0.0;
+        for s in &sizes {
+            starts.push(round);
+            round += main(*s) + gap;
+        }
+        let index = |p: Option<NodeId>| p.and_then(|p| items.iter().position(|&i| i == p));
+        let to = index(l.page).unwrap_or(0) as f64;
+        let from = index(l.page_from).map_or(to, |f| f as f64);
+        // Going round forward from the last page to the first is going on.
+        let count = n as f64;
+        let (from, to) = match (l.circular, l.page_forward) {
+            (true, true) if to < from => (from, to + count),
+            (true, false) if to > from => (from + count, to),
+            _ => (from, to),
+        };
+        let at = from + (to - from) * l.page_turn.clamp(0.0, 1.0);
+        // The start of the place `k` pages along, part of the way between two.
+        let start_at = |k: f64| {
+            let whole = |j: f64| starts[j.rem_euclid(count) as usize] + (j / count).floor() * round;
+            let i = k.floor();
+            whole(i) + (whole(i + 1.0) - whole(i)) * (k - i)
+        };
+        let scroll = start_at(at);
+        let shown = at.round().rem_euclid(count) as usize;
+        let offset = (main_len - main(sizes[shown])) * main_align;
+        let mut placed = Vec::with_capacity(n);
+        for (i, &item) in items.iter().enumerate() {
+            let mut along = starts[i] - scroll;
+            if l.circular && round > 0.0 {
+                along -= (along / round).round() * round;
+            }
+            let s = sizes[i];
+            let c = (cross_len - cross(s)) * cross_align;
+            let m = along + offset;
+            let (x, y) = if horizontal { (m, c) } else { (c, m) };
+            placed.push((
+                item,
+                Area {
+                    x: area.x + x,
+                    y: area.y + y,
+                    w: s.x,
+                    h: s.y,
+                },
+            ));
+        }
+        let thick = sizes.iter().map(|&s| cross(s)).fold(0.0, f64::max);
+        let long = round - gap;
+        Arranged {
+            items: placed,
+            content_size: if horizontal {
+                Vector2::new(long, thick)
+            } else {
+                Vector2::new(thick, long)
+            },
+            cell_size: Vector2::ZERO,
+            cell_count: Vector2::ZERO,
+            page: Some(items[shown]),
         }
     }
 
@@ -2041,6 +2157,7 @@ impl<'a> Pass<'a> {
                 cell_size: done.cell_size * ctx.k,
                 cell_count: done.cell_count,
                 scale: ctx.k,
+                page: done.page,
                 ..Placed::default()
             });
             areas.extend(done.items);

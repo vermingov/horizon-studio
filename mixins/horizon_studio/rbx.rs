@@ -954,7 +954,29 @@ pub static CLASSES: &[C] = &[
             &[],
         )
     },
-    kept("UIPageLayout", "UIGridStyleLayout"),
+    C {
+        lenient: true,
+        ..class(
+            "UIPageLayout",
+            "UIGridStyleLayout",
+            &[
+                p("FillDirection", K::Enum("FillDirection"), D::E("Horizontal")),
+                p("HorizontalAlignment", K::Enum("HorizontalAlignment"), D::E("Center")),
+                p("VerticalAlignment", K::Enum("VerticalAlignment"), D::E("Center")),
+                p("Padding", K::UD, D::UD(0.0, 0.0)),
+                p("Animated", Bool, B(true)),
+                p("Circular", Bool, B(false)),
+                p("EasingStyle", K::Enum("EasingStyle"), D::E("Back")),
+                p("EasingDirection", K::Enum("EasingDirection"), D::E("Out")),
+                p("TweenTime", Num, N(1.0)),
+                p("ScrollWheelInputEnabled", Bool, B(true)),
+                p("GamepadInputEnabled", Bool, B(true)),
+                p("TouchInputEnabled", Bool, B(true)),
+                ro("CurrentPage", Obj, D::Nil),
+            ],
+            &["PageEnter", "PageLeave", "Stopped"],
+        )
+    },
     kept("UITableLayout", "UIGridStyleLayout"),
     kept("Decal", "Instance"),
     kept("Texture", "Instance"),
@@ -1317,6 +1339,8 @@ pub struct Rbx {
     /// Layouts a read made, and the nodes they laid out in all.
     pub fresh_layouts: u64,
     pub fresh_nodes: u64,
+    /// UIPageLayouts turning to a page.
+    pub page_turns: Vec<super::hstudio_rbx_draw::PageTurn>,
 }
 
 /// An HTTP request a thread waits for.
@@ -1425,6 +1449,7 @@ impl Rbx {
             gui_view: (0.0, 0.0),
             fresh_layouts: 0,
             fresh_nodes: 0,
+            page_turns: Vec::new(),
         };
         r.build();
         r
@@ -2107,6 +2132,10 @@ const METHODS: &[(&str, &str)] = &[
     ("TweenSizeAndPosition", "GuiObject"),
     ("GetGuiObjectsAtPosition", "PlayerGui"),
     ("GetGuiObjectsAtPosition", "LayerCollector"),
+    ("JumpTo", "UIPageLayout"),
+    ("JumpToIndex", "UIPageLayout"),
+    ("Next", "UIPageLayout"),
+    ("Previous", "UIPageLayout"),
 ];
 
 const SIGNAL_METHODS: &[&str] = &["Connect", "Once", "Wait", "ConnectParallel"];
