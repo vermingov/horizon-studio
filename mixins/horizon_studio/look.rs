@@ -2158,14 +2158,16 @@ fn floor_char(s: &str, i: usize) -> usize {
 /// scrollbar, the suggestions, and the file changing on disk.
 pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     let now = st.s.now;
-    // The live check, once typing pauses.
+    // The live check, once typing pauses; a module's file with its siblings
+    // (read again, and checked again, when they change).
+    let siblings = super::hstudio_ui::editor_siblings(st);
     {
         let s = &mut st.s;
         let ed = &mut s.editor;
         // (A file opened or read again is checked at once; typing, at a pause.)
         let typing = ed.edited_at > 0.0 && now - ed.edited_at < CHECK_PAUSE;
         if ed.checked != Some(ed.revision) && !typing {
-            ed.problems = super::hstudio_assist::check(&ed.lines, &ed.title);
+            ed.problems = super::hstudio_assist::check(&ed.lines, &ed.title, siblings.as_deref());
             ed.checked = Some(ed.revision);
             let old = std::mem::take(&mut s.ui.problem_at);
             for pr in &ed.problems {

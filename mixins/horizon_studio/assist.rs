@@ -2,9 +2,29 @@
 // its signatures, the standard library, keywords, event names in on("...",
 // the buffer's own words, string methods after ':'), and the live check of a
 // script (syntax errors with their line and column from the studio's own
-// parser, and names that don't exist: `player.poss`, `plyer.pos`).
+// parser, and names that don't exist: `player.poss`, `plyer.pos`). In a
+// module's file both know the module's other files: the names they define,
+// the files `require("...")` can load, and the members of the table a
+// required file returns.
 
 use super::hstudio::{API, CONSOLE_API};
+use super::hstudio_modfiles::{require_name, require_path};
+
+/// The module the open file is in, for its checks and suggestions: the
+/// file's own path in it ("lib.lua"), and every other `.lua` file of the
+/// module with its lines. A script, the scratch file and the console have
+/// none.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Siblings {
+    pub file: String,
+    pub others: Vec<(String, Vec<String>)>,
+}
+
+impl Siblings {
+    fn lines_of(&self, rel: &str) -> Option<&[String]> {
+        self.others.iter().find(|(f, _)| f == rel).map(|(_, l)| l.as_slice())
+    }
+}
 
 /// What a suggestion is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -690,12 +710,61 @@ fn buffer_words(lines: &[String]) -> Vec<String> {
     words
 }
 
+/// Inside `require("` or `require('`: where the name being typed starts (a
+/// byte of `before`), and what is typed of it.
+fn in_require(before: &str) -> Option<(usize, &str)> {
+    let start = before
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-')))
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    let head = &before[..start];
+    let head = head.strip_suffix('"').or_else(|| head.strip_suffix('\''))?.trim_end();
+    let head = head.strip_suffix('(').map_or(head, str::trim_end);
+    let at = head.len().checked_sub("require".len())?;
+    (head.ends_with("require") && whole_at(head, at, "require")).then(|| (start, &before[start..]))
+}
+
 /// Suggestions for the text before the cursor on its line (`before`), with
 /// the buffer's lines for its words (`console`: the console's own functions
 /// too, no keywords): where the word being typed starts (a
 /// byte in `before`), and the suggestions, best first. None where nothing
-/// fits (in a comment or a string, or after a number).
-pub fn suggest(before: &str, lines: &[String], console: bool) -> Option<(usize, Vec<Suggestion>)> {
+/// fits (in a comment or a string, or after a number). In a module's file
+/// (`module`), `require("` offers the module's files, a name bound to a
+/// required file offers what that file returns, and the names the other
+/// files define come too.
+pub fn suggest(
+    before: &str,
+    lines: &[String],
+    console: bool,
+    module: Option<&Siblings>,
+) -> Option<(usize, Vec<Suggestion>)> {
+    // Inside require(" or require(': the module's files.
+    if let Some(m) = module
+        && let Some((start, typed)) = in_require(before)
+    {
+        let mut items: Vec<(u32, Suggestion)> = m
+            .others
+            .iter()
+            .filter(|(f, _)| f != "main.lua")
+            .filter_map(|(f, _)| {
+                let name = require_name(f);
+                let s = score(&name, typed).filter(|_| name != typed)?;
+                Some((
+                    s,
+                    Suggestion {
+                        detail: format!("require(\"{name}\")"),
+                        doc: format!("{f} in this module"),
+                        label: name.clone(),
+                        insert: name,
+                        kind: Kind::Value,
+                    },
+                ))
+            })
+            .collect();
+        items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.label.cmp(&b.1.label)));
+        return (!items.is_empty()).then(|| (start, items.into_iter().map(|x| x.1).collect()));
+    }
     // Inside on(" or on(': the events.
     let trimmed = before.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == ':');
     if let Some(head) = trimmed.strip_suffix('"').or_else(|| trimmed.strip_suffix('\'')) {
@@ -771,10 +840,25 @@ pub fn suggest(before: &str, lines: &[String], console: bool) -> Option<(usize, 
                 .into_iter()
                 .filter(|(n, ..)| n.strip_prefix(owner).is_some_and(|r| r.starts_with('.')) && !owner.is_empty())
                 .collect();
-            let mine = if owner.is_empty() {
+            let mut mine = if owner.is_empty() {
                 Vec::new()
             } else {
                 file_members(lines, owner)
+            };
+            // A name bound to a required file: what that file returns.
+            let required = module
+                .filter(|_| !owner.is_empty())
+                .and_then(|m| bound_members(lines, owner, m));
+            if let Some((_, members)) = &required {
+                for (m, f) in members {
+                    if !mine.iter().any(|(n, _)| n == m) {
+                        mine.push((m.clone(), *f));
+                    }
+                }
+            }
+            let in_file = |name: &str| match &required {
+                Some((rel, members)) if members.iter().any(|(m, _)| m == name) => format!("in {rel}"),
+                _ => "in this file".to_owned(),
             };
             if sep == ':' && !library.is_empty() {
                 // `player:` means `player.`: the library's functions, the
@@ -811,7 +895,7 @@ pub fn suggest(before: &str, lines: &[String], console: bool) -> Option<(usize, 
                     } else {
                         (format!("{owner}.{name}"), Kind::Value)
                     };
-                    push(name, &detail, "in this file", kind, &mut items);
+                    push(name, &detail, &in_file(name), kind, &mut items);
                 }
                 // A string's methods: after one, or after what the file
                 // doesn't say anything about.
@@ -838,10 +922,20 @@ pub fn suggest(before: &str, lines: &[String], console: bool) -> Option<(usize, 
                     push(k, k, "", Kind::Keyword, &mut items);
                 }
             }
-            let known: Vec<String> = items.iter().map(|i| i.1.label.clone()).collect();
+            let mut known: Vec<String> = items.iter().map(|i| i.1.label.clone()).collect();
             for w in buffer_words(lines) {
                 if !known.contains(&w) && w != typed {
                     push(&w, "", "in this file", Kind::Word, &mut items);
+                    known.push(w);
+                }
+            }
+            // The names the module's other files define for all of it.
+            for (file, other) in module.map_or(&[][..], |m| m.others.as_slice()) {
+                for w in sibling_words(other) {
+                    if !known.contains(&w) && w != typed {
+                        push(&w, "", &format!("in {file}"), Kind::Word, &mut items);
+                        known.push(w);
+                    }
                 }
             }
         }
@@ -870,15 +964,7 @@ fn whole_at(line: &str, at: usize, word: &str) -> bool {
 /// `owner = { ... }` constructor.
 fn file_members(lines: &[String], owner: &str) -> Vec<(String, bool)> {
     let mut out: Vec<(String, bool)> = Vec::new();
-    let add = |name: &str, func: bool, out: &mut Vec<(String, bool)>| {
-        if name.is_empty() || name.starts_with(|c: char| c.is_ascii_digit()) || KEYWORDS.contains(&name) {
-            return;
-        }
-        match out.iter_mut().find(|(n, _)| n == name) {
-            Some(e) => e.1 |= func,
-            None => out.push((name.to_owned(), func)),
-        }
-    };
+    let add = add_member;
     let text: Vec<String> = lines.iter().map(|l| strip_strings(l)).collect();
     for (row, line) in text.iter().enumerate() {
         for (at, _) in line.match_indices(owner) {
@@ -911,6 +997,18 @@ fn file_members(lines: &[String], owner: &str) -> Vec<(String, bool)> {
         }
     }
     out
+}
+
+/// A member found, once (a function if any sighting says so); numbers and
+/// keywords are none.
+fn add_member(name: &str, func: bool, out: &mut Vec<(String, bool)>) {
+    if name.is_empty() || name.starts_with(|c: char| c.is_ascii_digit()) || KEYWORDS.contains(&name) {
+        return;
+    }
+    match out.iter_mut().find(|(n, _)| n == name) {
+        Some(e) => e.1 |= func,
+        None => out.push((name.to_owned(), func)),
+    }
 }
 
 /// The fields `name = value` at the first depth of the constructor whose
@@ -1029,15 +1127,238 @@ pub struct Problem {
 }
 
 /// Checks a script as it is typed: its syntax (with the studio's parser),
-/// then names that don't exist (`player.poss`, `plyer.pos`).
-pub fn check(lines: &[String], chunk: &str) -> Vec<Problem> {
+/// then names that don't exist (`player.poss`, `plyer.pos`), and the files
+/// it requires. `module` is the module the file is in (None: a script, the
+/// scratch file): what its other files define is not unknown here, a
+/// `require` of a file it lacks is a problem, and so is a typo in a member
+/// of the table a required file returns.
+pub fn check(lines: &[String], chunk: &str, module: Option<&Siblings>) -> Vec<Problem> {
     let src = lines.join("\n");
     let mut lua = super::hstudio_lua::Lua::new();
     let env = std::rc::Rc::new(std::cell::RefCell::new(super::hstudio_lua::Table::new()));
     if let Err(e) = lua.load(&src, chunk, &env) {
         return vec![syntax_problem(&e, lines, chunk, super::hstudio_lua::syntax_error_at())];
     }
-    unknown_names(lines)
+    let mut out = unknown_names(lines, module);
+    out.extend(require_problems(lines, module));
+    out.sort_by_key(|p| (p.line, p.span.map_or(0, |s| s.0)));
+    out
+}
+
+/// The `require` calls of a file with a literal name, outside strings and
+/// comments: the line's index, the literal's span (its quotes included)
+/// and the name.
+fn requires(lines: &[String]) -> Vec<(usize, (usize, usize), String)> {
+    let mut out = Vec::new();
+    for (row, line) in lines.iter().enumerate() {
+        let code = strip_strings(line);
+        for (at, _) in code.match_indices("require") {
+            if !whole_at(&code, at, "require") {
+                continue;
+            }
+            let b = line.as_bytes();
+            let mut j = at + "require".len();
+            while b.get(j) == Some(&b' ') {
+                j += 1;
+            }
+            if b.get(j) == Some(&b'(') {
+                j += 1;
+                while b.get(j) == Some(&b' ') {
+                    j += 1;
+                }
+            }
+            let Some(&q) = b.get(j).filter(|q| **q == b'"' || **q == b'\'') else {
+                continue;
+            };
+            let Some(len) = line[j + 1..].find(q as char) else {
+                continue;
+            };
+            let name = &line[j + 1..j + 1 + len];
+            if !name.contains('\\') {
+                out.push((row, (j, j + len + 2), name.to_owned()));
+            }
+        }
+    }
+    out
+}
+
+/// What is wrong with a file's `require`s: a file the module lacks, the
+/// file itself, main.lua, a name require can't take, or any file at all in
+/// a file that is not a module's; and typos in the members of what a
+/// required file returns.
+fn require_problems(lines: &[String], module: Option<&Siblings>) -> Vec<Problem> {
+    let mut out = Vec::new();
+    for (row, span, name) in requires(lines) {
+        let message = match module {
+            None => Some("require loads a module's files, and this file isn't in a module".to_owned()),
+            Some(m) => match require_path(&name) {
+                None => Some(format!(
+                    "bad module name '{name}': name a file of the module, as \"lib\" or \"lib.util\""
+                )),
+                Some(rel) if rel == m.file => Some("a file can't require itself".to_owned()),
+                Some(rel) if rel == "main.lua" => Some("main.lua starts the module: it can't be required".to_owned()),
+                Some(rel) if m.lines_of(&rel).is_some() => None,
+                Some(rel) => Some(format!("no {rel} in this module")),
+            },
+        };
+        if let Some(message) = message {
+            out.push(Problem {
+                line: row + 1,
+                span: Some(span),
+                message,
+                error: false,
+            });
+        }
+    }
+    if let Some(m) = module {
+        out.extend(member_typos(lines, m));
+    }
+    out
+}
+
+/// A table's members as the file names them: (name, whether it is a function).
+type Members = Vec<(String, bool)>;
+
+/// The file `owner` holds in a file that says `local owner = require("x")`,
+/// and the members of the table x.lua returns: (x.lua, its members).
+fn bound_members(lines: &[String], owner: &str, module: &Siblings) -> Option<(String, Members)> {
+    requires(lines).into_iter().find_map(|(row, (start, _), name)| {
+        let code = strip_strings(&lines[row]);
+        let head = code[..start].trim_end();
+        let head = head.strip_suffix('(').map_or(head, str::trim_end);
+        let bound = head
+            .strip_suffix("require")?
+            .trim_end()
+            .strip_suffix('=')?
+            .trim()
+            .strip_prefix("local ")?
+            .trim();
+        if bound != owner {
+            return None;
+        }
+        let rel = require_path(&name)?;
+        let members = returned_members(module.lines_of(&rel)?)?;
+        Some((rel, members))
+    })
+}
+
+/// `L.m` where the file says `local L = require("x")` and x.lua returns a
+/// table with members it names: an `m` it doesn't have but a letter or two
+/// from one it does is a typo ("lib.lua has no 'gret' (did you mean
+/// greet?)"). Other unknown members may well be added elsewhere: they are
+/// left alone.
+fn member_typos(lines: &[String], module: &Siblings) -> Vec<Problem> {
+    let mut bound: Vec<(String, String, Members)> = Vec::new();
+    for (row, (start, _), _) in requires(lines) {
+        let code = strip_strings(&lines[row]);
+        let head = code[..start].trim_end();
+        let head = head.strip_suffix('(').map_or(head, str::trim_end);
+        let Some(name) = head
+            .strip_suffix("require")
+            .map(str::trim_end)
+            .and_then(|h| h.strip_suffix('='))
+            .map(str::trim)
+            .and_then(|h| h.strip_prefix("local "))
+            .map(str::trim)
+        else {
+            continue;
+        };
+        if let Some((rel, mut members)) = bound_members(lines, name, module) {
+            // What this file adds to the table is known too.
+            for m in defined_members(lines, name) {
+                add_member(&m, false, &mut members);
+            }
+            bound.push((name.to_owned(), rel, members));
+        }
+    }
+    let mut out = Vec::new();
+    for (row, line) in lines.iter().enumerate() {
+        let code = strip_strings(line);
+        for (name, rel, members) in &bound {
+            for (at, _) in code.match_indices(name.as_str()) {
+                if !whole_at(&code, at, name) {
+                    continue;
+                }
+                let rest = &code[at + name.len()..];
+                let Some(after) = rest.strip_prefix('.').or_else(|| rest.strip_prefix(':')) else {
+                    continue;
+                };
+                let member: String = after.chars().take_while(|c| is_word(*c)).collect();
+                if member.is_empty() || members.iter().any(|(m, _)| *m == member) {
+                    continue;
+                }
+                if let Some((close, _)) = members.iter().find(|(m, _)| near(m, &member)) {
+                    let s = at + name.len() + 1;
+                    out.push(Problem {
+                        line: row + 1,
+                        span: Some((s, s + member.len())),
+                        message: format!("{rel} has no '{member}' (did you mean {close}?)"),
+                        error: false,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The members a file defines in the table `owner`: `function owner.m(`,
+/// `function owner:m(` and `owner.m = ...` (uses of a member don't count).
+fn defined_members(lines: &[String], owner: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in lines {
+        let code = strip_strings(line);
+        for (at, _) in code.match_indices(owner) {
+            if !whole_at(&code, at, owner) {
+                continue;
+            }
+            let rest = &code[at + owner.len()..];
+            let Some(after) = rest.strip_prefix('.').or_else(|| rest.strip_prefix(':')) else {
+                continue;
+            };
+            let name: String = after.chars().take_while(|c| is_word(*c)).collect();
+            let tail = after[name.len()..].trim_start();
+            let assigned = tail.starts_with('=') && !tail.starts_with("==");
+            if !name.is_empty() && (assigned || code[..at].trim_end().ends_with("function")) {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
+/// What a file returns, as (member, whether it is a function), when that is
+/// a table whose members the file names: the fields of a last
+/// `return { ... }`, or for a last `return T`, what the file puts in T. None
+/// when it returns anything else, or a table filled in ways that can't be
+/// read here (`setmetatable(T`, `T[...]`).
+fn returned_members(lines: &[String]) -> Option<Vec<(String, bool)>> {
+    let text: Vec<String> = lines.iter().map(|l| strip_strings(l)).collect();
+    let (row, line) = text
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, l)| l.starts_with("return") && l["return".len()..].chars().next().is_none_or(|c| !is_word(c)))?;
+    let rest = line["return".len()..].trim().trim_end_matches(';').trim_end();
+    if rest.starts_with('{') {
+        let mut out = Vec::new();
+        constructor_fields(&text, row, line.find('{')?, &mut out, &add_member);
+        return Some(out);
+    }
+    if rest.is_empty() || !rest.chars().all(is_word) {
+        return None;
+    }
+    let dynamic = text.iter().any(|l| {
+        let l = l.replace(' ', "");
+        l.contains(&format!("setmetatable({rest}"))
+            || l.contains(&format!("{rest}=setmetatable("))
+            || l.contains(&format!("{rest}["))
+    });
+    if dynamic {
+        return None;
+    }
+    let members = file_members(lines, rest);
+    (!members.is_empty()).then_some(members)
 }
 
 /// A parser error ("chunk:12: unexpected symbol near 'end'") as a problem
@@ -1099,37 +1420,65 @@ fn syntax_problem(e: &str, lines: &[String], chunk: &str, at: Option<usize>) -> 
     }
 }
 
+/// The names a file defines: what follows `local`, `function` and `for`,
+/// every word before an `=` (assignments), and parameters and loop names.
+/// With `globals_only`, lines that start with `local` are left out: what
+/// another file of a module defines for the rest of it.
+fn defined_names(lines: &[String], globals_only: bool, d: &mut std::collections::HashSet<String>) {
+    for line in lines {
+        if globals_only && line.trim_start().starts_with("local") {
+            continue;
+        }
+        let code = strip_strings(line);
+        let words: Vec<&str> = code.split(|c: char| !is_word(c)).filter(|w| !w.is_empty()).collect();
+        for w in words.windows(2) {
+            if w[0] == "local" || w[0] == "function" || w[0] == "for" {
+                d.insert(w[1].to_owned());
+            }
+        }
+        // Assignments, parameters and loop names: every word on a line
+        // before an '=' or inside function( ... ) and for ... in.
+        if let Some(eq) = code.find('=').filter(|i| !code[*i..].starts_with("==")) {
+            for w in code[..eq].split(|c: char| !is_word(c)).filter(|w| !w.is_empty()) {
+                d.insert(w.to_owned());
+            }
+        }
+        for (open, close) in [("function", ")"), ("for", " in ")] {
+            if let Some(a) = code.find(open)
+                && let Some(b) = code[a..].find(close)
+            {
+                for w in code[a..a + b].split(|c: char| !is_word(c)).filter(|w| !w.is_empty()) {
+                    d.insert(w.to_owned());
+                }
+            }
+        }
+    }
+}
+
+/// The names another file of the module defines for all of it (its
+/// globals), as suggestions: long enough to be worth one, no keywords.
+fn sibling_words(lines: &[String]) -> Vec<String> {
+    let mut d = std::collections::HashSet::new();
+    defined_names(lines, true, &mut d);
+    let mut words: Vec<String> = d
+        .into_iter()
+        .filter(|w| w.len() >= 3 && !w.starts_with(|c: char| c.is_ascii_digit()) && !KEYWORDS.contains(&w.as_str()))
+        .collect();
+    words.sort();
+    words
+}
+
 /// Uses of a library's member it doesn't have (`player.poss`), and of a
 /// table name nothing defines (`plyer.pos`), outside strings and comments.
-fn unknown_names(lines: &[String]) -> Vec<Problem> {
+/// What a module's other files define for all of it counts as defined.
+fn unknown_names(lines: &[String], module: Option<&Siblings>) -> Vec<Problem> {
     let ns = namespaces();
     let all = names(true);
     let defined: std::collections::HashSet<String> = {
         let mut d = std::collections::HashSet::new();
-        for line in lines {
-            let code = strip_strings(line);
-            let words: Vec<&str> = code.split(|c: char| !is_word(c)).filter(|w| !w.is_empty()).collect();
-            for w in words.windows(2) {
-                if w[0] == "local" || w[0] == "function" || w[0] == "for" {
-                    d.insert(w[1].to_owned());
-                }
-            }
-            // Assignments, parameters and loop names: every word on a line
-            // before an '=' or inside function( ... ) and for ... in.
-            if let Some(eq) = code.find('=').filter(|i| !code[*i..].starts_with("==")) {
-                for w in code[..eq].split(|c: char| !is_word(c)).filter(|w| !w.is_empty()) {
-                    d.insert(w.to_owned());
-                }
-            }
-            for (open, close) in [("function", ")"), ("for", " in ")] {
-                if let Some(a) = code.find(open)
-                    && let Some(b) = code[a..].find(close)
-                {
-                    for w in code[a..a + b].split(|c: char| !is_word(c)).filter(|w| !w.is_empty()) {
-                        d.insert(w.to_owned());
-                    }
-                }
-            }
+        defined_names(lines, false, &mut d);
+        for (_, other) in module.map_or(&[][..], |m| m.others.as_slice()) {
+            defined_names(other, true, &mut d);
         }
         d
     };

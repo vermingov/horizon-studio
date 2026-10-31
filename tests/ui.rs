@@ -1654,3 +1654,51 @@ fn the_editor_says_which_file_a_module_failed_in() {
     redraw(&mut st, &mut game);
     assert!(!drawn_contains(&game, "Failed in"), "not about the file open");
 }
+
+#[test]
+fn the_editor_checks_a_module_file_with_its_siblings() {
+    let mut game = FakeGame::new("ui-siblings");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    let dir = game.mods_dir().join("loud");
+    std::fs::create_dir_all(&dir).unwrap();
+    let main_src = "require('lib')\nchat.shout('x')\nlocal extra = require('extra')\n";
+    std::fs::write(dir.join("main.lua"), main_src).unwrap();
+    std::fs::write(dir.join("lib.lua"), "function chat.shout(s) chat.show(s) end\n").unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    let messages = |st: &horizon_studio::game::hstudio::Studio| -> Vec<String> {
+        st.s.editor.problems.iter().map(|p| p.message.clone()).collect()
+    };
+    st.open_file(&dir.join("main.lua"));
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    redraw(&mut st, &mut game);
+    assert_eq!(messages(&st), ["no extra.lua in this module"]);
+    // The same text as a one-file script: lib.lua's function is unknown there.
+    game.write_mod("solo.lua", main_src);
+    run_for(&mut st, &mut game, 0.6);
+    st.open_file(&game.mods_dir().join("solo.lua"));
+    redraw(&mut st, &mut game);
+    let solo = messages(&st);
+    assert!(solo.contains(&"chat has no 'shout'".to_owned()), "{solo:?}");
+    assert!(
+        solo.iter().any(|m| m.contains("require loads a module's files")),
+        "{solo:?}"
+    );
+    // A sibling written on disk: the check looks again, the text unchanged.
+    st.open_file(&dir.join("main.lua"));
+    redraw(&mut st, &mut game);
+    let revision = st.s.editor.revision;
+    assert_eq!(messages(&st), ["no extra.lua in this module"]);
+    std::fs::write(dir.join("extra.lua"), "return {}\n").unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    redraw(&mut st, &mut game);
+    assert!(messages(&st).is_empty(), "{:?}", messages(&st));
+    assert_eq!(st.s.editor.revision, revision);
+    // Suggestions know the module's files.
+    st.s.editor.set_text("local e = require(\"ex");
+    st.s.editor.click(0, 22, false);
+    horizon_studio::game::hstudio_ui::refresh_suggest(&mut st);
+    let sg = st.s.ui.suggest.clone().expect("suggestions");
+    assert_eq!(sg.items[0].label, "extra");
+}

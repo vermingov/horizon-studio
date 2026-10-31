@@ -562,6 +562,9 @@ pub struct Ui {
     pub scripts_scroll: usize,
     pub(crate) scripts_at: Option<[f32; 4]>,
     pub(crate) scripts_followed: Option<PathBuf>,
+    /// The other files of the module the editor's file is in, for its
+    /// checks and suggestions, read again when the module's files change.
+    pub(crate) siblings: Option<SiblingCache>,
     /// When the AI setup prompt was copied (its button says so a moment).
     pub copied_at: Option<f64>,
     /// The looks chosen in Settings (`look.txt`).
@@ -1834,6 +1837,59 @@ pub fn target(ui: &Ui) -> Target {
     }
 }
 
+/// The siblings of the editor's file as last read: for which file, the
+/// module's files' sizes and times then (its `stamp`), and what was read.
+pub(crate) struct SiblingCache {
+    path: PathBuf,
+    stamp: Vec<(PathBuf, Option<std::time::SystemTime>, u64)>,
+    data: std::rc::Rc<super::hstudio_assist::Siblings>,
+}
+
+/// The other files of the module the editor's file is in, for its checks
+/// and suggestions (None outside a module). They are read again only when
+/// the scan saw the module's files change (its stamp), and then the live
+/// check looks again, though the buffer didn't change.
+pub(crate) fn editor_siblings(st: &mut Studio) -> Option<std::rc::Rc<super::hstudio_assist::Siblings>> {
+    let path = st.s.editor.path.clone()?;
+    let Some((i, folder)) = st
+        .mod_of_path(&path)
+        .and_then(|i| Some((i, st.s.mods[i].folder.clone()?)))
+    else {
+        st.s.ui.siblings = None;
+        return None;
+    };
+    let m = &st.s.mods[i];
+    let rel = super::hstudio_modfiles::rel_in(&folder, &path)?;
+    if let Some(c) = &st.s.ui.siblings
+        && c.path == path
+        && c.stamp == m.stamp
+    {
+        return Some(c.data.clone());
+    }
+    // Large files are left out: the check is a help, not a build.
+    let others = m
+        .files()
+        .into_iter()
+        .filter(|f| *f != rel)
+        .map(|f| {
+            let p = super::hstudio_modfiles::path_in(&folder, &f);
+            let text = match std::fs::metadata(&p) {
+                Ok(meta) if meta.len() <= 512 << 10 => std::fs::read_to_string(&p).unwrap_or_default(),
+                _ => String::new(),
+            };
+            (f, text.lines().map(str::to_owned).collect())
+        })
+        .collect();
+    let data = std::rc::Rc::new(super::hstudio_assist::Siblings { file: rel, others });
+    st.s.ui.siblings = Some(SiblingCache {
+        path,
+        stamp: m.stamp.clone(),
+        data: data.clone(),
+    });
+    st.s.editor.checked = None;
+    Some(data)
+}
+
 /// Opens, updates or closes the suggestions for what is typed now.
 pub fn refresh_suggest(st: &mut Studio) {
     let console = match target(&st.s.ui) {
@@ -1846,13 +1902,14 @@ pub fn refresh_suggest(st: &mut Studio) {
     };
     let found = if console {
         let i = &st.s.ui.input;
-        super::hstudio_assist::suggest(&i.text[..i.cursor], &[], true)
+        super::hstudio_assist::suggest(&i.text[..i.cursor], &[], true, None)
     } else {
+        let siblings = editor_siblings(st);
         let ed = &st.s.editor;
         if ed.selection().is_some() {
             None
         } else {
-            super::hstudio_assist::suggest(&ed.lines[ed.row][..ed.col], &ed.lines, false)
+            super::hstudio_assist::suggest(&ed.lines[ed.row][..ed.col], &ed.lines, false, siblings.as_deref())
         }
     };
     let ui = &mut st.s.ui;
