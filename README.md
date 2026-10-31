@@ -76,12 +76,18 @@ retired), so a mod with code is a [native mod](https://github.com/horizon-rust/h
 that the launcher compiles into the game, once. You don't install Rust or type commands: the launcher brings its own
 and does it.
 
-On Linux or macOS, one line downloads it and has the launcher build it, and the same line updates it (close the
-launcher first; on macOS use `"/Applications/Horizon.app/Contents/MacOS/horizon-launcher"` for `horizon-launcher`):
+On Linux or macOS, one line installs it, and the same line updates it (close the launcher first):
 
 ```sh
-rm -rf ~/.cache/horizon-studio/horizon-studio-main && mkdir -p ~/.cache/horizon-studio && curl -fsSL https://github.com/vermingov/horizon-studio/archive/refs/heads/main.tar.gz | tar -xz -C ~/.cache/horizon-studio && horizon-launcher native-build ~/.cache/horizon-studio/horizon-studio-main/mixins/horizon_studio --trust-native-code
+curl -fsSL https://raw.githubusercontent.com/vermingov/horizon-studio/main/install.sh | sh
 ```
+
+On Linux (x86_64) and macOS (Apple silicon) this takes seconds: each release carries the game with Horizon
+Studio already built in, made the way the launcher makes it, and [install.sh](install.sh) puts it where the
+launcher keeps its builds (checked against the release's SHA256SUMS) and has the launcher select it. Elsewhere,
+or with `HORIZON_STUDIO_BUILD=1`, the launcher compiles it as before, with settings that compile several times
+faster (no whole-program optimisation). It finds `horizon-launcher` on your PATH or in `/Applications/Horizon.app`;
+set `HORIZON_LAUNCHER` to point at it otherwise. Horizon must be installed and prepared in the launcher first.
 
 Then play the **Native mods** instance. Or, by hand:
 

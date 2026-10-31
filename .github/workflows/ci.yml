@@ -33,6 +33,8 @@ jobs:
             target/game
           key: game-${{ hashFiles('compatibility.json') }}
       - run: python3 tools/studio.py check
+      - name: install.sh names the prebuilt game as the launcher does
+        run: python3 tools/studio.py native-key
       - run: python3 tools/studio.py package
       - uses: actions/upload-artifact@v4
         with:
