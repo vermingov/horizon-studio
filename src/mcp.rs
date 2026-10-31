@@ -9,7 +9,7 @@
 
 use crate::game::hstudio::VERSION;
 use crate::game::hstudio_examples::EXAMPLES;
-use crate::headless::{Run, STEPS_HELP, Source, check_id, read_mod, run_steps, write_mod};
+use crate::headless::{Run, STEPS_HELP, Source, check_id, merged_files, read_mod, remove_files, run_steps, write_mod};
 use crate::mcp_docs::{self, Reference};
 use serde_json::{Value as Json, json};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -26,8 +26,9 @@ const PROTOCOLS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-
 pub const INSTRUCTIONS: &str = "Horizon Studio makes Minecraft mods for Horizon (Minecraft Java 26.3 in Rust) in Lua, \
 hot reloaded in the running game. Workflow: call `docs` with no arguments for its index, then read the topics you need \
 (`start`, `api`, `events`, `language`, `recipes`...); `docs` with `name` gives one function, event or widget in full \
-and `search` finds anything, so nothing needs looking up elsewhere. Look at `examples` for idioms; write a mod with `write_mod` (one file, or a \
-folder with main.lua; a library calls export(table) and others import(\"id\")); fix what `write_mod`'s check reports; \
+and `search` finds anything, so nothing needs looking up elsewhere. Look at `examples` for idioms; write a mod with `write_mod`: a script \
+is one file, <id>.lua; a module is a folder whose main.lua requires its other files (for an existing module, write only \
+the files that change, and `remove` deletes files); a library calls export(table) and others import(\"id\"). Fix what `write_mod`'s check reports; \
 then `test_mod` with steps, headless first (no game needed) and live once `game_status` says the game is linked. \
 `run_lua`, `send_chat` and `game_log` work in the running game; `horizon_ctl` plays it and takes screenshots when the \
 game runs with --control. Mods are sandboxed Lua: no files, no network, a step budget per call.";
@@ -260,10 +261,37 @@ fn tool(name: &str, description: &str, properties: Json, required: &[&str]) -> J
 fn files_schema() -> Json {
     json!({
         "type": "object",
-        "description": "The mod's files by path: {\"main.lua\": \"...\", \"lib/util.lua\": \"...\"} for a folder mod \
-                        (require(\"lib.util\") reads the others), or {\"<id>.lua\": \"...\"} for one file.",
+        "description": "The mod's files by path: {\"<id>.lua\": \"...\"} for a script, or a module's \
+                        {\"main.lua\": \"...\", \"lib/util.lua\": \"...\"} (main.lua loads the others with \
+                        require(\"lib.util\")). For a module that exists, only the files given change; the others \
+                        stay as they are.",
         "additionalProperties": { "type": "string" },
     })
+}
+
+/// write_mod's files to delete.
+fn remove_schema() -> Json {
+    json!({
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Files of an existing module to delete, by their paths in it ([\"old.lua\"]); not main.lua.",
+    })
+}
+
+/// write_mod's `remove`: a list of paths (none when it isn't given).
+fn remove_param(args: &Json) -> Result<Vec<String>, String> {
+    match args.get("remove") {
+        None | Some(Json::Null) => Ok(Vec::new()),
+        Some(Json::Array(items)) => items
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "remove is a list of paths in the module".to_owned())
+            })
+            .collect(),
+        Some(_) => Err("remove is a list of paths in the module".into()),
+    }
 }
 
 fn steps_schema() -> Json {
@@ -305,7 +333,8 @@ pub fn tools() -> Json {
         ),
         tool(
             "list_mods",
-            "The script mods in the mods folder, with their state in the game when it is linked.",
+            "The script mods in the mods folder: each one's kind (a script, or a module and its files), \
+              with its state in the game when it is linked.",
             json!({ "mods_dir": mods_dir }),
             &[]
         ),
@@ -317,11 +346,13 @@ pub fn tools() -> Json {
         ),
         tool(
             "write_mod",
-            "Creates or replaces a script mod (a folder mod's files are written, others kept). It is \
-              checked headless first (loads, registers, errors with lines); while the game is linked it then reloads \
-              there and its live state is returned.",
-            json!({ "id": id, "files": files_schema(), "mods_dir": mods_dir }),
-            &["id", "files"]
+            "Creates or changes a script mod: a script's one file, or a module's files (for a module that \
+              exists, only the files given are written, the others kept, and `remove` deletes files). main.lua \
+              for an existing script makes it a module (the old file goes to the trash). It is checked headless \
+              first, as it will be on disk (loads, registers, errors with their file and line); while the game is \
+              linked it then reloads there and its live state is returned.",
+            json!({ "id": id, "files": files_schema(), "remove": remove_schema(), "mods_dir": mods_dir }),
+            &["id"]
         ),
         tool(
             "delete_mod",
@@ -332,8 +363,8 @@ pub fn tools() -> Json {
         tool(
             "check_mod",
             "Loads a mod headless (the studio on a simulated game, with the libraries it imports): \
-              whether it runs, its error and line, its commands, handlers and exports. Give files to check text \
-              not yet written.",
+              whether it runs, its error and the file and line it is in, its commands, handlers and exports. Give \
+              files to check text not yet written (for a module that exists, over its other files).",
             json!({ "id": id, "files": files_schema(), "mods_dir": mods_dir }),
             &["id"]
         ),
@@ -416,6 +447,8 @@ fn text_result(v: &Json, error: bool) -> Json {
     json!({ "content": [{ "type": "text", "text": text }], "isError": error })
 }
 
+/// `files` as (path, text) pairs: None when it isn't given. It may be
+/// empty ({}), as write_mod takes it beside `remove`.
 fn files_param(args: &Json) -> Result<Option<Vec<(String, String)>>, String> {
     match args.get("files") {
         None | Some(Json::Null) => Ok(None),
@@ -425,12 +458,17 @@ fn files_param(args: &Json) -> Result<Option<Vec<(String, String)>>, String> {
                 let text = v.as_str().ok_or_else(|| format!("files.{k} must be the file's text"))?;
                 files.push((k.clone(), text.to_owned()));
             }
-            if files.is_empty() {
-                return Err("files is empty".into());
-            }
             Ok(Some(files))
         }
         Some(_) => Err("files is an object of path -> text".into()),
+    }
+}
+
+/// `files` for check_mod and test_mod, which load what is given: not empty.
+fn files_to_load(args: &Json) -> Result<Option<Vec<(String, String)>>, String> {
+    match files_param(args)? {
+        Some(files) if files.is_empty() => Err("files is empty".into()),
+        files => Ok(files),
     }
 }
 
@@ -661,7 +699,18 @@ impl Server {
                         .collect();
                     names.sort();
                     names.dedup();
-                    out = names.into_iter().map(|id| json!({ "id": id })).collect();
+                    out = names
+                        .into_iter()
+                        .map(|id| {
+                            let folder = dir.join(&id);
+                            if folder.join("main.lua").is_file() {
+                                let files = crate::game::hstudio_modfiles::lua_files(&folder);
+                                json!({ "id": id, "kind": "module", "files": files })
+                            } else {
+                                json!({ "id": id, "kind": "script", "files": [] })
+                            }
+                        })
+                        .collect();
                 }
                 if let Ok(live) = self.live("mods", json!({})) {
                     for m in &mut out {
@@ -682,22 +731,34 @@ impl Server {
             "write_mod" => {
                 let id = str_arg(args, "id")?;
                 check_id(id)?;
-                let files = files_param(args)?.ok_or("missing 'files'")?;
+                let files = files_param(args)?.unwrap_or_default();
+                let remove = remove_param(args)?;
+                if files.is_empty() && remove.is_empty() {
+                    return Err("give 'files' to write, or 'remove': files of a module to delete".into());
+                }
                 let dir = dir()?;
+                // Checked as it will be on disk: a module's other files too.
+                let merged = merged_files(&dir, id, &files, &remove)?;
                 let check = check(&Source::Files {
                     id: id.to_owned(),
-                    files: files.clone(),
+                    files: merged,
                     libraries: Some(dir.clone()),
                 })
                 .map(|(r, _)| r)
                 .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
-                let path = write_mod(&dir, id, &files)?;
+                let path = if files.is_empty() {
+                    dir.join(id)
+                } else {
+                    write_mod(&dir, id, &files)?
+                };
+                let removed = remove_files(&dir, id, &remove)?;
                 let live = self
                     .live("reload", json!({ "id": id }))
                     .map(|mods| mods.as_array().and_then(|a| a.iter().find(|m| m["id"] == id)).cloned());
                 Ok(json!({
                     "ok": check["ok"] == true,
                     "written": path,
+                    "removed": removed,
                     "check": check,
                     "live": match live {
                         Ok(state) => state.unwrap_or(json!("not found in the game")),
@@ -722,12 +783,8 @@ impl Server {
             }
             "check_mod" => {
                 let id = str_arg(args, "id")?;
-                let source = match files_param(args)? {
-                    Some(files) => Source::Files {
-                        id: id.to_owned(),
-                        files,
-                        libraries: dir().ok(),
-                    },
+                let source = match files_to_load(args)? {
+                    Some(files) => given_files(id, files, dir().ok()),
                     None => Source::Installed {
                         mods_dir: dir()?,
                         id: id.to_owned(),
@@ -742,17 +799,13 @@ impl Server {
                     .and_then(Json::as_array)
                     .ok_or("missing 'steps' (a list)")?;
                 if args.get("live").and_then(Json::as_bool) == Some(true) {
-                    if let Some(files) = files_param(args)? {
+                    if let Some(files) = files_to_load(args)? {
                         write_mod(&dir()?, id, &files)?;
                     }
                     return self.live_test(id, steps);
                 }
-                let source = match files_param(args)? {
-                    Some(files) => Source::Files {
-                        id: id.to_owned(),
-                        files,
-                        libraries: dir().ok(),
-                    },
+                let source = match files_to_load(args)? {
+                    Some(files) => given_files(id, files, dir().ok()),
                     None => Source::Installed {
                         mods_dir: dir()?,
                         id: id.to_owned(),
@@ -1046,6 +1099,21 @@ impl Server {
             "steps": reports,
             "mod": mods.as_array().and_then(|a| a.iter().find(|m| m["id"] == id)).cloned(),
         }))
+    }
+}
+
+/// A mod given as text to check or test headless: for a module in the mods
+/// folder, the files given over its other files, as writing them would
+/// leave it.
+fn given_files(id: &str, files: Vec<(String, String)>, mods_dir: Option<PathBuf>) -> Source {
+    let files = mods_dir
+        .as_deref()
+        .and_then(|d| merged_files(d, id, &files, &[]).ok())
+        .unwrap_or(files);
+    Source::Files {
+        id: id.to_owned(),
+        files,
+        libraries: mods_dir,
     }
 }
 

@@ -86,6 +86,12 @@ name = "hstudio_sunc"
 source = "sunc.rs"
 
 [[module]]
+id = "modfiles"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_modfiles"
+source = "modfiles.rs"
+
+[[module]]
 id = "studio"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio"
@@ -96,6 +102,12 @@ id = "ui"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_ui"
 source = "ui.rs"
+
+[[module]]
+id = "menus"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_menus"
+source = "menus.rs"
 
 [[module]]
 id = "look"

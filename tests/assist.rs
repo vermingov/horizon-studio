@@ -1,10 +1,10 @@
 // Suggestions and the live check (hstudio_assist).
 
-use horizon_studio::game::hstudio_assist::{Kind, STDLIB, check, suggest};
+use horizon_studio::game::hstudio_assist::{Kind, STDLIB, Siblings, check, suggest};
 
 fn labels(before: &str, lines: &[&str], console: bool) -> Vec<String> {
     let lines: Vec<String> = lines.iter().map(|s| (*s).to_owned()).collect();
-    suggest(before, &lines, console)
+    suggest(before, &lines, console, None)
         .map(|(_, s)| s.into_iter().map(|x| x.label).collect())
         .unwrap_or_default()
 }
@@ -14,7 +14,7 @@ fn suggestions_fit_what_is_typed() {
     assert_eq!(labels("play", &[], false)[0], "player");
     let members = labels("player.po", &[], false);
     assert_eq!(&members[..2], ["pos", "pose"], "{members:?}");
-    let (start, s) = suggest("x = player.po", &[], false).unwrap();
+    let (start, s) = suggest("x = player.po", &[], false, None).unwrap();
     assert_eq!(start, "x = player.".len());
     assert!(s[0].detail.starts_with("player.pos("), "{:?}", s[0]);
     assert!(!s[0].doc.is_empty());
@@ -22,7 +22,7 @@ fn suggestions_fit_what_is_typed() {
     assert_eq!(labels("name:up", &[], false)[0], "upper");
     assert_eq!(labels("math.ra", &[], false)[..2], ["rad", "random"]);
     // Events inside on("...").
-    let (start, s) = suggest("on(\"ti", &[], false).unwrap();
+    let (start, s) = suggest("on(\"ti", &[], false, None).unwrap();
     assert_eq!((start, s[0].label.as_str(), s[0].kind), (4, "tick", Kind::Event));
     assert_eq!(labels("on('w", &[], false), ["world"]);
     // The file's own names; keywords in the editor, the console's functions in the console.
@@ -42,11 +42,27 @@ fn suggestions_fit_what_is_typed() {
 type Found = (usize, Option<(usize, usize)>, String, bool);
 
 fn problems(src: &str) -> Vec<Found> {
+    problems_in(src, None)
+}
+
+/// The problems of `src` as a file of a module (`module`), or of a script.
+fn problems_in(src: &str, module: Option<&Siblings>) -> Vec<Found> {
     let lines: Vec<String> = src.lines().map(str::to_owned).collect();
-    check(&lines, "m.lua")
+    check(&lines, "m.lua", module)
         .into_iter()
         .map(|p| (p.line, p.span, p.message, p.error))
         .collect()
+}
+
+/// A module whose open file is `file`, with these other files.
+fn module(file: &str, others: &[(&str, &str)]) -> Siblings {
+    Siblings {
+        file: file.to_owned(),
+        others: others
+            .iter()
+            .map(|(f, src)| ((*f).to_owned(), src.lines().map(str::to_owned).collect()))
+            .collect(),
+    }
 }
 
 #[test]
@@ -84,7 +100,7 @@ fn the_standard_library_matches_the_reference() {
 #[test]
 fn after_a_colon_the_receivers_own_methods() {
     // A library's functions: the ':' becomes the '.' they are called with.
-    let (start, s) = suggest("x = player:po", &[], false).unwrap();
+    let (start, s) = suggest("x = player:po", &[], false, None).unwrap();
     assert_eq!(start, "x = player".len(), "from the ':'");
     assert_eq!(s[0].label, "pos");
     assert_eq!(s[0].insert, ".pos");
@@ -130,4 +146,203 @@ fn after_a_colon_the_receivers_own_methods() {
     );
     // A name the file says nothing about may well be a string.
     assert_eq!(labels("name:up", &[], false)[0], "upper");
+}
+
+#[test]
+fn names_from_sibling_files_are_not_unknown() {
+    let main = "players.add('x')\nchat.shout('hi')\n";
+    let warned = |p: &[Found]| p.iter().any(|f| f.2.contains("did you mean player"));
+    assert!(warned(&problems_in(main, None)), "a script has no siblings");
+    let m = module(
+        "main.lua",
+        &[("players.lua", "players = {}\nfunction chat.shout(s) end\nreturn true\n")],
+    );
+    let p = problems_in(main, Some(&m));
+    assert!(!warned(&p), "{p:?}");
+    assert!(!p.iter().any(|f| f.2.contains("chat has no")), "{p:?}");
+    // A sibling's locals are its own.
+    let m = module("main.lua", &[("players.lua", "local players = {}\nreturn players\n")]);
+    assert!(warned(&problems_in(main, Some(&m))));
+    // Its names are suggested, saying where they come from.
+    let m = module("main.lua", &[("shared.lua", "settings = { loud = true }\n")]);
+    let lines: Vec<String> = vec!["sett".into()];
+    let (_, s) = suggest("sett", &lines, false, Some(&m)).unwrap();
+    let hit = s.iter().find(|x| x.label == "settings").expect("settings suggested");
+    assert_eq!(hit.doc, "in shared.lua");
+}
+
+#[test]
+fn requires_of_missing_files_are_problems() {
+    let m = module(
+        "main.lua",
+        &[("lib.lua", "return {}\n"), ("lib/util.lua", "return {}\n")],
+    );
+    let p = problems_in("local x = require('nope')\n", Some(&m));
+    assert_eq!(
+        p,
+        vec![(1, Some((18, 24)), "no nope.lua in this module".to_owned(), false)]
+    );
+    assert!(problems_in("local lib = require('lib')\nlocal u = require \"lib.util\"\n", Some(&m)).is_empty());
+    let p = problems_in("require('main')\n", Some(&m));
+    assert!(p[0].2.contains("a file can't require itself"), "{p:?}");
+    let lib = module("lib.lua", &[("main.lua", "")]);
+    let p = problems_in("require('main')\n", Some(&lib));
+    assert!(p[0].2.contains("main.lua starts the module"), "{p:?}");
+    let p = problems_in("require('../up')\n", Some(&m));
+    assert!(p[0].2.contains("bad module name"), "{p:?}");
+    let p = problems_in("local lib = require('lib')\n", None);
+    assert!(p[0].2.contains("require loads a module's files"), "{p:?}");
+    // Only literal names, outside strings and comments; Roblox's form is fine.
+    let quiet = "require(script.lib)\n-- require('nope')\nprint(\"require('nope')\")\n";
+    assert!(problems_in(quiet, Some(&m)).is_empty());
+    assert!(problems_in("require(script.lib)\n", None).is_empty());
+}
+
+#[test]
+fn require_suggests_the_modules_files() {
+    let m = module(
+        "main.lua",
+        &[
+            ("shared.lua", ""),
+            ("lib.lua", ""),
+            ("lib/util.lua", ""),
+            ("main.lua", ""),
+        ],
+    );
+    let before = "local s = require(\"sh";
+    let (start, s) = suggest(before, &[], false, Some(&m)).unwrap();
+    assert_eq!(start, "local s = require(\"".len());
+    assert_eq!(s[0].label, "shared");
+    assert_eq!(s[0].kind, Kind::Value);
+    assert_eq!(s[0].detail, "require(\"shared\")");
+    assert_eq!(s[0].doc, "shared.lua in this module");
+    let (_, s) = suggest("require('lib.u", &[], false, Some(&m)).unwrap();
+    assert_eq!(s[0].label, "lib.util");
+    let all: Vec<String> = suggest("require('", &[], false, Some(&m))
+        .unwrap()
+        .1
+        .into_iter()
+        .map(|x| x.label)
+        .collect();
+    assert!(!all.contains(&"main".to_owned()), "{all:?}");
+    // Not in a script, nor in another call's string.
+    assert!(suggest(before, &[], false, None).is_none());
+    assert!(suggest("print(\"sh", &[], false, Some(&m)).is_none());
+}
+
+#[test]
+fn a_required_files_members_are_suggested_and_checked() {
+    let lib = "local lib = {}\nfunction lib.greet(name) return name end\nfunction lib.stop() end\nlib.version = 2\nreturn lib\n";
+    let m = module("main.lua", &[("lib.lua", lib)]);
+    let file = ["local lib = require('lib')".to_owned(), "lib.".to_owned()];
+    let (_, s) = suggest("lib.", &file, false, Some(&m)).unwrap();
+    let names: Vec<&str> = s.iter().map(|x| x.label.as_str()).collect();
+    for want in ["greet", "stop", "version"] {
+        assert!(names.contains(&want), "{want} in {names:?}");
+    }
+    let greet = s.iter().find(|x| x.label == "greet").unwrap();
+    assert_eq!((greet.kind, greet.doc.as_str()), (Kind::Function, "in lib.lua"));
+    let src = "local lib = require('lib')\nprint(lib.gret('x'), lib.stop(), lib.whatever)\n";
+    assert_eq!(
+        problems_in(src, Some(&m)),
+        vec![(
+            2,
+            Some((10, 14)),
+            "lib.lua has no 'gret' (did you mean greet?)".to_owned(),
+            false
+        )]
+    );
+    // What the file itself adds to the table is known.
+    let adds = "local lib = require('lib')\nfunction lib.gree() end\nlib.gree()\n";
+    assert!(problems_in(adds, Some(&m)).is_empty());
+    // A table returned as a constructor.
+    let m = module(
+        "main.lua",
+        &[("cfg.lua", "return {\n  speed = 1,\n  go = function() end,\n}\n")],
+    );
+    let p = problems_in("local cfg = require('cfg')\nprint(cfg.sped)\n", Some(&m));
+    assert!(p[0].2.contains("cfg.lua has no 'sped' (did you mean speed?)"), "{p:?}");
+    // One made with setmetatable or filled by key can't be read: nothing is said.
+    let dynamic = "local lib = setmetatable({}, {})\nfunction lib.greet() end\nreturn lib\n";
+    let m = module("main.lua", &[("lib.lua", dynamic)]);
+    assert!(problems_in("local lib = require('lib')\nlib.gret()\n", Some(&m)).is_empty());
+}
+
+#[test]
+fn names_and_modules_under_the_cursor() {
+    use horizon_studio::game::hstudio_assist::{module_at, name_at};
+    let line = "local x = player.pos() + obj:m(1.5)";
+    let name = |col: usize| name_at(line, col).map(|(_, _, n)| n);
+    // As far as the part clicked: the table, or its member.
+    assert_eq!(name(line.find("player").unwrap() + 2).as_deref(), Some("player"));
+    assert_eq!(name(line.find("pos").unwrap() + 1).as_deref(), Some("player.pos"));
+    assert_eq!(
+        name(line.find("pos").unwrap() + 3).as_deref(),
+        Some("player.pos"),
+        "just after it"
+    );
+    assert_eq!(
+        name(line.find(":m").unwrap() + 1).as_deref(),
+        Some("obj.m"),
+        "':' read as '.'"
+    );
+    assert_eq!(name(line.find('x').unwrap()).as_deref(), Some("x"));
+    let (start, end, _) = name_at(line, line.find("pos").unwrap()).unwrap();
+    assert_eq!(&line[start..end], "player.pos");
+    // Not in strings or comments, nor on numbers or keywords.
+    assert_eq!(name(line.find("1.5").unwrap()), None);
+    assert_eq!(name(1), None, "local is a keyword");
+    let quoted = "print('player.pos') -- player.pos";
+    assert_eq!(name_at(quoted, 9), None);
+    assert_eq!(name_at(quoted, quoted.len() - 3), None);
+    // The string of an import or a require.
+    let imports = "local kit = import(\"uikit\")  local u = require('lib.util')";
+    assert_eq!(
+        module_at(imports, imports.find("uikit").unwrap()),
+        Some((true, "uikit".into()))
+    );
+    assert_eq!(
+        module_at(imports, imports.find("lib.util").unwrap() + 4),
+        Some((false, "lib.util".into()))
+    );
+    assert_eq!(module_at(imports, 2), None);
+    assert_eq!(module_at("print(\"uikit\")", 8), None);
+}
+
+#[test]
+fn definitions_are_found_in_the_file() {
+    use horizon_studio::game::hstudio_assist::{definition, documented};
+    let src = [
+        "local function greet(name, times)",
+        "  return name",
+        "end",
+        "function kit.shout(s) end",
+        "function obj:m() end",
+        "local a, b = 1, 2",
+        "for i, v in ipairs({}) do end",
+        "count = 0",
+        "kit.size = 3",
+        "if count == 1 then count = 2 end",
+        "local greet = 5",
+    ];
+    let lines: Vec<String> = src.iter().map(|s| (*s).to_owned()).collect();
+    let at = |name: &str, row: usize| definition(&lines, name, row, false).map(|(r, a, b)| (r, &lines[r][a..b]));
+    assert_eq!(at("greet", 3), Some((0, "greet")), "local function");
+    assert_eq!(at("times", 1), Some((0, "times")), "a parameter");
+    assert_eq!(at("kit.shout", 9), Some((3, "kit.shout")), "function t.f");
+    assert_eq!(at("obj.m", 9), Some((4, "obj:m")), "function t:m");
+    assert_eq!(at("b", 9), Some((5, "b")), "local a, b");
+    assert_eq!(at("v", 9), Some((6, "v")), "a for name");
+    assert_eq!(at("count", 9), Some((7, "count")), "a global assignment");
+    assert_eq!(at("kit.size", 9), Some((8, "kit.size")));
+    // The nearest above wins; with none above, the first below.
+    assert_eq!(at("greet", 10), Some((10, "greet")));
+    assert_eq!(at("count", 0), Some((7, "count")));
+    assert_eq!(at("nothing", 5), None);
+    // Another file of a module: only what it defines for all of it.
+    assert_eq!(definition(&lines, "a", 0, true), None, "a local");
+    assert_eq!(definition(&lines, "count", 0, true).map(|d| d.0), Some(7));
+    // The Docs have the API's functions and the console's.
+    assert!(documented("player.pos") && documented("help") && documented("on"));
+    assert!(!documented("player") && !documented("string.format") && !documented("greet"));
 }

@@ -386,6 +386,9 @@ pub struct AgentContext {
     /// "hello.lua" or "statue/main.lua".
     pub file: Option<String>,
     pub mods_dir: PathBuf,
+    /// The files of the module the open file is in, by their paths in it
+    /// (main.lua first); empty for a script.
+    pub files: Vec<String>,
     /// The text selected in the editor.
     pub selection: Option<String>,
     /// The editor's problems: "hello.lua:12: unexpected symbol near 'end'".
@@ -436,16 +439,21 @@ pub fn prompt(request: &str, ctx: &AgentContext) -> String {
          look with it to check what a mod draws.\n\n",
     );
     p += &format!(
-        "The mods folder is {}. A mod is a file <id>.lua or a folder <id>/ with main.lua and other files.\n",
+        "The mods folder is {}. A mod is a script (one file, <id>.lua) or a module (a folder <id>/ whose \
+         main.lua requires its other files: write_mod with some of a module's files changes only those, and its \
+         remove deletes files).\n",
         ctx.mods_dir.display()
     );
     match ctx.file.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
         Some(file) => {
+            let id = mod_of(file);
             p += &format!(
-                "The editor has {file} open ({}): mod id \"{}\".\n",
+                "The editor has {file} open ({}): mod id \"{id}\".\n",
                 ctx.mods_dir.join(file).display(),
-                mod_of(file)
             );
+            if !ctx.files.is_empty() {
+                p += &format!("{file} is a file of the module {id}: {}.\n", ctx.files.join(", "));
+            }
         }
         None => p += "No mod file is open in the editor.\n",
     }

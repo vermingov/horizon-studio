@@ -962,6 +962,10 @@ fn map_key(code: KeyCode) -> Key {
         KeyCode::PageUp => Key::PageUp,
         KeyCode::PageDown => Key::PageDown,
         KeyCode::Slash | KeyCode::NumpadDivide => Key::Char('/'),
+        // Ctrl+Space suggests and Ctrl+` shows the panel; Space is also typed text.
+        KeyCode::Space => Key::Char(' '),
+        KeyCode::Backquote => Key::Char('`'),
+        KeyCode::ContextMenu => Key::Menu,
         other => {
             // KeyA..KeyZ and Digit0..Digit9, by their names.
             let name = format!("{other:?}");
@@ -1019,11 +1023,14 @@ pub(super) fn window_input(event: &mut WindowEvent) {
         return;
     }
     let mods = MODS.with(Cell::get);
+    // Shift+F10 is the Menu key's twin (the game keeps F10 itself).
+    let menu_key = |code: KeyCode| code == KeyCode::F10 && mods.shift && !is_open_key(code);
     let inputs: Vec<Input> = match &*event {
         WindowEvent::KeyboardInput { event: k, .. } => {
             let down = k.state == ElementState::Pressed;
             let key = match k.physical_key {
                 PhysicalKey::Code(code) if is_open_key(code) => Key::Toggle,
+                PhysicalKey::Code(code) if menu_key(code) => Key::Menu,
                 PhysicalKey::Code(code) => map_key(code),
                 _ => Key::Other,
             };
@@ -1047,10 +1054,17 @@ pub(super) fn window_input(event: &mut WindowEvent) {
             }
             v
         }
-        WindowEvent::MouseInput { state, button, .. } => vec![Input::Button {
-            left: *button == MouseButton::Left,
-            down: *state == ElementState::Pressed,
-        }],
+        // The left and right buttons, and the middle one for script screens;
+        // the others (back, forward) reach neither the studio nor the game.
+        WindowEvent::MouseInput { state, button, .. } => {
+            let down = *state == ElementState::Pressed;
+            match button {
+                MouseButton::Left => vec![Input::Button { left: true, down }],
+                MouseButton::Right => vec![Input::Button { left: false, down }],
+                MouseButton::Middle => vec![Input::Middle { down }],
+                _ => Vec::new(),
+            }
+        }
         WindowEvent::MouseWheel { delta, .. } => {
             let steps = match delta {
                 MouseScrollDelta::LineDelta(_, y) => *y,
@@ -1066,9 +1080,9 @@ pub(super) fn window_input(event: &mut WindowEvent) {
         _ => return,
     };
     // The game keeps the pointer and its own function keys (fullscreen,
-    // screenshots, the debug screen).
+    // screenshots, the debug screen), but for Shift+F10.
     let function_key = matches!(event, WindowEvent::KeyboardInput { event: k, .. }
-        if matches!(k.physical_key, PhysicalKey::Code(code) if is_function_key(code) && !is_open_key(code)));
+        if matches!(k.physical_key, PhysicalKey::Code(code) if is_function_key(code) && !is_open_key(code) && !menu_key(code)));
     if function_key {
         return;
     }

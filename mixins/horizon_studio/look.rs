@@ -9,7 +9,7 @@ use super::hstudio::{API, CONSOLE_API, Font, GameApi, LogKind, ModState, Studio}
 use super::hstudio_examples::EXAMPLES;
 use super::hstudio_theme::{ACCENTS, Layout, Look, Palette, THEMES};
 use super::hstudio_ui::{
-    Action, EditorView, LineEdit, Long, Panel, Tab, Tint, Ui, field, field_num, field_text, highlight, kind,
+    Action, EditorView, LineEdit, Long, Panel, Spot, Tab, Tint, Ui, field, field_num, field_text, highlight, kind,
     slider_text, widgets,
 };
 
@@ -100,6 +100,36 @@ pub(super) fn on(c: u32) -> u32 {
     } else {
         0xFFFF_FFFF
     }
+}
+
+/// A colour's relative luminance, as WCAG measures it (its alpha left out).
+fn luminance(c: u32) -> f32 {
+    let lin = |s: u32| {
+        let v = ((c >> s) & 0xFF) as f32 / 255.0;
+        if v <= 0.040_45 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(16) + 0.7152 * lin(8) + 0.0722 * lin(0)
+}
+
+/// How well two colours read on each other: WCAG's contrast ratio, 1 to 21.
+pub(super) fn contrast(a: u32, b: u32) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// `c` as text on `bg`: as it is when it reads there at `ratio` (WCAG's
+/// 4.5 for text), else moved toward what reads best on `bg` (black or
+/// white) until it does.
+pub(super) fn legible(c: u32, bg: u32, ratio: f32) -> u32 {
+    let best = on(bg);
+    (0..=10)
+        .map(|k| mix(c, best, k as f32 / 10.0))
+        .find(|&t| contrast(t, bg) >= ratio)
+        .unwrap_or(best)
 }
 
 /// Warnings' amber, the same in every theme (some themes' numbers are
@@ -456,16 +486,32 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
     let (w, h) = (dw / s, dh / s);
     // Back after a while (opened again): nothing glides from before.
     let fresh = now - st.s.ui.last_draw > 0.25;
+    // Back since the last frame (opened again, or from a script's screen):
+    // what the left button held then has ended, its release gone elsewhere.
+    if st.s.ui.opened_at > st.s.ui.last_draw {
+        super::hstudio_ui::let_go(st);
+    }
     let dt = {
         let ui = &mut st.s.ui;
+        // A menu left open goes when the studio opens again (or comes back
+        // from a script's screen).
+        if ui.menu.as_ref().is_some_and(|m| m.opened_at < ui.opened_at) {
+            ui.menu = None;
+        }
         ui.dp = k;
         ui.screen = (w, h);
         ui.hits.clear();
         ui.text_rows.clear();
         ui.text_areas.clear();
         ui.view = None;
+        ui.caret_at = None;
+        ui.scripts_at = None;
+        ui.library_dots = None;
+        ui.drawn_files.clear();
         tick(ui, now)
     };
+    // The hits name mods by their place in this list.
+    st.s.ui.drawn_mods = st.s.mods.iter().map(|m| m.id.clone()).collect();
     // The open file changed on disk (an agent wrote it): read it again.
     if now - st.s.ui.disk_at >= 0.5 {
         st.s.ui.disk_at = now;
@@ -512,48 +558,139 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         studio_page(st, &mut p, [x0, 24.0, cw, h - 48.0], dt, false);
     }
     if st.s.ui.menu.is_some() {
+        // In the executor styles, in the studio's own colours (as its
+        // dialogs are): theirs are a title bar's and a button's.
+        if look.theme().layout != Layout::Studio {
+            use_look(&look, true);
+        }
         p.dy = 0.0;
         draw_menu(st, &mut p, w, h, dt);
     }
     if let Some(name) = st.s.ui.naming.clone() {
         use_look(&look, true);
         p.dy = 0.0;
-        naming(st, &mut p, &name, w, h);
+        naming(st, &mut p, &name, w, h, dt);
+    }
+    if st.s.ui.notice.is_some() {
+        use_look(&look, true);
+        p.dy = 0.0;
+        notice(st, &mut p, w, h);
     }
 }
 
+/// What a menu's item just did ("Copied 42 characters"), at the bottom of
+/// the studio a moment: the HUD's toast is not drawn while it is open.
+fn notice(st: &mut Studio, p: &mut P, w: f32, h: f32) {
+    let now = st.s.now;
+    let Some((text, at)) = st.s.ui.notice.clone() else {
+        return;
+    };
+    if now - at > TOAST_SECS || now < at {
+        st.s.ui.notice = None;
+        return;
+    }
+    let arrive = progress(now, at, MOVE);
+    let leave = 1.0 - progress(now, at + TOAST_SECS - 0.3, QUICK);
+    let (a, dy) = (p.alpha, p.dy);
+    p.alpha = a * arrive * leave;
+    p.dy = (1.0 - arrive) * RISE;
+    let text = p.fit(&text, w - 80.0, 13.0, Font::Regular);
+    let tw = p.measure(&text, 13.0, Font::Regular);
+    let r = [((w - tw) / 2.0 - 28.0).floor(), (h - 92.0).floor(), tw + 46.0, 36.0];
+    p.rect(r, 18.0, pal().surface);
+    p.border(r, 18.0, pal().rule);
+    p.rect([r[0] + 16.0, r[1] + 15.0, 6.0, 6.0], 3.0, pal().accent);
+    p.text(
+        &text,
+        r[0] + 30.0,
+        top(r[1] + 18.0, 13.0),
+        13.0,
+        Font::Regular,
+        pal().ink,
+    );
+    p.alpha = a;
+    p.dy = dy;
+}
+
 /// The open menu: its items in a plate at its place, kept on the screen
-/// (opening upward where there is no room below). The row under the
-/// pointer or the keys is lit; the current choice has a dot; a hint (a
-/// shortcut) sits at the right. Clicks between its rows go nowhere.
+/// (opening upward where there is no room below, or as low as it fits).
+/// Its rows shrink to fit the screen, and a menu taller than that still
+/// shows what fits from its scroll on, with marks for the rest. One row is
+/// lit, the one the keys or the pointer are on; the current choice has a
+/// dot, a hint (a shortcut, or "›") sits at the right, and an item that
+/// deletes is in the danger colour, each kept readable on its row. The row
+/// the menu is for is outlined. Clicks between its rows go nowhere.
 fn draw_menu(st: &mut Studio, p: &mut P, w: f32, h: f32, dt: f32) {
-    const ROW: f32 = 26.0;
     const SEP: f32 = 9.0;
     const PAD: f32 = 5.0;
+    const MARK: f32 = 14.0;
     let now = st.s.now;
-    let Some(menu) = st.s.ui.menu.clone() else { return };
+    let Some(mut menu) = st.s.ui.menu.clone() else { return };
+    let n = menu.items.len();
+    if n == 0 {
+        st.s.ui.menu = None;
+        return;
+    }
+    menu.sel = menu.sel.filter(|&s| s < n);
     let size = 12.5;
-    let mut mw: f32 = 168.0;
-    let mut mh = 2.0 * PAD;
-    for it in &menu.items {
-        if it.separator {
-            mh += SEP;
-            continue;
-        }
-        let hint = if it.hint.is_empty() {
+    let room = (h - 16.0).max(60.0);
+    let seps = menu.items.iter().filter(|i| i.separator).count();
+    let rows = (n - seps).max(1);
+    let row = ((room - 2.0 * PAD - seps as f32 * SEP) / rows as f32)
+        .floor()
+        .clamp(20.0, 26.0);
+    let item_h = |i: usize| if menu.items[i].separator { SEP } else { row };
+    // A label starts 26 in, and a hint ends 10 from the right, 18 after it.
+    let hint_w = |p: &mut P, hint: &str| {
+        if hint.is_empty() {
             0.0
         } else {
-            p.measure(&it.hint, 11.5, Font::Mono) + 18.0
-        };
-        mw = mw.max(p.measure(&it.label, size, Font::Regular) + hint + 46.0);
-        mh += ROW;
+            p.measure(hint, 11.5, Font::Mono) + 18.0
+        }
+    };
+    let mut mw: f32 = 168.0;
+    for it in menu.items.iter().filter(|i| !i.separator) {
+        let hint = hint_w(p, &it.hint);
+        mw = mw.max(p.measure(&it.label, size, Font::Regular) + hint + 2.0 * PAD + 36.0);
     }
     let mw = mw.min(w - 16.0);
+    // What shows: everything, or from its scroll as much as fits, the lit
+    // item always among it.
+    let total = 2.0 * PAD + (0..n).map(item_h).sum::<f32>();
+    let (first, end) = if total <= room {
+        (0, n)
+    } else {
+        let end_from = |first: usize| {
+            let mut used = 2.0 * PAD + 2.0 * MARK;
+            let mut j = first;
+            while j < n && used + item_h(j) <= room {
+                used += item_h(j);
+                j += 1;
+            }
+            j.max(first + 1)
+        };
+        let mut first = menu.scroll.min(n - 1);
+        if let Some(s) = menu.sel {
+            first = first.min(s);
+        }
+        while menu.sel.is_some_and(|s| s >= end_from(first)) {
+            first += 1;
+        }
+        // Scrolled past the end, it shows as many as fit there.
+        while first > 0 && end_from(first - 1) == n {
+            first -= 1;
+        }
+        (first, end_from(first))
+    };
+    let scrolls = (first, end) != (0, n);
+    let mh = 2.0 * PAD + (first..end).map(item_h).sum::<f32>() + if scrolls { 2.0 * MARK } else { 0.0 };
     let mut x = menu.at[0].min(w - mw - 8.0).max(8.0);
     let mut y = menu.at[1];
     if y + mh > h - 8.0 {
-        // Above where it was asked for: over the chip that opened it, or the pointer.
-        y = (menu.at[1] - mh - 8.0 - st.s.ui.model_chip.map_or(0.0, |c| c[3])).max(8.0);
+        // Above where it was asked for (over what opened it, or the
+        // pointer), or else as low as it fits.
+        let above = menu.at[1] - mh - 8.0 - menu.anchor_h;
+        y = if above >= 8.0 { above } else { (h - 8.0 - mh).max(8.0) };
     }
     x = x.floor();
     y = y.floor();
@@ -562,50 +699,86 @@ fn draw_menu(st: &mut Studio, p: &mut P, w: f32, h: f32, dt: f32) {
     let (a, dy) = (p.alpha, p.dy);
     p.alpha = a * arrive;
     p.dy = dy + (1.0 - arrive) * -4.0;
+    if let Some(t) = menu.target {
+        p.border(t, 8.0, fade(pal().accent, 0.7));
+    }
+    let plate = pal().surface;
+    let lit = mix(plate, pal().accent, 0.18);
     p.rect([x + 1.0, y + 3.0, mw, mh], 10.0, fade(0xFF00_0000, 0.25));
-    p.rect(rect, 10.0, pal().surface);
+    p.rect(rect, 10.0, plate);
     p.border(rect, 10.0, pal().rule);
     st.s.ui.hits.push((rect, Action::Block));
     let mut ry = y + PAD;
-    for (i, it) in menu.items.iter().enumerate() {
+    if scrolls {
+        // A mark that there is more above, and below.
+        let c = legible(pal().muted, plate, 3.0);
+        let cx = x + mw / 2.0;
+        for k in 0..4 {
+            let f = k as f32;
+            if first > 0 {
+                p.rect([cx - f, ry + 4.0 + f, 1.0 + 2.0 * f, 1.0], 0.0, c);
+            }
+            if end < n {
+                p.rect(
+                    [cx - 3.0 + f, y + mh - PAD - MARK + 6.0 + f, 7.0 - 2.0 * f, 1.0],
+                    0.0,
+                    c,
+                );
+            }
+        }
+        ry += MARK;
+    }
+    for i in first..end {
+        let it = &menu.items[i];
         if it.separator {
             p.rect([x + 10.0, ry + SEP / 2.0, mw - 20.0, 1.0], 0.0, pal().rule);
             ry += SEP;
             continue;
         }
-        let r = [x + PAD, ry, mw - 2.0 * PAD, ROW];
+        let r = [x + PAD, ry, mw - 2.0 * PAD, row];
         let ui = &mut st.s.ui;
-        let over = it.enabled && inside(r, ui.mouse);
-        let hv = hover(ui, id("menu-row", i), over || menu.sel == Some(i), dt);
-        if it.enabled && hv > 0.01 {
-            p.rect(r, 7.0, fade(pal().accent, 0.18 * hv));
-        }
+        let hv = hover(ui, id("menu-row", i), it.enabled && menu.sel == Some(i), dt);
+        let bg = if hv > 0.01 {
+            let bg = mix(plate, lit, hv);
+            p.rect(r, 7.0, bg);
+            bg
+        } else {
+            plate
+        };
         if it.checked {
-            p.rect([r[0] + 10.0, ry + ROW / 2.0 - 3.0, 6.0, 6.0], 3.0, pal().accent);
+            p.rect([r[0] + 10.0, ry + row / 2.0 - 3.0, 6.0, 6.0], 3.0, pal().accent);
         }
-        let c = if it.enabled { pal().ink } else { pal().muted };
-        let label = p.fit(&it.label, r[2] - 40.0, size, Font::Regular);
-        p.text(&label, r[0] + 26.0, top(ry + ROW / 2.0, size), size, Font::Regular, c);
+        let c = match (it.enabled, it.danger) {
+            (false, _) => legible(pal().muted, bg, 3.0),
+            (true, true) => legible(pal().danger, bg, 4.5),
+            (true, false) => legible(pal().ink, bg, 4.5),
+        };
+        let room = r[2] - 36.0 - hint_w(p, &it.hint) + 0.5;
+        let label = p.fit(&it.label, room, size, Font::Regular);
+        p.text(&label, r[0] + 26.0, top(ry + row / 2.0, size), size, Font::Regular, c);
         if !it.hint.is_empty() {
             let hw = p.measure(&it.hint, 11.5, Font::Mono);
             p.text(
                 &it.hint,
                 r[0] + r[2] - 10.0 - hw,
-                top(ry + ROW / 2.0, 11.5),
+                top(ry + row / 2.0, 11.5),
                 11.5,
                 Font::Mono,
-                pal().muted,
+                legible(pal().muted, bg, 3.0),
             );
         }
         if it.enabled {
             ui.hits.push((r, Action::MenuPick(i.min(255) as u8)));
         }
-        ry += ROW;
+        ry += row;
     }
     p.alpha = a;
     p.dy = dy;
     if let Some(m) = st.s.ui.menu.as_mut() {
         m.rect = Some(rect);
+        m.sel = menu.sel;
+        m.scroll = first;
+        m.shown = (first, end);
     }
 }
 
@@ -743,6 +916,8 @@ fn window(st: &mut Studio, p: &mut P, r: [f32; 4], c: Chrome, dt: f32) -> Option
         }
         ui.hits.push((b, action));
     }
+    // A right click on the title bar opens the window's menu, as Windows' does.
+    ui.hits.push(([x, y, w, TITLE], Action::Spot(Spot::Window)));
     p.border([x, y, w, h], 0.0, c.edge);
     set_pal(Palette { round, ..pal() });
     // (The eased value is a hair off 0 at rest.)
@@ -821,6 +996,8 @@ fn header(st: &mut Studio, p: &mut P, x: f32, y: f32, w: f32, dt: f32, windowed:
         p.text(label, r[0] + 14.0, top(y + 16.0, 13.0), 13.0, Font::Medium, c);
         ui.hits.push((r, Action::Tab(tab)));
     }
+    // A right click anywhere on the header opens the window's menu.
+    ui.hits.push(([x, y, w, 32.0], Action::Spot(Spot::Window)));
     // Close, at the right.
     let mut right = x + w;
     if !windowed {
@@ -877,7 +1054,10 @@ fn header(st: &mut Studio, p: &mut P, x: f32, y: f32, w: f32, dt: f32, windowed:
 }
 
 fn footer(st: &mut Studio, p: &mut P, x: f32, cy: f32, w: f32) {
+    let menu: &[(&str, &str)] = &[("↑ ↓", "choose"), ("⏎", "do it"), ("Esc", "close")];
     let hints: &[(&str, &str)] = match st.s.ui.tab {
+        // An open menu has the keys.
+        _ if st.s.ui.menu.is_some() => menu,
         Tab::Console => &[
             ("⏎", "run"),
             ("↑ ↓", "history"),
@@ -902,7 +1082,13 @@ fn footer(st: &mut Studio, p: &mut P, x: f32, cy: f32, w: f32) {
             ("Ctrl Z", "undo"),
             ("Ctrl /", "comment"),
         ],
-        Tab::Library => &[("⏎", "edit"), ("Space", "on or off"), ("R", "reload"), ("N", "new mod")],
+        Tab::Library => &[
+            ("⏎", "edit"),
+            ("Space", "on or off"),
+            ("R", "reload"),
+            ("N", "new mod"),
+            (".", "menu"),
+        ],
         Tab::Docs => &[("↑ ↓", "scroll"), ("PgUp PgDn", "page")],
         Tab::Settings => &[("↑ ↓", "scroll"), ("Esc", "close")],
     };
@@ -985,6 +1171,9 @@ fn draw_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let f = [x + 10.0, y + h - 10.0 - field_h, w - 20.0, field_h];
     p.rect(f, 12.0, pal().page);
     p.border(f, 12.0, fade(pal().accent, 0.45));
+    st.s.ui
+        .hits
+        .push((f, Action::Spot(Spot::Field(super::hstudio_ui::FIELD_CONSOLE))));
     let cy = f[1] + field_h / 2.0;
     p.text("›", f[0] + 16.0, top(cy, 16.0), 16.0, Font::Mono, pal().accent);
     let input = st.s.ui.input.clone();
@@ -1046,6 +1235,9 @@ pub(super) fn draw_log(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], scrol
     let need = rows + scroll + 2;
     let text_w = w - 20.0;
     st.s.ui.text_areas.push((super::hstudio_ui::AREA_LOG, [x, y, w, h]));
+    st.s.ui
+        .hits
+        .push(([x, y, w, h], Action::Spot(Spot::Text(super::hstudio_ui::AREA_LOG))));
     // Each piece with its line's number (log_seq counts every line written) and place, for selecting.
     let mut shown: Vec<LogRow> = Vec::new();
     let newest = st.s.log_seq;
@@ -1153,6 +1345,7 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let tmax = (w * 0.45).max(80.0);
     let title = p.fit(&title, tmax, 15.0, Font::Medium);
     let tw = p.text(&title, x, top(y + 16.0, 15.0), 15.0, Font::Medium, pal().ink);
+    st.s.ui.hits.push(([x, y, tw + 22.0, 32.0], Action::Spot(Spot::File)));
     let dirty = glide(&mut st.s.ui, id("dirty", 0), st.s.editor.dirty, dt);
     if dirty > 0.01 {
         let d = 7.0 * dirty;
@@ -1226,6 +1419,10 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         ui.hits.push((chip, Action::PanelTab(Panel::Problems)));
         px += cw + 14.0;
     }
+    let chip = failed_chip(st, p, px - 8.0, y + 4.0, bx - 16.0, dt);
+    if chip > 0.0 {
+        px += chip + 6.0;
+    }
     if let Some(problem) = st.s.editor.problem.clone() {
         let msg = p.fit(
             &format!("Could not read the file: {problem}"),
@@ -1288,10 +1485,92 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     }
 }
 
-/// The script list beside the code: the scratch file, then every script mod
-/// (its state's dot); a click opens one, + starts a new one.
+/// When the module of the editor's file failed in another of its files:
+/// that file's path, and what its chip says ("Failed in lib.lua:5").
+fn failed_elsewhere(st: &Studio) -> Option<(std::path::PathBuf, String)> {
+    let i = st.s.editor.path.as_deref().and_then(|path| st.mod_of_path(path))?;
+    let m = &st.s.mods[i];
+    let folder = m.folder.as_deref()?;
+    let (file, line) = st.failure_place(i)?;
+    if !m.files().contains(&file) || m.chunk_of(&file) == st.s.editor.title {
+        return None;
+    }
+    Some((
+        super::hstudio_modfiles::path_in(folder, &file),
+        format!("Failed in {file}:{line}"),
+    ))
+}
+
+/// How wide the Failed in chip is, when there is one to draw.
+pub(super) fn failed_chip_width(st: &Studio, p: &mut P) -> Option<f32> {
+    let (_, label) = failed_elsewhere(st)?;
+    Some(p.measure(&label, 12.0, Font::Medium) + 34.0)
+}
+
+/// Where the module of the editor's file failed, when that is another of
+/// its files: "Failed in lib.lua:5", a chip 24 high at (x, y) that a click
+/// opens there, drawn when it ends before `right`. Returns its width (0
+/// when it isn't drawn). Every layout has it by its editor.
+pub(super) fn failed_chip(st: &mut Studio, p: &mut P, x: f32, y: f32, right: f32, dt: f32) -> f32 {
+    let Some((path, label)) = failed_elsewhere(st) else {
+        return 0.0;
+    };
+    let lw = p.measure(&label, 12.0, Font::Medium);
+    let chip = [x, y, lw + 34.0, 24.0];
+    if chip[0] + chip[2] >= right {
+        return 0.0;
+    }
+    let ui = &mut st.s.ui;
+    let hv = hover(ui, id("failed-chip", 0), inside(chip, ui.mouse), dt);
+    p.rect(chip, 12.0, fade(pal().danger, 0.12 + 0.08 * hv));
+    p.rect([x + 8.0, y + 8.5, 7.0, 7.0], 3.5, pal().danger);
+    p.text(&label, x + 22.0, top(y + 12.0, 12.0), 12.0, Font::Medium, pal().danger);
+    edit_file_hit(ui, chip, path);
+    chip[2]
+}
+
+/// A click in `r` that opens `path`, a file of a mod (`Action::EditFile`).
+pub(super) fn edit_file_hit(ui: &mut super::hstudio_ui::Ui, r: [f32; 4], path: std::path::PathBuf) {
+    let k = ui.drawn_files.len().min(65535) as u16;
+    ui.drawn_files.push(path);
+    ui.hits.push((r, Action::EditFile(k)));
+}
+
+/// A small filled triangle of 1 dp rects in a 7 x 7 box at (x, y),
+/// pointing down for an open folder, right for a folded one.
+pub(super) fn chevron(p: &mut P, x: f32, y: f32, open: bool, c: u32) {
+    for i in 0..4 {
+        let f = i as f32;
+        if open {
+            p.rect([x + f, y + 1.5 + f, 7.0 - 2.0 * f, 1.0], 0.0, c);
+        } else {
+            p.rect([x + 1.5 + f, y + f, 1.0, 7.0 - 2.0 * f], 0.0, c);
+        }
+    }
+}
+
+/// A mod's state as its dot's colour.
+pub(super) fn state_dot(state: &ModState) -> u32 {
+    match state {
+        ModState::Running => pal().success,
+        ModState::Failed(..) => pal().danger,
+        ModState::Off => pal().muted,
+    }
+}
+
+/// The script list beside the code, as VS Code's explorer: the scratch
+/// file, then each mod with its state's dot, a script as one row and a
+/// module as a folder that folds, its files under it. A click opens a file
+/// or folds a module; the row under the pointer (and the open one) shows
+/// "..." for its menu, which a right press opens too, and a module's row
+/// has a "+" for a new file of it. The "+" at the top makes a script or a
+/// module. The wheel scrolls it, and it brings the open file's row into
+/// view.
 fn draw_scripts(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
+    use super::hstudio_ui::{ScriptRow, open_row, row_label, script_rows, scripts_first};
     p.rect([x, y, w, h], 14.0, pal().plate_soft);
+    // Its own menu, under its rows' and its buttons.
+    st.s.ui.hits.push(([x, y, w, h], Action::Spot(Spot::Scripts)));
     p.text(
         "Scripts",
         x + 14.0,
@@ -1314,75 +1593,95 @@ fn draw_scripts(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             Font::Medium,
             mix(pal().muted, pal().ink, hv),
         );
-        ui.hits.push((plus, Action::NewMod));
+        ui.hits.push((plus, Action::NewMenu));
+        ui.new_button = Some(plus);
     }
     let row_h = 26.0;
     let list_y = y + 36.0;
     let rows = (((h - 44.0) / row_h).floor() as usize).max(1);
-    let open_path = st.s.editor.path.clone();
-    let scratch = st.scratch_path();
-    // Row 0 is the scratch file, row k + 1 is mod k.
-    let total = st.s.mods.len() + 1;
-    let open_row = if open_path.as_ref() == Some(&scratch) {
-        Some(0)
-    } else {
-        st.s.mods
-            .iter()
-            .position(|m| Some(&m.main) == open_path.as_ref())
-            .map(|i| i + 1)
-    };
-    let first = open_row
-        .unwrap_or(0)
-        .saturating_sub(rows - 1)
-        .min(total.saturating_sub(rows));
-    for (k, row) in (first..total).take(rows).enumerate() {
-        let r = [x + 6.0, list_y + row_h * k as f32, w - 12.0, row_h - 2.0];
+    let all = script_rows(st);
+    let open = open_row(st, &all);
+    let first = scripts_first(st, all.len(), rows, open);
+    st.s.ui.scripts_at = Some([x, list_y, w, row_h * rows as f32]);
+    for (k, row) in all.iter().enumerate().skip(first).take(rows) {
+        let r = [x + 6.0, list_y + row_h * (k - first) as f32, w - 12.0, row_h - 2.0];
+        let label = row_label(st, row);
         let ui = &mut st.s.ui;
-        let hv = hover(ui, id("scripts-row", row), inside(r, ui.mouse), dt);
-        let on = open_row == Some(row);
+        let over = inside(r, ui.mouse);
+        let hv = hover(ui, id(&label, k), over, dt);
+        let on = open == Some(k);
         let bg = if on {
             fade(pal().accent, 0.16)
         } else {
             fade(pal().ink, 0.06 * hv)
         };
         p.rect(r, 8.0, bg);
-        let (name, dot, fg, action) = if row == 0 {
-            (
-                "scratch.lua".to_owned(),
-                pal().muted,
-                pal().ink_soft,
-                Action::EditScratch,
-            )
-        } else {
-            let m = &st.s.mods[row - 1];
-            let dot = match m.state {
-                ModState::Running => pal().success,
-                ModState::Failed(..) => pal().danger,
-                ModState::Off => pal().muted,
-            };
-            let fg = if m.enabled { pal().ink_soft } else { pal().muted };
-            (m.chunk(), dot, fg, Action::Edit(row - 1))
+        let cy = r[1] + r[3] / 2.0;
+        let (enabled, state) = match row {
+            ScriptRow::Scratch => (true, None),
+            ScriptRow::Script { i, .. } | ScriptRow::Module { i, .. } | ScriptRow::File { i, .. } => {
+                st.s.mods
+                    .get(*i)
+                    .map_or((true, None), |m| (m.enabled, Some(m.state.clone())))
+            }
         };
-        p.rect([r[0] + 10.0, r[1] + r[3] / 2.0 - 3.0, 6.0, 6.0], 3.0, dot);
-        let name = p.fit(&name, r[2] - 32.0, 12.5, Font::Regular);
-        let fg = if on { pal().ink } else { mix(fg, pal().ink, hv) };
-        p.text(
-            &name,
-            r[0] + 24.0,
-            top(r[1] + r[3] / 2.0, 12.5),
-            12.5,
-            Font::Regular,
-            fg,
-        );
-        if on && st.s.editor.dirty {
-            p.rect(
-                [r[0] + r[2] - 14.0, r[1] + r[3] / 2.0 - 3.0, 6.0, 6.0],
-                3.0,
-                pal().accent,
-            );
+        let fg = if enabled { pal().ink_soft } else { pal().muted };
+        let tx = match row {
+            ScriptRow::Scratch | ScriptRow::Script { .. } => {
+                let dot = state.as_ref().map_or(pal().muted, state_dot);
+                p.rect([r[0] + 10.0, cy - 3.0, 6.0, 6.0], 3.0, dot);
+                r[0] + 24.0
+            }
+            ScriptRow::Module { open: unfolded, .. } => {
+                chevron(p, r[0] + 7.0, cy - 3.5, *unfolded, mix(pal().muted, pal().ink, hv));
+                let dot = state.as_ref().map_or(pal().muted, state_dot);
+                p.rect([r[0] + 19.0, cy - 3.0, 6.0, 6.0], 3.0, dot);
+                r[0] + 31.0
+            }
+            // A module's files, under its name.
+            ScriptRow::File { .. } => r[0] + 38.0,
+        };
+        // Its buttons at the right, under the pointer and on the open row.
+        let mut bx = r[0] + r[2];
+        let mut buttons: Vec<([f32; 4], &str, Action)> = Vec::new();
+        if (over || on) && !matches!(row, ScriptRow::Scratch) {
+            bx -= 22.0;
+            buttons.push((
+                [bx, r[1] + 2.0, 20.0, r[3] - 4.0],
+                "...",
+                Action::ScriptMenu(k.min(65535) as u16),
+            ));
+            if let ScriptRow::Module { i, .. } = row {
+                bx -= 20.0;
+                buttons.push(([bx, r[1] + 2.0, 20.0, r[3] - 4.0], "+", Action::NewFileIn(*i)));
+            }
         }
-        st.s.ui.hits.push((r, action));
+        if on && st.s.editor.dirty {
+            bx -= 12.0;
+            p.rect([bx, cy - 3.0, 6.0, 6.0], 3.0, pal().accent);
+        }
+        let name = p.fit(&label, (bx - tx - 6.0).max(12.0), 12.5, Font::Regular);
+        let fg = if on { pal().ink } else { mix(fg, pal().ink, hv) };
+        p.text(&name, tx, top(cy, 12.5), 12.5, Font::Regular, fg);
+        let ui = &mut st.s.ui;
+        ui.hits.push((r, Action::ScriptRow(k.min(65535) as u16)));
+        ui.hits.push((r, Action::Spot(Spot::Row(k.min(65535) as u16))));
+        for (b, glyph, action) in buttons {
+            let bh = hover(ui, id(glyph, k), inside(b, ui.mouse), dt);
+            p.rect(b, 6.0, fade(pal().ink, 0.10 * bh));
+            let gw = p.measure(glyph, 12.5, Font::Medium);
+            p.text(
+                glyph,
+                b[0] + (b[2] - gw) / 2.0,
+                top(cy, 12.5),
+                12.5,
+                Font::Medium,
+                mix(pal().muted, pal().ink, bh),
+            );
+            ui.hits.push((b, action));
+        }
     }
+    st.s.ui.script_rows = all;
 }
 
 /// How many of `problems` are errors, and how many warnings.
@@ -1399,6 +1698,8 @@ fn draw_panel(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     p.rect([x, y, w, h], 14.0, pal().plate_soft);
     p.border([x, y, w, h], 14.0, fade(pal().accent, 0.35 * focus));
     ui.hits.push(([x, y, w, h], Action::FocusPanel));
+    // The tab shown's menu, under what its tab's content marks.
+    ui.hits.push(([x, y, w, h], Action::Spot(Spot::Panel(ui.panel))));
     let (errors, warnings) = counts(&st.s.editor.problems);
     let busy = super::hstudio_ui::agent_busy(st);
     let ui = &mut st.s.ui;
@@ -1444,6 +1745,7 @@ fn draw_panel(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             active = [r[0] + 8.0, r[2] - 16.0];
         }
         ui.hits.push((r, Action::PanelTab(panel)));
+        ui.hits.push((r, Action::Spot(Spot::Panel(panel))));
         tx += r[2] + 2.0;
     }
     // The line under the tab shown glides to it.
@@ -1554,6 +1856,9 @@ fn panel_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let fo = glide(&mut st.s.ui, id("panel-input", 0), focused, dt);
     p.rect(f, 9.0, pal().page);
     p.border(f, 9.0, mix(pal().rule, fade(pal().accent, 0.55), fo));
+    st.s.ui
+        .hits
+        .push((f, Action::Spot(Spot::Field(super::hstudio_ui::FIELD_CONSOLE))));
     let cy = f[1] + field_h / 2.0;
     let size = code_size();
     p.text("›", f[0] + 10.0, top(cy, size), size, Font::Mono, pal().accent);
@@ -1657,6 +1962,7 @@ fn panel_problems(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             mix(pal().ink_soft, pal().ink, hv.max(sel)),
         );
         ui.hits.push((r, Action::Problem(k)));
+        ui.hits.push((r, Action::Spot(Spot::Problem(k))));
     }
     p.alpha = base;
     if n > rows {
@@ -1709,6 +2015,10 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
     st.s.ui
         .text_areas
         .push((super::hstudio_ui::AREA_AGENT, [x, y, w, log_h]));
+    st.s.ui.hits.push((
+        [x, y, w, log_h],
+        Action::Spot(Spot::Text(super::hstudio_ui::AREA_AGENT)),
+    ));
     let newest = st.s.ui.agent.seq;
     for (r, line) in st.s.ui.agent.lines.iter().rev().enumerate() {
         let seq = newest.saturating_sub(r as u64);
@@ -1859,6 +2169,9 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
     let fo = glide(&mut st.s.ui, id("agent-input", 0), focused, dt);
     p.rect(f, 9.0, pal().page);
     p.border(f, 9.0, mix(pal().rule, fade(pal().accent, 0.55), fo));
+    st.s.ui
+        .hits
+        .push((f, Action::Spot(Spot::Field(super::hstudio_ui::FIELD_AGENT))));
     let cy = f[1] + field_h / 2.0;
     p.text("›", f[0] + 10.0, top(cy, 14.0), 14.0, Font::Mono, pal().accent);
     let input = st.s.ui.agent_input.clone();
@@ -2082,14 +2395,16 @@ fn floor_char(s: &str, i: usize) -> usize {
 /// scrollbar, the suggestions, and the file changing on disk.
 pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     let now = st.s.now;
-    // The live check, once typing pauses.
+    // The live check, once typing pauses; a module's file with its siblings
+    // (read again, and checked again, when they change).
+    let siblings = super::hstudio_ui::editor_siblings(st);
     {
         let s = &mut st.s;
         let ed = &mut s.editor;
         // (A file opened or read again is checked at once; typing, at a pause.)
         let typing = ed.edited_at > 0.0 && now - ed.edited_at < CHECK_PAUSE;
         if ed.checked != Some(ed.revision) && !typing {
-            ed.problems = super::hstudio_assist::check(&ed.lines, &ed.title);
+            ed.problems = super::hstudio_assist::check(&ed.lines, &ed.title, siblings.as_deref());
             ed.checked = Some(ed.revision);
             let old = std::mem::take(&mut s.ui.problem_at);
             for pr in &ed.problems {
@@ -2110,6 +2425,9 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     if panel[3] < 24.0 + code_line() {
         return;
     }
+    // A right click on the code (its line numbers too) opens its menu; the
+    // scroll bar, a banner and the suggestions, drawn later, are over it.
+    st.s.ui.hits.push((panel, Action::Spot(Spot::Code)));
     let rows = ((panel[3] - 24.0) / code_line()).max(1.0) as usize;
     st.s.ui.page = rows;
     let gutter = p.measure("0000", 12.0, Font::Mono) + 30.0;
@@ -2305,7 +2623,10 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     let line = &ed.lines[ed.row];
     let from = line.char_indices().nth(ed.hscroll).map_or(line.len(), |(i, _)| i);
     let cx = text_x + caret[1] - p.measure(&line[..from], code_size(), Font::Mono);
-    if caret_y >= top_y - 0.5 && caret_y + code_line() <= bottom + 0.5 && cx >= text_x - 1.0 && cx <= text_x + text_w {
+    let shown =
+        caret_y >= top_y - 0.5 && caret_y + code_line() <= bottom + 0.5 && cx >= text_x - 1.0 && cx <= text_x + text_w;
+    st.s.ui.caret_at = shown.then_some([cx, caret_y + code_line()]);
+    if shown {
         let still = (now - st.s.ui.caret_moved - 0.5).max(0.0);
         let blink = 0.55 + 0.45 * (still as f32 * std::f32::consts::PI * 1.6).cos();
         p.rect(
@@ -2372,10 +2693,12 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
 }
 
 /// Over the code: the file changed on disk while it had edits here (take
-/// that, or keep these), or a note that it was read again.
+/// that, or keep these), or was removed from disk (let it go, or keep these
+/// to save it again), or a note that it was read again.
 fn file_changed(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     let now = st.s.now;
-    let c = glide(&mut st.s.ui, id("conflict", 0), st.s.editor.conflict, dt);
+    let removed = st.s.editor.removed;
+    let c = glide(&mut st.s.ui, id("conflict", 0), st.s.editor.conflict || removed, dt);
     let base = p.alpha;
     if c > 0.01 {
         p.alpha = base * c;
@@ -2404,26 +2727,34 @@ fn file_changed(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
             Action::KeepMine,
             dt,
         );
-        let rw = p.measure("Reload", 13.0, Font::Medium) + 28.0;
+        let (label, action, said) = if removed {
+            (
+                "Close",
+                Action::CloseRemoved,
+                "This file was removed from disk while you were editing it.",
+            )
+        } else {
+            (
+                "Reload",
+                Action::ReloadFile,
+                "This file changed on disk while you were editing it.",
+            )
+        };
+        let rw = p.measure(label, 13.0, Font::Medium) + 28.0;
         bx -= rw + 6.0;
         pill(
             &mut st.s.ui,
             p,
             "reload-file",
-            "Reload",
+            label,
             bx,
             cy - 13.0,
             26.0,
             Style::Secondary,
-            Action::ReloadFile,
+            action,
             dt,
         );
-        let msg = p.fit(
-            "This file changed on disk while you were editing it.",
-            bx - r[0] - 24.0,
-            13.0,
-            Font::Regular,
-        );
+        let msg = p.fit(said, bx - r[0] - 24.0, 13.0, Font::Regular);
         p.text(&msg, r[0] + 14.0, top(cy, 13.0), 13.0, Font::Regular, pal().ink);
         p.alpha = base;
     }
@@ -2448,6 +2779,11 @@ fn file_changed(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
             p.alpha = base;
         }
     }
+}
+
+/// "1 file", "3 files".
+fn files_text(n: usize) -> String {
+    if n == 1 { "1 file".into() } else { format!("{n} files") }
 }
 
 fn status(state: &ModState, enabled: bool) -> (&'static str, u32) {
@@ -2501,6 +2837,10 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let row_h = 52.0;
     let max_rows = ((list_h / row_h).floor() as usize).max(1);
     let first = st.s.ui.library_sel.saturating_sub(max_rows - 1);
+    // The list's own menu, under its rows'.
+    st.s.ui
+        .hits
+        .push(([x, y, list_w, list_h + 30.0], Action::Spot(Spot::Scripts)));
     let (base_a, base_dy) = (p.alpha, p.dy);
     let mut ly = list_top;
     if n == 0 {
@@ -2544,7 +2884,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         } else {
             p.measure(&ver, 11.0, Font::Mono)
         };
-        let room = if buttons { list_w - 52.0 - 230.0 } else { list_w - 52.0 };
+        let room = if buttons { list_w - 52.0 - 274.0 } else { list_w - 52.0 };
         let name_w = room.max(40.0) - vw;
         let name = p.fit(&m.name, name_w, 14.0, Font::Medium);
         let failed = match &m.state {
@@ -2554,7 +2894,10 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         let desc = if let Some(msg) = &failed {
             msg.clone()
         } else if m.description.is_empty() {
-            format!("{}.lua", m.id)
+            match &m.folder {
+                Some(_) => format!("{}/  ·  {}", m.id, files_text(m.file_count())),
+                None => format!("{}.lua", m.id),
+            }
         } else {
             m.description.clone()
         };
@@ -2574,11 +2917,14 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             );
         }
         st.s.ui.hits.push((r, Action::Select(i)));
+        st.s.ui.hits.push((r, Action::Spot(Spot::Mod(i))));
         if buttons {
             let enabled = st.s.mods[i].enabled;
             let toggle = if enabled { "Turn off" } else { "Turn on" };
             let mut bx = x + list_w - 8.0;
+            // Its "..." has the rest: a module's files, New file, Make it a module, Delete.
             for (key, label, action) in [
+                ("n-menu", "...", Action::LibraryMenu(i)),
                 ("n-reload", "Reload", Action::Reload(i)),
                 ("n-toggle", toggle, Action::Toggle(i)),
                 ("n-edit", "Edit", Action::Edit(i)),
@@ -2589,7 +2935,10 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
                 } else {
                     Style::Quiet
                 };
-                pill(&mut st.s.ui, p, key, label, bx, cy - 13.0, 26.0, style, action, dt);
+                let bw = pill(&mut st.s.ui, p, key, label, bx, cy - 13.0, 26.0, style, action, dt);
+                if action == Action::LibraryMenu(i) {
+                    st.s.ui.library_dots = Some([bx, cy - 13.0, bw, 26.0]);
+                }
                 bx -= 4.0;
             }
         }
@@ -2644,6 +2993,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             break;
         }
         let r = [x, ey, list_w, 30.0];
+        st.s.ui.hits.push((r, Action::Spot(Spot::Example(i))));
         let over = inside(r, st.s.ui.mouse);
         let hv = hover(&mut st.s.ui, id("ex", i), over, dt);
         if inside(r, st.s.ui.mouse) {
@@ -2710,8 +3060,11 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let i = st.s.ui.library_sel;
     let name = m.name.clone();
     let (label, c) = status(&m.state, m.enabled);
-    let file = if m.folder.is_some() {
-        format!("{}/main.lua", m.id)
+    let folder = m.folder.clone();
+    let module = folder.is_some();
+    let files = m.files();
+    let file = if module {
+        format!("module  ·  {}", files_text(files.len()))
     } else {
         format!("{}.lua", m.id)
     };
@@ -2769,6 +3122,19 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         );
         chips_w += lw + 8.0;
     }
+    if module {
+        let mw = p.measure("Module", 12.0, Font::Medium) + 20.0;
+        p.rect([dx + chips_w + 8.0, dy, mw, 24.0], 12.0, fade(pal().ink, 0.10));
+        p.text(
+            "Module",
+            dx + chips_w + 18.0,
+            top(dy + 12.0, 12.0),
+            12.0,
+            Font::Medium,
+            pal().ink_soft,
+        );
+        chips_w += mw + 8.0;
+    }
     if running {
         let stats = p.fit(&stats, dw - chips_w - 12.0, 11.0, Font::Mono);
         p.text(
@@ -2824,7 +3190,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         Action::Toggle(i),
         dt,
     ) + 8.0;
-    pill(
+    bx += pill(
         &mut st.s.ui,
         p,
         "reload",
@@ -2835,8 +3201,66 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         Style::Secondary,
         Action::Reload(i),
         dt,
+    ) + 8.0;
+    // A module takes new files; a script can become a module.
+    let (key, more, action) = if module {
+        ("new-file", "New file", Action::NewFileIn(i))
+    } else {
+        ("make-module", "Make it a module", Action::MakeModule(i))
+    };
+    if bx + p.measure(more, 13.0, Font::Medium) + 28.0 > dx + dw {
+        dy += 40.0;
+        bx = dx;
+    }
+    bx += pill(&mut st.s.ui, p, key, more, bx, dy, 32.0, Style::Quiet, action, dt) + 8.0;
+    // The rest (deleting it, a module's files renamed or deleted) is in its menu.
+    let dots_w = p.measure("...", 13.0, Font::Medium) + 28.0;
+    if bx + dots_w > dx + dw {
+        dy += 40.0;
+        bx = dx;
+    }
+    pill(
+        &mut st.s.ui,
+        p,
+        "library-menu",
+        "...",
+        bx,
+        dy,
+        32.0,
+        Style::Quiet,
+        Action::LibraryMenu(i),
+        dt,
     );
+    st.s.ui.library_dots = Some([bx, dy, dots_w, 32.0]);
     dy += 50.0;
+    // A module's files: a click opens one.
+    if module && dy + 46.0 <= bottom {
+        p.text("Files", dx, top(dy + 8.0, 13.0), 13.0, Font::Medium, pal().ink_soft);
+        dy += 24.0;
+        const SHOWN: usize = 8;
+        for (k, rel) in files.iter().enumerate().take(SHOWN) {
+            if dy + 22.0 > bottom {
+                break;
+            }
+            let r = [dx - 6.0, dy - 3.0, dw.min(340.0), 22.0];
+            let ui = &mut st.s.ui;
+            let hv = hover(ui, id("library-file", k), inside(r, ui.mouse), dt);
+            p.rect(r, 6.0, fade(pal().ink, 0.06 * hv));
+            let shown = p.fit(rel, r[2] - 12.0, 13.0, Font::Mono);
+            p.text(&shown, dx, dy, 13.0, Font::Mono, mix(pal().ink_soft, pal().ink, hv));
+            if let Some(folder) = &folder {
+                let path = super::hstudio_modfiles::path_in(folder, rel);
+                edit_file_hit(&mut st.s.ui, r, path);
+            }
+            dy += 22.0;
+        }
+        if files.len() > SHOWN && dy + 22.0 <= bottom {
+            let rest = format!("and {} more in the Editor's script list", files.len() - SHOWN);
+            p.text(&rest, dx, dy, 12.0, Font::Regular, pal().muted);
+            dy += 22.0;
+        }
+        dy += 10.0;
+    }
     if !commands.is_empty() && dy + 46.0 <= bottom {
         p.text("Commands", dx, top(dy + 8.0, 13.0), 13.0, Font::Medium, pal().ink_soft);
         dy += 24.0;
@@ -2887,7 +3311,8 @@ enum Doc {
 fn docs() -> Vec<Doc> {
     let mut out = vec![
         Doc::Heading("Script mods".into()),
-        Doc::Para("A script mod is a Lua file in horizon-mods/.horizon-mod-data/horizon_studio/mods/: name.lua, or a folder with main.lua and other files to require. The file runs when the mod loads; what it registers with on(), command() and every() then runs in the game. Save it, in the Editor or any other editor, and it reloads at once. A mod that fails stops alone: the Library shows the error and its line.".into()),
+        Doc::Para("Script mods live in horizon-mods/.horizon-mod-data/horizon_studio/mods/. A script is one file, name.lua. A module is a folder, name/, whose main.lua loads its other files with require(\"lib\") for lib.lua: each file runs once, however its name is written, and the files share the mod's globals. The New prompt (the Library's New mod, or + in the Editor's script list) makes either; a new module has main.lua, shared.lua and lib.lua. The main file runs when the mod loads; what it registers with on(), command() and every() then runs in the game. Save any of its files, in the Editor or any other editor, and the mod reloads at once. A mod that fails stops alone: the Library shows the error, and the Editor marks its line in the file it is in.".into()),
+        Doc::Para("In the Editor's script list a module is a folder that folds open to its files. A row's ... (or a right click) adds, renames and deletes a module's files, deletes a mod and makes a script a module; what is deleted goes to the trash folder beside mods. In the Library each mod's ... (or the . key) has the same, with a module's files to open. Right-click a script or a module, in the Editor's list or the Library, to rename, duplicate or delete it: a copy starts turned off, and a rename keeps its saved data and its on/off state. Ctrl+Enter on a module's file saves it and reloads the module.".into()),
         Doc::Para("Drop a .lua file, a mod folder or a .zip on the game window to install it. Lines -- name:, -- version:, -- author: and -- description: at the top name it in the Library.".into()),
         Doc::Heading("Libraries".into()),
         Doc::Para("A mod can be a library for others: it calls export(table), or its main file returns a table, and other mods take it with local kit = import(\"uikit\"). Libraries load first; when one reloads, the mods that use it reload too. A library's functions run as the mod that calls them, so what they draw, register or store belongs to that mod. Mods talk to each other with emit(\"name:event\", ...) and on(\"name:event\", fn), and json.encode and json.decode turn tables into text and back.".into()),
@@ -2914,7 +3339,7 @@ fn docs() -> Vec<Doc> {
         }
     }
     out.push(Doc::Heading("Looks".into()));
-    out.push(Doc::Para("Settings, the last tab, changes how the studio looks: the theme (Horizon, Horizon Light, Midnight, Nord, Rose, Forest, Solar, or one of four styles after the script executors of old Roblox days), full screen or a window, the accent colour, the size of everything, how much of the game shows behind it, the code's size and whether things move. A window is dragged by its title bar and sized from its bottom right corner; its buttons roll it up, fill the screen and close it.".into()));
+    out.push(Doc::Para("Settings, the last tab, changes how the studio looks: the theme (Horizon, Horizon Light, Midnight, Nord, Rose, Forest, Solar, or one of four styles after the script executors of old Roblox days), full screen or a window, the accent colour, the size of everything, how much of the game shows behind it, the code's size and whether things move. A window is dragged by its title bar and sized from its bottom right corner; its buttons roll it up, fill the screen and close it. Right-click the title bar for the window and the theme.".into()));
     out.push(Doc::Para("The executor styles are always a window. Their buttons do the studio's work: Execute runs the editor's code, Clear empties it, Execute File saves the file and reloads its mod, Open File shows the Library, Attach and Inject reload every mod, and Options shows Settings, where the console, the Library and the docs are a click away too.".into()));
     out.push(Doc::Heading("AI agents".into()));
     out.push(Doc::Para("horizon-studio-mcp lets AI agents (Claude Code, omp, Codex, Cursor...) make mods here: they write and test them, headless and in this game, run Lua in the console and read what happened. Copy AI setup prompt, at the top right, copies a prompt for your agent that sets it all up; once one is connected, its name shows there. Options > Mods > Horizon Studio turns the AI link off.".into()));
@@ -2939,9 +3364,14 @@ pub fn docs_markdown() -> String {
 }
 
 fn draw_docs(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
+    const LIT_SECS: f64 = 1.5;
+    let now = st.s.now;
+    st.s.ui.hits.push(([x, y, w, h], Action::Spot(Spot::Docs)));
     let width = w.min(820.0);
-    // Laid out as lines of (text, size, font, colour, height).
+    // Laid out as lines of (text, size, font, colour, height), with each
+    // function's entry by its name and its lines (Show in Docs goes there).
     let mut lines: Vec<(String, f32, Font, u32, f32)> = Vec::new();
+    let mut entries: Vec<(String, usize, usize)> = Vec::new();
     for d in docs() {
         match d {
             Doc::Heading(t) => {
@@ -2955,12 +3385,15 @@ fn draw_docs(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
                 lines.push((String::new(), 0.0, Font::Regular, 0, 8.0));
             }
             Doc::Api(sig, desc) => {
+                let first = lines.len();
                 for l in p.wrap(&sig, width, 13.0, Font::Mono) {
                     lines.push((l, 13.0, Font::Mono, pal().ink, 20.0));
                 }
                 for l in p.wrap(&desc, width, 13.0, Font::Regular) {
                     lines.push((l, 13.0, Font::Regular, pal().muted, 20.0));
                 }
+                let name = sig.split('(').next().unwrap_or("").to_owned();
+                entries.push((name, first, lines.len()));
                 lines.push((String::new(), 0.0, Font::Regular, 0, 10.0));
             }
         }
@@ -2969,11 +3402,36 @@ fn draw_docs(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let step = 22.0;
     let max = ((total - h) / step).max(0.0).ceil() as usize;
     st.s.ui.page = (h / step) as usize;
+    // Show in Docs: the entry asked for at the top, at once, and tinted a moment.
+    if let Some(name) = st.s.ui.docs_find.take()
+        && let Some((_, first, _)) = entries.iter().find(|(n, ..)| *n == name)
+    {
+        let above: f32 = lines[..*first].iter().map(|l| l.4).sum();
+        st.s.ui.docs_scroll = (above / step).floor() as usize;
+        st.s.ui.smooth[2] = st.s.ui.docs_scroll.min(max) as f32;
+        st.s.ui.docs_lit = Some((name, now));
+    }
     st.s.ui.docs_scroll = st.s.ui.docs_scroll.min(max);
     smooth(&mut st.s.ui.smooth[2], st.s.ui.docs_scroll as f32, dt);
+    let lit =
+        st.s.ui
+            .docs_lit
+            .as_ref()
+            .filter(|(_, at)| now - at < LIT_SECS)
+            .and_then(|(name, at)| {
+                let (_, a, b) = entries.iter().find(|(n, ..)| n == name)?;
+                Some((*a, *b, (1.0 - (now - at) / LIT_SECS) as f32))
+            });
     let mut ly = y - st.s.ui.smooth[2] * step;
-    for (t, size, font, c, lh) in lines {
-        if ly >= y - 1.0 && ly + lh <= y + h + 1.0 && !t.is_empty() {
+    for (k, (t, size, font, c, lh)) in lines.into_iter().enumerate() {
+        let shown = ly >= y - 1.0 && ly + lh <= y + h + 1.0;
+        if let Some((a, b, k_lit)) = lit
+            && (a..b).contains(&k)
+            && shown
+        {
+            p.rect([x - 8.0, ly, width + 16.0, lh], 0.0, fade(pal().accent, 0.16 * k_lit));
+        }
+        if shown && !t.is_empty() {
             p.text(&t, x, ly + (lh - (size * 1.45).round()) / 2.0, size, font, c);
         }
         ly += lh;
@@ -3198,7 +3656,20 @@ fn stepper(ui: &mut Ui, p: &mut P, x: f32, cy: f32, value: &str, which: u8, dt: 
     );
 }
 
-fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32) {
+/// A mod as its file shows it: `<id>.lua` for a script, `<id>/` for a module.
+fn mod_file(st: &Studio, id: &str) -> String {
+    match st.s.mods.iter().find(|m| m.id == id) {
+        Some(m) if m.folder.is_some() => format!("{id}/"),
+        _ => format!("{id}.lua"),
+    }
+}
+
+/// The naming prompt over everything: its heading (with the Script and
+/// Module switch for a new mod), what to type, the field (none when it only
+/// asks, for a delete), the line saying what Enter will do or why it can't,
+/// and its keys.
+fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32, dt: f32) {
+    use super::hstudio_ui::NamingKind;
     let now = st.s.now;
     let arrive = progress(now, st.s.ui.naming_at, MOVE);
     let (a, dy) = (p.alpha, p.dy);
@@ -3206,42 +3677,106 @@ fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32) {
     p.dy = 0.0;
     p.rect([0.0, 0.0, w, h], 0.0, fade(pal().page, 0.55));
     p.dy = (1.0 - arrive) * RISE;
-    let cw = 380f32.min(w - 32.0);
-    let r = [((w - cw) / 2.0).floor(), (h / 2.0 - 84.0).floor(), cw, 168.0];
+    let cw = 420f32.min(w - 32.0);
+    let r = [((w - cw) / 2.0).floor(), (h / 2.0 - 98.0).floor(), cw, 196.0];
     p.rect(r, 16.0, pal().surface);
     p.border(r, 16.0, pal().rule);
-    use super::hstudio_ui::NamingKind;
-    let kind = st.s.ui.naming_kind;
-    let (heading, ask, enter) = match kind {
-        NamingKind::NewMod => ("New mod", "What is it called?", "Enter to create  ·  Esc to cancel"),
+    let kind = st.s.ui.naming_kind.clone();
+    let shown = |path: &std::path::Path| super::hstudio_ui::prompt_name(st, path);
+    let (heading, ask, enter) = match &kind {
+        NamingKind::NewScript | NamingKind::NewModule => (
+            if kind == NamingKind::NewModule {
+                "New module".to_owned()
+            } else {
+                "New script".to_owned()
+            },
+            "What is it called?",
+            "Enter to create  ·  Tab: Script or Module  ·  Esc to cancel",
+        ),
         NamingKind::SaveAs => (
-            "Save as a script mod",
+            "Save as a script".to_owned(),
             "What is it called?",
             "Enter to save  ·  Esc to cancel",
         ),
         NamingKind::Model => (
-            "The agent's model",
+            "The agent's model".to_owned(),
             "Its name, as the agent takes it (empty: its default)",
             "Enter to use it  ·  Esc to cancel",
         ),
+        NamingKind::NewFile(folder) => (
+            format!("New file in {}", shown(folder)),
+            "Its path in the module (lib/util makes a folder)",
+            "Enter to create  ·  Esc to cancel",
+        ),
+        NamingKind::Rename(path) => (
+            format!("Rename {}", shown(path)),
+            "Its new path in the module",
+            "Enter to rename  ·  Esc to cancel",
+        ),
+        NamingKind::Delete(path) => (
+            format!("Delete {}?", shown(path)),
+            if st.mod_of_path(path).is_some_and(|i| {
+                let m = &st.s.mods[i];
+                m.folder.as_deref() == Some(path) || (m.folder.is_none() && m.main == *path)
+            }) {
+                "The mod stops and leaves the Library, files and all."
+            } else {
+                "The module reloads without it."
+            },
+            "Enter to delete  ·  Esc to cancel",
+        ),
+        NamingKind::RenameMod(id) => (
+            format!("Rename {}", mod_file(st, id)),
+            "Its new name (its file's)",
+            "Enter to rename  ·  Esc to cancel",
+        ),
+        NamingKind::Duplicate(id) => (
+            format!("Duplicate {}", mod_file(st, id)),
+            "The copy's name (it starts turned off)",
+            "Enter to duplicate  ·  Esc to cancel",
+        ),
     };
-    p.text(heading, r[0] + 22.0, r[1] + 18.0, 16.0, Font::Medium, pal().ink);
-    p.text(ask, r[0] + 22.0, r[1] + 44.0, 13.0, Font::Regular, pal().muted);
-    let f = [r[0] + 20.0, r[1] + 74.0, cw - 40.0, 40.0];
-    p.rect(f, 10.0, pal().page);
-    p.border(f, 10.0, fade(pal().accent, 0.6));
-    line_edit(
-        p,
-        now,
-        name,
-        f[0] + 14.0,
-        top(f[1] + 20.0, 14.0),
-        f[2] - 28.0,
-        14.0,
-        Font::Regular,
-        pal().ink,
-    );
-    p.text(enter, r[0] + 22.0, r[1] + 130.0, 12.0, Font::Regular, pal().muted);
+    let heading = p.fit(&heading, cw - 44.0 - 150.0, 16.0, Font::Medium);
+    p.text(&heading, r[0] + 22.0, r[1] + 18.0, 16.0, Font::Medium, pal().ink);
+    if matches!(kind, NamingKind::NewScript | NamingKind::NewModule) {
+        let module = kind == NamingKind::NewModule;
+        let items = [
+            ("Script", !module, Action::NewKind(false)),
+            ("Module", module, Action::NewKind(true)),
+        ];
+        let sw: f32 = items
+            .iter()
+            .map(|(l, _, _)| p.measure(l, 13.0, Font::Medium) + 28.0)
+            .sum::<f32>()
+            + 4.0;
+        segmented(&mut st.s.ui, p, r[0] + cw - 20.0 - sw, r[1] + 30.0, &items, dt);
+    }
+    p.text(ask, r[0] + 22.0, r[1] + 52.0, 13.0, Font::Regular, pal().muted);
+    if !matches!(kind, NamingKind::Delete(_)) {
+        let f = [r[0] + 20.0, r[1] + 78.0, cw - 40.0, 40.0];
+        p.rect(f, 10.0, pal().page);
+        p.border(f, 10.0, fade(pal().accent, 0.6));
+        line_edit(
+            p,
+            now,
+            name,
+            f[0] + 14.0,
+            top(f[1] + 20.0, 14.0),
+            f[2] - 28.0,
+            14.0,
+            Font::Regular,
+            pal().ink,
+        );
+    }
+    let (plan, c) = match super::hstudio_ui::naming_plan(st) {
+        Ok(line) => (line, pal().muted),
+        Err(why) => (why, pal().danger),
+    };
+    if !plan.is_empty() {
+        let plan = p.fit(&plan, cw - 44.0, 12.5, Font::Regular);
+        p.text(&plan, r[0] + 22.0, r[1] + 128.0, 12.5, Font::Regular, c);
+    }
+    p.text(enter, r[0] + 22.0, r[1] + 160.0, 12.0, Font::Regular, pal().muted);
     p.alpha = a;
     p.dy = dy;
 }

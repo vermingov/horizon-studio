@@ -253,6 +253,7 @@ fn the_prompt_has_the_editor_context() {
     let ctx = AgentContext {
         file: Some("statue/main.lua".into()),
         mods_dir: PathBuf::from("/home/steve/.horizon/mods"),
+        files: Vec::new(),
         selection: Some("world.set_block(x, y, z, 'stone')".into()),
         problems: vec!["statue/main.lua:12: unexpected symbol near 'end'".into()],
     };
@@ -309,6 +310,37 @@ fn the_prompt_has_the_editor_context() {
     let p = prompt("fix", &big);
     assert!(p.len() < 8000, "{}", p.len());
     assert!(p.contains("a.lua:20: oops") && !p.contains("a.lua:21: oops") && p.contains("and 20 more"));
+}
+
+#[test]
+fn the_prompt_names_the_modules_files() {
+    let p = prompt(
+        "add a file",
+        &AgentContext {
+            file: Some("m/lib.lua".into()),
+            mods_dir: PathBuf::from("/m"),
+            files: vec!["main.lua".into(), "lib.lua".into()],
+            ..Default::default()
+        },
+    );
+    assert!(
+        p.contains("a module (a folder <id>/ whose main.lua requires its other files"),
+        "{p}"
+    );
+    assert!(
+        p.contains("m/lib.lua is a file of the module m: main.lua, lib.lua."),
+        "{p}"
+    );
+    // A script's file has no such line.
+    let one = prompt(
+        "hi",
+        &AgentContext {
+            file: Some("hello.lua".into()),
+            mods_dir: PathBuf::from("/m"),
+            ..Default::default()
+        },
+    );
+    assert!(!one.contains("is a file of the module"), "{one}");
 }
 
 #[test]

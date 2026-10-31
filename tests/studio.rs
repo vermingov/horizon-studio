@@ -466,7 +466,744 @@ fn folder_mods_require_their_files() {
     run_for(&mut st, &mut game, 0.6);
     assert!(log(&st).contains(&"[big_mod] 420    true".to_owned()), "{:?}", log(&st));
     let out = console(&mut st, &mut game, "require('x')");
-    assert!(out[0].contains("require works in folder mods"), "{out:?}");
+    assert!(out[0].contains("require works in modules"), "{out:?}");
+}
+
+/// A module of `files` (path in it, text) in the mods folder.
+fn write_module(game: &FakeGame, id: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = game.mods_dir().join(id);
+    for (rel, text) in files {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    dir
+}
+
+fn failure(st: &Studio, id: &str) -> (String, String) {
+    match &st.s.mods[mod_index(st, id)].state {
+        ModState::Failed(msg, trace) => (msg.clone(), trace.clone()),
+        other => panic!("{id} is {other:?}, not failed"),
+    }
+}
+
+#[test]
+fn require_runs_a_file_once_whatever_the_spelling() {
+    let mut game = FakeGame::new("require-once");
+    let mut st = studio(&mut game);
+    write_module(
+        &game,
+        "spell",
+        &[
+            (
+                "main.lua",
+                "local a = require('lib.util')\nlocal b = require('lib/util')\nlocal c = require('lib/util.lua')\nprint(a == b, b == c, a.n, a.name)\n",
+            ),
+            ("lib/util.lua", "print('util runs')\nreturn { n = 7, name = ... }\n"),
+        ],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let lines = log(&st);
+    assert!(st.s.mods[mod_index(&st, "spell")].running(), "{lines:?}");
+    assert_eq!(
+        lines.iter().filter(|l| *l == "[spell] util runs").count(),
+        1,
+        "{lines:?}"
+    );
+    // `...` is the name as the first require wrote it.
+    assert!(
+        lines.contains(&"[spell] true    true    7    lib.util".to_owned()),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn requires_that_loop_say_which_files() {
+    let mut game = FakeGame::new("require-loop");
+    let mut st = studio(&mut game);
+    write_module(
+        &game,
+        "looped",
+        &[
+            ("main.lua", "require('a')\n"),
+            ("a.lua", "require('b')\nreturn {}\n"),
+            ("b.lua", "require('a')\nreturn {}\n"),
+        ],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let (msg, _) = failure(&st, "looped");
+    assert!(msg.contains("'a' is already loading"), "{msg}");
+    assert!(msg.contains("main.lua -> a.lua -> b.lua -> a.lua"), "{msg}");
+    assert!(!msg.contains("stack overflow"), "{msg}");
+    // main.lua starts the chain only when its top level began the loop,
+    // after a wait too; a command begins it at the first file it requires.
+    write_module(
+        &game,
+        "later",
+        &[
+            ("main.lua", "task.wait()\nrequire('a')\n"),
+            ("a.lua", "require('b')\nreturn {}\n"),
+            ("b.lua", "require('a')\nreturn {}\n"),
+        ],
+    );
+    write_module(
+        &game,
+        "lazy",
+        &[
+            (
+                "main.lua",
+                "command('lazy', function() local ok, e = pcall(require, 'a') return e end)\n",
+            ),
+            ("a.lua", "require('b')\nreturn {}\n"),
+            ("b.lua", "require('a')\nreturn {}\n"),
+        ],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let (msg, _) = failure(&st, "later");
+    assert!(msg.contains("(main.lua -> a.lua -> b.lua -> a.lua)"), "{msg}");
+    st.command("lazy");
+    st.frame(&mut game, 0.016);
+    let said = game.chats.last().cloned().unwrap_or_default();
+    assert!(
+        said.contains("'a' is already loading (a.lua -> b.lua -> a.lua)"),
+        "{said}"
+    );
+    // main.lua runs once, by itself.
+    write_module(&game, "selfish", &[("main.lua", "require('main')\n")]);
+    run_for(&mut st, &mut game, 0.6);
+    assert!(failure(&st, "selfish").0.contains("main.lua starts the module"));
+}
+
+#[test]
+fn require_stays_inside_the_module() {
+    let mut game = FakeGame::new("require-sandbox");
+    let mut st = studio(&mut game);
+    let outside = game.dir.join("outside.lua");
+    std::fs::write(&outside, "print('escaped')\nreturn 1\n").unwrap();
+    let absolute = outside.to_string_lossy().trim_end_matches(".lua").to_owned();
+    write_module(&game, "abs", &[("main.lua", &format!("require([[{absolute}]])\n"))]);
+    write_module(&game, "dots", &[("main.lua", "require('.x')\n")]);
+    write_module(&game, "up", &[("main.lua", "require('../outside')\n")]);
+    run_for(&mut st, &mut game, 0.6);
+    for id in ["abs", "dots", "up"] {
+        let (msg, _) = failure(&st, id);
+        assert!(msg.contains("bad module name"), "{id}: {msg}");
+    }
+    assert!(!log(&st).iter().any(|l| l.contains("escaped")), "{:?}", log(&st));
+    // A missing file names the ones the module has.
+    write_module(
+        &game,
+        "lost",
+        &[("main.lua", "require('nope')\n"), ("util.lua", "return 1\n")],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let (msg, _) = failure(&st, "lost");
+    assert!(
+        msg.contains("module 'nope' not found (nope.lua; the module has main.lua, util.lua)"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn error_lines_belong_to_their_files() {
+    use horizon_studio::game::hstudio::{error_line_in, error_places};
+    let msg = "m/main.lua:2: m/lib.lua:3: unexpected symbol near 'x'";
+    assert_eq!(
+        error_places(msg),
+        [("m/main.lua".to_owned(), 2), ("m/lib.lua".to_owned(), 3)]
+    );
+    assert_eq!(error_line_in(msg, "", "m/lib.lua"), Some(3));
+    assert_eq!(error_line_in(msg, "", "m/main.lua"), Some(2));
+    assert_eq!(error_places("tick: m/lib.lua:7: y"), [("m/lib.lua".to_owned(), 7)]);
+    assert_eq!(error_line_in("tick: m/lib.lua:7: y", "", "m/lib.lua"), Some(7));
+    assert_eq!(error_line_in("tick: m/lib.lua:7: y", "", "m/main.lua"), None);
+    // The traceback, innermost first, gives the line in a file the message doesn't name.
+    let trace = "m/lib.lua:7: in f\nm/main.lua:12: in main chunk";
+    assert_eq!(error_line_in("tick: m/lib.lua:7: y", trace, "m/main.lua"), Some(12));
+    assert_eq!(error_line_in("tick: m/lib.lua:7: y", trace, "m/other.lua"), None);
+    assert!(error_places("no place here: lua 5").is_empty());
+}
+
+#[test]
+fn a_modules_files_are_listed_main_first() {
+    let mut game = FakeGame::new("module-files");
+    let mut st = studio(&mut game);
+    let dir = write_module(
+        &game,
+        "tree",
+        &[
+            ("shared.lua", "return {}\n"),
+            ("lib/util.lua", "return {}\n"),
+            ("main.lua", "print('tree')\n"),
+            ("lib.lua", "return {}\n"),
+            (".hidden.lua", "return {}\n"),
+            (".git/x.lua", "return {}\n"),
+            ("notes.txt", "not code\n"),
+        ],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let i = mod_index(&st, "tree");
+    assert_eq!(
+        st.s.mods[i].files(),
+        ["main.lua", "lib.lua", "lib/util.lua", "shared.lua"]
+    );
+    assert_eq!(st.s.mods[i].file_count(), 4);
+    assert!(
+        st.s.mods[mod_index(&st, "hello")].files().is_empty(),
+        "a script has none"
+    );
+    std::fs::write(dir.join("extra.lua"), "return {}\n").unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    assert_eq!(st.s.mods[i].files()[1], "extra.lua");
+}
+
+#[test]
+fn saving_any_file_of_a_module_reloads_it_and_marks_that_files_line() {
+    let mut game = FakeGame::new("module-save");
+    let mut st = studio(&mut game);
+    let dir = write_module(
+        &game,
+        "pair",
+        &[
+            (
+                "main.lua",
+                "-- name: Pair\nlocal lib = require('lib')\ncommand('pair', function() return lib.say() end)\n",
+            ),
+            (
+                "lib.lua",
+                "local lib = {}\nfunction lib.say() return 'one' end\nreturn lib\n",
+            ),
+        ],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let i = mod_index(&st, "pair");
+    assert!(st.s.mods[i].running(), "{:?}", st.s.mods[i].state);
+    st.open_file(&dir.join("lib.lua"));
+    assert_eq!(st.s.editor.title, "pair/lib.lua");
+    let reloads = st.s.mods[i].reloads;
+    st.s.editor
+        .set_text("local lib = {}\nfunction lib.say() return 'two, and longer' end\nreturn lib\n");
+    st.s.editor.dirty = true;
+    st.save_editor(&mut game);
+    assert_eq!(st.s.mods[i].reloads, reloads + 1);
+    assert!(
+        log(&st).iter().any(|l| l.starts_with("Reloaded pair")),
+        "{:?}",
+        log(&st)
+    );
+    st.command("pair");
+    st.frame(&mut game, 0.016);
+    assert_eq!(game.chats.last().map(String::as_str), Some("two, and longer"));
+    // A runtime error on lib.lua's line 3 marks that line there...
+    st.s.editor
+        .set_text("local lib = {}\nfunction lib.say() return 'x' end\nerror('broken lib')\nreturn lib\n");
+    st.s.editor.dirty = true;
+    st.save_editor(&mut game);
+    assert!(failure(&st, "pair").0.contains("pair/lib.lua:3: broken lib"));
+    assert_eq!(st.s.editor.error_line, Some(3));
+    // ...and in main.lua, the line that required it.
+    st.open_file(&dir.join("main.lua"));
+    assert_eq!(st.s.editor.title, "pair/main.lua");
+    assert_eq!(st.s.editor.error_line, Some(2));
+    // A syntax error in lib.lua: its own line there, the require in main.lua.
+    std::fs::write(dir.join("lib.lua"), "local lib = {}\n\nlocal = 1\nreturn lib\n").unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    st.edit_mod(i);
+    assert_eq!(st.s.editor.error_line, Some(2));
+    st.open_file(&dir.join("lib.lua"));
+    assert_eq!(st.s.editor.error_line, Some(3));
+}
+
+/// The tick count in the template module's greeting: "Hello, Sam! (12 ticks so far)".
+fn ticks_in(reply: &str) -> u64 {
+    reply
+        .split('(')
+        .nth(1)
+        .and_then(|r| r.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no tick count in {reply:?}"))
+}
+
+#[test]
+fn a_new_module_has_main_shared_and_lib_and_runs() {
+    let mut game = FakeGame::new("new-module");
+    let mut st = studio(&mut game);
+    let main = st.create_module(&mut game, "Night Light").unwrap();
+    let dir = game.mods_dir().join("night_light");
+    assert_eq!(main, dir.join("main.lua"));
+    for f in ["main.lua", "shared.lua", "lib.lua"] {
+        assert!(dir.join(f).is_file(), "{f}");
+    }
+    assert!(
+        !game.mods_dir().join(".night_light.creating").exists(),
+        "written beside, then moved in"
+    );
+    let i = mod_index(&st, "night_light");
+    assert!(st.s.mods[i].running(), "{:?}", st.s.mods[i].state);
+    assert_eq!(st.s.mods[i].name, "Night Light");
+    assert_eq!(st.s.mods[i].files(), ["main.lua", "lib.lua", "shared.lua"]);
+    // Its command answers from lib.lua, with the count main.lua keeps in shared.lua.
+    st.command("night_light Sam");
+    st.frame(&mut game, 0.016);
+    let first = game.chats.last().cloned().unwrap_or_default();
+    assert!(first.starts_with("Hello, Sam! ("), "{first}");
+    run_for(&mut st, &mut game, 1.0);
+    st.command("night_light Sam");
+    st.frame(&mut game, 0.016);
+    let later = game.chats.last().cloned().unwrap_or_default();
+    assert!(ticks_in(&later) > ticks_in(&first), "{first} then {later}");
+    // The name is taken now, by either kind.
+    assert!(
+        st.create_module(&mut game, "Night Light")
+            .unwrap_err()
+            .contains("night_light already exists")
+    );
+    assert!(
+        st.create_mod(&mut game, "Night Light", None)
+            .unwrap_err()
+            .contains("already exists")
+    );
+    assert!(
+        st.create_module(&mut game, "Hello")
+            .unwrap_err()
+            .contains("already exists")
+    );
+}
+
+#[test]
+fn files_are_added_renamed_and_deleted_to_the_trash() {
+    let mut game = FakeGame::new("module-file-ops");
+    let mut st = studio(&mut game);
+    st.create_module(&mut game, "Kit").unwrap();
+    let dir = game.mods_dir().join("kit");
+    let i = mod_index(&st, "kit");
+    let util = st.add_file(&mut game, &dir, "util").unwrap();
+    assert_eq!(util, dir.join("util.lua"));
+    let text = std::fs::read_to_string(&util).unwrap();
+    assert!(
+        text.contains("require(\"util\")") && text.contains("a file of Kit"),
+        "{text}"
+    );
+    assert!(st.s.mods[i].files().contains(&"util.lua".to_owned()));
+    for (typed, why) in [
+        ("../x", "outside the module"),
+        ("main", "main.lua is there already"),
+        ("a.b", "dots are for require"),
+        ("util", "util.lua is there already"),
+    ] {
+        let e = st.add_file(&mut game, &dir, typed).unwrap_err();
+        assert!(e.contains(why), "{typed}: {e}");
+    }
+    // The editor has util.lua open with an edit: a rename takes both along.
+    st.open_file(&util);
+    st.s.editor.insert("-- mine\n");
+    let new = st.rename_file(&mut game, &util, "lib/helpers").unwrap();
+    assert_eq!(new, dir.join("lib").join("helpers.lua"));
+    assert!(!util.exists() && new.is_file());
+    assert_eq!(st.s.editor.path.as_ref(), Some(&new));
+    assert_eq!(st.s.editor.title, "kit/lib/helpers.lua");
+    assert!(st.s.editor.dirty && st.s.editor.text().starts_with("-- mine"));
+    assert!(st.s.mods[i].files().contains(&"lib/helpers.lua".to_owned()));
+    // main.lua keeps its name.
+    let e = st.rename_file(&mut game, &dir.join("main.lua"), "start").unwrap_err();
+    assert!(e.contains("main.lua starts the module"), "{e}");
+    // Deleted: to the trash with the unsaved edit, the module reloads, the editor shows main.lua.
+    let reloads = st.s.mods[i].reloads;
+    let moved = st.delete_path(&mut game, &new).unwrap();
+    assert_eq!(
+        moved,
+        game.dir.join("trash").join("kit").join("lib").join("helpers.lua")
+    );
+    assert!(std::fs::read_to_string(&moved).unwrap().starts_with("-- mine"));
+    assert!(
+        !new.exists() && !dir.join("lib").exists(),
+        "its emptied folder went too"
+    );
+    assert_eq!(st.s.mods[i].reloads, reloads + 1);
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    assert!(!st.s.editor.dirty);
+    // A newer copy replaces the older one in the trash.
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(dir.join("lib").join("helpers.lua"), "return 2\n").unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    st.delete_path(&mut game, &dir.join("lib").join("helpers.lua")).unwrap();
+    assert_eq!(std::fs::read_to_string(&moved).unwrap(), "return 2\n");
+    // main.lua alone can't go; the whole module can.
+    let e = st.delete_path(&mut game, &dir.join("main.lua")).unwrap_err();
+    assert!(e.contains("delete the module instead"), "{e}");
+    let old = st.add_file(&mut game, &dir, "old").unwrap();
+    st.delete_path(&mut game, &old).unwrap();
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(dir.join("lib").join("helpers.lua"), "return 3, newer\n").unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    let moved = st.delete_path(&mut game, &dir).unwrap();
+    assert_eq!(moved, game.dir.join("trash").join("kit"));
+    assert!(!dir.exists() && moved.join("main.lua").is_file());
+    // It joins what was deleted from it before: the newest copy of each file.
+    assert!(moved.join("old.lua").is_file(), "deleted before, it stays");
+    assert_eq!(
+        std::fs::read_to_string(moved.join("lib").join("helpers.lua")).unwrap(),
+        "return 3, newer\n"
+    );
+    assert!(log(&st).contains(&"Removed kit".to_owned()), "{:?}", log(&st));
+    assert_eq!(st.s.editor.title, "scratch.lua");
+    // So can a script.
+    let hello = game.mods_dir().join("hello.lua");
+    st.delete_path(&mut game, &hello).unwrap();
+    assert!(!hello.exists() && game.dir.join("trash").join("hello.lua").is_file());
+    assert!(!st.s.mods.iter().any(|m| m.id == "hello"));
+}
+
+#[test]
+fn a_script_becomes_a_module_and_the_editor_follows() {
+    let mut game = FakeGame::new("make-module");
+    let mut st = studio(&mut game);
+    game.write_mod("x.lua", "-- name: X\nprint('x runs')\n");
+    run_for(&mut st, &mut game, 0.6);
+    let i = mod_index(&st, "x");
+    st.edit_mod(i);
+    st.s.editor.insert("-- edited\n");
+    assert!(st.s.editor.dirty);
+    let main = st.make_module(&mut game, i).unwrap();
+    let dir = game.mods_dir().join("x");
+    assert_eq!(main, dir.join("main.lua"));
+    assert!(main.is_file() && !game.mods_dir().join("x.lua").exists());
+    let j = mod_index(&st, "x");
+    assert!(st.s.mods[j].folder.is_some());
+    assert!(st.s.mods[j].running(), "{:?}", st.s.mods[j].state);
+    assert_eq!(st.s.mods[j].name, "X");
+    assert_eq!(st.s.editor.path.as_ref(), Some(&main));
+    assert_eq!(st.s.editor.title, "x/main.lua");
+    assert!(st.s.editor.dirty, "the edit is still the editor's");
+    st.save_editor(&mut game);
+    assert!(std::fs::read_to_string(&main).unwrap().starts_with("-- edited"));
+    assert!(!game.mods_dir().join("x.lua").exists(), "the save went to the module");
+    let e = st.make_module(&mut game, j).unwrap_err();
+    assert!(e.contains("x is a module already"), "{e}");
+    // A script turned off stays off as a module.
+    game.write_mod("y.lua", "print('y runs')\n");
+    run_for(&mut st, &mut game, 0.6);
+    let k = mod_index(&st, "y");
+    st.set_enabled(&mut game, k, false);
+    st.make_module(&mut game, k).unwrap();
+    let k = mod_index(&st, "y");
+    assert!(st.s.mods[k].folder.is_some() && !st.s.mods[k].enabled);
+    assert_eq!(st.s.mods[k].state, ModState::Off);
+    assert!(
+        std::fs::read_to_string(game.dir.join("studio.txt"))
+            .unwrap()
+            .contains("off:y")
+    );
+    // A folder of that name with files in it is not taken over.
+    game.write_mod("z.lua", "print('z')\n");
+    std::fs::create_dir_all(game.mods_dir().join("z")).unwrap();
+    std::fs::write(game.mods_dir().join("z").join("notes.txt"), "mine").unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    let z = mod_index(&st, "z");
+    assert!(st.make_module(&mut game, z).unwrap_err().contains("files in it"));
+    assert!(game.mods_dir().join("z.lua").is_file());
+}
+
+#[test]
+fn a_script_made_a_module_elsewhere_takes_the_editor_along() {
+    use horizon_studio::headless::write_mod;
+    let mut game = FakeGame::new("convert-elsewhere");
+    let mut st = studio(&mut game);
+    let mods = game.mods_dir();
+    game.write_mod("solo.lua", "-- name: Solo\nprint('one file')\n");
+    run_for(&mut st, &mut game, 0.6);
+    st.edit_mod(mod_index(&st, "solo"));
+    // An agent's write_mod makes the open script a module: the editor goes
+    // to its main.lua and reads what the agent wrote there.
+    let files = [
+        ("main.lua".to_owned(), "print('a module now, and longer')\n".to_owned()),
+        ("lib.lua".to_owned(), "return {}\n".to_owned()),
+    ];
+    write_mod(&mods, "solo", &files).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    let main = mods.join("solo").join("main.lua");
+    assert_eq!(st.s.editor.path.as_ref(), Some(&main));
+    assert_eq!(st.s.editor.title, "solo/main.lua");
+    assert_eq!(st.s.editor.text(), "print('a module now, and longer')\n");
+    assert!(!st.s.editor.dirty && !st.s.editor.conflict);
+    // A save goes to the module, and no solo.lua comes back beside it.
+    st.s.editor.insert("-- my edit\n");
+    st.save_editor(&mut game);
+    run_for(&mut st, &mut game, 0.6);
+    assert!(!mods.join("solo.lua").exists());
+    assert!(std::fs::read_to_string(&main).unwrap().starts_with("-- my edit"));
+    let i = mod_index(&st, "solo");
+    assert!(st.s.mods[i].folder.is_some() && st.s.mods[i].running());
+    // With unsaved edits they come along, and as main.lua is not what the
+    // editor read, it asks first (Reload, or Keep mine).
+    game.write_mod("duo.lua", "print('duo')\n");
+    run_for(&mut st, &mut game, 0.6);
+    st.edit_mod(mod_index(&st, "duo"));
+    st.s.editor.insert("-- unsaved\n");
+    let files = [("main.lua".to_owned(), "print('the agent wrote this')\n".to_owned())];
+    write_mod(&mods, "duo", &files).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    let duo = mods.join("duo").join("main.lua");
+    assert_eq!(st.s.editor.path.as_ref(), Some(&duo));
+    assert!(st.s.editor.dirty && st.s.editor.conflict);
+    assert_eq!(st.s.editor.text(), "-- unsaved\nprint('duo')\n");
+    st.save_editor(&mut game);
+    assert!(!mods.join("duo.lua").exists());
+    assert!(
+        std::fs::read_to_string(&duo)
+            .unwrap()
+            .starts_with("-- unsaved\nprint('duo')")
+    );
+    // Moved in a file manager, the same file: no question.
+    game.write_mod("tri.lua", "print('tri')\n");
+    run_for(&mut st, &mut game, 0.6);
+    st.edit_mod(mod_index(&st, "tri"));
+    st.s.editor.insert("-- mine\n");
+    std::fs::create_dir_all(mods.join("tri")).unwrap();
+    std::fs::rename(mods.join("tri.lua"), mods.join("tri").join("main.lua")).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    assert_eq!(st.s.editor.title, "tri/main.lua");
+    assert!(st.s.editor.dirty && !st.s.editor.conflict);
+}
+
+#[test]
+fn a_file_removed_elsewhere_gives_way_or_keeps_its_edits() {
+    use horizon_studio::headless::remove_files;
+    let mut game = FakeGame::new("removed-elsewhere");
+    let mut st = studio(&mut game);
+    let mods = game.mods_dir();
+    st.create_module(&mut game, "Kit").unwrap();
+    let dir = mods.join("kit");
+    for f in ["old", "gone", "back"] {
+        std::fs::write(dir.join(format!("{f}.lua")), format!("return '{f}'\n")).unwrap();
+    }
+    run_for(&mut st, &mut game, 0.6);
+    // Open with nothing unsaved: removed by an agent's write_mod, main.lua shows.
+    st.open_file(&dir.join("old.lua"));
+    remove_files(&mods, "kit", &["old.lua".to_owned()]).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    assert!(!st.s.editor.removed);
+    // With unsaved edits: they stay, marked as removed, and nothing writes it back.
+    st.open_file(&dir.join("gone.lua"));
+    st.s.editor.insert("-- mine\n");
+    remove_files(&mods, "kit", &["gone.lua".to_owned()]).unwrap();
+    run_for(&mut st, &mut game, 1.2);
+    assert_eq!(st.s.editor.title, "kit/gone.lua");
+    assert!(st.s.editor.removed && st.s.editor.dirty);
+    assert!(st.s.editor.text().starts_with("-- mine"));
+    assert!(!dir.join("gone.lua").exists());
+    // Let go (the banner's Close): main.lua opens.
+    st.close_removed();
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    assert!(!st.s.editor.removed && !st.s.editor.dirty);
+    // Kept: a save writes it back, and the module has it again.
+    st.open_file(&dir.join("back.lua"));
+    st.s.editor.insert("-- keep this\n");
+    remove_files(&mods, "kit", &["back.lua".to_owned()]).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    assert!(st.s.editor.removed);
+    st.save_editor(&mut game);
+    assert!(!st.s.editor.removed);
+    assert!(
+        std::fs::read_to_string(dir.join("back.lua"))
+            .unwrap()
+            .starts_with("-- keep this")
+    );
+    assert!(
+        st.s.mods[mod_index(&st, "kit")]
+            .files()
+            .contains(&"back.lua".to_owned())
+    );
+    // A whole mod gone: the scratch file.
+    st.edit_mod(mod_index(&st, "hello"));
+    std::fs::remove_file(mods.join("hello.lua")).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    assert_eq!(st.s.editor.title, "scratch.lua");
+}
+
+#[test]
+fn a_delete_whose_save_fails_deletes_nothing() {
+    let mut game = FakeGame::new("delete-save-fails");
+    let mut st = studio(&mut game);
+    st.create_module(&mut game, "Kit").unwrap();
+    let lib = game.mods_dir().join("kit").join("lib.lua");
+    st.open_file(&lib);
+    st.s.editor.insert("-- my unsaved work\n");
+    // The save will fail: a folder stands where the file was.
+    std::fs::remove_file(&lib).unwrap();
+    std::fs::create_dir_all(&lib).unwrap();
+    let e = st.delete_path(&mut game, &lib).unwrap_err();
+    assert!(
+        e.contains("could not save kit/lib.lua") && e.contains("nothing was deleted"),
+        "{e}"
+    );
+    assert!(lib.is_dir() && !game.dir.join("trash").exists());
+    assert_eq!(st.s.editor.title, "kit/lib.lua");
+    assert!(st.s.editor.dirty && st.s.editor.text().starts_with("-- my unsaved work"));
+}
+
+#[test]
+fn a_conflict_moves_with_a_renamed_file() {
+    let mut game = FakeGame::new("rename-conflict");
+    let mut st = studio(&mut game);
+    st.create_module(&mut game, "Kit").unwrap();
+    let dir = game.mods_dir().join("kit");
+    let util = st.add_file(&mut game, &dir, "util").unwrap();
+    st.open_file(&util);
+    st.s.editor.insert("-- mine\n");
+    // Someone else writes the file meanwhile: a conflict.
+    std::fs::write(&util, "-- theirs, a longer line than before\nreturn {}\n").unwrap();
+    st.s.editor.sync_disk();
+    assert!(st.s.editor.conflict);
+    let new = st.rename_file(&mut game, &util, "helpers").unwrap();
+    assert_eq!(st.s.editor.path.as_ref(), Some(&new));
+    assert!(st.s.editor.conflict, "the change elsewhere moved with the file");
+    assert!(st.s.editor.dirty && st.s.editor.text().starts_with("-- mine"));
+}
+
+#[test]
+fn console_new_and_edit_know_modules() {
+    use horizon_studio::game::hstudio_ui::Tab;
+    let mut game = FakeGame::new("console-modules");
+    let mut st = studio(&mut game);
+    console(&mut st, &mut game, "new('Tool', 'module')");
+    assert!(game.mods_dir().join("tool").join("main.lua").is_file());
+    assert_eq!(st.s.editor.title, "tool/main.lua");
+    assert_eq!(st.s.ui.tab, Tab::Editor);
+    // Unsaved edits are saved before edit() opens another file.
+    st.s.editor.insert("-- unsaved in main\n");
+    console(&mut st, &mut game, "edit('tool', 'lib.lua')");
+    assert_eq!(st.s.editor.title, "tool/lib.lua");
+    let main = game.mods_dir().join("tool").join("main.lua");
+    assert!(
+        std::fs::read_to_string(&main)
+            .unwrap()
+            .starts_with("-- unsaved in main")
+    );
+    console(&mut st, &mut game, "edit('tool', 'shared')");
+    assert_eq!(st.s.editor.title, "tool/shared.lua");
+    console(&mut st, &mut game, "edit('tool')");
+    assert_eq!(st.s.editor.title, "tool/main.lua");
+    let out = console(&mut st, &mut game, "new('X', 'folder')");
+    assert!(
+        out.iter().any(|l| l.contains("\"script\" or \"module\" expected")),
+        "{out:?}"
+    );
+    assert!(!game.mods_dir().join("x.lua").exists() && !game.mods_dir().join("x").exists());
+    let out = console(&mut st, &mut game, "edit('tool', 'nope.lua')");
+    assert!(out.iter().any(|l| l.contains("no nope.lua in tool")), "{out:?}");
+    let out = console(&mut st, &mut game, "edit('hello', 'x.lua')");
+    assert!(out.iter().any(|l| l.contains("'hello' is a script")), "{out:?}");
+    // And before new() makes and opens one.
+    st.s.editor.insert("-- unsaved in tool\n");
+    console(&mut st, &mut game, "new('Plain')");
+    assert_eq!(st.s.editor.title, "plain.lua");
+    assert!(
+        std::fs::read_to_string(game.mods_dir().join("tool").join("main.lua"))
+            .unwrap()
+            .starts_with("-- unsaved in tool")
+    );
+    let out = console(&mut st, &mut game, "new('Plain')");
+    assert!(out.iter().any(|l| l.contains("plain already exists")), "{out:?}");
+}
+
+#[test]
+fn running_a_modules_file_reloads_the_module() {
+    let mut game = FakeGame::new("run-module-file");
+    let mut st = studio(&mut game);
+    st.create_module(&mut game, "Runner").unwrap();
+    let dir = game.mods_dir().join("runner");
+    let i = mod_index(&st, "runner");
+    st.open_file(&dir.join("lib.lua"));
+    // Unchanged: it reloads.
+    let before = log(&st).len();
+    st.run_editor(&mut game);
+    let after: Vec<String> = log(&st)[before..].to_vec();
+    assert!(after.contains(&"Ran runner (reloaded)".to_owned()), "{after:?}");
+    assert!(!after.iter().any(|l| l.contains("require works")), "{after:?}");
+    assert!(st.s.mods[i].running());
+    // With an edit: it is saved, and the module runs it.
+    st.s.editor
+        .set_text("print('lib ran, edited')\nreturn { greet = function() return 'hi' end }\n");
+    st.s.editor.dirty = true;
+    st.run_editor(&mut game);
+    assert!(!st.s.editor.dirty);
+    assert!(
+        std::fs::read_to_string(dir.join("lib.lua"))
+            .unwrap()
+            .contains("lib ran, edited")
+    );
+    assert!(
+        log(&st).contains(&"[runner] lib ran, edited".to_owned()),
+        "{:?}",
+        log(&st)
+    );
+    // A script still runs in the console.
+    st.edit_mod(mod_index(&st, "hello"));
+    st.s.editor.set_text("print('in the console ' .. 6 * 7)");
+    st.run_editor(&mut game);
+    assert_eq!(log(&st).last().map(String::as_str), Some("in the console 42"));
+}
+
+#[test]
+fn typed_file_names_become_paths_in_the_module() {
+    use horizon_studio::game::hstudio_modfiles::{file_name, plan_file, plan_mod, require_name, require_path};
+    assert_eq!(file_name("util"), Ok("util.lua".to_owned()));
+    assert_eq!(file_name(" lib/util.lua "), Ok("lib/util.lua".to_owned()));
+    assert_eq!(file_name("lib\\util"), Ok("lib/util.lua".to_owned()));
+    assert_eq!(file_name("Util"), Ok("Util.lua".to_owned()));
+    for bad in ["lib.util", "", "/a", ".a", "a b", "a/b/c/d/e", "a//b", "../x", "x?"] {
+        assert!(file_name(bad).is_err(), "{bad:?} was taken");
+    }
+    assert!(file_name("lib.util").unwrap_err().contains("dots are for require"));
+    assert!(file_name("a b").unwrap_err().contains("no spaces"));
+    assert_eq!(require_path("lib.util").as_deref(), Some("lib/util.lua"));
+    assert_eq!(require_path("lib/util.lua").as_deref(), Some("lib/util.lua"));
+    assert_eq!(require_name("lib/util.lua"), "lib.util");
+    for bad in ["", "/x", ".x", "a..b", "a/b/c/d/e", "a b", "../x"] {
+        assert_eq!(require_path(bad), None, "{bad:?}");
+    }
+    let game = FakeGame::new("plans");
+    let mods = game.mods_dir();
+    std::fs::create_dir_all(mods.join("night_light")).unwrap();
+    std::fs::write(mods.join("taken.lua"), "").unwrap();
+    std::fs::write(mods.join("night_light").join("main.lua"), "").unwrap();
+    assert_eq!(plan_mod(&mods, "  ", true), Ok(String::new()));
+    assert_eq!(
+        plan_mod(&mods, "Night Watch", true).as_deref(),
+        Ok("night_watch/: main.lua, shared.lua and lib.lua")
+    );
+    assert_eq!(
+        plan_mod(&mods, "Night Watch", false).as_deref(),
+        Ok("night_watch.lua: one file")
+    );
+    assert_eq!(plan_mod(&mods, "Taken", true), Err("taken already exists".to_owned()));
+    assert_eq!(
+        plan_mod(&mods, "Night Light", false),
+        Err("night_light already exists".to_owned())
+    );
+    let folder = mods.join("night_light");
+    assert_eq!(
+        plan_file(&folder, "util", None).as_deref(),
+        Ok("night_light/util.lua: require(\"util\") loads it")
+    );
+    assert_eq!(
+        plan_file(&folder, "lib/util", None).as_deref(),
+        Ok("night_light/lib/util.lua: require(\"lib.util\") loads it")
+    );
+    assert_eq!(
+        plan_file(&folder, "main", None),
+        Err("main.lua is there already".to_owned())
+    );
+    assert!(plan_file(&folder, "a.b", None).unwrap_err().contains("dots"));
+    assert_eq!(plan_file(&folder, "", None), Ok(String::new()));
+    let rename = plan_file(&folder, "helpers", Some("util.lua")).unwrap();
+    assert!(
+        rename.contains("require(\"helpers\") loads it") && rename.contains("require(\"util\")"),
+        "{rename}"
+    );
+    assert_eq!(plan_file(&folder, "util", Some("util.lua")), Ok(String::new()));
 }
 
 #[test]
@@ -745,4 +1482,266 @@ fn colors_in_every_written_form() {
     for bad in ["#ff", "#ffff", "#fffff", "#gggggg"] {
         assert!(c(Value::str(bad)).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn rename_mod_moves_files_and_keeps_state() {
+    let mut game = FakeGame::new("rename-mod");
+    let mut st = studio(&mut game);
+    // A library with saved data, a mod that imports it, one waiting for a
+    // toolkit, and a module.
+    game.write_mod(
+        "kit.lua",
+        "-- name: Kit\nstorage.set('n', 7)\nexport({ hi = function() return 'hi' end })\n",
+    );
+    game.write_mod("user.lua", "local kit = import('kit')\nprint('user ' .. kit.hi())\n");
+    game.write_mod(
+        "waiter.lua",
+        "local t = import('toolkit')\nprint('waiter ' .. t.hi())\n",
+    );
+    write_module(
+        &game,
+        "box",
+        &[
+            ("main.lua", "-- name: My Box\nlocal lib = require('lib')\n"),
+            ("lib.lua", "return {}\n"),
+            ("lib/util.lua", "return {}\n"),
+        ],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let mods = game.mods_dir();
+    let k = mod_index(&st, "kit");
+    assert!(game.dir.join("storage/kit/n.lua").is_file());
+    let waiting = failure(&st, "waiter").0;
+    assert!(waiting.contains("no mod 'toolkit' to import"), "{waiting}");
+    let main = st.rename_mod(&mut game, "kit", "Toolkit").unwrap();
+    assert_eq!(main, mods.join("toolkit.lua"));
+    assert!(main.is_file() && !mods.join("kit.lua").exists());
+    assert_eq!(st.s.mods[k].id, "toolkit", "in place");
+    assert!(st.s.mods[k].running(), "{:?}", st.s.mods[k].state);
+    assert_eq!(st.s.mods[k].name, "Toolkit", "its name was the id's: it follows");
+    assert!(
+        std::fs::read_to_string(&main)
+            .unwrap()
+            .starts_with("-- name: Toolkit\n")
+    );
+    assert!(
+        game.dir.join("storage/toolkit/n.lua").is_file(),
+        "its saved data follows"
+    );
+    assert!(!game.dir.join("storage/kit").exists());
+    // The mod that imports it fails until it imports the new id, and the log says so.
+    let lines = log(&st);
+    assert!(lines.contains(&"Renamed kit to toolkit".to_owned()), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("user imports kit, which is toolkit now")),
+        "{lines:?}"
+    );
+    assert!(matches!(st.s.mods[mod_index(&st, "user")].state, ModState::Failed(..)));
+    // The mod that was waiting for a toolkit has one now, and runs.
+    let w = mod_index(&st, "waiter");
+    assert!(st.s.mods[w].running(), "{:?}", st.s.mods[w].state);
+    assert!(lines.contains(&"[waiter] waiter hi".to_owned()), "{lines:?}");
+    // A module, turned off: it stays off under its new id, and a name written by hand stays.
+    // Its file open with an unsaved edit is saved first, and the editor follows it.
+    let b = mod_index(&st, "box");
+    st.set_enabled(&mut game, b, false);
+    st.open_file(&mods.join("box").join("lib").join("util.lua"));
+    st.s.editor.insert("-- mine\n");
+    st.rename_mod(&mut game, "box", "crate").unwrap();
+    assert!(mods.join("crate").join("lib.lua").is_file() && !mods.join("box").exists());
+    assert_eq!(st.s.mods[b].id, "crate");
+    assert_eq!(st.s.mods[b].folder.as_deref(), Some(mods.join("crate").as_path()));
+    assert!(!st.s.mods[b].enabled);
+    assert_eq!(st.s.mods[b].name, "My Box");
+    let util = mods.join("crate").join("lib").join("util.lua");
+    assert_eq!(st.s.editor.path.as_ref(), Some(&util));
+    assert_eq!(st.s.editor.title, "crate/lib/util.lua");
+    assert!(!st.s.editor.dirty);
+    assert_eq!(std::fs::read_to_string(&util).unwrap(), "-- mine\nreturn {}\n");
+    let kept = std::fs::read_to_string(game.dir.join("studio.txt")).unwrap();
+    assert!(kept.contains("off:crate") && !kept.contains("off:box"), "{kept}");
+    // Onto an id that is taken: an error, and nothing changes.
+    let e = st.rename_mod(&mut game, "crate", "User").unwrap_err();
+    assert!(e.contains("user already exists"), "{e}");
+    assert!(mods.join("crate").is_dir() && mods.join("user.lua").is_file());
+    assert!(
+        st.rename_mod(&mut game, "nope", "x")
+            .unwrap_err()
+            .contains("nope is gone")
+    );
+    // A rename to its own name does nothing.
+    assert_eq!(
+        st.rename_mod(&mut game, "toolkit", "toolkit").unwrap(),
+        mods.join("toolkit.lua")
+    );
+    // Back to its old id, it heals the mod the first rename broke, and the
+    // other waits for a toolkit again.
+    st.rename_mod(&mut game, "toolkit", "kit").unwrap();
+    let u = mod_index(&st, "user");
+    assert!(st.s.mods[u].running(), "{:?}", st.s.mods[u].state);
+    assert!(matches!(
+        st.s.mods[mod_index(&st, "waiter")].state,
+        ModState::Failed(..)
+    ));
+    assert!(game.dir.join("storage/kit/n.lua").is_file());
+    // The next start finds them under their ids.
+    let again = studio(&mut game);
+    assert!(again.s.mods.iter().any(|m| m.id == "kit" && m.running()));
+    assert!(again.s.mods.iter().any(|m| m.id == "user" && m.running()));
+    assert!(again.s.mods.iter().any(|m| m.id == "crate" && !m.enabled));
+}
+
+#[test]
+fn a_rename_or_copy_onto_another_mods_id_or_data_changes_nothing() {
+    use horizon_studio::game::hstudio_modfiles::plan_mod;
+    let mut game = FakeGame::new("rename-taken");
+    let mut st = studio(&mut game);
+    // A mod whose file isn't named by its id, and one to rename or copy.
+    game.write_mod("My Mod.lua", "print('mine')\n");
+    game.write_mod("bar.lua", "storage.set('n', 1)\nprint('bar')\n");
+    run_for(&mut st, &mut game, 0.6);
+    let mods = game.mods_dir();
+    let mine = mod_index(&st, "my_mod");
+    assert_eq!(st.s.mods[mine].main, mods.join("My Mod.lua"));
+    // Its id is taken, though no file is called my_mod: renaming, copying
+    // and a new mod are refused, and nothing is written.
+    assert_eq!(st.rename_plan("bar", "My_Mod"), Err("my_mod already exists".to_owned()));
+    let e = st.rename_mod(&mut game, "bar", "my_mod").unwrap_err();
+    assert_eq!(e, "my_mod already exists");
+    assert_eq!(st.s.mods[mod_index(&st, "bar")].main, mods.join("bar.lua"));
+    let e = st.duplicate_mod(&mut game, "bar", "My Mod").unwrap_err();
+    assert_eq!(e, "my_mod already exists");
+    assert_eq!(
+        plan_mod(&mods, "my mod", false),
+        Err("my_mod already exists".to_owned())
+    );
+    assert!(st.create_mod(&mut game, "My_Mod", None).is_err());
+    assert!(st.create_module(&mut game, "my mod").is_err());
+    assert!(!mods.join("my_mod.lua").exists() && !mods.join("my_mod").exists());
+    let kept = std::fs::read_to_string(game.dir.join("studio.txt")).unwrap();
+    assert!(!kept.contains("off:my_mod"), "{kept}");
+    assert_eq!(st.s.mods.iter().filter(|m| m.id == "my_mod").count(), 1);
+    // A file written a moment ago, before the scan has listed it, counts
+    // too, and so does a mod still listed whose file went a moment ago.
+    game.write_mod("Fresh One.lua", "print('fresh')\n");
+    let e = st.rename_mod(&mut game, "bar", "fresh_one").unwrap_err();
+    assert_eq!(e, "fresh_one already exists");
+    game.write_mod("gone.lua", "print('gone')\n");
+    run_for(&mut st, &mut game, 0.6);
+    std::fs::remove_file(mods.join("gone.lua")).unwrap();
+    let e = st.rename_mod(&mut game, "bar", "gone").unwrap_err();
+    assert_eq!(e, "gone already exists");
+    // Another mod's saved data, left in storage/old: renaming onto it is
+    // refused, and both stay where they are.
+    std::fs::create_dir_all(game.dir.join("storage/old")).unwrap();
+    std::fs::write(game.dir.join("storage/old/n.lua"), "return 2\n").unwrap();
+    assert!(game.dir.join("storage/bar/n.lua").is_file());
+    let e = st.rename_mod(&mut game, "bar", "old").unwrap_err();
+    assert_eq!(e, "storage/old holds another mod's saved data");
+    assert!(mods.join("bar.lua").is_file() && !mods.join("old.lua").exists());
+    assert!(game.dir.join("storage/bar/n.lua").is_file());
+    assert_eq!(
+        std::fs::read_to_string(game.dir.join("storage/old/n.lua")).unwrap(),
+        "return 2\n"
+    );
+    // The next start lists my_mod once, from its own file, turned on.
+    let again = studio(&mut game);
+    let m = &again.s.mods[mod_index(&again, "my_mod")];
+    assert_eq!(m.main, mods.join("My Mod.lua"));
+    assert!(m.enabled && m.running());
+}
+
+#[test]
+fn a_rename_or_copy_whose_save_fails_changes_nothing() {
+    let mut game = FakeGame::new("rename-save-fails");
+    let mut st = studio(&mut game);
+    st.create_module(&mut game, "Box").unwrap();
+    let mods = game.mods_dir();
+    let lib = mods.join("box").join("lib.lua");
+    st.open_file(&lib);
+    st.s.editor.insert("-- my unsaved work\n");
+    // The save will fail: a folder stands where the file was.
+    std::fs::remove_file(&lib).unwrap();
+    std::fs::create_dir_all(&lib).unwrap();
+    let e = st.rename_mod(&mut game, "box", "crate").unwrap_err();
+    assert!(
+        e.contains("could not save box/lib.lua") && e.contains("nothing was renamed"),
+        "{e}"
+    );
+    assert!(mods.join("box").is_dir() && !mods.join("crate").exists());
+    assert_eq!(
+        st.s.mods[mod_index(&st, "box")].folder.as_deref(),
+        Some(mods.join("box").as_path())
+    );
+    let e = st.duplicate_mod(&mut game, "box", "crate").unwrap_err();
+    assert!(
+        e.contains("could not save box/lib.lua") && e.contains("nothing was copied"),
+        "{e}"
+    );
+    assert!(!mods.join("crate").exists() && !mods.join(".crate.copying").exists());
+    let kept = std::fs::read_to_string(game.dir.join("studio.txt")).unwrap();
+    assert!(!kept.contains("off:crate"), "{kept}");
+    // The edits are still there, unsaved.
+    assert_eq!(st.s.editor.title, "box/lib.lua");
+    assert!(st.s.editor.dirty && st.s.editor.text().starts_with("-- my unsaved work"));
+    // A copy needs a name.
+    assert_eq!(
+        st.duplicate_mod(&mut game, "box", "  ").unwrap_err(),
+        "the copy needs a name"
+    );
+}
+
+#[test]
+fn duplicate_mod_copies_it_turned_off() {
+    let mut game = FakeGame::new("duplicate-mod");
+    let mut st = studio(&mut game);
+    game.write_mod(
+        "glow.lua",
+        "-- name: Glow\n-- version: 1.0\nstorage.set('n', 1)\nprint('glow runs')\n",
+    );
+    write_module(
+        &game,
+        "box",
+        &[
+            ("main.lua", "local lib = require('lib.util')\nprint('box runs')\n"),
+            ("lib/util.lua", "return {}\n"),
+        ],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let mods = game.mods_dir();
+    let copy = st.duplicate_mod(&mut game, "glow", "Glow 2").unwrap();
+    assert_eq!(copy, mods.join("glow_2.lua"));
+    let text = std::fs::read_to_string(&copy).unwrap();
+    assert!(text.starts_with("-- name: Glow 2\n-- version: 1.0\n"), "{text}");
+    let c = mod_index(&st, "glow_2");
+    assert!(!st.s.mods[c].enabled && !st.s.mods[c].running());
+    assert_eq!(st.s.mods[c].name, "Glow 2");
+    assert!(st.s.mods[mod_index(&st, "glow")].running(), "the original runs on");
+    assert!(
+        std::fs::read_to_string(game.dir.join("studio.txt"))
+            .unwrap()
+            .contains("off:glow_2")
+    );
+    assert!(
+        !game.dir.join("storage/glow_2").exists(),
+        "its saved data stays the original's"
+    );
+    // A module: every file, its main.lua named.
+    let copy = st.duplicate_mod(&mut game, "box", "crate").unwrap();
+    assert_eq!(copy, mods.join("crate").join("main.lua"));
+    assert!(mods.join("crate").join("lib").join("util.lua").is_file());
+    assert!(
+        std::fs::read_to_string(&copy)
+            .unwrap()
+            .starts_with("-- name: crate\nlocal lib")
+    );
+    let c = mod_index(&st, "crate");
+    assert!(st.s.mods[c].folder.is_some() && !st.s.mods[c].enabled);
+    assert!(!mods.join(".crate.copying").exists());
+    // A name that is taken.
+    let e = st.duplicate_mod(&mut game, "box", "glow").unwrap_err();
+    assert!(e.contains("glow already exists"), "{e}");
 }

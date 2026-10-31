@@ -5,15 +5,22 @@
 // its tabs down the side and big letters. The shapes and colours are
 // theirs; the names and the letters are the studio's. Their buttons do the
 // studio's work: Execute runs the editor's code, Clear empties it, Execute
-// File reloads the mod open in the editor, Save File saves it (scratch code
-// as a new script mod, named first), the script list opens one, Open File is
-// the Library, Attach and Inject reload every mod, Options is Settings. The
-// other pages show in the editor's place, with the studio's tabs above.
+// File saves the open file of a mod and reloads the mod, Save File saves it
+// (scratch code as a new script, named first), the script list is the
+// Editor's (scripts, and modules that fold open to their files), Open File
+// is the Library (where the styles with no script list open a module's
+// other files, from its "..."), Attach and Inject reload every mod, Options
+// is Settings. The other pages show in the editor's place, with the
+// studio's tabs above, and a module that failed in another of its files
+// says where by the editor, as the studio's own layout does.
 
-use super::hstudio::{Font, ModState, Studio};
-use super::hstudio_look::{P, draw_code, draw_log, fade, hover, id, inside, mix, on, page, pal, set_pal, top};
+use super::hstudio::{Font, Studio};
+use super::hstudio_look::{
+    P, chevron, draw_code, draw_log, fade, failed_chip, failed_chip_width, hover, id, inside, mix, on, page, pal,
+    set_pal, state_dot, top,
+};
 use super::hstudio_theme::{Layout, Palette, Theme};
-use super::hstudio_ui::{Action, Tab};
+use super::hstudio_ui::{Action, ScriptRow, Spot, Tab, open_row, row_label, script_rows, scripts_first};
 
 /// A flat button's look.
 #[derive(Clone, Copy)]
@@ -80,15 +87,10 @@ fn strip_width(p: &mut P, b: Btn, items: &[(&str, Action)]) -> f32 {
         - 5.0
 }
 
-/// The mod whose file the editor has open.
-fn open_mod(st: &Studio) -> Option<usize> {
-    let path = st.s.editor.path.as_ref()?;
-    st.s.mods.iter().position(|m| &m.main == path)
-}
-
-/// Execute File: the mod open in the editor reloaded, else the editor's code run.
-fn execute_file(st: &Studio) -> Action {
-    open_mod(st).map_or(Action::Run, Action::Reload)
+/// Execute File: the open file of a mod saved and its mod reloaded (any
+/// file of a module, not only main.lua), else the editor's code run.
+fn execute_file() -> Action {
+    Action::ExecuteFile
 }
 
 pub(super) fn draw(st: &mut Studio, p: &mut P, layout: Layout, body: [f32; 4], dt: f32) {
@@ -180,6 +182,9 @@ fn synapse(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         };
         let tw = (p.measure(&label, 12.0, Font::Regular) + 26.0).min(area[2] - 40.0);
         p.rect([area[0], area[1], tw, 24.0], 3.0, c.plate_soft);
+        st.s.ui
+            .hits
+            .push(([area[0], area[1], tw, 24.0], Action::Spot(Spot::File)));
         let label = p.fit(&label, tw - 20.0, 12.0, Font::Regular);
         p.text(
             &label,
@@ -203,67 +208,20 @@ fn synapse(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             Action::NewMod,
             dt,
         );
+        // A module that failed in another of its files says where, beside its tab.
+        failed_chip(st, p, area[0] + tw + 32.0, area[1], area[0] + area[2], dt);
         draw_code(st, p, [area[0], area[1] + 24.0, area[2], area[3] - 24.0], dt);
     } else {
         tabbed_page(st, p, area, btn, dt);
     }
-    // The script list: the mods, a click opens one.
-    let lx = x + w - pad - list_w;
-    p.text(
-        "Script mods",
-        lx + 4.0,
-        top(area[1] + 12.0, 11.0),
-        11.0,
-        Font::Medium,
-        c.muted,
-    );
-    let list = [lx, area[1] + 24.0, list_w, area[3] - 24.0];
-    p.rect(list, 2.0, c.plate_soft);
-    let row_h = 21.0;
-    let rows = (((list[3] - 8.0) / row_h).floor() as usize).max(1);
-    let open = open_mod(st);
-    let first = open.unwrap_or(0).saturating_sub(rows - 1);
-    for (k, i) in (first..st.s.mods.len()).take(rows).enumerate() {
-        let r = [
-            list[0] + 3.0,
-            list[1] + 4.0 + row_h * k as f32,
-            list[2] - 6.0,
-            row_h - 1.0,
-        ];
-        let ui = &mut st.s.ui;
-        let hv = hover(ui, id("script", i), inside(r, ui.mouse), dt);
-        let bg = if open == Some(i) {
-            fade(c.accent, 0.45)
-        } else {
-            fade(c.ink, 0.08 * hv)
-        };
-        p.rect(r, 2.0, bg);
-        let m = &st.s.mods[i];
-        let dot = match m.state {
-            ModState::Running => c.success,
-            ModState::Failed(..) => c.danger,
-            ModState::Off => c.muted,
-        };
-        p.rect([r[0] + 6.0, r[1] + r[3] / 2.0 - 3.0, 6.0, 6.0], 3.0, dot);
-        let name = p.fit(&m.chunk(), r[2] - 24.0, 12.0, Font::Regular);
-        let fg = if m.enabled { c.ink_soft } else { c.muted };
-        p.text(
-            &name,
-            r[0] + 18.0,
-            top(r[1] + r[3] / 2.0, 12.0),
-            12.0,
-            Font::Regular,
-            fg,
-        );
-        st.s.ui.hits.push((r, Action::Edit(i)));
-    }
+    script_list(st, p, x + w - pad - list_w, area[1], list_w, area[3], dt);
     // The buttons along the bottom.
     let by = y + h - pad - bar_h;
     let left = [
         ("Execute", Action::Run),
         ("Clear", Action::ClearEditor),
         ("Open File", Action::Tab(Tab::Library)),
-        ("Execute File", execute_file(st)),
+        ("Execute File", execute_file()),
         ("Save File", Action::SaveFile),
     ];
     let right = [
@@ -279,6 +237,109 @@ fn synapse(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     }
     strip(st, p, btn, &left[..shown], x + pad, by, bar_h, dt);
     strip(st, p, btn, &right, x + w - pad - rw, by, bar_h, dt);
+}
+
+/// The editor of the styles with no tab for its file: its code in `area`,
+/// and over its top right, when a module failed in another of its files,
+/// the chip that says where (a click opens it there).
+fn code_with_chip(st: &mut Studio, p: &mut P, area: [f32; 4], dt: f32) {
+    draw_code(st, p, area, dt);
+    let ed = &st.s.editor;
+    if ed.conflict || ed.removed {
+        // The banner over the code says more just now.
+        return;
+    }
+    if let Some(w) = failed_chip_width(st, p) {
+        let (x, y) = (area[0] + area[2] - w - 16.0, area[1] + 8.0);
+        if x > area[0] + 60.0 {
+            p.rect([x, y, w, 24.0], 12.0, pal().plate_soft);
+            failed_chip(st, p, x, y, area[0] + area[2], dt);
+        }
+    }
+}
+
+/// Synapse's script list at the right, its column `[x, y, w, h]`: the
+/// Editor's rows (the scratch file, scripts, modules that fold open to
+/// their files) in its own flat look. A click opens a file or folds a
+/// module, "..." on the row under the pointer (or a right press) opens its
+/// menu, and the wheel scrolls it.
+fn script_list(st: &mut Studio, p: &mut P, x: f32, y: f32, w: f32, h: f32, dt: f32) {
+    let c = pal();
+    p.text("Scripts", x + 4.0, top(y + 12.0, 11.0), 11.0, Font::Medium, c.muted);
+    let list = [x, y + 24.0, w, h - 24.0];
+    p.rect(list, 2.0, c.plate_soft);
+    // Its own menu, under its rows'.
+    st.s.ui.hits.push(([x, y, w, h], Action::Spot(Spot::Scripts)));
+    let row_h = 21.0;
+    let rows = (((list[3] - 8.0) / row_h).floor() as usize).max(1);
+    let all = script_rows(st);
+    let open = open_row(st, &all);
+    let first = scripts_first(st, all.len(), rows, open);
+    st.s.ui.scripts_at = Some(list);
+    for (k, row) in all.iter().enumerate().skip(first).take(rows) {
+        let r = [
+            list[0] + 3.0,
+            list[1] + 4.0 + row_h * (k - first) as f32,
+            list[2] - 6.0,
+            row_h - 1.0,
+        ];
+        let label = row_label(st, row);
+        let ui = &mut st.s.ui;
+        let over = inside(r, ui.mouse);
+        let hv = hover(ui, id(&label, k), over, dt);
+        let bg = if open == Some(k) {
+            fade(c.accent, 0.45)
+        } else {
+            fade(c.ink, 0.08 * hv)
+        };
+        p.rect(r, 2.0, bg);
+        let cy = r[1] + r[3] / 2.0;
+        let m = match row {
+            ScriptRow::Scratch => None,
+            ScriptRow::Script { i, .. } | ScriptRow::Module { i, .. } | ScriptRow::File { i, .. } => st.s.mods.get(*i),
+        };
+        let fg = if m.is_none_or(|m| m.enabled) {
+            c.ink_soft
+        } else {
+            c.muted
+        };
+        let dot = m.map_or(c.muted, |m| state_dot(&m.state));
+        let tx = match row {
+            ScriptRow::Scratch | ScriptRow::Script { .. } => {
+                p.rect([r[0] + 6.0, cy - 3.0, 6.0, 6.0], 3.0, dot);
+                r[0] + 18.0
+            }
+            ScriptRow::Module { open: unfolded, .. } => {
+                chevron(p, r[0] + 4.0, cy - 3.5, *unfolded, c.ink_soft);
+                p.rect([r[0] + 15.0, cy - 3.0, 6.0, 6.0], 3.0, dot);
+                r[0] + 27.0
+            }
+            ScriptRow::File { .. } => r[0] + 30.0,
+        };
+        let menu = over && !matches!(row, ScriptRow::Scratch);
+        let room = r[2] - (tx - r[0]) - if menu { 24.0 } else { 6.0 };
+        let name = p.fit(&label, room.max(12.0), 12.0, Font::Regular);
+        p.text(&name, tx, top(cy, 12.0), 12.0, Font::Regular, fg);
+        st.s.ui.hits.push((r, Action::ScriptRow(k.min(65535) as u16)));
+        st.s.ui.hits.push((r, Action::Spot(Spot::Row(k.min(65535) as u16))));
+        if menu {
+            let b = [r[0] + r[2] - 20.0, r[1] + 1.0, 18.0, r[3] - 2.0];
+            let ui = &mut st.s.ui;
+            let bh = hover(ui, id("synapse-row-menu", k), inside(b, ui.mouse), dt);
+            p.rect(b, 2.0, fade(c.ink, 0.12 * bh));
+            let gw = p.measure("...", 12.0, Font::Medium);
+            p.text(
+                "...",
+                b[0] + (b[2] - gw) / 2.0,
+                top(cy, 12.0),
+                12.0,
+                Font::Medium,
+                c.ink_soft,
+            );
+            ui.hits.push((b, Action::ScriptMenu(k.min(65535) as u16)));
+        }
+    }
+    st.s.ui.script_rows = all;
 }
 
 // ----------------------------------------------------------------- ProtoSmasher
@@ -298,7 +359,7 @@ fn protosmasher(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let out_h = (h * 0.24).max(56.0);
     let area = [x + pad, y + pad, w - 2.0 * pad, h - 5.0 * pad - row_h - out_h - foot_h];
     if st.s.ui.tab == Tab::Editor {
-        draw_code(st, p, area, dt);
+        code_with_chip(st, p, area, dt);
     } else {
         tabbed_page(st, p, area, btn, dt);
     }
@@ -351,6 +412,8 @@ fn protosmasher(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let dx = x + pad + 2.0 * (quarter + 6.0);
     let r = [dx, fy, x + w - pad - dx, foot_h];
     button(st, p, Btn { upper: false, ..btn }, &name, r, Action::NextTheme, dt);
+    // A right click lists every theme, as its dropdown did.
+    st.s.ui.hits.push((r, Action::Spot(Spot::Themes)));
     let (ax, ay) = (r[0] + r[2] - 16.0, r[1] + r[3] / 2.0 - 2.0);
     for i in 0..4 {
         let f = i as f32;
@@ -376,7 +439,7 @@ fn protoclassic(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let out_h = (h * 0.22).max(52.0);
     let area = [x + pad, y + pad, w - 2.0 * pad, h - 5.0 * pad - row_h - out_h - foot_h];
     if st.s.ui.tab == Tab::Editor {
-        draw_code(st, p, area, dt);
+        code_with_chip(st, p, area, dt);
     } else {
         tabbed_page(st, p, area, btn, dt);
     }
@@ -453,7 +516,7 @@ fn rc7(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         h - 3.0 * pad - bottom_h,
     ];
     if st.s.ui.tab == Tab::Editor {
-        draw_code(st, p, area, dt);
+        code_with_chip(st, p, area, dt);
     } else {
         sub_page(st, p, area, dt);
     }

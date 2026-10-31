@@ -764,6 +764,7 @@ fn screen_keycode(key: &str) -> Option<&'static str> {
         "pagedown" => Some("PageDown"),
         "escape" => Some("Escape"),
         " " => Some("Space"),
+        "`" => Some("Backquote"),
         k if k.chars().count() == 1 => keycode(&format!("key.keyboard.{}", k.to_ascii_lowercase())),
         _ => None,
     }
@@ -907,22 +908,17 @@ pub fn screen_call(env: &mut dyn Env, lua: &mut Lua, which: u32, args: &[Value])
             pointer_moved(env.rbx(), x, y);
             Ok(Vec::new())
         }
-        // click(x, y, button)
-        2 => {
+        // click(x, y, button), release(x, y, button)
+        2 | 3 => {
             let (x, y) = xy(lua, args)?;
-            let left = args.get(2).and_then(Value::as_text).is_none_or(|b| b == "left");
+            let button = args.get(2).and_then(Value::as_text);
+            let down = which == 2;
             let rbx = env.rbx();
             pointer_moved(rbx, x, y);
-            pointer_button(rbx, left, true);
-            Ok(Vec::new())
-        }
-        // release(x, y, button)
-        3 => {
-            let (x, y) = xy(lua, args)?;
-            let left = args.get(2).and_then(Value::as_text).is_none_or(|b| b == "left");
-            let rbx = env.rbx();
-            pointer_moved(rbx, x, y);
-            pointer_button(rbx, left, false);
+            match button.as_deref() {
+                Some("middle") => middle_button(rbx, down),
+                b => pointer_button(rbx, b.is_none_or(|b| b == "left"), down),
+            }
             Ok(Vec::new())
         }
         // key(key, down)
@@ -1043,6 +1039,20 @@ fn hits(rbx: &Rbx) -> (Option<Id>, Option<Id>) {
         f.layout.hit_test(p).map(|n| f.node_inst[n]),
         f.layout.button_at(p).map(|n| f.node_inst[n]),
     )
+}
+
+/// The middle button over the GUI: InputBegan and InputEnded of the GUI
+/// object under the pointer and of UserInputService, as MouseButton3
+/// (Roblox's buttons have no click of their own for it).
+pub fn middle_button(rbx: &mut Rbx, down: bool) {
+    rbx.pointer.buttons[2] = down;
+    let (top, _) = hits(rbx);
+    let state = if down { "Begin" } else { "End" };
+    let input = input_object(rbx, None, "MouseButton3", state, None);
+    if let Some(t) = top {
+        rbx.fire(t, if down { "InputBegan" } else { "InputEnded" }, vec![input]);
+    }
+    mouse_input(rbx, "MouseButton3", down, top.is_some());
 }
 
 pub fn pointer_button(rbx: &mut Rbx, left: bool, down: bool) {

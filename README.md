@@ -111,8 +111,8 @@ In a world, press **F8** (or type `/studio`). Escape or F8 closes it. The world 
 | Tab | What it does | Keys |
 |---|---|---|
 | **Console** | Runs Lua at once. An expression's value is printed, tables expanded. What you register here (`on`, `command`, `every`) runs until `clear()`. Suggestions show as you type. | Enter run · Tab complete · Up/Down history (or choose a suggestion) · Esc close the suggestions · Page Up/Down scroll · Ctrl+L clear |
-| **Editor** | Edits a mod's file (or `scratch.lua`), with the console, the problems and the agent in a panel under it. Saving reloads the mod. | Ctrl+S save · Ctrl+Enter run in the console · Ctrl+Space suggest · Tab take a suggestion · Ctrl+\` or Ctrl+J show or hide the panel · Esc back to the code · Ctrl+Z/Y undo/redo · Ctrl+C/X/V · Ctrl+A · Ctrl+D duplicate line · Ctrl+/ comment · Tab/Shift+Tab indent · mouse click and drag |
-| **Library** | Your script mods and the examples; Open folder shows the mods folder. | Up/Down choose · Enter edit · Space on/off · R reload · N new mod |
+| **Editor** | Edits a mod's file (or `scratch.lua`), with the script list beside it and the console, the problems and the agent in a panel under it. Saving reloads the mod. | Ctrl+S save · Ctrl+Enter run in the console (a module's file: save and reload the module) · Ctrl+Space suggest · Tab take a suggestion · Ctrl+\` or Ctrl+J show or hide the panel · Esc back to the code · Ctrl+Z/Y undo/redo · Ctrl+C/X/V · Ctrl+A · Ctrl+D duplicate line · Ctrl+/ comment · Tab/Shift+Tab indent · mouse click and drag · right click or the Menu key: its menu |
+| **Library** | Your script mods and the examples, a module with its files; each mod's **...** (or a right click on its row) has its menu: a module's files to open and New file, or a script's Edit, then Reload, Turn off or on, Rename, Duplicate, Make it a module, Delete, Show in folder, Copy path and New mod. Open folder shows the mods folder. | Up/Down choose · Enter edit · Space on/off · R reload · N new script or module · F new file in a module · M make a script a module · . or the Menu key: its menu |
 | **Docs** | The API. | Up/Down, Page Up/Down, wheel |
 | **Settings** | How the studio looks: see [Themes](#themes-and-the-window). | Up/Down, Page Up/Down, wheel |
 
@@ -121,16 +121,28 @@ Ctrl+1 to Ctrl+5 switch tabs. In chat: `/studio` opens it, `/studio reload` relo
 
 ### The editor
 
+- **The script list** beside the code has the scratch file, then your mods: a script as one row, a module as a folder
+  that a click folds open to its files (opening one of its files unfolds it). A click opens a file, unsaved edits in
+  the one before saved first. The **+** at its top makes a new script or module, or a new file of the module open.
+  Each row's **...** (or a right click on it) has its menu (see [Right-click menus](#right-click-menus)): a mod's
+  Reload, Turn off or on, Rename, Duplicate, Make it a module and Delete, a module's New file, a file's Rename and
+  Delete. A delete asks first and moves the file or mod to `trash/` beside the mods folder, and the editor follows a
+  file that is renamed or made a module. Ctrl+Enter on a module's file saves it and reloads the module, since the
+  console can't `require` its files; when a module fails in another of its files, a chip by the title says where
+  (*Failed in lib.lua:5*) and opens it there.
 - **Suggestions** open as you type a name: after `player.` the player's functions, after `on("` the events, and
   otherwise the libraries, the standard library, keywords and the names in your file, best matches first. Each shows
   its kind, its signature, and beside the list what it does. Up and Down choose, Tab takes one (Enter too, once you
   have moved through the list), Esc closes them, Ctrl+Space opens them anywhere. A function comes with its brackets,
-  the cursor between them; a library with its dot, and its members open.
+  the cursor between them; a library with its dot, and its members open. In a module's file they know the other files
+  too: `require("` offers them, and after `local lib = require("lib")`, `lib.` offers what lib.lua returns.
 - **Problems** are found as you type, a second after you stop typing: a syntax error underlined in red where the parser
   stopped, and in amber a name nothing defines (*nothing defines 'plyer' (did you mean player?)*) or a library
   function that doesn't exist (*player has no 'poss'*). Each line with one has a dot in the gutter and its message at
   the end, the scrollbar marks where they are, and the count by the file's name opens the Problems panel. A runtime
-  error still marks its line in red.
+  error still marks its line in red. In a module's file, what the other files define is known, and a
+  `require("nope")` of a file the module lacks is marked (*no nope.lua in this module*), as is a typo in what a
+  required file returns (*lib.lua has no 'gret' (did you mean greet?)*).
 - **Typing** keeps your indent, and Enter after `then`, `do`, `function(` or `repeat` indents the next line and
   closes the block below with its `end` (`end)` for a function passed to a call, `until` for `repeat`), unless it is
   already closed. Brackets and quotes close themselves, typing the closing one steps over it, and Backspace between
@@ -140,6 +152,49 @@ Ctrl+1 to Ctrl+5 switch tabs. In chat: `/studio` opens it, `/studio reload` relo
   and shows it; a click in it, or on a tab, sends typing there, and Esc back to the code.
 - **The file on disk** is watched: when something else changes it (another editor, or the agent), the editor reads it
   again, keeping your place, and Ctrl+Z goes back. If you had unsaved edits, it asks first: Reload, or Keep mine.
+  When the script open is made a module elsewhere (the agent's `write_mod`), the editor follows it to its main.lua,
+  unsaved edits and all; when the file open is removed, its module's main.lua opens, or, with unsaved edits, it
+  stays and asks: Close lets it go, Keep mine keeps it for a save to write back.
+
+### Right-click menus
+
+A right click opens the menu of what is under the pointer, at the pointer: the code, the file's name, the console's
+lines and the agent's conversation and their input lines, the rows of the script list and the Library, the examples,
+the panel's tabs, the problems, the title bar and the header, and the Docs. The **Menu key** (or **Shift+F10**) opens
+the menu of what has the keys: the code's at the cursor, an input line's, the Library's chosen mod's and the Problems'
+chosen problem's (the list's own menu while it is empty). Up and Down choose (Home and End go to the first and the
+last), Enter or Space does it, a letter goes to the next item that starts with it, and Escape, or a click or the wheel
+outside it, closes it. A menu taller than the screen scrolls. Items that can't do anything now are greyed out, and
+each shows its shortcut.
+
+- **The code**: Go to definition (in the file, or in a module's other files, which it opens), Open the library an
+  `import("...")` names or the file a `require("...")` loads, Show the function in the Docs; Cut, Copy, Paste, Select
+  all; Toggle comment, Indent, Outdent, Duplicate line; with an agent found, Ask it, Explain the selection (or the
+  line), and Fix with it when the line has a problem; Run the selection, Run and Save. A right click puts the cursor
+  there, unless that is in the selection, which stays. Go to definition reads the file as written, without scopes.
+- **The file's name** (and Synapse's tab): Save, Save as a script for scratch code, Revert to saved (one edit: Ctrl+Z
+  brings yours back), Rename, Show in folder, Copy path.
+- **A mod** (a row of the script list, of Synapse's list, of the Library): Open or Edit (a module's New file and its
+  files), Reload (while it is on), Turn off or on, Rename..., Duplicate..., Make it a module, Delete..., Show in
+  folder, Copy path, for a mod that failed Copy the error and Fix with the agent, and in the Library New mod. Rename
+  gives the mod's file or folder a new id in place: its on/off state and its saved data (`storage/<id>`) go with it,
+  and its name in the Library too when it was the old id's (a name written by hand stays); mods that import it fail
+  until they import the new id (the prompt says which), and mods that were waiting for the new id start. An id that
+  another mod has is refused, whatever its file is called (`My Mod.lua` has the id `my_mod`). A duplicate starts
+  turned off, as it would register the same commands twice. Delete asks first and moves the mod to `trash/` in the
+  studio's folder. The lists' empty space offers New script, New module, New file in the module open, Reload all and
+  the mods folder; an example offers Install and Copy its code.
+- **The console's lines** and **the agent's conversation**: Copy what is selected, Copy all, Clear (or Stop and New
+  conversation). **Their input lines**: the console's Paste, Copy, Cut and Clear the line, Run and Clear the console;
+  the agent's Paste, Clear the line, Send and Stop.
+- **The panel's tabs**: Copy all, Clear, Copy all problems, the agents found and Look for agents again, Model ›, Hide
+  the panel. **A problem**: Go to it, Copy, Fix with the agent.
+- **The title bar** and **the header**: Roll up, Fill the screen, Reset window, In a window or Full screen, Theme ›,
+  Settings, Close. An item ending in › puts its list in the menu's place, so an executor style is left in two clicks.
+
+The executor styles have the same menus (ProtoSmasher's theme dropdown lists the themes on a right click); asking the
+agent is the studio's own layout's, which has its panel. What a menu did, such as *Copied 42 characters*, shows at the
+bottom of the studio a moment.
 
 ### The agent
 
@@ -168,7 +223,7 @@ Settings, the last tab, chooses how the studio looks, and keeps it in `look.txt`
   the executor styles below.
 - **Window.** Full screen, or a window like a Windows 10 application's: drag it by its title bar, size it from its
   bottom right corner, roll it up to its title bar (—), fill the screen (□) or close it (×). Reset window puts it
-  back in the middle.
+  back in the middle. A right click on the title bar (or on the header) has all of these, and Theme ›.
 - **Accent**, the colour of the main buttons, the cursor and the selection; **Size**, of everything, 75% to 150%;
   **Backdrop**, how much the studio hides the game; **Code size**, in the editor and console; **Animations** on or
   off.
@@ -178,15 +233,18 @@ window. Only their shape and colours are copied; the window says Horizon Studio,
 
 | Style | Its layout |
 |---|---|
-| **Synapse X style** | Dark. The editor with its tab and +, the script list on the right (a click opens a mod), and Execute, Clear, Open File, Execute File, Save File, Console, Options and Attach along the bottom |
+| **Synapse X style** | Dark. The editor with its tab and +, the script list on the right (scripts, and modules that fold open to their files; a click opens one), and Execute, Clear, Open File, Execute File, Save File, Console, Options and Attach along the bottom |
 | **ProtoSmasher style** | Grey. The editor, then EXECUTE, OPEN FILE, CLEAR and INJECT, the output, then SETTINGS, NEW TAB and the theme's dropdown |
 | **ProtoSmasher classic** | A white title bar over a dark body: the editor, Windows' own Execute, Open, Clear and Inject buttons, a grey output, Console and Options |
 | **RC7 style** | Maroon, with white tabs down the left (Editor, Console, Library, Docs, Options), a white editor, big letters down the right, and EXECUTE and CLEAR |
 
-Their buttons do the studio's work: Execute runs the editor's code, Clear empties it, Execute File reloads the mod
-open in the editor, Save File saves it, Open File shows the Library, Attach and Inject reload every mod, New Tab
-starts a new mod, and Options shows Settings. The console, the Library and the docs show in the editor's place,
-with their tabs above.
+Their buttons do the studio's work: Execute runs the editor's code, Clear empties it, Execute File saves the open
+file of a mod and reloads the mod, Save File saves it (scratch code as a new script, named first), Open File shows
+the Library, Attach and Inject reload every mod, New Tab starts a new script or module, and Options shows Settings.
+The console, the Library and the docs show in the editor's place, with their tabs above. In the styles with no
+script list, a module's other files open from the Library, from the **...** of the mod chosen there. When a module
+fails in another of its files, the chip that says where (*Failed in lib.lua:5*) is beside Synapse's tab and over the
+code in the others.
 
 | | |
 |---|---|
@@ -300,8 +358,8 @@ shows the JSON). Then restart the agent.
 |---|---|
 | `docs`, `examples` | The complete reference, so an agent never looks elsewhere: every function, event, widget and standard library function with its arguments, results, errors and an example, the language, limits, error messages and fixes, recipes and the test steps; by topic, by exact name (`player.pos`, `event:tick`) or by search, and as MCP resources (`horizon-studio://docs/<topic>`). The server fetches the newest reference from this repository's main branch (`docs/reference.json`) as it starts, so the docs change without a new release. The bundled mods' source |
 | `update_server` | Updates the server to the newest release in place; it switches to the new binary at its next call, without a restart or a reinstall (also Options → Mods → Horizon Studio in the game, and `horizon-studio-mcp update`) |
-| `write_mod`, `read_mod`, `list_mods`, `delete_mod` | Mods in the game's mods folder; `write_mod` checks the mod first and reloads it in the game |
-| `check_mod` | Loads a mod headless: does it run, its error and line, its commands, handlers and libraries |
+| `write_mod`, `read_mod`, `list_mods`, `delete_mod` | Mods in the game's mods folder, scripts and modules; `write_mod` checks the mod first and reloads it in the game, and for a module writes only the files given (`remove` deletes files) |
+| `check_mod` | Loads a mod headless: does it run, its error with its file and line, its commands, handlers and libraries |
 | `test_mod` | Steps (commands, chat, keys, Lua assertions, player and blocks, screen clicks...) with expectations (chat, output, text drawn, sounds, particles, mod state), headless or `live` |
 | `game_status`, `run_lua`, `send_chat`, `game_log`, `reload_mod` | The running game: its state and mods, Lua in the console, chat and commands, the console log |
 | `horizon_ctl` | Horizon's own `horizon-ctl` commands for a game started with `--control`: playing it, its widgets, screenshots |
@@ -321,11 +379,13 @@ while both run, so an agent shows as connected from the start of its session.
 
 Script mods live in `horizon-mods/.horizon-mod-data/horizon_studio/mods/` in your Horizon game folder:
 
-- `name.lua`: a mod in one file, or
-- `name/main.lua`: a folder mod, whose other files load with `require("file")` (`require("lib.util")` reads
-  `lib/util.lua`).
+- `name.lua`: a **script**, a mod in one file, or
+- `name/main.lua`: a **module** (a folder mod), whose main.lua loads its other files with `require("file")`
+  (`require("lib.util")` reads `lib/util.lua`). Each file runs once, however its name is written, and the files share
+  the mod's globals. Two files that require each other while they load are an error that names them.
 
-The file runs when the mod loads, and again each time it changes. Lines at the top name it in the Library:
+The file runs when the mod loads, and again each time it changes (for a module, when any of its files does). Lines
+at the top name it in the Library:
 
 ```lua
 -- name: Coordinates
@@ -351,7 +411,32 @@ command("coords", function()
 end, "Shows or hides the coordinates")
 ```
 
-The Library's **New mod** writes a file like this to start from.
+The Library's **New mod** (or the script list's **+**) writes a file like this to start from. Its **Module** switch
+makes a module instead, three files that show how the pieces fit: `main.lua` starts it and requires the other two,
+`shared.lua` returns one table every file gets (the values they share), and `lib.lua` returns the functions:
+
+```lua
+-- night_light/main.lua
+local shared = require("shared")
+local lib = require("lib")
+command("night_light", function(args)
+  return lib.greet(args ~= "" and args or "you")
+end, "Says hello")
+on("tick", function() shared.ticks = shared.ticks + 1 end)
+```
+
+```lua
+-- night_light/lib.lua (shared.lua is: return { greeting = "Hello", ticks = 0 })
+local shared = require("shared")
+local lib = {}
+function lib.greet(name)
+  return shared.greeting .. ", " .. name .. "! (" .. shared.ticks .. " ticks so far)"
+end
+return lib
+```
+
+In Roblox's style, each file of a module is also a ModuleScript under `script`: `require(script.lib)` in main.lua, and
+`require(script.Parent.shared)` in lib.lua, load the same files.
 
 ### Events
 
@@ -375,7 +460,7 @@ The Library's **New mod** writes a file like this to start from.
 | `on(event, fn)` | Runs `fn` on an event (above). |
 | `command(name, fn[, help])` | `/name args` calls `fn(args, words)`; a returned string shows in chat. Vanilla's command names are refused. |
 | `after(seconds, fn)`, `every(seconds, fn)`, `cancel(id)` | Timers; `after` and `every` return an id. |
-| `require(name)` | Loads another file of a folder mod. |
+| `require(name)` | Loads another file of a module, once (`require(script.lib)` too). |
 | `task.wait([seconds])`, `task.spawn(fn, ...)`, `task.defer(fn, ...)`, `task.delay(seconds, fn, ...)`, `task.cancel(thread)` | Luau's task scheduler: wait without stopping the game (a mod's top level, commands, these threads and Roblox signal handlers can wait), and threads of their own now, after the current code, or later. `task.synchronize()` and `task.desynchronize()` do nothing. |
 | `wait([seconds])`, `spawn(fn)`, `delay(seconds, fn)`, `tick()`, `time()`, `warn(...)` | Roblox's older globals: `task.wait`, `task.defer` and `task.delay` as they were; seconds since 1970; the studio's clock; a warning in the console. |
 | `color(r, g, b[, a])` | A color number for `hud` functions. Colors are also `0xAARRGGBB` numbers or `"#rrggbb"` strings. |
@@ -439,7 +524,9 @@ The Library's **New mod** writes a file like this to start from.
 The agent commands are those of Horizon's `horizon-ctl` ([agent control](https://github.com/horizon-rust/horizon/blob/main/docs/agent-control.md)),
 limited to reading the world and acting as the player: nothing that saves, quits or changes options.
 
-In the console only: `help([name])`, `clear()`, `reload([id])`, `mods()`, `edit(id)`, `new(name)`.
+In the console only: `help([name])`, `clear()`, `reload([id])`, `mods()`, `edit(id[, file])` (a module's other
+files by their path in it: `edit("tool", "lib.lua")`), `new(name[, kind])` (`new("Tool", "module")` makes a
+module).
 
 ### Screens
 
@@ -452,7 +539,7 @@ changes the screen:
 | `title`, `width` | A panel with this title (220 GUI pixels wide unless given). |
 | `widgets` | The panel's rows, top to bottom (below). |
 | `draw(w, h)` | Called each frame after the panel: draw anything with `hud.text`, `hud.rect`... A screen with neither `title` nor `widgets` is yours alone to draw. |
-| `click(x, y, button)`, `key(key, down)`, `text(t)`, `wheel(steps)` | Input outside the widgets (`button` is `"left"` or `"right"`; `key` is `"enter"`, `"left"`, `"a"`...). |
+| `click(x, y, button)`, `key(key, down)`, `text(t)`, `wheel(steps)` | Input outside the widgets (`button` is `"left"`, `"right"` or `"middle"`; `key` is `"enter"`, `"left"`, `"a"`, `" "`...). |
 | `close()` | Called when the screen closes. |
 | `canvas` | `true`: the screen is yours to draw, in dp with `gfx.*`. `draw(w, h)` gets the size in dp, and the pointer calls come in dp too, with `move(x, y)` and `release(x, y, button)` added. `backdrop = false` drops the dimmed backdrop. |
 
@@ -502,7 +589,7 @@ command("hi", function(args) return greeter.greet(args) end)
   `storage` or show on a screen belongs to that mod. A library keeps its own state between calls (its locals), so
   it can be a shared service: a registry, an event bus, a cache.
 - Mods talk without importing each other with `emit("name:event", ...)` and `on("name:event", fn)`.
-- Folder mods can still split themselves into files with `require`; `import` is between mods.
+- A module splits itself into files with `require`, inside the mod; `import` is between mods.
 
 #### The UI Kit
 

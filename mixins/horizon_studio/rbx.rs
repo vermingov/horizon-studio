@@ -1653,8 +1653,11 @@ impl Rbx {
             removed += before - inst.conns.len();
         }
         self.conn_count -= removed;
-        // Destroyed instances nothing can reach any more are let go.
+        // Destroyed instances nothing can reach any more are let go, and so
+        // is what require kept for those that were ModuleScripts.
         self.insts.retain(|_, i| !(i.destroyed && i.owner == Some(owner)));
+        let insts = &self.insts;
+        self.loaded_modules.retain(|(id, _)| insts.contains_key(id));
         self.tweens.retain(|t| t.owner != owner);
         self.waiters.retain(|w| w.owner != owner);
         self.deferred.retain(|d| d.0 != owner);
