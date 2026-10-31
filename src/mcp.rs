@@ -31,7 +31,12 @@ is one file, <id>.lua; a module is a folder whose main.lua requires its other fi
 the files that change, and `remove` deletes files); a library calls export(table) and others import(\"id\"). Fix what `write_mod`'s check reports; \
 then `test_mod` with steps, headless first (no game needed) and live once `game_status` says the game is linked. \
 `run_lua`, `send_chat` and `game_log` work in the running game; `horizon_ctl` plays it and takes screenshots when the \
-game runs with --control. Mods are sandboxed Lua: no files, no network, a step budget per call.";
+game runs with --control. In the player's own editor, live: `read_script` reads a script as they have it (unsaved edits \
+too), `edit_script` types a change into it as they watch, `save_script` saves it, `open_script` opens one (open a \
+script first to type into it: `edit_script` writes one the editor doesn't have open to disk at once), \
+`mark_lines` points at lines with a note (`clear_marks` clears them), and `start_lesson` teaches with numbered steps \
+they go through, `wait_for_player` telling you when they press Check or write to you. Mods are sandboxed Lua: no \
+files, no network, a step budget per call.";
 
 // ------------------------------------------------------------------ paths
 
@@ -85,6 +90,8 @@ pub struct LinkClient {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
     next_id: u64,
+    /// The link protocol the game speaks, from its auth reply (2 has the editor).
+    pub protocol: u64,
 }
 
 impl LinkClient {
@@ -109,12 +116,14 @@ impl LinkClient {
             reader: BufReader::new(stream),
             writer,
             next_id: 1,
+            protocol: 1,
         };
         c.write(&json!({ "auth": token, "client": client.unwrap_or("An AI agent") }))?;
         let reply = c.read_line()?;
         if reply.get("ok") != Some(&Json::Bool(true)) {
             return Err(format!("the game refused the link: {}", reply["error"]));
         }
+        c.protocol = reply["protocol"].as_u64().unwrap_or(1);
         Ok(c)
     }
 
@@ -298,6 +307,22 @@ fn steps_schema() -> Json {
     json!({ "type": "array", "items": { "type": "object" }, "description": STEPS_HELP })
 }
 
+/// The properties every tool of the player's editor takes (which file),
+/// with `more` of its own.
+fn script_props(more: Json) -> Json {
+    let mut props = json!({
+        "id": { "type": "string",
+                "description": "The mod's id. Without it (and without scratch): the script open in the player's editor, or with file, a file of its mod." },
+        "file": { "type": "string",
+                  "description": "A file of the mod by its path in it: a module's main.lua (the default), lib.lua, lib/util.lua; a script's one file is <id>.lua." },
+        "scratch": { "type": "boolean", "description": "The editor's scratch file (scratch.lua) instead of a mod's." },
+    });
+    if let (Some(p), Json::Object(m)) = (props.as_object_mut(), more) {
+        p.extend(m);
+    }
+    props
+}
+
 pub fn tools() -> Json {
     let id = json!({ "type": "string", "description": "The mod's id: its file or folder name (lowercase, digits, _ and -)." });
     let mods_dir = json!({ "type": "string", "description": "The mods folder, if not the game's (found by itself)." });
@@ -420,6 +445,144 @@ pub fn tools() -> Json {
             &[]
         ),
         tool(
+            "open_script",
+            "Opens a script in the player's editor in the running game, as the player would from its script list: \
+              any mod's file (a module's other files too) or the scratch file, the Editor tab brought forward. It \
+              waits while the player is using the studio, and refuses while the file open has unsaved edits. \
+              create: true opens a file that isn't there yet (a new script <id>.lua, a new module's main.lua, a new \
+              file of a module) empty, for edit_script to type into; it is written when saved. line shows that \
+              line. Live only.",
+            script_props(json!({
+                "line": { "type": "integer", "description": "A line to show, from 1." },
+                "create": { "type": "boolean", "description": "Open a file that doesn't exist yet, empty (default false)." },
+            })),
+            &[]
+        ),
+        tool(
+            "read_script",
+            "A script's text as the player's editor has it, unsaved edits included (a file the editor doesn't \
+              have open: as on disk), 400 lines at a time (from, to). Returns the editor's state as JSON (the file, \
+              unsaved edits, the line count, the player's cursor and selection), then the lines numbered from 1 as \
+              edit_script counts them. Live only.",
+            script_props(json!({
+                "from": { "type": "integer", "description": "The first line, from 1 (default 1)." },
+                "to": { "type": "integer", "description": "The last line (default: 399 lines after from)." },
+            })),
+            &[]
+        ),
+        tool(
+            "edit_script",
+            "Changes a script in the player's editor while they watch: the text it replaces shows a moment, then the \
+              new text types in at your own caret, named, about 70 characters a second (2 s at most), and it answers \
+              once it is in. Give one of: old_text and new_text (old_text exactly as read_script shows it, there once; \
+              one function or block per call), start_line and new_text (whole lines from 1; end_line too; end_line = \
+              start_line - 1 puts lines in before start_line, start_line one past the last line adds them at the end, \
+              new_text \"\" removes them), or text (the whole file). It is one undo step for the player, and lands at \
+              once while they are typing or nobody sees the editor. It stays unsaved unless save is true (save_script \
+              saves it), but with the studio closed it is saved, unless the player has unsaved edits in the file. A \
+              file the editor doesn't have open is written to disk at once instead, and its mod reloads: open_script \
+              it first to type into it as the player watches. Returns the lines it covers and the live check's \
+              problems. Live only.",
+            script_props(json!({
+                "old_text": { "type": "string", "description": "The code to replace, as it is now (read_script)." },
+                "new_text": { "type": "string", "description": "What comes in its place (or in start_line's)." },
+                "start_line": { "type": "integer", "description": "The first whole line to replace, from 1." },
+                "end_line": { "type": "integer", "description": "The last (default start_line; start_line - 1 inserts)." },
+                "text": { "type": "string", "description": "The whole file's new text." },
+                "typing": { "type": "boolean", "description": "Type it in as the player watches (default true); false puts it in at once." },
+                "save": { "type": "boolean", "description": "Save it afterwards, and the mod reloads (default false while the studio is open; while it is closed, true unless the player has unsaved edits in the file)." },
+            })),
+            &[]
+        ),
+        tool(
+            "save_script",
+            "Saves the script the player's editor has open, as Ctrl+S does, and the game reloads its mod; returns \
+              the mod's state (running, or failed at a file and line) and the live check's problems. It waits while \
+              the player is typing in it, and refuses when the file changed on disk since the editor read it (the \
+              player chooses then). Live only.",
+            script_props(json!({})),
+            &[]
+        ),
+        tool(
+            "mark_lines",
+            "Points at code in the player's editor: lines highlighted in a colour (tone) with a note beside them \
+              in a bubble, such as where a bug is and why, in one or two sentences. The view goes there unless the \
+              player is using the studio (reveal: false only highlights); their cursor stays. A file the editor \
+              doesn't have open keeps its mark until it opens, and a note over the code tells the player: \
+              marking never switches their file. Marks stay on their lines as the code changes; replace: true \
+              clears your other marks first; at most 20 (the oldest goes). Returns the mark's number, for \
+              clear_marks. Live only.",
+            script_props(json!({
+                "start_line": { "type": "integer", "description": "The first line to mark, from 1 (as read_script numbers them)." },
+                "end_line": { "type": "integer", "description": "The last (default start_line)." },
+                "note": { "type": "string", "description": "What to say about the lines, one or two sentences (500 characters at most)." },
+                "tone": { "type": "string", "enum": ["note", "error", "warning", "good"],
+                          "description": "Its colour: note (default), error, warning or good." },
+                "columns": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2,
+                             "description": "[first, last]: the characters of start_line to underline, from 1." },
+                "reveal": { "type": "boolean", "description": "Open its note and scroll to it (default true)." },
+                "replace": { "type": "boolean", "description": "Clear your other marks first (default false)." },
+            })),
+            &["start_line", "note"]
+        ),
+        tool(
+            "clear_marks",
+            "Clears marks from the player's editor: one by its number (mark), a file's (id, file or scratch), or \
+              with none of these every mark, which also ends a lesson. Live only.",
+            script_props(json!({
+                "mark": { "type": "integer", "description": "A mark's number, as mark_lines gave it." },
+            })),
+            &[]
+        ),
+        tool(
+            "start_lesson",
+            "Teaches in the player's editor: a lesson of numbered steps, each lines of a script with a note (in \
+              a bubble, as mark_lines shows one), what it explains at more length (explain, shown in the Agent \
+              panel) and something to try (task). The player goes through it with Next and Back (Alt+Right, \
+              Alt+Left), and Check on a step with a task asks you to look at their code: call wait_for_player to \
+              hear it. A step's file is the lesson's (id, file, scratch; else the file open) unless it names its \
+              own. The first step's file opens only while the player isn't using the studio (it waits up to 10 s) \
+              and the file open has no unsaved edits. A new lesson replaces the one shown. Returns the steps' mark \
+              numbers. Live only.",
+            script_props(json!({
+                "title": { "type": "string", "description": "What the lesson is about, in a few words." },
+                "steps": {
+                    "type": "array", "minItems": 1, "maxItems": 20,
+                    "description": "The steps, in order (1 to 20).",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "start_line": { "type": "integer", "description": "The step's first line, from 1." },
+                            "end_line": { "type": "integer", "description": "Its last (default start_line)." },
+                            "note": { "type": "string", "description": "What these lines do, in a sentence or two." },
+                            "explain": { "type": "string", "description": "More about it, for the Agent panel." },
+                            "task": { "type": "string", "description": "Something to try here, such as: change 20 to 40." },
+                            "tone": { "type": "string", "enum": ["note", "error", "warning", "good"] },
+                            "id": { "type": "string", "description": "Another mod's file for this step." },
+                            "file": { "type": "string", "description": "Another file for this step." },
+                            "scratch": { "type": "boolean", "description": "The scratch file for this step." },
+                        },
+                        "required": ["start_line", "note"],
+                    },
+                },
+            })),
+            &["title", "steps"]
+        ),
+        tool(
+            "wait_for_player",
+            "Waits for the player in the editor and returns what they did, for at most timeout_s seconds \
+              (default 30, 5 to 50): next or back (the lesson's step they went to), check (they want their try \
+              of a step checked: its lines as they are now, the task and the live check's problems), done or \
+              closed (the lesson ended), dismissed (they closed your notes), saved (they saved, with the mod's \
+              state), message (what they wrote to you in the Agent panel), or timeout: nothing yet, call it again \
+              to go on waiting. What they did while you weren't waiting comes first. While you wait the Agent \
+              panel says so, and Enter there sends you their answer. Live only.",
+            json!({
+                "timeout_s": { "type": "integer", "description": "How long to wait, in seconds (default 30, 5 to 50)." },
+            }),
+            &[]
+        ),
+        tool(
             "horizon_ctl",
             "A horizon-ctl command to Horizon itself, for a game started with --control (or by \
               `horizon-ctl launch --world NAME --wait`): state, ui, click ID, screenshot (returns the image), \
@@ -512,6 +675,11 @@ pub struct Server {
     /// The published reference, once fetched or read from the cache (None:
     /// the built-in one).
     docs: Arc<Mutex<Option<Arc<Reference>>>>,
+    /// The last of the player's events wait_for_player gave (or the newest
+    /// when start_lesson began): the run of the game it is of, and its
+    /// number. It goes on from there; a game started again since (another
+    /// run, which numbers its events from 1) gives all of its own.
+    events_after: Option<(u64, u64)>,
 }
 
 impl Server {
@@ -645,6 +813,117 @@ impl Server {
         self.live("status", json!({})).is_ok()
     }
 
+    /// The link protocol the game speaks, from its auth reply (connecting
+    /// first if needed).
+    fn link_protocol(&mut self) -> Result<u64, String> {
+        let name = self.client_name();
+        let mut slot = self.link.lock().map_err(|_| "the link broke".to_owned())?;
+        if let Some(link) = slot.as_ref() {
+            return Ok(link.protocol);
+        }
+        let link = LinkClient::connect(name.as_deref())?;
+        let protocol = link.protocol;
+        *slot = Some(link);
+        Ok(protocol)
+    }
+
+    /// When the player's editor in the running game has unsaved edits to a
+    /// file of mod `id`, a note that says so: the files on disk, which the
+    /// other tools use, don't have them yet.
+    fn editor_unsaved(&mut self, id: &str) -> Option<Json> {
+        let editor = self.live("status", json!({})).ok()?["editor"].clone();
+        let file = editor["file"].as_str().unwrap_or("it").to_owned();
+        (editor["dirty"] == true && editor["mod"] == id).then(|| {
+            json!({
+                "file": file,
+                "note": format!(
+                    "the player's editor has unsaved edits to {file}: this used the file on disk; read_script shows \
+                     the editor's text, and save_script saves it"
+                ),
+            })
+        })
+    }
+
+    /// A request to the player's editor in the game (`hstudio_coach`), with
+    /// its errors made plain: an older game has no editor, and the editor
+    /// tools work in the running game only. One that changes something
+    /// (`keyed`) carries a fresh key, so the game does it once though `live`
+    /// sends it again after the link drops. While the player is using the
+    /// studio the game answers that it waits: it is asked again, for up to
+    /// `wait` seconds.
+    fn editor_live(&mut self, method: &str, args: &Json, keyed: bool, wait: f64) -> Result<Json, String> {
+        let old = || {
+            "this game's Horizon Studio is older than this server and has no live editor: update the game \
+             (Horizon Studio's newest release)"
+                .to_owned()
+        };
+        let not_live = |e: String| {
+            if e.starts_with("the game isn't") {
+                format!("{e} (the editor tools work in the running game; game_status says)")
+            } else {
+                e
+            }
+        };
+        // The game's link speaks protocol 2 or newer (connected first, if
+        // it isn't yet): an older game's has no editor.
+        if self.link_protocol().map_err(not_live)? < 2 {
+            return Err(old());
+        }
+        let until = Instant::now() + Duration::from_secs_f64(wait);
+        loop {
+            let mut params = if args.is_object() { args.clone() } else { json!({}) };
+            if keyed {
+                params["key"] = json!(fresh_key());
+            }
+            let answer = match self.live(method, params) {
+                Ok(v) => v,
+                Err(e) if e.starts_with("unknown method") => return Err(old()),
+                Err(e) => return Err(not_live(e)),
+            };
+            if answer["busy"] != true {
+                return Ok(answer);
+            }
+            if Instant::now() >= until {
+                let why = answer["error"].as_str().unwrap_or("the player is busy");
+                return Err(format!("{why}: try again in a moment"));
+            }
+            self.live("wait", json!({ "frames": 15 }))?;
+        }
+    }
+
+    /// wait_for_player: the next thing the player does in the editor (a
+    /// lesson's Next, Back or Check, a note closed, a save, what they write
+    /// in the Agent panel), asked for every few frames for at most
+    /// `timeout_s` seconds (5 to 50, default 30), so the server is never
+    /// held long: the agent calls again to go on waiting.
+    fn wait_for_player(&mut self, args: &Json) -> Result<Json, String> {
+        let secs = args.get("timeout_s").and_then(Json::as_u64).unwrap_or(30).clamp(5, 50);
+        let start = Instant::now();
+        loop {
+            let mut ask = json!({});
+            if let Some((run, after)) = self.events_after {
+                ask["after"] = json!(after);
+                ask["run"] = json!(run);
+            }
+            let mut event = self.editor_live("player_event", &ask, true, 0.0)?;
+            let run = game_run(&mut event);
+            if event["event"] != "none" {
+                if let (Some(run), Some(seq)) = (run, event["seq"].as_u64()) {
+                    self.events_after = Some((run, seq));
+                }
+                return Ok(event);
+            }
+            if start.elapsed() >= Duration::from_secs(secs) {
+                return Ok(json!({
+                    "event": "timeout",
+                    "waited_s": secs,
+                    "did": format!("Nothing from the player in {secs} s: call wait_for_player again to go on waiting"),
+                }));
+            }
+            self.live("wait", json!({ "frames": 6 }))?;
+        }
+    }
+
     pub fn call_tool(&mut self, name: &str, args: &Json) -> Json {
         match self.tool(name, args) {
             Ok(v) if v.get("content").is_some() => v,
@@ -724,9 +1003,11 @@ impl Server {
             "read_mod" => {
                 let id = str_arg(args, "id")?;
                 let files = read_mod(&dir()?, id)?;
-                Ok(
-                    json!({ "id": id, "files": files.into_iter().map(|(k, v)| (k, Json::String(v))).collect::<serde_json::Map<_, _>>() }),
-                )
+                let mut out = json!({ "id": id, "files": files.into_iter().map(|(k, v)| (k, Json::String(v))).collect::<serde_json::Map<_, _>>() });
+                if let Some(note) = self.editor_unsaved(id) {
+                    out["editor_unsaved"] = note;
+                }
+                Ok(out)
             }
             "write_mod" => {
                 let id = str_arg(args, "id")?;
@@ -783,14 +1064,21 @@ impl Server {
             }
             "check_mod" => {
                 let id = str_arg(args, "id")?;
-                let source = match files_to_load(args)? {
-                    Some(files) => given_files(id, files, dir().ok()),
-                    None => Source::Installed {
-                        mods_dir: dir()?,
-                        id: id.to_owned(),
-                    },
+                let (source, installed) = match files_to_load(args)? {
+                    Some(files) => (given_files(id, files, dir().ok()), false),
+                    None => (
+                        Source::Installed {
+                            mods_dir: dir()?,
+                            id: id.to_owned(),
+                        },
+                        true,
+                    ),
                 };
-                check(&source).map(|(r, _)| r)
+                let mut report = check(&source).map(|(r, _)| r)?;
+                if installed && let Some(note) = self.editor_unsaved(id) {
+                    report["editor_unsaved"] = note;
+                }
+                Ok(report)
             }
             "test_mod" => {
                 let id = str_arg(args, "id")?;
@@ -802,7 +1090,11 @@ impl Server {
                     if let Some(files) = files_to_load(args)? {
                         write_mod(&dir()?, id, &files)?;
                     }
-                    return self.live_test(id, steps);
+                    let mut report = self.live_test(id, steps)?;
+                    if let Some(note) = self.editor_unsaved(id) {
+                        report["editor_unsaved"] = note;
+                    }
+                    return Ok(report);
                 }
                 let source = match files_to_load(args)? {
                     Some(files) => given_files(id, files, dir().ok()),
@@ -901,6 +1193,51 @@ impl Server {
                 Ok(json!({ "content": [
                     { "type": "image", "data": base64(&png), "mimeType": "image/png" },
                     { "type": "text", "text": json!({ "ok": true, "bytes": png.len(), "studio_shown": reply["studio_shown"] }).to_string() },
+                ] }))
+            }
+            "open_script" => self.editor_live("open", args, true, 10.0),
+            "edit_script" => {
+                let r = self.editor_live("edit", args, true, 0.0)?;
+                let Some(id) = r["typing"].as_u64() else {
+                    return Ok(r);
+                };
+                // It types in over a couple of seconds: asked again every few
+                // frames (asking doesn't hurry it).
+                let until = Instant::now() + Duration::from_secs(15);
+                loop {
+                    self.live("wait", json!({ "frames": 3 }))?;
+                    let t = self.live("typed", json!({ "id": id }))?;
+                    if t["done"] == true {
+                        return Ok(t["result"].clone());
+                    }
+                    if Instant::now() >= until {
+                        return Ok(
+                            json!({ "ok": true, "still_typing": true, "typing": id, "file": r["file"],
+                            "did": format!("Still typing into {}", r["file"].as_str().unwrap_or("the script")) }),
+                        );
+                    }
+                }
+            }
+            "save_script" => self.editor_live("save", args, true, 8.0),
+            "mark_lines" => self.editor_live("mark", args, true, 0.0),
+            "clear_marks" => self.editor_live("unmark", args, true, 0.0),
+            "start_lesson" => {
+                let mut r = self.editor_live("lesson", args, true, 10.0)?;
+                // What the player does from now on is the lesson's.
+                if let (Some(run), Some(seq)) = (game_run(&mut r), r["seq"].as_u64()) {
+                    self.events_after = Some((run, seq));
+                }
+                Ok(r)
+            }
+            "wait_for_player" => self.wait_for_player(args),
+            "read_script" => {
+                let mut state = self.editor_live("editor", args, false, 0.0)?;
+                let lines = state.as_object_mut().and_then(|o| o.remove("lines"));
+                let from = state["from"].as_u64().unwrap_or(1);
+                let numbered = numbered_lines(lines.as_ref(), from);
+                Ok(json!({ "content": [
+                    { "type": "text", "text": serde_json::to_string_pretty(&state).unwrap_or_default() },
+                    { "type": "text", "text": numbered },
                 ] }))
             }
             "horizon_ctl" => {
@@ -1100,6 +1437,42 @@ impl Server {
             "mod": mods.as_array().and_then(|a| a.iter().find(|m| m["id"] == id)).cloned(),
         }))
     }
+}
+
+/// A key no other request has: the game does what a request with a key
+/// asks once, however often it is sent.
+fn fresh_key() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!("{}-{nanos}-{n}", std::process::id())
+}
+
+/// The run of the game an answer about the player's events is of, taken out
+/// of it: the server keeps it with the last event it gave, and the agent has
+/// no use for it.
+fn game_run(answer: &mut Json) -> Option<u64> {
+    answer.as_object_mut()?.remove("run")?.as_u64()
+}
+
+/// Lines numbered as `cat -n` numbers them ("     12\tcode"), the first
+/// being line `from`; as Claude Code's own Read shows files.
+fn numbered_lines(lines: Option<&Json>, from: u64) -> String {
+    let lines: Vec<&str> = lines
+        .and_then(Json::as_array)
+        .map(|a| a.iter().filter_map(Json::as_str).collect())
+        .unwrap_or_default();
+    if lines.is_empty() {
+        return "(no lines)".into();
+    }
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| format!("{:>6}\t{l}", from + i as u64))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A mod given as text to check or test headless: for a module in the mods

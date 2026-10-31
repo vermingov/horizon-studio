@@ -754,21 +754,25 @@ fn render_the_editor_at_every_size() {
             kind: AgentLineKind::You,
             text: "Make the waypoints glow at night".into(),
             at: now,
+            jump: None,
         },
         AgentLine {
             kind: AgentLineKind::Said,
             text: "I'll read the script first, then add a glow that turns on after dusk.".into(),
             at: now,
+            jump: None,
         },
         AgentLine {
             kind: AgentLineKind::ToolOk,
             text: "read_mod waypoints".into(),
             at: now,
+            jump: None,
         },
         AgentLine {
             kind: AgentLineKind::Tool,
             text: "write_mod waypoints".into(),
             at: now,
+            jump: None,
         },
     ];
     let settle = |st: &mut Studio, p: &mut Preview| {
@@ -849,4 +853,101 @@ fn render_the_editor_at_every_size() {
         }
     }
     SIZE.with(|c| c.set((W, H)));
+}
+
+#[test]
+#[ignore]
+fn render_the_agent_in_the_editor() {
+    use horizon_studio::game::hstudio_coach::{self as coach, By};
+    use horizon_studio::game::hstudio_theme::{Look, THEMES};
+    use horizon_studio::game::hstudio_ui::Panel;
+    use serde_json::json;
+    let mut game = FakeGame::new("preview-agent");
+    let mut st = studio(&mut game);
+    for (i, ex) in horizon_studio::game::hstudio_examples::EXAMPLES.iter().enumerate() {
+        if ex.id == "waypoints" {
+            st.install_example(&mut game, i).unwrap();
+        }
+    }
+    run_for(&mut st, &mut game, 0.6);
+    st.s.ui.open = true;
+    let i = st.s.mods.iter().position(|m| m.id == "waypoints").unwrap();
+    st.edit_mod(i);
+    st.s.ui.tab = Tab::Editor;
+    st.s.ui.panel = Panel::Agent;
+    st.s.ui.panel_hidden = false;
+    let by = By {
+        name: "Claude Code".into(),
+        conn: 1,
+    };
+    let settle = |st: &mut Studio, p: &mut Preview| {
+        for _ in 0..60 {
+            st.s.now += 1.0 / 60.0;
+            let mut warm = Preview {
+                game: FakeGame::new("agent-warm"),
+                canvas: Canvas::blind(),
+            };
+            warm.game.dir = st.s.dir.clone();
+            draw(st, &mut warm);
+            std::mem::forget(warm.game);
+        }
+        draw(st, p);
+    };
+    // Pointing at code: a bug's lines in red with its note, and two more notes.
+    for (line, tone, note) in [
+        (6, "good", "Each waypoint keeps its name and place."),
+        (12, "warning", "This runs every tick: keep it cheap."),
+        (
+            4,
+            "error",
+            "This loop never ends: i never changes, so i < 10 stays true. Add i = i + 1 at the end of the loop.",
+        ),
+    ] {
+        let mark = json!({ "start_line": line, "end_line": line + 1, "tone": tone, "note": note });
+        coach::call(&mut st, &mut game, &by, "mark", &mark).unwrap();
+    }
+    shot(&mut st, "agent-marks", settle);
+    // A lesson, on its second step, its explanation in the Agent panel.
+    let lesson = json!({ "title": "Waypoints", "steps": [
+        { "start_line": 1, "note": "The mod's name and what it does.", "explain": "A header comment names the mod." },
+        { "start_line": 6, "end_line": 8, "note": "A table holds the waypoints.", "task": "Add a waypoint called home.", "explain": "Tables hold lists and records: this one is a list of records." },
+        { "start_line": 12, "note": "Its command adds one where you stand." },
+    ] });
+    coach::call(&mut st, &mut game, &by, "unmark", &json!({})).unwrap();
+    coach::call(&mut st, &mut game, &by, "lesson", &lesson).unwrap();
+    st.s.ui.agent.agents = Some(Vec::new());
+    // On to step 2, as Alt+Right goes.
+    let alt = horizon_studio::game::hstudio_ui::Mods {
+        ctrl: false,
+        shift: false,
+        alt: true,
+    };
+    let right = Input::Key {
+        key: horizon_studio::game::hstudio_ui::Key::Right,
+        down: true,
+        repeat: false,
+        mods: alt,
+    };
+    horizon_studio::game::hstudio_ui::handle(&mut st, &mut game, right);
+    // An agent waits for the player: the panel says so, and Check shows.
+    let waiting = |st: &mut Studio, p: &mut Preview| {
+        coach::player_event(st, &by, &json!({ "after": 1000 })).unwrap();
+        settle(st, p);
+    };
+    shot(&mut st, "agent-lesson", waiting);
+    // The same in the Synapse X style, where the explanation is in the note.
+    st.s.ui.look = Look {
+        theme: THEMES.iter().position(|t| t.id == "synapse").unwrap(),
+        ..Look::default()
+    };
+    shot(&mut st, "agent-lesson-synapse", waiting);
+    // The agent typing a change in, with its own caret and name.
+    st.s.ui.look = Look::default();
+    coach::call(&mut st, &mut game, &by, "unmark", &json!({})).unwrap();
+    st.s.ui.coach.input_at = f64::NEG_INFINITY;
+    st.s.ui.coach.player_at = f64::NEG_INFINITY;
+    let edit = json!({ "start_line": 3, "end_line": 2, "new_text": "local glow = true -- the waypoints glow at night\nlocal glow_from = 13000" });
+    coach::call(&mut st, &mut game, &by, "edit", &edit).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    shot(&mut st, "agent-typing", settle);
 }

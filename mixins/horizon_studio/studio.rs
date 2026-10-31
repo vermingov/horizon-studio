@@ -1265,6 +1265,8 @@ impl Studio {
             let title = self.file_title(to);
             self.s.editor.moved(to, &title);
             self.s.editor.disk = disk;
+            // Agents' marks go along before what is there now is read in.
+            super::hstudio_coach::follow_marks(self);
             if self.s.editor.sync_disk() {
                 self.s.editor.reloaded_at = Some(self.s.now);
             }
@@ -1740,6 +1742,8 @@ impl Studio {
                 .map_err(|e| format!("could not save {}: {e}; nothing was deleted", ed.title))?;
         }
         let moved = to_trash(&self.trash_dir(), &self.s.mods_dir(), &target)?;
+        // Agents' marks in what went go with it.
+        super::hstudio_coach::file_gone(self, &target);
         if let Some(f) = &folder {
             prune_empty(f, target.parent());
         }
@@ -2474,6 +2478,8 @@ impl Studio {
         let dt = if dt.is_finite() { dt.clamp(0.0, 1.0) } else { 0.0 };
         self.s.now += dt;
         super::hstudio_ui::agent_poll(self);
+        // What AI agents do in the editor moves on (an edit typed in).
+        super::hstudio_coach::step(self, game);
         self.s.send_tokens = (self.s.send_tokens + dt * SEND_RATE).min(SEND_BURST);
         self.s.particles = 0;
         self.s.sounds = 0;
@@ -3198,6 +3204,15 @@ impl Studio {
     }
 
     fn do_requests(&mut self, game: &mut dyn GameApi) {
+        // Another file opening: an agent's edit being typed in is all in first.
+        if self
+            .s
+            .requests
+            .iter()
+            .any(|r| matches!(r, Request::Edit(..) | Request::New(..)))
+        {
+            super::hstudio_coach::finish_typing(self, "the console opened another file");
+        }
         for r in std::mem::take(&mut self.s.requests) {
             match r {
                 Request::Reload(None) => self.reload_all(game),
@@ -3268,6 +3283,8 @@ impl Studio {
     /// file can't run there (its `require` needs the module), so it is saved
     /// and the module reloaded instead.
     pub fn run_editor(&mut self, game: &mut dyn GameApi) {
+        // An agent's edit being typed in is all in first: none runs half typed.
+        super::hstudio_coach::finish_typing(self, "the code was run");
         let module = self
             .s
             .editor
@@ -3328,6 +3345,8 @@ impl Studio {
     /// the line of this file it failed at (for a module's file, where it
     /// failed or the line that required the file that did).
     pub fn save_editor(&mut self, game: &mut dyn GameApi) {
+        // An agent's edit being typed in is all in first: none is saved half typed.
+        super::hstudio_coach::finish_typing(self, "the file was saved");
         match self.s.editor.save() {
             Ok(path) => {
                 self.s.log(LogKind::Info, format!("Saved {}", path.display()));
@@ -3342,6 +3361,8 @@ impl Studio {
                 if self.s.editor.error_line.is_none() {
                     self.mark_failure();
                 }
+                // An agent waiting for the player hears of it.
+                super::hstudio_coach::saved(self);
             }
             Err(e) => self.s.log(LogKind::Error, format!("Could not save: {e}")),
         }

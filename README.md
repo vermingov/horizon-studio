@@ -14,7 +14,8 @@ native Horizon mod that adds:
   problems and an AI agent.
 - **An AI agent in the game.** Ask Claude Code or omp, the one installed on your computer, to write or fix the
   script open in the editor: it sees the file, what you selected and its problems, works through Horizon Studio's
-  MCP, and its edits land in the editor as it makes them.
+  MCP, and types its changes into the editor as you watch, at a caret of its own. It points at the code it means
+  with notes, and teaches with lessons you step through in the editor.
 - **A mod library.** Every script mod with its state, error, commands and cost per call. Turn mods on and off,
   reload them, open them in the editor, start a new one from a template, or install one of the bundled examples.
 - **Drag and drop install.** Drop a `.lua` file, a mod folder or a `.zip` on the game window and it runs.
@@ -152,7 +153,9 @@ commands are in the chat's suggestions, beside the server's.
   **Problems** (a click, or Enter, goes to one) and the **Agent**. Drag the bar above it to size it; Ctrl+\` hides
   and shows it; a click in it, or on a tab, sends typing there, and Esc back to the code.
 - **The file on disk** is watched: when something else changes it (another editor, or the agent), the editor reads it
-  again, keeping your place, and Ctrl+Z goes back. If you had unsaved edits, it asks first: Reload, or Keep mine.
+  again, keeping your place, and Ctrl+Z goes back. A change of up to 60 lines is typed in as you watch, as the
+  agent's own edits are (with Motion off, or a bigger change, it comes in at once). If you had unsaved edits, it asks
+  first: Reload, or Keep mine.
   When the script open is made a module elsewhere (the agent's `write_mod`), the editor follows it to its main.lua,
   unsaved edits and all; when the file open is removed, its module's main.lua opens, or, with unsaved edits, it
   stays and asks: Close lets it go, Keep mine keeps it for a save to write back.
@@ -209,6 +212,36 @@ model it uses: for Claude Code its default, Opus, Sonnet, Haiku or Fable, and fo
 (*Other model...*); the choice is kept for each agent in `agent-models.txt` in the studio's folder. Drag over its
 answers or the console's lines to select them, and Ctrl+C copies them. It can also look at the game: its
 `screenshot` tool sees the window as you do, without the studio over it.
+
+**It edits as you watch.** Through Horizon Studio's MCP the agent (the game's own, or one connected from outside the
+game) opens any script, reads it as you have it, unsaved edits included, and types its changes in at a caret of its
+own with its name on a flag: the code it replaces shows in red a moment, then the new code comes in, in 2 s at most.
+Your cursor and selection keep their place, and the view follows the agent until you scroll. Any key or click puts
+the rest of its change in at once, so your key lands where you type; Ctrl+Z takes a whole change back, and Ctrl+Y
+puts it back. With Motion off, or while you are typing, its changes land at once. It never switches your file or tab
+while you use the studio: a change to a file you don't have open is written to disk (the mod reloads), and a note
+over the code shows it. Its changes stay unsaved until it saves them or you press Ctrl+S (with the studio closed they
+are saved at once, unless the file has unsaved edits of yours); nothing you are typing is saved for you, and a file
+changed on disk meanwhile isn't written over. When the game's own agent finishes a turn
+well, its unsaved edits are saved; otherwise the panel says they aren't, and how to keep them or take them back.
+Each thing it did in the editor has a line in the panel (*Typed lines 12-19 into timer.lua*), and **Show** on it
+goes to that code.
+
+**It points at code.** Ask *why does my timer never stop?* and the agent can highlight the lines at fault, in red
+for an error (amber for a warning, green for something right, the accent for a note), with a note beside them: the
+view goes there unless you are busy, and your cursor stays. The newest note shows in a bubble under its lines; the
+others show at the end of their first line, and a click opens them. The bubble's × removes a note, Esc closes the
+bubble, and the editor's header says how many notes there are (*3 notes*: a click goes to the next, its × clears
+them all). Notes stay on their lines as you edit, and one for a file you don't have open waits there; **Show** on
+its line in the panel opens it.
+
+**It teaches in the editor.** Ask *teach me events* and the agent can give you a lesson: numbered steps over your
+code, each a few lines with a note, something to try (*Try: change 20 to 40*) and, in the Agent panel, a longer
+explanation. **Next** and **Back** in the note (or Alt+Right and Alt+Left) go through the steps, opening another
+file when a step is in one; **Done** on the last ends the lesson, and so does its ×. **Check** asks the agent to
+look at what you did: it reads your code, marks any mistake and tells you how you did. The editor's header shows
+*Lesson 2/5*. While the agent waits for you the panel says *Waiting for you*, and Enter sends it what you write.
+The executor styles get the same notes and buttons, with the explanation in the note.
 
 It works in your mods folder and runs with its own permissions: Claude Code may use Horizon Studio's MCP tools and
 read files, and asks for nothing else (in a run from the game, anything that needs your approval is refused); omp
@@ -363,6 +396,9 @@ shows the JSON). Then restart the agent.
 | `check_mod` | Loads a mod headless: does it run, its error with its file and line, its commands, handlers and libraries |
 | `test_mod` | Steps (commands, chat, keys, Lua assertions, player and blocks, screen clicks...) with expectations (chat, output, text drawn, sounds, particles, mod state), headless or `live` |
 | `game_status`, `run_lua`, `send_chat`, `game_log`, `reload_mod` | The running game: its state and mods, Lua in the console, chat and commands, the console log |
+| `open_script`, `read_script`, `edit_script`, `save_script` | The player's editor, live: open any script, read it as they have it (unsaved edits too, numbered as edits count lines), type a change in as they watch (one undo step; a file that isn't open is written to disk instead), save it and say how the mod runs |
+| `mark_lines`, `clear_marks` | Point at code in the player's editor: lines highlighted in a colour with a note, which stay on their lines as the code changes |
+| `start_lesson`, `wait_for_player` | Teach in the player's editor: numbered steps they go through with Next and Back, with tasks to try; what they do (Check, a step, a message from the Agent panel), as it happens |
 | `horizon_ctl` | Horizon's own `horizon-ctl` commands for a game started with `--control`: playing it, its widgets, screenshots |
 
 **Headless** tests run the studio itself (the interpreter, events, commands, timers, libraries, screens) on a
@@ -833,6 +869,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `ui.rs` (`hstudio_ui`) | The screen: console, editor, library, docs, settings; input, the window's moving and sizing |
 | `assist.rs` (`hstudio_assist`) | The editor's and console's suggestions, and the live check of a script (syntax, unknown names) |
 | `agent.rs` (`hstudio_agent`) | The in-game agent: finding Claude Code and omp, running one with the editor's context, reading its events |
+| `coach.rs` (`hstudio_coach`) | AI agents in the player's editor: which file a request means, reading and opening, edits typed in at the agent's own caret, saving, marks that follow their lines, lessons and what the player does for an agent waiting, the Agent panel's lines that go to the code |
 | `meshes.rs` (`hstudio_meshes`) | Textures and meshes: PNG and base64, `.obj` and `.bbmodel`, box UV, drawing them as textured triangles |
 | `look.rs` (`hstudio_look`) | How the screen draws: the studio's layout, Settings, the Windows 10 window, script screens |
 | `theme.rs` (`hstudio_theme`) | The themes' palettes, and the look chosen in Settings (`look.txt`) |

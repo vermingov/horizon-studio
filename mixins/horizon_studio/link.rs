@@ -15,8 +15,9 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 
-/// The protocol's version, in the link file and the auth reply.
-pub const PROTOCOL: u32 = 1;
+/// The protocol's version, in the link file and the auth reply: 2 has the
+/// player's editor (`editor`, `open`...).
+pub const PROTOCOL: u32 = 2;
 
 /// What to give an AI agent so it sets itself up (copied from the studio's
 /// screen and its Options > Mods page; the README has it too).
@@ -384,7 +385,19 @@ pub fn poll(st: &mut Studio, game: &mut dyn GameApi) {
         };
         link.accept();
         for (conn, line) in link.read() {
-            let authed = link.conns.iter().any(|c| c.id == conn && c.authed);
+            let Some(c) = link.conns.iter().find(|c| c.id == conn) else {
+                continue;
+            };
+            let authed = c.authed;
+            // A connection already closed can't have its answer: its client
+            // asks again on a new one, and what it asked isn't done twice.
+            if authed && c.closed {
+                continue;
+            }
+            let by = super::hstudio_coach::By {
+                name: c.client.clone(),
+                conn,
+            };
             if !authed {
                 let hello = serde_json::from_str::<Json>(&line).ok();
                 let ok = hello
@@ -421,7 +434,7 @@ pub fn poll(st: &mut Studio, game: &mut dyn GameApi) {
             let id = request.get("id").cloned().unwrap_or(Json::Null);
             let method = request.get("method").and_then(Json::as_str).unwrap_or("");
             let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
-            match handle(st, game, method, &params) {
+            match handle(st, game, &by, method, &params) {
                 Ok(Answer::Now(result)) => link.send(conn, json!({ "id": id, "result": result })),
                 Ok(Answer::Wait(frames)) => link.waiting.push(Waiting { conn, id, frames }),
                 Err(e) => link.send(conn, json!({ "id": id, "error": e })),
@@ -530,7 +543,13 @@ fn player(game: &mut dyn GameApi) -> Json {
     }
 }
 
-fn handle(st: &mut Studio, game: &mut dyn GameApi, method: &str, params: &Json) -> Result<Answer, String> {
+fn handle(
+    st: &mut Studio,
+    game: &mut dyn GameApi,
+    by: &super::hstudio_coach::By,
+    method: &str,
+    params: &Json,
+) -> Result<Answer, String> {
     let now = Answer::Now;
     Ok(match method {
         "status" => now(json!({
@@ -547,8 +566,16 @@ fn handle(st: &mut Studio, game: &mut dyn GameApi, method: &str, params: &Json) 
             "chat_seq": CHAT_SEQ.with(Cell::get),
             "agents": agents(),
             "mods": mods(st),
+            "editor": super::hstudio_coach::summary(st),
         })),
         "ping" => now(json!({ "ok": true })),
+        // The player's editor, live (hstudio_coach): read a file as it has
+        // it, open one, type a change in (and whether it is in), save it,
+        // point at lines with a note and clear those marks, give a lesson,
+        // and what the player did since (for an agent waiting for them).
+        "editor" | "open" | "edit" | "typed" | "save" | "mark" | "unmark" | "lesson" | "player_event" => {
+            now(super::hstudio_coach::call(st, game, by, method, params)?)
+        }
         "mods" => now(mods(st)),
         // This game's own API reference (its version's).
         "docs" => now(Json::String(super::hstudio_look::docs_markdown())),
@@ -645,7 +672,8 @@ fn handle(st: &mut Studio, game: &mut dyn GameApi, method: &str, params: &Json) 
         "" => return Err("no method".into()),
         other => {
             return Err(format!(
-                "unknown method '{other}' (status, ping, mods, docs, lua, scan, reload, enable, send, key, chat_in, chat, log, wait)"
+                "unknown method '{other}' (status, ping, mods, docs, lua, screenshot, scan, reload, enable, send, key, \
+                 chat_in, chat, log, wait, editor, open, edit, typed, save, mark, unmark, lesson, player_event)"
             ));
         }
     })

@@ -16,6 +16,8 @@ pub mod game {
     pub mod hstudio_chatcmd;
     #[path = "../../mixins/horizon_studio/cmdtree.rs"]
     pub mod hstudio_cmdtree;
+    #[path = "../../mixins/horizon_studio/coach.rs"]
+    pub mod hstudio_coach;
     #[path = "../../mixins/horizon_studio/crypt.rs"]
     pub mod hstudio_crypt;
     #[path = "../../mixins/horizon_studio/examples.rs"]

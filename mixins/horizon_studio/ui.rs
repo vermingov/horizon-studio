@@ -179,6 +179,24 @@ pub enum Action {
     ModelMenu,
     /// Where a right click opens a menu; left clicks go to what is under it.
     Spot(Spot),
+    /// The code an Agent panel line is about (by the line's number), shown:
+    /// what an agent did in the editor.
+    AgentJump(u64),
+    /// An agent's mark (by its number): its note opened, or its × pressed;
+    /// the open note shown whole (its More).
+    MarkOpen(u32),
+    MarkClose(u32),
+    MarkMore,
+    /// The editor header's notes chip: the next mark, or its × (every mark cleared).
+    NextMark,
+    ClearMarks,
+    /// An agent's lesson: its step shown again (the header's chip), a step
+    /// back or on, its step checked, the lesson ended (a ×).
+    LessonShow,
+    LessonBack,
+    LessonNext,
+    LessonCheck,
+    LessonEnd,
 }
 
 /// What a right click is on: the menu it opens is this one's. look.rs and
@@ -794,6 +812,8 @@ pub struct Ui {
     pub agent_input: LineEdit,
     pub(crate) problem_sel: usize,
     pub agent: AgentPane,
+    /// What AI agents do in the editor, live (`hstudio_coach`).
+    pub coach: super::hstudio_coach::Coach,
     /// The pointer, in dp.
     pub mouse: (f32, f32),
     /// Whether the left and right buttons are held (over a script screen).
@@ -1177,11 +1197,15 @@ impl Editor {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
             Err(e) => (String::new(), Some(e.to_string())),
         };
+        // The revision goes on rising from file to file, so whatever follows
+        // the buffer (an agent's edit being typed in) sees that it changed.
+        let revision = self.revision + 1;
         *self = Editor {
             path: Some(path.to_path_buf()),
             title: title.to_owned(),
             problem,
             disk: disk_stamp(path),
+            revision,
             ..Editor::default()
         };
         self.set_text(&text);
@@ -1225,6 +1249,8 @@ impl Editor {
         let scroll = self.scroll;
         self.begin(EditKind::Other);
         self.set_text(&text);
+        // It reads now: what it couldn't read before is past.
+        self.problem = None;
         self.dirty = false;
         self.conflict = false;
         self.anchor = None;
@@ -1264,6 +1290,85 @@ impl Editor {
         self.removed = false;
         self.disk = disk_stamp(&path);
         Ok(path)
+    }
+    /// Whether the file on disk is no longer the one this buffer last read
+    /// or wrote (changed, or removed, elsewhere), whether or not that was
+    /// noticed yet.
+    pub fn disk_changed(&self) -> bool {
+        self.removed || self.conflict || self.path.as_deref().is_some_and(|p| disk_stamp(p) != self.disk)
+    }
+    /// Text as the buffer holds it: Windows line ends as `\n`, tabs as the
+    /// indent (what `insert` and `set_text` do to what they are given).
+    pub fn normal(s: &str) -> String {
+        s.replace("\r\n", "\n").replace('\t', INDENT)
+    }
+    /// A place (row, byte of the row) kept inside the buffer, on a char boundary.
+    fn clamp_pos(&self, (row, col): (usize, usize)) -> (usize, usize) {
+        let row = row.min(self.lines.len() - 1);
+        let line = &self.lines[row];
+        let mut col = col.min(line.len());
+        while !line.is_char_boundary(col) {
+            col -= 1;
+        }
+        (row, col)
+    }
+    /// A place as a byte of `text()`.
+    pub fn offset_of(&self, pos: (usize, usize)) -> usize {
+        let (row, col) = self.clamp_pos(pos);
+        self.lines[..row].iter().map(|l| l.len() + 1).sum::<usize>() + col
+    }
+    /// A byte of `text()` as a place (past the end: the end).
+    pub fn pos_at(&self, offset: usize) -> (usize, usize) {
+        let mut left = offset;
+        for (row, line) in self.lines.iter().enumerate() {
+            if left <= line.len() {
+                return self.clamp_pos((row, left));
+            }
+            left -= line.len() + 1;
+        }
+        let row = self.lines.len() - 1;
+        (row, self.lines[row].len())
+    }
+    /// An agent's change begins: one undo step for all of it, however long
+    /// it takes to type in (its splices take none of their own).
+    pub fn agent_begin(&mut self) {
+        self.begin(EditKind::Other);
+    }
+    /// Puts `text` (already `normal`) in place of `from..to` and returns
+    /// where it ends, taking no undo step of its own. The cursor and the
+    /// selection's other end keep their place in the text: before `from`
+    /// they stay, inside the range they go to its start, after it they move
+    /// with the text after it; and the view doesn't jump to them. Places
+    /// outside the buffer count as its nearest.
+    pub fn splice(&mut self, from: (usize, usize), to: (usize, usize), text: &str) -> (usize, usize) {
+        let (from, to) = {
+            let (a, b) = (self.clamp_pos(from), self.clamp_pos(to));
+            if b < a { (b, a) } else { (a, b) }
+        };
+        let joined = format!("{}{text}{}", &self.lines[from.0][..from.1], &self.lines[to.0][to.1..]);
+        let end = match text.rfind('\n') {
+            Some(i) => (from.0 + text.matches('\n').count(), text.len() - i - 1),
+            None => (from.0, from.1 + text.len()),
+        };
+        self.lines.splice(from.0..=to.0, joined.split('\n').map(str::to_owned));
+        let moved = |p: (usize, usize)| {
+            if p < from {
+                p
+            } else if p < to {
+                from
+            } else if p.0 == to.0 {
+                (end.0, end.1 + p.1 - to.1)
+            } else {
+                (p.0 - to.0 + end.0, p.1)
+            }
+        };
+        (self.row, self.col) = self.clamp_pos(moved((self.row, self.col)));
+        self.anchor = self.anchor.map(|a| self.clamp_pos(moved(a)));
+        self.dirty = true;
+        self.revision += 1;
+        self.followed = Some((self.row, self.col, self.revision));
+        self.scroll = self.scroll.min(self.lines.len() - 1);
+        end
     }
     fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -2117,11 +2222,13 @@ pub use super::hstudio_look::{code_line, draw, draw_screen};
 // ----------------------------------------------------------------- input
 
 pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult {
+    let before = super::hstudio_coach::before_input(st, &input);
     let revision = st.s.editor.revision;
     let out = handle_input(st, game, input);
     if st.s.editor.revision != revision {
         st.s.editor.edited_at = st.s.now;
     }
+    super::hstudio_coach::after_input(st, before);
     // A menu goes with the studio, and so does what the left button holds:
     // its release won't reach a studio closing.
     if out == UiResult::Close {
@@ -2295,6 +2402,11 @@ pub fn accept_suggestion(st: &mut Studio, i: usize) {
         }
     } else {
         let ed = &mut st.s.editor;
+        // Its word isn't where it was (the text changed under the list):
+        // the list just closes.
+        if sg.start > ed.col || !ed.lines[ed.row].is_char_boundary(sg.start) {
+            return;
+        }
         ed.anchor = Some((ed.row, sg.start.min(ed.col)));
         ed.insert(&item.insert);
         let next = ed.lines[ed.row][ed.col..].chars().next();
@@ -3375,6 +3487,17 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
         Action::Block | Action::ScrollBar | Action::Spot(_) => {}
         Action::MenuPick(i) => return menu_pick(st, game, i as usize),
         Action::ModelMenu => open_model_menu(st),
+        Action::AgentJump(seq) => super::hstudio_coach::go(st, game, seq),
+        Action::MarkOpen(_)
+        | Action::MarkClose(_)
+        | Action::MarkMore
+        | Action::NextMark
+        | Action::ClearMarks
+        | Action::LessonShow
+        | Action::LessonBack
+        | Action::LessonNext
+        | Action::LessonCheck
+        | Action::LessonEnd => super::hstudio_coach::act(st, game, action),
         Action::ClearLog => {
             st.s.log.clear();
             st.s.ui.log_scroll = 0;
@@ -3437,6 +3560,10 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
         return UiResult::Used;
     }
     if !mods.ctrl && suggest_key(st, key) {
+        return UiResult::Used;
+    }
+    // What agents show in the editor: Esc closes an agent's note first.
+    if super::hstudio_coach::key(st, game, key, mods) {
         return UiResult::Used;
     }
     match key {
@@ -3573,6 +3700,8 @@ pub struct AgentLine {
     pub text: String,
     /// When it came (its motion).
     pub at: f64,
+    /// The code it is about, for what an agent did in the editor.
+    pub jump: Option<super::hstudio_coach::Jump>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3588,6 +3717,8 @@ pub enum AgentLineKind {
     Error,
     /// The end of its answer.
     Done,
+    /// What an agent did in the editor (it typed lines in, opened a file).
+    Action,
 }
 
 /// The Agent panel: the conversation, the agent working, the conversation
@@ -3607,19 +3738,32 @@ pub struct AgentPane {
     pub(crate) seq: u64,
     /// The model chosen for each agent, by its id (`agent-models.txt`).
     pub(crate) models: Option<std::collections::HashMap<String, String>>,
+    /// Calls of the editor's tools whose lines aren't shown (what they did
+    /// has a line of its own), by call id, with the line each would have had.
+    pub(crate) hidden: std::collections::HashMap<String, String>,
 }
 
 /// Lines kept of the conversation.
 const AGENT_LINES: usize = 400;
 
 impl AgentPane {
-    fn say(&mut self, kind: AgentLineKind, text: impl Into<String>, at: f64) {
+    pub(crate) fn say(&mut self, kind: AgentLineKind, text: impl Into<String>, at: f64) {
+        self.say_jump(kind, text, None, at);
+    }
+    /// A line about some code, which `jump` goes to.
+    pub(crate) fn say_jump(
+        &mut self,
+        kind: AgentLineKind,
+        text: impl Into<String>,
+        jump: Option<super::hstudio_coach::Jump>,
+        at: f64,
+    ) {
         let text = text.into();
         if text.trim().is_empty() {
             return;
         }
         self.seq += 1;
-        self.lines.push(AgentLine { kind, text, at });
+        self.lines.push(AgentLine { kind, text, at, jump });
         if self.lines.len() > AGENT_LINES {
             self.lines.drain(..self.lines.len() - AGENT_LINES);
         }
@@ -3663,11 +3807,15 @@ pub fn agent_ask(st: &mut Studio, text: &str) {
         return;
     };
     // It reads the file from disk: unsaved edits are saved first, so it
-    // works on what the player sees (and its writes don't conflict).
+    // works on what the player sees (and its writes don't conflict); an
+    // agent's edit being typed in is all in first.
+    super::hstudio_coach::finish_typing(st, "the player asked the agent");
     if st.s.editor.dirty && st.s.editor.path.is_some() {
         match st.s.editor.save() {
             Ok(path) => {
-                st.s.log(LogKind::Info, format!("Saved {} for the agent", path.display()))
+                st.s.log(LogKind::Info, format!("Saved {} for the agent", path.display()));
+                // What an agent left unsaved in it is saved now.
+                super::hstudio_coach::written(st);
             }
             Err(e) => {
                 st.s.ui
@@ -3699,7 +3847,10 @@ pub fn agent_ask(st: &mut Studio, text: &str) {
             .iter()
             .map(|p| format!("{}:{}: {}", ed.title, p.line, p.message))
             .collect(),
+        lesson: super::hstudio_coach::lesson_line(st),
     };
+    // A new turn: what the player did before, kept for an agent waiting, is stale.
+    super::hstudio_coach::new_turn(st);
     let prompt = super::hstudio_agent::prompt(text, &ctx);
     let _ = std::fs::create_dir_all(&mods_dir);
     let pane = &mut st.s.ui.agent;
@@ -3726,11 +3877,24 @@ pub fn agent_poll(st: &mut Studio) {
                 }
             }
             AgentEvent::Text(t) => pane.say(AgentLineKind::Said, t, now),
-            AgentEvent::Tool { name, summary } => {
-                let text = if summary.is_empty() { name } else { summary };
-                pane.say(AgentLineKind::Tool, text, now);
+            AgentEvent::Tool { id, name, summary } => {
+                let text = if summary.is_empty() { name.clone() } else { summary };
+                // An editor tool says what it did in a line of its own.
+                match id.filter(|_| super::hstudio_agent::EDITOR_TOOLS.contains(&name.as_str())) {
+                    Some(id) => {
+                        pane.hidden.insert(id, text);
+                    }
+                    None => pane.say(AgentLineKind::Tool, text, now),
+                }
             }
-            AgentEvent::ToolResult { ok, summary } => {
+            AgentEvent::ToolResult { id, ok, summary } => {
+                let hidden = id.and_then(|id| pane.hidden.remove(&id));
+                if let Some(call) = hidden {
+                    if ok {
+                        continue;
+                    }
+                    pane.say(AgentLineKind::Tool, call, now);
+                }
                 let kind = if ok {
                     AgentLineKind::ToolOk
                 } else {
@@ -3758,6 +3922,9 @@ pub fn agent_poll(st: &mut Studio) {
                     None if ok => pane.say(AgentLineKind::Done, "Done.", now),
                     None => pane.say(AgentLineKind::Error, "It stopped.", now),
                 }
+                pane.hidden.clear();
+                // Its edits in the editor are saved now, or it says they aren't.
+                st.s.ui.coach.turn_ended(ok);
                 over = true;
             }
             AgentEvent::Error(e) => pane.say(AgentLineKind::Error, e, now),
@@ -3955,6 +4122,11 @@ pub fn agent_new_conversation(st: &mut Studio) {
 fn agent_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
     let _ = game;
     match key {
+        // An agent waiting for the player gets what they write.
+        Key::Enter if super::hstudio_coach::waiting(st) => {
+            let reply = std::mem::take(&mut st.s.ui.agent_input).text;
+            super::hstudio_coach::reply(st, reply.trim());
+        }
         // While it works, what is typed waits in the line.
         Key::Enter if !agent_busy(st) => agent_send(st),
         Key::Enter => {}

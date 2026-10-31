@@ -84,6 +84,14 @@ Once the `horizon-studio` tools are available:
   blocks, script screens and clicks, sounds, particles, text drawn), then live. Fix what fails and test again.
 - In the running game: `run_lua` runs Lua in the studio's console, `send_chat` sends chat or commands and returns what
   followed, `game_log` reads the console and chat, `reload_mod` reloads.
+- In the user's editor, while they have the game open: `read_script` reads the script they have open as they have it
+  (unsaved edits too, with line numbers), `edit_script` types a change into it as they watch (one function or block a
+  call), and `save_script` saves it, after which the game reloads the mod; save before `test_mod`, which uses the file
+  on disk. `open_script` opens another script, so that `edit_script` types into it as they watch (a script that isn't
+  open is changed on disk at once). `mark_lines` points at lines with a note (where a bug is and why),
+  and `clear_marks` clears them. To teach, `start_lesson` puts numbered steps over their code (a note, an
+  explanation and a task each), and `wait_for_player` returns what they do: a step, Check (with their code) or what
+  they write to you; it answers within 50 s at most, so call it again to go on waiting.
 - With Horizon started with `--control` (or `horizon-ctl launch --world NAME --wait`), `horizon_ctl` plays the game
   and `horizon_ctl` with `screenshot` shows you the screen.
 - Mods are sandboxed: no files, no network, a step budget per call. A mod that fails stops alone.
