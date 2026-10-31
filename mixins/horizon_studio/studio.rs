@@ -10,7 +10,9 @@
 // and the tests over a fake.
 
 use super::hstudio_chatcmd::{
-    ChatCommand, CommandArg, MAX_COMMANDS, Suggest, command_options, good_name, next_serial, shape, usage,
+    ArgKind, ChatCommand, CommandArg, Completion, Completions, MAX_COMMANDS, Suggest, command_options, finish,
+    good_name, last_word, locate, next_serial, returned_completions, shape, split_line, stamp, studio_actions,
+    studio_shapes, suggest_args, usage, utf16,
 };
 use super::hstudio_examples::{EXAMPLES, WELCOME};
 use super::hstudio_lua::{
@@ -2589,6 +2591,210 @@ impl Studio {
         matches!(name, "studio" | "lua") || self.s.command_owner(name).is_some()
     }
 
+    /// The owners whose commands the studio takes, in the order a typed
+    /// command looks for its owner: the console, then the running mods.
+    fn command_owners(&self) -> impl Iterator<Item = &ScriptMod> {
+        std::iter::once(&self.s.console_mod).chain(self.s.mods.iter().filter(|m| m.running()))
+    }
+
+    /// The commands the studio takes, as the chat's command tree is to have
+    /// them, sorted by name: its own two, then the console's and the running
+    /// mods', each name from the owner a typed command goes to.
+    pub fn chat_commands(&self) -> Vec<ChatCommand> {
+        let mut out = studio_shapes().to_vec();
+        let mut seen: HashSet<&str> = out.iter().map(|c| c.name.as_str()).collect();
+        let mut more = Vec::new();
+        for m in self.command_owners() {
+            for c in &m.commands {
+                if seen.insert(&c.name) {
+                    more.push(c.chat());
+                }
+            }
+        }
+        out.extend(more);
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// A number that changes whenever the commands the studio takes do (one
+    /// is registered, replaced or dropped, its mod starts or stops), so the
+    /// chat's tree is built again only then.
+    pub fn command_stamp(&self) -> u64 {
+        stamp(self.command_owners().flat_map(|m| m.commands.iter().map(|c| c.serial)))
+    }
+
+    /// The completions for an argument of a command the studio takes, as the
+    /// chat asks for them: `line` is the command up to the cursor (with its
+    /// `/`), and the chat's parse put the cursor in argument `arg` (from 0),
+    /// whose text starts at byte `start`. A text argument is completed whole,
+    /// any other kind at the text the parse gave it; a command that declares
+    /// no arguments, at the word typed. None when the studio takes no such
+    /// command, or its name is still being typed.
+    pub fn complete(&mut self, game: &mut dyn GameApi, line: &str, arg: usize, start: usize) -> Option<Completions> {
+        let (name, rest) = split_line(line)?;
+        let rest = rest?;
+        let after = line.len() - rest.len();
+        let mut from = start.clamp(after, line.len());
+        while !line.is_char_boundary(from) {
+            from -= 1;
+        }
+        let (found, spaces) = match name {
+            "studio" => (studio_actions(), false),
+            "lua" => (Vec::new(), true),
+            _ => {
+                let owner = self.s.command_owner(name)?;
+                let c = self.s.owner_mod(owner).commands.iter().find(|c| c.name == name)?;
+                let (which, options, f, spaces) = match &c.args {
+                    None => {
+                        from = last_word(line, after);
+                        (None, Vec::new(), c.suggest.as_ref().map(|s| s.f.clone()), true)
+                    }
+                    Some(args) => match args.get(arg) {
+                        Some(a) => (
+                            Some((arg, a.name.clone())),
+                            a.options.clone(),
+                            a.suggest.as_ref().map(|s| s.f.clone()),
+                            a.kind == ArgKind::Text,
+                        ),
+                        None => (None, Vec::new(), None, false),
+                    },
+                };
+                let mut found = options;
+                if let Some(f) = f {
+                    found.extend(self.call_suggest(game, owner, name, which, &f, rest));
+                }
+                (found, spaces)
+            }
+        };
+        let typed = &line[from..];
+        Some(Completions {
+            start: utf16(&line[..from]),
+            len: utf16(typed),
+            list: finish(typed, spaces, found),
+        })
+    }
+
+    /// `complete` without the chat's parse (headless tests): the argument
+    /// and where its text starts are read the simple way
+    /// (`hstudio_chatcmd::locate`).
+    pub fn suggest(&mut self, game: &mut dyn GameApi, line: &str) -> Option<Completions> {
+        let (name, _) = split_line(line)?;
+        let shape = self.chat_commands().into_iter().find(|c| c.name == name)?;
+        let (arg, start) = locate(&shape, line)?;
+        self.complete(game, line, arg, start)
+    }
+
+    /// Calls a suggest function of `/name`: its argument `which`'s (its
+    /// index and name), or the command's own (None). Its completions, or
+    /// none when it fails: an error is logged once, until another comes or
+    /// the function works again, and the mod runs on; a function that runs
+    /// out of steps or memory is not called again until the mod reloads.
+    fn call_suggest(
+        &mut self,
+        game: &mut dyn GameApi,
+        owner: Owner,
+        name: &str,
+        which: Option<(usize, String)>,
+        f: &Value,
+        rest: &str,
+    ) -> Vec<Completion> {
+        let (rest, words) = suggest_args(rest);
+        let words: Vec<Value> = words.iter().map(|w| Value::str(w)).collect();
+        let arg_name = which.as_ref().map_or(Value::Nil, |(_, n)| Value::str(n));
+        let args = vec![Value::str(&rest), Value::table(Table::from_list(words)), arg_name];
+        let (list, error) = match self.call(game, owner, f, args, EVENT_STEPS) {
+            Ok(vals) => match returned_completions(vals.first()) {
+                Ok(list) => (list, None),
+                Err(msg) => (Vec::new(), Some((msg, String::new(), false))),
+            },
+            Err(e) => (
+                Vec::new(),
+                Some((e.message(), e.traceback().to_owned(), matches!(e, Throw::Fatal(_)))),
+            ),
+        };
+        // The function may have registered its command again meanwhile:
+        // what is noted goes to the one it belongs to, if it is still there.
+        let Some(c) = self.s.owner_mod(owner).commands.iter_mut().find(|c| c.name == name) else {
+            return list;
+        };
+        let slot = match &which {
+            None => Some(&mut c.suggest),
+            Some((i, _)) => c.args.as_mut().and_then(|a| a.get_mut(*i)).map(|a| &mut a.suggest),
+        };
+        let Some(slot) = slot.filter(|s| s.as_ref().is_some_and(|s| s.f.raw_eq(f))) else {
+            return list;
+        };
+        let lines = match error {
+            None => {
+                if let Some(s) = slot.as_mut() {
+                    s.failing = None;
+                }
+                Vec::new()
+            }
+            Some((msg, _, true)) => {
+                *slot = None;
+                c.serial = next_serial();
+                vec![(
+                    LogKind::Error,
+                    format!("/{name} completions: {msg} (its completions are off until the mod reloads)"),
+                )]
+            }
+            Some((msg, trace, false)) => match slot.as_mut() {
+                Some(s) if s.failing.as_deref() != Some(msg.as_str()) => {
+                    s.failing = Some(msg.clone());
+                    let mut lines = vec![(LogKind::Error, format!("/{name} completions: {msg}"))];
+                    if !trace.is_empty() {
+                        lines.push((LogKind::Trace, trace));
+                    }
+                    lines
+                }
+                _ => Vec::new(),
+            },
+        };
+        for (kind, text) in lines {
+            self.s.log(kind, text);
+        }
+        list
+    }
+
+    /// `/studio help`: the commands the studio takes, with their usage and
+    /// descriptions, in chat.
+    fn studio_help(&mut self, game: &mut dyn GameApi) {
+        /// The scripts' commands listed; the Library shows the rest.
+        const SHOWN: usize = 20;
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut lines: Vec<String> = Vec::new();
+        for m in self.command_owners() {
+            for c in &m.commands {
+                if seen.insert(&c.name) {
+                    let mut line = format!("/{}", c.name);
+                    let usage = c.usage_line();
+                    if !usage.is_empty() {
+                        line.push(' ');
+                        line.push_str(&usage);
+                    }
+                    if !c.help.is_empty() {
+                        line.push_str(" - ");
+                        line.push_str(&c.help);
+                    }
+                    lines.push(line);
+                }
+            }
+        }
+        lines.sort();
+        game.chat(&format!("[{NAME}] commands:"));
+        for line in lines.iter().take(SHOWN) {
+            game.chat(line);
+        }
+        if lines.len() > SHOWN {
+            game.chat(&format!("and {} more: see the Library", lines.len() - SHOWN));
+        }
+        game.chat(
+            "/studio [help|reload] - opens the studio; help lists these commands, reload reloads every script mod",
+        );
+        game.chat("/lua <code> - runs Lua in the console");
+    }
+
     fn run_command(&mut self, game: &mut dyn GameApi, line: &str) {
         let (name, rest) = line.split_once(' ').unwrap_or((line, ""));
         let rest = rest.trim();
@@ -2599,8 +2805,9 @@ impl Studio {
                     game.chat(&format!("[{NAME}] reloaded all script mods"));
                 }
                 "" => self.s.ui.open_request = true,
+                "help" => self.studio_help(game),
                 other => game.chat(&format!(
-                    "[{NAME}] unknown: /studio {other} (try /studio or /studio reload)"
+                    "[{NAME}] unknown: /studio {other} (try /studio, /studio reload or /studio help)"
                 )),
             },
             "lua" => {

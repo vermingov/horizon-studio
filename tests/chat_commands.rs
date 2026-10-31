@@ -7,6 +7,7 @@ mod common;
 use common::{FakeGame, mod_index, run_for, studio};
 use horizon_studio::game::hstudio::{Command, Studio};
 use horizon_studio::game::hstudio_chatcmd::{ArgKind, ChatArg, ChatCommand};
+use horizon_studio::game::hstudio_lua::Value;
 
 fn console(st: &mut Studio, game: &mut FakeGame, src: &str) -> Vec<String> {
     st.run_console(game, src).into_iter().map(|(_, t)| t).collect()
@@ -400,4 +401,394 @@ fn a_mod_has_at_most_256_commands() {
     assert!(out.is_empty(), "{out:?}");
     assert_eq!(st.s.console_mod.commands.len(), 256);
     assert_eq!(console_command(&st, "c7").help, "again");
+}
+
+/// The names of the commands the chat's tree is to have.
+fn chat_names(st: &Studio) -> Vec<String> {
+    st.chat_commands().into_iter().map(|c| c.name).collect()
+}
+
+/// The completions for `line` (each text, with its tooltip in brackets), sorted.
+fn texts(st: &mut Studio, game: &mut FakeGame, line: &str) -> Vec<String> {
+    let mut out: Vec<String> = st
+        .suggest(game, line)
+        .unwrap_or_else(|| panic!("nothing completes {line}"))
+        .list
+        .into_iter()
+        .map(|(t, tip)| match tip {
+            Some(tip) => format!("{t} ({tip})"),
+            None => t,
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Sets a global of a running mod.
+fn set_global(st: &Studio, id: &str, name: &str, v: Value) {
+    let m = &st.s.mods[mod_index(st, id)];
+    m.env.as_ref().expect("running").borrow_mut().set_str(name, v);
+}
+
+/// The console lines that contain `part`.
+fn logged(st: &Studio, part: &str) -> Vec<String> {
+    st.s.log
+        .iter()
+        .filter(|l| l.text.contains(part))
+        .map(|l| l.text.clone())
+        .collect()
+}
+
+#[test]
+fn only_commands_the_studio_takes_are_listed() {
+    let mut game = FakeGame::new("chat-list");
+    let mut st = studio(&mut game);
+    let names = chat_names(&st);
+    for name in ["hello", "lua", "studio"] {
+        assert!(names.contains(&name.to_owned()), "{names:?}");
+    }
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted);
+    let shapes = st.chat_commands();
+    let find = |name: &str| shapes.iter().find(|c| c.name == name).unwrap().args.clone();
+    assert_eq!(find("studio"), vec![arg("action", ArgKind::Word, true, true)]);
+    assert_eq!(find("lua"), vec![arg("code", ArgKind::Text, false, false)]);
+    assert_eq!(find("hello"), vec![arg("args", ArgKind::Text, true, false)]);
+
+    let stamp = st.command_stamp();
+    st.frame(&mut game, 0.016);
+    assert_eq!(st.command_stamp(), stamp, "nothing changed");
+    // A mod that fails while loading has none.
+    game.write_mod("broken.lua", "command('broken', function() end)\nerror('no')\n");
+    game.write_mod("wp.lua", "command('wp', function() end, { args = { 'action' } })\n");
+    run_for(&mut st, &mut game, 0.6);
+    let names = chat_names(&st);
+    assert!(!names.contains(&"broken".to_owned()), "{names:?}");
+    assert!(names.contains(&"wp".to_owned()), "{names:?}");
+    assert_ne!(st.command_stamp(), stamp);
+    // A hot reload with the same shape lists the same command.
+    let before = st.chat_commands();
+    let stamp = st.command_stamp();
+    game.write_mod(
+        "wp.lua",
+        "command('wp', function() return 'v2' end, { args = { 'action' } })\n",
+    );
+    run_for(&mut st, &mut game, 0.6);
+    assert_eq!(st.chat_commands(), before);
+    assert_ne!(st.command_stamp(), stamp, "a reload registers it anew");
+    // Turned off, and deleted.
+    let i = mod_index(&st, "wp");
+    st.set_enabled(&mut game, i, false);
+    assert!(!chat_names(&st).contains(&"wp".to_owned()));
+    st.set_enabled(&mut game, i, true);
+    assert!(chat_names(&st).contains(&"wp".to_owned()));
+    std::fs::remove_file(game.mods_dir().join("wp.lua")).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    assert!(!chat_names(&st).contains(&"wp".to_owned()));
+    // The console's command lasts until clear().
+    console(&mut st, &mut game, "command('mine', function() end)");
+    assert!(chat_names(&st).contains(&"mine".to_owned()));
+    console(&mut st, &mut game, "clear()");
+    assert!(!chat_names(&st).contains(&"mine".to_owned()));
+}
+
+#[test]
+fn options_complete_the_word_being_typed() {
+    let mut game = FakeGame::new("chat-complete");
+    let mut st = studio(&mut game);
+    console(&mut st, &mut game, WAYPOINTS);
+    let c = st.suggest(&mut game, "/wp ").unwrap();
+    assert_eq!((c.start, c.len), (4, 0));
+    assert_eq!(
+        texts(&mut st, &mut game, "/wp "),
+        ["add", "clear (Removes every waypoint)", "remove"]
+    );
+    let c = st.suggest(&mut game, "/wp re").unwrap();
+    assert_eq!((c.start, c.len), (4, 2));
+    assert_eq!(c.list, vec![("remove".to_owned(), None)]);
+    assert_eq!(texts(&mut st, &mut game, "/wp RE"), ["remove"]);
+    // What is typed already is not offered again.
+    assert!(texts(&mut st, &mut game, "/wp clear").is_empty());
+    // The name is still being typed, or no command has it.
+    assert!(st.suggest(&mut game, "/wp").is_none());
+    assert!(st.suggest(&mut game, "/nothing x").is_none());
+    // The text argument after it has nothing to offer.
+    assert!(texts(&mut st, &mut game, "/wp add ho").is_empty());
+}
+
+#[test]
+fn sub_words_match_after_separators() {
+    let mut game = FakeGame::new("chat-sub");
+    let mut st = studio(&mut game);
+    console(
+        &mut st,
+        &mut game,
+        "command('go', function() end, { args = { { name = 'to', options = { 'go_home', 'minecraft:stone', 'a.b/c' } } } })",
+    );
+    assert_eq!(texts(&mut st, &mut game, "/go ho"), ["go_home"]);
+    assert!(texts(&mut st, &mut game, "/go st").is_empty(), "':' is no separator");
+    assert_eq!(texts(&mut st, &mut game, "/go mine"), ["minecraft:stone"]);
+    assert_eq!(texts(&mut st, &mut game, "/go c"), ["a.b/c"]);
+    assert_eq!(texts(&mut st, &mut game, "/go b"), ["a.b/c"]);
+}
+
+#[test]
+fn a_suggest_function_gets_the_words_and_can_give_tooltips() {
+    let mut game = FakeGame::new("chat-suggest");
+    let mut st = studio(&mut game);
+    console(
+        &mut st,
+        &mut game,
+        "command('pick', function() end, { args = { 'first', { name = 'second', suggest = function(rest, words, arg)
+          seen = { rest = rest, n = #words, last = words[#words], arg = arg }
+          return { 'alpha', { text = 'beta', tooltip = 'The second' }, 7, true, { tooltip = 'no text' } }
+        end } } })",
+    );
+    let c = st.suggest(&mut game, "/pick x b").unwrap();
+    assert_eq!(c.list, vec![("beta".to_owned(), Some("The second".to_owned()))]);
+    assert_eq!((c.start, c.len), (8, 1));
+    assert_eq!(
+        console(
+            &mut st,
+            &mut game,
+            "seen.rest .. '|' .. seen.n .. '|' .. seen.last .. '|' .. seen.arg"
+        ),
+        ["\"x b|2|b|second\""]
+    );
+    // After a space the last word is "", and numbers become text.
+    assert_eq!(
+        texts(&mut st, &mut game, "/pick x "),
+        ["7", "alpha", "beta (The second)"]
+    );
+    assert_eq!(
+        console(&mut st, &mut game, "seen.rest .. '|' .. seen.n .. '|' .. seen.last"),
+        ["\"x |2|\""]
+    );
+    // The first argument has neither options nor a function: nothing.
+    assert!(texts(&mut st, &mut game, "/pick a").is_empty());
+}
+
+#[test]
+fn a_command_without_arguments_completes_the_word_typed() {
+    let mut game = FakeGame::new("chat-free");
+    let mut st = studio(&mut game);
+    console(
+        &mut st,
+        &mut game,
+        "command('say2', function() end, { suggest = function(rest, words, arg)
+          seen = { rest = rest, n = #words, arg = tostring(arg) }
+          return { 'hello', 'help', 'world', 'two words' }
+        end })",
+    );
+    let c = st.suggest(&mut game, "/say2 he").unwrap();
+    assert_eq!((c.start, c.len), (6, 2));
+    assert_eq!(texts(&mut st, &mut game, "/say2 he"), ["hello", "help"]);
+    let c = st.suggest(&mut game, "/say2 one he").unwrap();
+    assert_eq!((c.start, c.len), (10, 2));
+    assert_eq!(
+        console(&mut st, &mut game, "seen.rest .. '|' .. seen.n .. '|' .. seen.arg"),
+        ["\"one he|2|nil\""]
+    );
+    // Free text takes a completion with a space.
+    assert_eq!(texts(&mut st, &mut game, "/say2 tw"), ["two words"]);
+}
+
+#[test]
+fn a_text_argument_is_completed_whole() {
+    let mut game = FakeGame::new("chat-text");
+    let mut st = studio(&mut game);
+    console(
+        &mut st,
+        &mut game,
+        "command('wp2', function() end, { args = { 'action', { name = 'name', kind = 'text', options = { 'the base', 'home' } } } })",
+    );
+    let line = "/wp2 remove the b";
+    let c = st.suggest(&mut game, line).unwrap();
+    assert_eq!((c.start, c.len), (line.find("the").unwrap(), 5));
+    assert_eq!(c.list, vec![("the base".to_owned(), None)]);
+}
+
+#[test]
+fn pos_takes_three_words() {
+    let mut game = FakeGame::new("chat-pos");
+    let mut st = studio(&mut game);
+    console(
+        &mut st,
+        &mut game,
+        "command('mark', function() end, { args = { { name = 'at', kind = 'pos' }, { name = 'what', options = { 'here', 'there' } } } })",
+    );
+    assert_eq!(texts(&mut st, &mut game, "/mark 1 2 3 th"), ["there"]);
+    // Inside the position: the pos argument, which has no options.
+    assert!(texts(&mut st, &mut game, "/mark 1 2 t").is_empty());
+}
+
+#[test]
+fn completions_are_counted_in_utf16_units() {
+    let mut game = FakeGame::new("chat-utf16");
+    let mut st = studio(&mut game);
+    console(
+        &mut st,
+        &mut game,
+        "command('u', function() end, { args = { 'a', { name = 'b', options = { 'zoo' } } } })",
+    );
+    let line = "/u é😀 z";
+    let c = st.suggest(&mut game, line).unwrap();
+    let at = line.rfind('z').unwrap();
+    assert_eq!(c.start, line[..at].encode_utf16().count());
+    assert_eq!(c.start, 7);
+    assert_eq!(c.len, 1);
+    assert_eq!(c.list, vec![("zoo".to_owned(), None)]);
+}
+
+#[test]
+fn a_failing_suggest_is_logged_once_and_the_mod_runs_on() {
+    let mut game = FakeGame::new("chat-fail");
+    let mut st = studio(&mut game);
+    game.write_mod(
+        "f.lua",
+        "fail = 'nope'\ncommand('f', function() end, { args = { { name = 'a', options = { 'one' }, suggest = function()\n  if fail then error(fail) end\n  return { 'two' }\nend } } })\n",
+    );
+    run_for(&mut st, &mut game, 0.6);
+    for _ in 0..3 {
+        assert_eq!(texts(&mut st, &mut game, "/f "), ["one"], "the options still come");
+    }
+    let failures = logged(&st, "/f completions:");
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].contains("f.lua:3: nope"), "{failures:?}");
+    assert!(st.s.mods[mod_index(&st, "f")].running());
+    // Another error is logged; so is the same one after it worked again.
+    set_global(&st, "f", "fail", Value::str("other"));
+    texts(&mut st, &mut game, "/f ");
+    assert_eq!(logged(&st, "/f completions:").len(), 2);
+    set_global(&st, "f", "fail", Value::Nil);
+    assert_eq!(texts(&mut st, &mut game, "/f "), ["one", "two"]);
+    set_global(&st, "f", "fail", Value::str("other"));
+    texts(&mut st, &mut game, "/f ");
+    assert_eq!(logged(&st, "/f completions:").len(), 3);
+    // Nothing reached the chat.
+    assert!(
+        !game.chats.iter().any(|c| c.contains("completions")),
+        "{:?}",
+        game.chats
+    );
+}
+
+#[test]
+fn a_suggest_that_runs_too_long_is_turned_off() {
+    let mut game = FakeGame::new("chat-slow");
+    let mut st = studio(&mut game);
+    game.write_mod(
+        "slow.lua",
+        "command('slow', function() end, { args = { { name = 'a', options = { 'one' }, suggest = function() while true do end end } } })\n",
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let i = mod_index(&st, "slow");
+    let serial = st.s.mods[i].commands[0].serial;
+    assert_eq!(texts(&mut st, &mut game, "/slow "), ["one"]);
+    let lines = logged(&st, "/slow completions:");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains("ran too long") && lines[0].contains("until the mod reloads"),
+        "{lines:?}"
+    );
+    let c = &st.s.mods[i].commands[0];
+    assert!(c.args.as_ref().unwrap()[0].suggest.is_none());
+    assert_ne!(c.serial, serial, "the chat's tree hears of it");
+    assert!(st.s.mods[i].running());
+    // It isn't called again.
+    let started = std::time::Instant::now();
+    assert_eq!(texts(&mut st, &mut game, "/slow o"), ["one"]);
+    assert!(started.elapsed().as_secs_f64() < 0.5);
+    assert_eq!(logged(&st, "/slow completions:").len(), 1);
+}
+
+#[test]
+fn completions_are_capped_and_cleaned() {
+    let mut game = FakeGame::new("chat-capped");
+    let mut st = studio(&mut game);
+    console(
+        &mut st,
+        &mut game,
+        "command('many', function() end, { args = { { name = 'a', suggest = function()
+          local t = {}
+          for i = 1, 1000 do t[i] = 'w' .. i end
+          return t
+        end } } })",
+    );
+    assert_eq!(st.suggest(&mut game, "/many ").unwrap().list.len(), 256);
+    console(
+        &mut st,
+        &mut game,
+        "command('odd', function() end, { args = { { name = 'a', suggest = function()
+          return { string.rep('x', 1000), '', 'two words', { text = 'tip', tooltip = string.rep('é', 200) }, 'ok' }
+        end }, { name = 'rest', kind = 'text', options = { 'two words' } } } })",
+    );
+    let c = st.suggest(&mut game, "/odd ").unwrap();
+    let got: Vec<&str> = c.list.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(got, ["tip", "ok"], "too long, empty and spaced texts are left out");
+    let tip = c.list[0].1.as_ref().unwrap();
+    assert!(tip.len() <= 256 && tip.chars().all(|ch| ch == 'é'), "{}", tip.len());
+    // A text argument takes a completion with a space.
+    assert_eq!(texts(&mut st, &mut game, "/odd ok tw"), ["two words"]);
+    // A suggest that returns no list is an error, logged.
+    console(
+        &mut st,
+        &mut game,
+        "command('nolist', function() end, { args = { { name = 'a', suggest = function() return 'abc' end } } })",
+    );
+    assert!(texts(&mut st, &mut game, "/nolist ").is_empty());
+    assert_eq!(
+        logged(&st, "/nolist completions:"),
+        ["/nolist completions: suggest returned a string, not a list"]
+    );
+}
+
+#[test]
+fn studio_help_lists_the_commands() {
+    let mut game = FakeGame::new("chat-help");
+    let mut st = studio(&mut game);
+    console(&mut st, &mut game, WAYPOINTS);
+    assert!(st.command("studio help"));
+    st.frame(&mut game, 0.016);
+    let chat = game.chats.join("\n");
+    assert!(chat.contains("[Horizon Studio] commands:"), "{chat}");
+    assert!(chat.contains("/wp [<action>] [<name>] - Waypoints"), "{chat}");
+    assert!(chat.contains("/hello - Says hello: /hello [name]"), "{chat}");
+    assert!(chat.contains("/studio [help|reload] - "), "{chat}");
+    assert!(chat.contains("/lua <code> - runs Lua in the console"), "{chat}");
+    // /studio completes its own actions.
+    assert_eq!(
+        texts(&mut st, &mut game, "/studio r"),
+        ["reload (Reloads every script mod)"]
+    );
+    assert_eq!(
+        texts(&mut st, &mut game, "/studio "),
+        [
+            "help (Lists the commands the studio takes)",
+            "reload (Reloads every script mod)"
+        ]
+    );
+    assert!(texts(&mut st, &mut game, "/lua pri").is_empty());
+    // Many commands: the first 20, then a pointer to the Library.
+    console(
+        &mut st,
+        &mut game,
+        "for i = 1, 30 do command(string.format('c%02d', i), function() end) end",
+    );
+    game.chats.clear();
+    st.command("studio help");
+    st.frame(&mut game, 0.016);
+    assert!(
+        game.chats
+            .iter()
+            .any(|c| c.starts_with("and ") && c.ends_with(" more: see the Library")),
+        "{:?}",
+        game.chats
+    );
+    assert!(game.chats.len() <= 24, "{:?}", game.chats);
+    // An unknown action names help.
+    st.command("studio what");
+    st.frame(&mut game, 0.016);
+    assert!(game.chats.last().unwrap().contains("/studio help"), "{:?}", game.chats);
 }

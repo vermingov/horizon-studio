@@ -7,6 +7,8 @@
 
 use super::hstudio_lua::{Lua, Table, Throw, Value, bad_arg};
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The most arguments one command declares.
@@ -86,6 +88,16 @@ impl ArgKind {
 
 /// A completion: its text, and the tooltip the chat shows over it.
 pub type Completion = (String, Option<String>);
+
+/// An answer to the chat's completion request: the completions for the text
+/// at the end of its line, and where that text starts and how long it is, in
+/// UTF-16 units of the line (as a server's answer counts them).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Completions {
+    pub start: usize,
+    pub len: usize,
+    pub list: Vec<Completion>,
+}
 
 /// A function that completes, and the last error it raised (logged once,
 /// until another comes or it works again).
@@ -188,6 +200,49 @@ pub fn usage(args: &[CommandArg]) -> String {
 pub fn next_serial() -> u64 {
     static SERIAL: AtomicU64 = AtomicU64::new(1);
     SERIAL.fetch_add(1, Ordering::Relaxed)
+}
+
+/// One number for the serials of the commands taken, in order: it changes
+/// whenever they do.
+pub fn stamp(serials: impl Iterator<Item = u64>) -> u64 {
+    let mut h = DefaultHasher::new();
+    for s in serials {
+        s.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// The studio's own commands as the chat's tree has them: `/studio
+/// [<action>]`, whose action it completes, and `/lua <code>`.
+pub fn studio_shapes() -> [ChatCommand; 2] {
+    [
+        ChatCommand {
+            name: "studio".into(),
+            args: vec![ChatArg {
+                name: "action".into(),
+                kind: ArgKind::Word,
+                optional: true,
+                asks: true,
+            }],
+        },
+        ChatCommand {
+            name: "lua".into(),
+            args: vec![ChatArg {
+                name: "code".into(),
+                kind: ArgKind::Text,
+                optional: false,
+                asks: false,
+            }],
+        },
+    ]
+}
+
+/// What `/studio` takes after it, with what each does.
+pub fn studio_actions() -> Vec<Completion> {
+    vec![
+        ("help".into(), Some("Lists the commands the studio takes".into())),
+        ("reload".into(), Some("Reloads every script mod".into())),
+    ]
 }
 
 // ----------------------------------------------------------------- command's third argument
