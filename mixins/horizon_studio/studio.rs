@@ -9,8 +9,8 @@
 
 use super::hstudio_examples::{EXAMPLES, WELCOME};
 use super::hstudio_lua::{
-    Host, Lua, Native, NoHost, Res, Table, TableRef, Throw, Value, arg, bad_arg, check_func, check_num, check_str,
-    check_table, check_text, opt_num, opt_str,
+    Host, Lua, Native, NoHost, Res, Resume, Table, TableRef, Thread, Throw, Value, arg, bad_arg, check_func, check_num,
+    check_str, check_table, check_text, opt_num, opt_str,
 };
 use super::hstudio_lualib::{inspect, new_env, quote, text_of};
 use super::hstudio_ui::{Editor, ScriptScreen, Ui};
@@ -551,6 +551,33 @@ pub struct Timer {
     pub f: Value,
 }
 
+/// A coroutine the task scheduler resumes: one that waits (`task.wait`,
+/// `wait`, `WaitForChild`, a signal's `Wait`) or one made to start later
+/// (`task.delay`, `task.defer`, a signal's handler).
+pub struct Task {
+    pub thread: Rc<Thread>,
+    pub wake: Wake,
+    /// The studio's clock when it began waiting.
+    pub since: f64,
+    /// The frame it began waiting in: a wait of 0 ends next frame.
+    pub frame: u64,
+}
+
+pub enum Wake {
+    /// At this time: with these arguments, or (None) with the time waited,
+    /// and the clock too for the older `wait`.
+    At {
+        at: f64,
+        args: Option<Vec<Value>>,
+        legacy: bool,
+    },
+    /// As soon as the scheduler runs, with these.
+    Now(Vec<Value>),
+}
+
+/// Threads one mod may have waiting at once.
+pub const MAX_TASKS: usize = 4096;
+
 pub struct Command {
     pub name: String,
     pub f: Value,
@@ -578,6 +605,11 @@ pub struct ScriptMod {
     pub handlers: Handlers,
     pub commands: Vec<Command>,
     pub timers: Vec<Timer>,
+    /// Its waiting threads, for the task scheduler.
+    pub tasks: Vec<Task>,
+    /// Its `script` Instance, and its main file's function.
+    pub script: Option<u32>,
+    pub main_fn: Option<Value>,
     pub panel: Option<(Corner, Vec<String>)>,
     pub zoom: Option<f32>,
     pub modules: HashMap<String, Value>,
@@ -614,6 +646,9 @@ impl ScriptMod {
             handlers: Handlers::default(),
             commands: Vec::new(),
             timers: Vec::new(),
+            tasks: Vec::new(),
+            script: None,
+            main_fn: None,
             panel: None,
             zoom: None,
             modules: HashMap::new(),
@@ -633,6 +668,9 @@ impl ScriptMod {
         self.handlers = Handlers::default();
         self.commands.clear();
         self.timers.clear();
+        self.tasks.clear();
+        self.script = None;
+        self.main_fn = None;
         self.panel = None;
         self.zoom = None;
         self.modules.clear();
@@ -763,6 +801,21 @@ pub struct State {
     pub screen_request: Option<(Owner, TableRef)>,
     /// What `world` handlers drew through walls, for the HUD.
     pub overlay: Vec<Overlay>,
+    /// Frames so far, for the task scheduler.
+    pub frame_no: u64,
+    /// The Roblox layer: one DataModel for every mod.
+    pub rbx: super::hstudio_rbx::Rbx,
+    /// The executor's globals (`getgenv`) and Roblox's (`getrenv`), shared by every mod.
+    pub genv: Option<TableRef>,
+    pub renv: Option<TableRef>,
+    /// Images decoded for Drawing and ImageLabels.
+    pub images: super::hstudio_sunc::ImageCache,
+    /// The table of the screen the Roblox GUI takes the pointer with.
+    rbx_screen: Option<TableRef>,
+
+    /// Errors of threads that a call resumed (`task.spawn`), for their
+    /// owners to fail with once the call is over.
+    thread_errors: Vec<(Owner, String, String)>,
     /// 3D quads, particles and sounds this frame (they are capped).
     world_quads: usize,
     particles: usize,
@@ -871,6 +924,13 @@ impl Studio {
                 screen: None,
                 screen_request: None,
                 overlay: Vec::new(),
+                frame_no: 0,
+                rbx: super::hstudio_rbx::Rbx::new(),
+                genv: None,
+                renv: None,
+                images: super::hstudio_sunc::ImageCache::default(),
+                rbx_screen: None,
+                thread_errors: Vec::new(),
                 world_quads: 0,
                 particles: 0,
                 sounds: 0,
@@ -889,6 +949,7 @@ impl Studio {
         }
         self.s.started = true;
         self.s.dir = game.data_dir();
+        self.s.rbx.workspace_dir = self.s.dir.join("workspace");
         self.s.ui.look = super::hstudio_theme::Look::load(&self.s.dir);
         let mods = self.s.mods_dir();
         if !mods.exists() {
@@ -1151,6 +1212,7 @@ impl Studio {
             }
         }
         self.s.mods[i].clear();
+        self.s.rbx.forget(Owner::Mod(i));
         // A failed mod keeps its imports, to retry when they change.
         self.s.mods[i].imports.clear();
         self.s.mods[i].state = ModState::Off;
@@ -1184,6 +1246,23 @@ impl Studio {
         let env = self.make_env(false);
         let chunk = self.s.mods[i].chunk();
         self.s.mods[i].env = Some(env.clone());
+        // `script`: a LocalScript named after the mod, in PlayerScripts.
+        {
+            let rbx = &mut self.s.rbx;
+            let sc = rbx.make("LocalScript", Some(Owner::Mod(i)));
+            rbx.inst_mut(sc).name = self.s.mods[i].id.clone();
+            let ps = rbx.child_named(rbx.local_player, "PlayerScripts");
+            let _ = rbx.set_parent(sc, ps);
+            env.borrow_mut().set_str("script", rbx.value(sc));
+            self.s.mods[i].script = Some(sc);
+        }
+        // getgc and filtergc find what was made after tracking starts.
+        if [&b"getgc"[..], b"filtergc", b"getreg", b"getproto"]
+            .iter()
+            .any(|w| src.windows(w.len()).any(|x| x == *w))
+        {
+            self.lua.track_objects(true);
+        }
         let f = match self.lua.load_bytes(&src, &chunk, &env) {
             Ok(f) => f,
             Err(e) => {
@@ -1192,8 +1271,11 @@ impl Studio {
             }
         };
         self.s.mods[i].state = ModState::Running;
-        match self.call(game, Owner::Mod(i), &f, Vec::new(), LOAD_STEPS) {
-            Ok(vals) => {
+        self.s.mods[i].main_fn = Some(f.clone());
+        // In a coroutine, as Roblox runs a script: its top level can wait.
+        let co = self.lua.new_thread(f);
+        match self.resume_in(game, Owner::Mod(i), &co, Vec::new(), LOAD_STEPS, Phase::Normal) {
+            Some(Ok(vals)) => {
                 // A main file that returns a table offers it, as a module does.
                 if self.s.mods[i].exports.is_none()
                     && let Some(v @ Value::Table(_)) = vals.into_iter().next()
@@ -1201,8 +1283,10 @@ impl Studio {
                     self.s.mods[i].exports = Some(v);
                 }
             }
-            Err(e) => self.fail(game, Owner::Mod(i), e.message(), e.traceback().to_owned()),
+            Some(Err(e)) => self.fail(game, Owner::Mod(i), e.message(), e.traceback().to_owned()),
+            None => {}
         }
+        self.pump(game);
     }
 
     /// Loads mod `i`, then reloads the mods that use it (they hold its old
@@ -1295,6 +1379,7 @@ impl Studio {
             Owner::Mod(i) => {
                 let id = self.s.mods[i].id.clone();
                 self.s.mods[i].clear();
+                self.s.rbx.forget(owner);
                 self.s.log(LogKind::Error, format!("{id} stopped: {msg}"));
                 if !trace.is_empty() {
                     self.s.log(LogKind::Trace, trace.clone());
@@ -1518,25 +1603,86 @@ impl Studio {
     // ------------------------------------------------------------- environments
 
     /// Globals for a mod or the console: the standard library and the API.
+    /// Globals for a mod or the console: its own table, falling back to the
+    /// executor's (`getgenv`: the studio's API and the executor library),
+    /// which falls back to Roblox's (`getrenv`: the standard library, game,
+    /// Instance, the data types, task).
     fn make_env(&mut self, console: bool) -> TableRef {
-        let env = new_env(&mut self.lua);
+        let genv = self.shared_envs();
+        let env = Rc::new(std::cell::RefCell::new(Table::new()));
+        {
+            let mut e = env.borrow_mut();
+            e.set_str("_G", Value::Table(env.clone()));
+            if console {
+                for (name, id, _) in CONSOLE_API {
+                    e.set_str(name, Native::host(name, *id));
+                }
+            }
+            let mut meta = Table::new();
+            meta.set_str("__index", Value::Table(genv));
+            e.meta = Some(Rc::new(std::cell::RefCell::new(meta)));
+        }
+        env
+    }
+
+    /// The executor's and Roblox's globals, made the first time.
+    fn shared_envs(&mut self) -> TableRef {
+        if let Some(g) = &self.s.genv {
+            return g.clone();
+        }
+        let renv = new_env(&mut self.lua);
+        let genv = Rc::new(std::cell::RefCell::new(Table::new()));
         let mut tables: HashMap<&str, Table> = HashMap::new();
+        // Roblox's own globals go in its environment; the rest are the studio's.
+        let roblox = |table: &str, name: &str| {
+            matches!(table, "task" | "game")
+                || (table.is_empty() && matches!(name, "wait" | "spawn" | "delay" | "tick" | "time" | "warn"))
+        };
         for (table, name, id, _) in API {
             let f = Native::host(name, *id);
             match *table {
-                "" => env.borrow_mut().set_str(name, f),
+                "" if roblox(table, name) => renv.borrow_mut().set_str(name, f),
+                "" => {
+                    super::hstudio_exec::mark(&f);
+                    genv.borrow_mut().set_str(name, f)
+                }
                 t => tables.entry(t).or_default().set_str(name, f),
             }
         }
-        if console {
-            for (name, id, _) in CONSOLE_API {
-                env.borrow_mut().set_str(name, Native::host(name, *id));
-            }
-        }
         for (name, t) in tables {
-            env.borrow_mut().set_str(name, Value::table(t));
+            let dest = if roblox(name, "") { &renv } else { &genv };
+            dest.borrow_mut().set_str(name, Value::table(t));
         }
-        env
+        self.roblox_globals(&renv);
+        super::hstudio_sunc::executor_globals(&mut self.lua, &genv, &mut self.s.rbx);
+        let mut meta = Table::new();
+        meta.set_str("__index", Value::Table(renv.clone()));
+        genv.borrow_mut().meta = Some(Rc::new(std::cell::RefCell::new(meta)));
+        self.s.renv = Some(renv);
+        self.s.genv = Some(genv.clone());
+        genv
+    }
+
+    /// The Roblox layer's globals: its data types and Enum, `Instance`,
+    /// and the shared `game` (still with the studio's `game.*`),
+    /// `workspace` and `shared`.
+    fn roblox_globals(&mut self, env: &TableRef) {
+        let mut g = env.borrow_mut();
+        for (name, v) in super::hstudio_rbx_values::globals() {
+            g.set_str(name, v);
+        }
+        let rbx = &mut self.s.rbx;
+        g.set_str("Instance", super::hstudio_rbx::instance_table(rbx));
+        let game = match g.get_str("game") {
+            Value::Table(t) => t,
+            _ => Rc::new(std::cell::RefCell::new(Table::new())),
+        };
+        rbx.adopt_game_table(&game);
+        g.set_str("game", Value::Table(game));
+        let ws = rbx.value(rbx.workspace);
+        g.set_str("workspace", ws.clone());
+        g.set_str("Workspace", ws);
+        g.set_str("shared", Value::table(Table::new()));
     }
 
     fn console_env(&mut self) -> TableRef {
@@ -1573,7 +1719,122 @@ impl Studio {
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         let m = self.s.owner_mod(owner);
         m.cost_ms = m.cost_ms * 0.95 + ms * 0.05;
+        self.thread_failures(game);
         r
+    }
+
+    /// Resumes `co` for `owner`: what it returned, its error, or None while
+    /// it waits (or was left suspended).
+    fn resume_in(
+        &mut self,
+        game: &mut dyn GameApi,
+        owner: Owner,
+        co: &Rc<Thread>,
+        args: Vec<Value>,
+        budget: u64,
+        phase: Phase,
+    ) -> Option<Outcome> {
+        if !co.is_suspended() {
+            return None;
+        }
+        self.lua.steps = budget;
+        let started = Instant::now();
+        let mut ctx = Ctx {
+            game,
+            s: &mut self.s,
+            owner,
+            phase,
+        };
+        let r = self.lua.resume(&mut ctx, co, args);
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let m = self.s.owner_mod(owner);
+        m.cost_ms = m.cost_ms * 0.95 + ms * 0.05;
+        self.thread_failures(game);
+        match r {
+            Resume::Done(vals) => Some(Ok(vals)),
+            Resume::Yielded(_) => None,
+            Resume::Error(e) => Some(Err(e)),
+        }
+    }
+
+    /// Stops the owners of threads that failed inside a call.
+    fn thread_failures(&mut self, game: &mut dyn GameApi) {
+        for (owner, msg, trace) in std::mem::take(&mut self.s.thread_errors) {
+            if self.s.owner_mod(owner).running() {
+                self.fail(game, owner, msg, trace);
+            }
+        }
+    }
+
+    /// Runs the threads due now: each waiting one whose time came (`timed`)
+    /// and those ready at once (deferred, signal handlers), again until
+    /// none are left (at most 10 rounds, as Roblox's deferred events).
+    fn run_tasks(&mut self, game: &mut dyn GameApi, timed: bool) {
+        for round in 0..10 {
+            let (now, frame) = (self.s.now, self.s.frame_no);
+            let mut due: Vec<(Owner, Rc<Thread>, Vec<Value>)> = Vec::new();
+            let mut owners: Vec<Owner> = (0..self.s.mods.len()).map(Owner::Mod).collect();
+            owners.push(Owner::Console);
+            for owner in owners {
+                let m = self.s.owner_mod(owner);
+                if !m.running() || m.tasks.is_empty() {
+                    continue;
+                }
+                let mut i = 0;
+                while i < m.tasks.len() {
+                    let t = &m.tasks[i];
+                    let ready = match &t.wake {
+                        Wake::Now(_) => true,
+                        Wake::At { at, .. } => timed && round == 0 && *at <= now && t.frame < frame,
+                    };
+                    if !ready {
+                        i += 1;
+                        continue;
+                    }
+                    let t = m.tasks.remove(i);
+                    let args = match t.wake {
+                        Wake::Now(args) | Wake::At { args: Some(args), .. } => args,
+                        Wake::At { legacy, .. } => {
+                            let waited = Value::Num(now - t.since);
+                            if legacy {
+                                vec![waited, Value::Num(now)]
+                            } else {
+                                vec![waited]
+                            }
+                        }
+                    };
+                    due.push((owner, t.thread, args));
+                }
+            }
+            // The Roblox layer's: threads its signals and children woke, and
+            // its signal handlers, each in a new thread.
+            for (owner, co, args) in std::mem::take(&mut self.s.rbx.ready) {
+                due.push((owner, co, args));
+            }
+            for (owner, f, args) in std::mem::take(&mut self.s.rbx.deferred) {
+                if self.s.owner_mod(owner).running() {
+                    let co = self.lua.new_thread(f);
+                    due.push((owner, co, args));
+                }
+            }
+            if due.is_empty() {
+                break;
+            }
+            for (owner, co, args) in due {
+                if !self.s.owner_mod(owner).running() {
+                    continue;
+                }
+                if let Some(Err(e)) = self.resume_in(game, owner, &co, args, EVENT_STEPS, Phase::Normal) {
+                    self.fail(game, owner, e.message(), e.traceback().to_owned());
+                }
+            }
+        }
+    }
+
+    /// The threads that are ready at once, after something that may have
+    /// made some (a load, a console line, input).
+    fn pump(&mut self, game: &mut dyn GameApi) {
+        self.run_tasks(game, false);
     }
 
     /// Calls the `event` handlers of every running mod and the console.
@@ -1631,6 +1892,8 @@ impl Studio {
                 self.s.held.remove(&key);
             }
             self.dispatch(game, "key", &[Value::str(&key), Value::Bool(down)], Phase::Normal);
+            let processed = self.s.ui.open || game.screen() != "playing";
+            super::hstudio_rbx_draw::game_input(&mut self.s.rbx, &key, down, processed);
         }
         for (name, args) in std::mem::take(&mut self.s.queued_events) {
             self.dispatch(game, &name, &args, Phase::Normal);
@@ -1653,10 +1916,93 @@ impl Studio {
         }
         self.s.last_tick = Some(ticks);
         self.run_timers(game);
+        self.roblox_frame(game, dt);
+        self.run_tasks(game, true);
         self.run_replies(game);
         self.dispatch(game, "frame", &[Value::Num(dt)], Phase::Normal);
+        self.pump(game);
+        self.s.frame_no += 1;
         if self.s.toast.as_ref().is_some_and(|t| t.1 < self.s.now) {
             self.s.toast = None;
+        }
+    }
+
+    /// The Roblox layer's frame: the DataModel follows the game, then what
+    /// it asked of the game (sounds, chat, agent moves, warnings), and
+    /// whether its GUI takes the pointer.
+    fn roblox_frame(&mut self, game: &mut dyn GameApi, dt: f64) {
+        let (now, frame) = (self.s.now, self.s.frame_no);
+        super::hstudio_rbx_draw::step(&mut self.s.rbx, game, now, dt, frame);
+        self.roblox_effects(game);
+        let ours = self.rbx_screen_open();
+        let pending = match (&self.s.screen_request, &self.s.rbx_screen) {
+            (Some((_, r)), Some(t)) => Rc::ptr_eq(r, t),
+            _ => false,
+        };
+        if !ours && !pending && self.s.rbx.pointer.free {
+            // Its screen went (closed by the studio): the pointer is the game's.
+            self.s.rbx.pointer.free = false;
+        }
+        let wants = super::hstudio_rbx_draw::wants_pointer(&self.s.rbx);
+        if !wants {
+            self.s.rbx.pointer.dismissed = false;
+            if ours || pending {
+                self.s.screen = None;
+                self.s.screen_request = None;
+                self.s.rbx.pointer.free = false;
+            }
+        } else if !ours
+            && !pending
+            && !self.s.rbx.pointer.dismissed
+            && self.s.screen.is_none()
+            && self.s.screen_request.is_none()
+            && !self.s.ui.open
+            && game.player().is_some()
+        {
+            let t = match &self.s.rbx_screen {
+                Some(t) => t.clone(),
+                None => {
+                    let t = super::hstudio_rbx::screen_table(&mut self.s.rbx);
+                    self.s.rbx_screen = Some(t.clone());
+                    t
+                }
+            };
+            self.s.screen_request = Some((Owner::Console, t));
+            self.s.rbx.pointer.free = true;
+        }
+    }
+
+    /// Whether the script screen up is the Roblox GUI's.
+    fn rbx_screen_open(&self) -> bool {
+        match (&self.s.screen, &self.s.rbx_screen) {
+            (Some(sc), Some(t)) => Rc::ptr_eq(&sc.table, t),
+            _ => false,
+        }
+    }
+
+    /// Sounds, chat, agent moves and warnings the Roblox layer asked for.
+    fn roblox_effects(&mut self, game: &mut dyn GameApi) {
+        let rbx = &mut self.s.rbx;
+        for (id, at, volume, pitch) in std::mem::take(&mut rbx.sounds) {
+            if self.s.sounds < MAX_SOUNDS {
+                self.s.sounds += 1;
+                let _ = game.sound(&id, at, volume, pitch);
+            }
+        }
+        for line in std::mem::take(&mut rbx.sends) {
+            if self.s.send_tokens >= 1.0 {
+                self.s.send_tokens -= 1.0;
+                game.send(&line);
+            }
+        }
+        for cmd in std::mem::take(&mut rbx.agent) {
+            let _ = game.agent(&cmd);
+        }
+        for w in std::mem::take(&mut rbx.warnings) {
+            match w.strip_prefix('\u{1}') {
+                Some(note) => game.chat(note),
+                None => self.s.log(LogKind::Error, format!("warning: {w}")),
+            }
         }
     }
 
@@ -1743,6 +2089,9 @@ impl Studio {
         self.s.world_quads = 0;
         self.dispatch(game, "world", &[], Phase::World);
         self.draw_models(game);
+        let mut budget = MAX_WORLD_QUADS.saturating_sub(self.s.world_quads);
+        super::hstudio_rbx_draw::draw_parts(&self.s.rbx, game, &mut budget);
+        self.s.world_quads = MAX_WORLD_QUADS - budget;
     }
 
     /// Every running mod's attachments, at their parts this frame.
@@ -1844,6 +2193,14 @@ impl Studio {
             &[Value::Num(f64::from(w)), Value::Num(f64::from(h))],
             Phase::Hud,
         );
+        // Roblox ScreenGuis, unless their own screen draws them.
+        if !self.rbx_screen_open() && self.s.rbx.active {
+            let now = self.s.now;
+            let ws = self.s.dir.join("workspace");
+            super::hstudio_rbx_draw::lay_out(&mut self.s.rbx, game);
+            super::hstudio_rbx_draw::draw(&self.s.rbx, game, now, &mut self.s.images, &ws);
+        }
+        super::hstudio_sunc::draw_drawings(&self.s.rbx, game, &mut self.s.images);
         let panels: Vec<(Corner, Vec<String>)> = self
             .s
             .mods
@@ -1937,15 +2294,17 @@ impl Studio {
                 };
                 let argv: Vec<Value> = rest.split_whitespace().map(Value::str).collect();
                 let args = vec![Value::str(rest), Value::table(Table::from_list(argv))];
-                match self.call(game, owner, &f, args, EVENT_STEPS) {
-                    Ok(r) => {
+                // In a thread, so a command can wait (its answer is then lost).
+                let co = self.lua.new_thread(f);
+                match self.resume_in(game, owner, &co, args, EVENT_STEPS, Phase::Normal) {
+                    Some(Ok(r)) => {
                         if let Some(v) = r.first()
                             && !v.is_nil()
                         {
                             game.chat(&v.plain_text());
                         }
                     }
-                    Err(e) => {
+                    Some(Err(e)) => {
                         let msg = e.message();
                         game.chat(&format!("/{name}: {msg}"));
                         self.s.log(LogKind::Error, format!("/{name}: {msg}"));
@@ -1953,7 +2312,9 @@ impl Studio {
                             self.s.log(LogKind::Trace, e.traceback().to_owned());
                         }
                     }
+                    None => {}
                 }
+                self.pump(game);
             }
         }
     }
@@ -1985,15 +2346,20 @@ impl Studio {
         };
         match f {
             Err(e) => self.s.log(LogKind::Error, e),
-            Ok(f) => match self.call(game, Owner::Console, &f, Vec::new(), CONSOLE_STEPS) {
-                Ok(vals) => {
-                    if !vals.is_empty() {
-                        let text = vals.iter().map(|v| inspect(v, 2)).collect::<Vec<_>>().join(", ");
-                        self.s.log(LogKind::Output, text);
+            Ok(f) => {
+                let co = self.lua.new_thread(f);
+                match self.resume_in(game, Owner::Console, &co, Vec::new(), CONSOLE_STEPS, Phase::Normal) {
+                    Some(Ok(vals)) => {
+                        if !vals.is_empty() {
+                            let text = vals.iter().map(|v| inspect(v, 2)).collect::<Vec<_>>().join(", ");
+                            self.s.log(LogKind::Output, text);
+                        }
                     }
+                    Some(Err(e)) => self.fail(game, Owner::Console, e.message(), e.traceback().to_owned()),
+                    None => {}
                 }
-                Err(e) => self.fail(game, Owner::Console, e.message(), e.traceback().to_owned()),
-            },
+                self.pump(game);
+            }
         }
         self.do_requests(game);
         self.log_since(mark)
@@ -2933,6 +3299,60 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         194,
         "mesh.free(id): drops a mesh; true if there was one",
     ),
+    // Luau's task library, and Roblox's older globals around it.
+    (
+        "task",
+        "wait",
+        300,
+        "task.wait([seconds]): wait (next frame by default) without stopping the game; returns the time waited",
+    ),
+    (
+        "task",
+        "spawn",
+        301,
+        "task.spawn(fn_or_thread, ...): run it now in a thread of its own; returns the thread",
+    ),
+    (
+        "task",
+        "defer",
+        302,
+        "task.defer(fn_or_thread, ...): run it in a thread of its own once the current code is done",
+    ),
+    (
+        "task",
+        "delay",
+        303,
+        "task.delay(seconds, fn_or_thread, ...): run it in a thread of its own later; returns the thread",
+    ),
+    ("task", "cancel", 304, "task.cancel(thread): stop a thread that waits"),
+    (
+        "task",
+        "synchronize",
+        305,
+        "task.synchronize(): nothing here (no parallel Luau)",
+    ),
+    (
+        "task",
+        "desynchronize",
+        306,
+        "task.desynchronize(): nothing here (no parallel Luau)",
+    ),
+    (
+        "",
+        "wait",
+        307,
+        "wait([seconds]): Roblox's older task.wait; returns the time waited and the time",
+    ),
+    ("", "spawn", 308, "spawn(fn): Roblox's older task.defer"),
+    ("", "delay", 309, "delay(seconds, fn): Roblox's older task.delay"),
+    ("", "tick", 310, "tick(): seconds since 1970, with a fraction"),
+    (
+        "",
+        "time",
+        311,
+        "time(): seconds since the studio started (as game.time)",
+    ),
+    ("", "warn", 312, "warn(...): print a warning in the console"),
 ];
 
 /// Only in the console.
@@ -2950,10 +3370,10 @@ pub const CONSOLE_API: &[(&str, u32, &str)] = &[
 ];
 
 /// A running script's view of the studio and the game.
-struct Ctx<'a> {
-    game: &'a mut dyn GameApi,
-    s: &'a mut State,
-    owner: Owner,
+pub(crate) struct Ctx<'a> {
+    pub(crate) game: &'a mut dyn GameApi,
+    pub(crate) s: &'a mut State,
+    pub(crate) owner: Owner,
     phase: Phase,
 }
 
@@ -3009,8 +3429,188 @@ impl Ctx<'_> {
         });
         Ok(vec![Value::Num(f64::from(id))])
     }
+    /// `require(moduleScript)`: its Source (a hidden property here) runs
+    /// once, and what it returns is kept.
+    fn require_module(&mut self, lua: &mut Lua, m: u32) -> Res {
+        let rbx = &self.s.rbx;
+        if rbx.inst(m).class.name != "ModuleScript" {
+            return Err(bad_arg(lua, 0, "require", "ModuleScript expected"));
+        }
+        if let Some((_, v)) = rbx.loaded_modules.iter().find(|(id, _)| *id == m) {
+            return Ok(vec![v.clone()]);
+        }
+        let Some(src) = rbx
+            .inst(m)
+            .extra
+            .get("Source")
+            .and_then(Value::as_bytes)
+            .map(<[u8]>::to_vec)
+        else {
+            return Err(lua.rt_error(
+                "require: the ModuleScript has no source (set it with sethiddenproperty(module, \"Source\", code))",
+            ));
+        };
+        let chunk = rbx.full_name(m);
+        let env = super::hstudio_exec::caller_env(lua).ok_or_else(|| lua.rt_error("require: no environment"))?;
+        let f = lua.load_bytes(&src, &chunk, &env).map_err(|e| lua.rt_error(e))?;
+        let r = lua.call(self, &f, Vec::new())?;
+        let v = match r.into_iter().next() {
+            Some(v) if !v.is_nil() => v,
+            _ => return Err(lua.rt_error("require: the module must return exactly one value")),
+        };
+        self.s.rbx.loaded_modules.push((m, v.clone()));
+        Ok(vec![v])
+    }
     fn storage_dir(&self) -> PathBuf {
         self.s.dir.join("storage").join(self.s.owner_name(self.owner))
+    }
+    /// Parks the running thread until `wake`: it yields, and the scheduler
+    /// resumes it.
+    pub(crate) fn park(&mut self, lua: &Lua, wake: Wake, what: &str) -> Res {
+        if !lua.is_yieldable() {
+            return Err(lua.rt_error(format!(
+                "{what} can't wait here: this code isn't in a thread that can wait (run it with task.spawn)"
+            )));
+        }
+        self.schedule(lua, lua.current_thread(), wake)?;
+        Err(Throw::Yield(Vec::new()))
+    }
+    /// Has the scheduler resume `thread` at `wake`.
+    pub(crate) fn schedule(&mut self, lua: &Lua, thread: Rc<Thread>, wake: Wake) -> Result<(), Throw> {
+        if self.me().tasks.len() >= MAX_TASKS {
+            return Err(lua.rt_error(format!("too many waiting threads ({MAX_TASKS})")));
+        }
+        let (since, frame) = (self.s.now, self.s.frame_no);
+        self.me().tasks.push(Task {
+            thread,
+            wake,
+            since,
+            frame,
+        });
+        Ok(())
+    }
+    /// A function or a thread argument, as a thread to run.
+    fn thread_arg(&mut self, lua: &mut Lua, args: &[Value], i: usize, fname: &str) -> Result<Rc<Thread>, Throw> {
+        match args.get(i) {
+            Some(Value::Thread(t)) => Ok(t.clone()),
+            Some(f) if f.is_callable() => Ok(lua.new_thread(f.clone())),
+            _ => Err(bad_arg(lua, i, fname, "function or thread expected")),
+        }
+    }
+    /// Resumes `co` now, inside the running call; its error stops its
+    /// owner once the call is over.
+    pub(crate) fn resume_now(&mut self, lua: &mut Lua, co: &Rc<Thread>, args: Vec<Value>) {
+        if !co.is_suspended() {
+            return;
+        }
+        if let Resume::Error(e) = lua.resume(self, co, args) {
+            let (msg, trace) = (e.message(), e.traceback().to_owned());
+            self.s.thread_errors.push((self.owner, msg, trace));
+        }
+    }
+    fn task(&mut self, lua: &mut Lua, id: u32, args: Vec<Value>) -> Res {
+        let wait_secs = |lua: &Lua, args: &[Value], fname: &str| -> Result<f64, Throw> {
+            let n = opt_num(lua, args, 0, fname, 0.0)?;
+            Ok(if n.is_finite() { n.max(0.0) } else { 0.0 })
+        };
+        match id {
+            300 | 307 => {
+                let legacy = id == 307;
+                let secs = wait_secs(lua, &args, "wait")?;
+                // The older wait waits at least a thirtieth of a second.
+                let secs = if legacy { secs.max(1.0 / 30.0) } else { secs };
+                let at = self.s.now + secs;
+                self.park(
+                    lua,
+                    Wake::At { at, args: None, legacy },
+                    if legacy { "wait" } else { "task.wait" },
+                )
+            }
+            301 => {
+                let co = self.thread_arg(lua, &args, 0, "spawn")?;
+                self.resume_now(lua, &co, args[1..].to_vec());
+                Ok(vec![Value::Thread(co)])
+            }
+            302 => {
+                let co = self.thread_arg(lua, &args, 0, "defer")?;
+                self.schedule(lua, co.clone(), Wake::Now(args[1..].to_vec()))?;
+                Ok(vec![Value::Thread(co)])
+            }
+            303 => {
+                let secs = wait_secs(lua, &args, "delay")?;
+                let co = self.thread_arg(lua, &args, 1, "delay")?;
+                let at = self.s.now + secs;
+                let rest = args.get(2..).unwrap_or_default().to_vec();
+                self.schedule(
+                    lua,
+                    co.clone(),
+                    Wake::At {
+                        at,
+                        args: Some(rest),
+                        legacy: false,
+                    },
+                )?;
+                Ok(vec![Value::Thread(co)])
+            }
+            304 => {
+                let Some(Value::Thread(co)) = args.first() else {
+                    return Err(bad_arg(lua, 0, "cancel", "thread expected"));
+                };
+                let co = co.clone();
+                self.me().tasks.retain(|t| !Rc::ptr_eq(&t.thread, &co));
+                if co.is_suspended() {
+                    let _ = lua.close_thread(&co);
+                } else if !co.is_dead() {
+                    return Err(lua.rt_error("cannot cancel a thread that is running"));
+                }
+                Ok(Vec::new())
+            }
+            305 | 306 => Ok(Vec::new()),
+            308 => {
+                let f = check_func(lua, &args, 0, "spawn")?;
+                let co = lua.new_thread(f);
+                let now = self.s.now;
+                let wake = Wake::At {
+                    at: now,
+                    args: Some(vec![Value::Num(0.0), Value::Num(now)]),
+                    legacy: true,
+                };
+                self.schedule(lua, co, wake)?;
+                Ok(Vec::new())
+            }
+            309 => {
+                let secs = check_num(lua, &args, 0, "delay")?;
+                let f = check_func(lua, &args, 1, "delay")?;
+                let co = lua.new_thread(f);
+                let at = self.s.now + if secs.is_finite() { secs.max(0.0) } else { 0.0 };
+                let wake = Wake::At {
+                    at,
+                    args: None,
+                    legacy: true,
+                };
+                self.schedule(lua, co, wake)?;
+                Ok(Vec::new())
+            }
+            310 => {
+                let t = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map_or(0.0, |d| d.as_secs_f64());
+                Ok(vec![Value::Num(t)])
+            }
+            311 => Ok(vec![Value::Num(self.s.now)]),
+            _ => {
+                let mut parts = Vec::with_capacity(args.len());
+                for a in &args {
+                    parts.push(lua.tostring(self, a)?);
+                }
+                let who = match self.owner {
+                    Owner::Console => String::new(),
+                    Owner::Mod(i) => format!("[{}] ", self.s.mods[i].id),
+                };
+                self.s.log(LogKind::Error, format!("{who}warning: {}", parts.join(" ")));
+                Ok(Vec::new())
+            }
+        }
     }
 }
 
@@ -3903,6 +4503,31 @@ fn pos(x: f64, y: f64, z: f64) -> Vec<Value> {
     vec![Value::Num(x), Value::Num(y), Value::Num(z)]
 }
 
+impl super::hstudio_rbx::Env for Ctx<'_> {
+    fn rbx(&mut self) -> &mut super::hstudio_rbx::Rbx {
+        &mut self.s.rbx
+    }
+    fn owner(&self) -> Owner {
+        self.owner
+    }
+    fn now(&self) -> f64 {
+        self.s.now
+    }
+    fn game(&mut self) -> &mut dyn GameApi {
+        self.game
+    }
+    fn rbx_and_game(&mut self) -> (&mut super::hstudio_rbx::Rbx, &mut dyn GameApi) {
+        (&mut self.s.rbx, self.game)
+    }
+    fn held(&self, key: &str) -> bool {
+        self.s.held.contains(key)
+    }
+    fn spawn_now(&mut self, lua: &mut Lua, f: Value, args: Vec<Value>) {
+        let co = lua.new_thread(f);
+        self.resume_now(lua, &co, args);
+    }
+}
+
 impl Host for Ctx<'_> {
     fn print(&mut self, text: &str) {
         let line = match self.owner {
@@ -3975,6 +4600,9 @@ impl Host for Ctx<'_> {
                 none()
             }
             6 => {
+                if let Some(m) = args.first().and_then(|v| self.s.rbx.id_of(v)) {
+                    return self.require_module(lua, m);
+                }
                 let name = check_text(lua, &args, 0, "require")?;
                 if let Some(v) = self.me().modules.get(&name) {
                     return Ok(vec![v.clone()]);
@@ -4578,6 +5206,7 @@ impl Host for Ctx<'_> {
             201 => {
                 self.s.log.clear();
                 self.s.console_mod.clear();
+                self.s.rbx.forget(Owner::Console);
                 self.s.console_mod.state = ModState::Running;
                 none()
             }
@@ -4613,6 +5242,9 @@ impl Host for Ctx<'_> {
                 self.s.requests.push(Request::New(text_of(&name)));
                 none()
             }
+            300..=312 => self.task(lua, id, args),
+            super::hstudio_rbx::FIRST_ID..=super::hstudio_rbx::LAST_ID => super::hstudio_rbx::call(self, lua, id, args),
+            super::hstudio_sunc::FIRST_ID..=super::hstudio_sunc::LAST_ID => self.sunc(lua, id, args),
             _ => Err(lua.rt_error(format!("unknown studio function {id}"))),
         }
     }

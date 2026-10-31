@@ -127,6 +127,16 @@ pub const TOPICS: &[Topic] = &[
         summary: "Step budgets, the chat rate limit and every cap, with the real numbers.",
     },
     Topic {
+        id: "roblox",
+        title: "Roblox scripts: game, Instances, GUIs, input and data types",
+        summary: "The Roblox API on Horizon: game and its services, Instance.new and the Instance tree, signals, ScreenGuis drawn in game, the mouse, UserInputService, the character and Camera, Parts, Raycast, TweenService, Enum and every data type.",
+    },
+    Topic {
+        id: "executor",
+        title: "Executor functions (sUNC): hooks, debug, files, HTTP, Drawing",
+        summary: "The sUNC standard's functions: hookfunction, newcclosure, hookmetamethod, the debug library, getrawmetatable, getgenv and getrenv, getgc and filtergc, Base64 and LZ4, the workspace file system, request and WebSocket, Drawing, cloneref, getconnections, getsenv and hidden properties, and how they differ from a Roblox executor's.",
+    },
+    Topic {
         id: "errors",
         title: "Error messages",
         summary: "Common errors a script gets, what each means and the fix.",
@@ -158,6 +168,8 @@ fn topic_text(id: &str) -> &'static str {
         "recipes" => RECIPES,
         "limits" => LIMITS,
         "errors" => ERRORS,
+        "roblox" => ROBLOX,
+        "executor" => EXECUTOR,
         _ => "",
     }
 }
@@ -668,7 +680,7 @@ end)
 "##;
 
 const LANGUAGE: &str = r##"
-Horizon Studio runs its own Lua interpreter, written in Rust, with the syntax and semantics of Lua 5.3 except where this page says otherwise. Mods are sandboxed: no files, no network, no other processes, only the functions the studio gives them.
+Horizon Studio runs its own Lua interpreter, written in Rust, with the syntax and semantics of Lua 5.3 except where this page says otherwise. Mods are sandboxed: no other processes and only the functions the studio gives them; their files are their storage and the executor functions' `workspace` folder, and their network the internet only (see the `executor` topic).
 
 ## Statements
 
@@ -678,6 +690,31 @@ Everything in Lua 5.3 but `goto` and labels: `local`, assignment (several target
 - `local x <const> = 1` is accepted, but not enforced (`x` can still be assigned). `<close>` is a syntax error ("unknown attribute 'close'").
 - There is no `_ENV`. The globals table is `_G` (the mod's own).
 - Nesting of blocks and expressions is limited to 80 levels ("chunk has too many syntax levels").
+
+## Luau
+
+Luau's syntax works too, so Roblox scripts run as they are:
+
+- **Types** are read and dropped (they change nothing at run time): `local x: number = 1`, parameters and returns (`function f(a: string, ...: number): (boolean, string?)`), generics (`function f<T>(x: T): T`), `type Name<T> = ...` and `export type`, casts (`value :: any`), table, function, union, intersection, optional, literal and `typeof(...)` types. `--!strict` and other `--!` lines are comments.
+- **Compound assignment**: `x += 1`, `-=`, `*=`, `/=`, `//=`, `%=`, `^=`, `..=`. The target's table and key are worked out once (`t[f()] += 1` calls `f` once), and metamethods apply.
+- **`continue`** in `for`, `while` and `repeat` loops goes to the next round. It is still a name elsewhere (`local continue = 1`).
+- **Interpolated strings**: `` `hello {name}, {n * 2} items` `` (each `{expression}` through `tostring`, so `__tostring` applies); `\{` and `` \` `` escape.
+- **If-expressions**: `local kind = if n > 0 then "positive" elseif n < 0 then "negative" else "zero"` (the `else` is required).
+- **Generalized iteration**: `for k, v in t do` goes through a table without `pairs`, or through its `__iter` metamethod.
+- **Numbers**: `0b1010` binary literals and `1_000_000` digit separators.
+- **Attributes** (`@native`, `@checked`) are accepted and change nothing.
+- Each mod's top level, its commands, `task.spawn`/`task.defer`/`task.delay` threads and Roblox signal handlers run in coroutines of their own, so `task.wait`, `wait`, `WaitForChild` and `signal:Wait()` can wait there. `on(...)` handlers and timers run on the main thread, where waiting errors.
+
+```lua
+type Item = { name: string, price: number }
+local items: { Item } = { { name = "Sword", price = 10 }, { name = "Shield", price = 15 } }
+local total = 0
+for _, item in items do
+  if item.price > 12 then continue end
+  total += item.price
+end
+print(`total: {total}, {if total > 5 then "pricey" else "cheap"}`)
+```
 
 ## Numbers: all floats
 
@@ -775,7 +812,8 @@ Every standard function a mod (and the console) can call, as Lua 5.3 has it unle
 
 - Base: `print`, `type`, `tostring`, `tonumber`, `pairs`, `ipairs`, `next`, `select`, `rawget`, `rawset`, `rawequal`, `rawlen`, `setmetatable`, `getmetatable`, `error`, `assert`, `pcall`, `xpcall`, `load`, `unpack` (as Lua 5.1, also `table.unpack`), `collectgarbage` (does nothing), and the studio's `dump` and `inspect` (a value as readable text). Values: `_G`, `_VERSION`.
 - `string`: `len`, `sub`, `upper`, `lower`, `rep`, `reverse`, `byte`, `char`, `format`, `find`, `match`, `gmatch`, `gsub` with Lua patterns, and the studio's `split`, `trim`, `startswith`, `endswith`. Strings have them as methods (`s:upper()`).
-- `math`: `abs`, `ceil`, `floor`, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `exp`, `log`, `fmod`, `modf`, `max`, `min`, `random`, `randomseed`, `tointeger`, `type`, `rad`, `deg`, `ult`, the studio's `clamp`, and from Lua 5.1/5.2 `atan2`, `pow`, `log10`, `sinh`, `cosh`, `tanh`, `frexp`, `ldexp`. Values: `pi`, `huge`, `maxinteger`, `mininteger`.
+- `math`: `abs`, `ceil`, `floor`, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `exp`, `log`, `fmod`, `modf`, `max`, `min`, `random`, `randomseed`, `tointeger`, `type`, `rad`, `deg`, `ult`, the studio's `clamp`, and from Lua 5.1/5.2 `atan2`, `pow`, `log10`, `sinh`, `cosh`, `tanh`, `frexp`, `ldexp`. Values: `pi`, `huge`, `maxinteger`, `mininteger`. Luau's `sign`, `round`, `noise`, `lerp`, `map`, `isnan`, `isinf`, `isfinite`.
+- Luau's: `typeof`, `table.find`, `table.create`, `table.clear`, `table.clone`, `table.freeze`, `table.isfrozen`, `table.maxn`, `table.getn`, `table.foreach`, `table.foreachi`, and `bit32` (`band`, `bor`, `bxor`, `btest`, `bnot`, `lshift`, `rshift`, `arshift`, `lrotate`, `rrotate`, `extract`, `replace`, `countlz`, `countrz`, `byteswap`). Roblox's data types (`Vector3`, `CFrame`, `UDim2`, `Color3`...) and `Enum` are in the `roblox` topic.
 - `table`: `insert`, `remove`, `concat`, `sort`, `unpack`, `pack`, `move`.
 - `utf8`: `char`, `codepoint`, `len`, `offset`, `codes`, and `charpattern`.
 - `os`: `clock`, `time`, `date`, `difftime` (UTC only; no other `os` function).
@@ -1805,6 +1843,90 @@ Every number below is in the runtime's source.
 | Headless test | 12000 frames (10 minutes of game time) |
 | `send_chat` wait / link `wait` | 1 to 1200 frames |
 | A chat line sent through the link | 1 to 256 characters |
+"##;
+
+const ROBLOX: &str = r##"
+Horizon Studio runs Roblox client scripts: Luau (see the `language` topic) and the Roblox API a LocalScript uses, put onto what the studio already does. A Roblox UI script, or a general Luau script, runs as a script mod as it is.
+
+```lua
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+
+local gui = Instance.new("ScreenGui")
+gui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+
+local button = Instance.new("TextButton")
+button.Size = UDim2.fromOffset(160, 40)
+button.Position = UDim2.new(0.5, -80, 0.8, 0)
+button.Text = "Click me"
+button.Modal = true -- frees the mouse while the button shows
+button.Parent = gui
+Instance.new("UICorner", button)
+
+button.MouseButton1Click:Connect(function()
+  TweenService:Create(button, TweenInfo.new(0.3), { BackgroundColor3 = Color3.fromRGB(0, 170, 255) }):Play()
+end)
+```
+
+**How it maps.**
+
+- `game` is the DataModel, shared by every mod as one game is by every script in Roblox. It keeps the studio's own `game.run`, `game.fps`, `game.screen`, `game.time` and `game.ticks`. `game.Players`, `game:GetService("X")`, `workspace` (also `Workspace`) and `shared` (one table for every mod) work as in Roblox. `script` is a LocalScript named after the mod, in `Players.LocalPlayer.PlayerScripts`.
+- What a mod makes (Instances, connections, tweens, waiting threads, render steps, actions) goes when it stops or reloads.
+- **Signals** (`inst.Changed`, `button.MouseButton1Click`, `RunService.Heartbeat`...) have `Connect`, `Once`, `Wait` and `ConnectParallel` (as Connect); connections have `Disconnect` and `Connected`. They are deferred, Roblox's default: a handler runs in a thread of its own once the code that fired it is done (in the same frame), so it can `task.wait`. `GetPropertyChangedSignal(name)` and `GetAttributeChangedSignal(name)` give a property's own signal.
+- **ScreenGuis** under `Players.LocalPlayer.PlayerGui` (or `game.CoreGui`) are laid out as Roblox lays them out (Size, Position, AnchorPoint, SizeConstraint, AutomaticSize, UIListLayout, UIGridLayout, UIPadding, UIScale, UIAspectRatioConstraint, UISizeConstraint, UITextSizeConstraint, ScrollingFrame canvases, ClipsDescendants, ZIndex with Global or Sibling, DisplayOrder) and drawn on the HUD with the design system's shapes and Geist fonts: backgrounds and transparency, UICorner, UIStroke (on the edge, or round text), a UIGradient's middle colour, borders, text with its alignment, wrapping, scaling and stroke, TextBox placeholders and the caret, ScrollingFrame bars, AutoButtonColor. A GUI pixel is a dp (Horizon's logical pixel); there is no top bar, so `GuiService:GetGuiInset()` is zero. Images (`rbxassetid://`) aren't loaded: an ImageLabel shows only a faint tint.
+- **The mouse.** In Minecraft the pointer belongs to the game. The GUI takes it while a visible GuiButton has `Modal = true` or a TextBox has focus (`CaptureFocus`), or after **Left Alt** over a GUI with buttons; Escape gives it back. Then MouseEnter/MouseLeave/MouseMoved, InputBegan/InputEnded, MouseButton1Down/Up/Click, MouseButton2*, Activated, MouseWheel*, TextBox focus and typing (FocusLost(enterPressed)), ScrollingFrame wheel scrolling and `Draggable` work.
+- **Input.** Keys and mouse buttons fire UserInputService's InputBegan/InputEnded (`input.KeyCode`, `input.UserInputType`, `input.UserInputState`, `input.Position`, and `gameProcessedEvent`, true while chat, a menu or the studio is open), `UIS:IsKeyDown`, `IsMouseButtonPressed`, `GetMouseLocation`, ContextActionService's BindAction (keys and mouse buttons) and the Mouse's (`Player:GetMouse()`) Button1Down, Button1Up, Move, X, Y, Hit (where the crosshair points, through the world's blocks).
+- **The player.** `Players.LocalPlayer.Character` is a Model with a HumanoidRootPart, a Head and a Humanoid that follow the player each frame (positions in blocks, a stud being a block; Health and MaxHealth are the player's times 5, Died and HealthChanged fire). Setting the HumanoidRootPart's CFrame runs `/tp`. `Humanoid:MoveTo(pos)` walks there with the agent's `goto`.
+- **The Camera.** `workspace.CurrentCamera` follows the game's: CFrame, FieldOfView, ViewportSize (dp); `WorldToViewportPoint`, `WorldToScreenPoint`, `ViewportPointToRay`, `ScreenPointToRay`.
+- **Parts.** BaseParts in the Workspace (Part with Block, Ball and Cylinder shapes, WedgePart, MeshPart and the rest as boxes) are drawn in the world each frame with their CFrame, Size, Color and Transparency, lit by the world (Neon is not). They don't collide or fall: Anchored or not, they stay where they are put.
+- **`workspace:Raycast(origin, direction[, params])`** goes through the world's blocks (`result.Instance` is `workspace.Terrain`, `result.Material` the closest Roblox material, `result.Block` the block's id) and the Workspace's parts, with RaycastParams' filter.
+- **RunService** fires PreRender, RenderStepped, Heartbeat, Stepped(time, dt) and the rest once a frame; `BindToRenderStep` works.
+- **Tweens.** `TweenService:Create(inst, info, goals)` tweens numbers, booleans, Vector2, Vector3, CFrame, Color3, UDim, UDim2; `Play`, `Pause`, `Cancel`, `Completed`, `PlaybackState`; `GetValue`. GuiObject's TweenPosition, TweenSize and TweenSizeAndPosition too.
+- **Other services:** Debris (`AddItem`), HttpService (`JSONEncode`, `JSONDecode`, `GenerateGUID`, `UrlEncode`; its requests aren't here: use `http.*`), TextService (`GetTextSize`), StarterGui (`SetCore("SendNotification", {Title, Text})` shows it in chat, `SetCoreGuiEnabled`), CollectionService (tags), Lighting (`ClockTime` and `TimeOfDay` follow the world's time), ReplicatedStorage and the other containers, and Sound (`Play` plays a sound event's name in `SoundId`, such as `"entity.experience_orb.pickup"`; asset ids are silent).
+
+**Instances.** Every Instance has Name, ClassName, Parent, Archivable; `FindFirstChild(name[, recursive])`, `FindFirstChildOfClass`, `FindFirstChildWhichIsA`, `FindFirstAncestor`, `FindFirstAncestorOfClass`, `FindFirstAncestorWhichIsA`, `FindFirstDescendant`, `GetChildren`, `GetDescendants`, `IsA`, `IsDescendantOf`, `IsAncestorOf`, `GetFullName`, `Destroy`, `ClearAllChildren`, `Clone`, `WaitForChild(name[, timeout])` (warns after 5 seconds, as Roblox does), attributes (`SetAttribute`, `GetAttribute`, `GetAttributes`) and tags (`AddTag`, `HasTag`, `RemoveTag`, `GetTags`); events Changed, ChildAdded, ChildRemoved, DescendantAdded, DescendantRemoving, AncestryChanged, Destroying, AttributeChanged. A child is reached by its name (`gui.Frame.Title`) after the properties, events and methods. Properties are checked as Roblox checks them (`Unable to assign property Size. UDim2 expected, got string`); enums take an EnumItem, its name or its number.
+
+**Classes Instance.new makes:** Folder, Configuration, Model, Part, MeshPart, WedgePart, CornerWedgePart, TrussPart, SpawnLocation, Seat, Camera, Humanoid, StringValue, NumberValue, IntValue, BoolValue, ObjectValue, Vector3Value, CFrameValue, Color3Value, BrickColorValue, BindableEvent, BindableFunction, Sound, LocalScript, Script, ModuleScript, ScreenGui, Frame, CanvasGroup, TextLabel, TextButton, TextBox, ImageLabel, ImageButton, ScrollingFrame, UICorner, UIStroke, UIGradient, UIPadding, UIScale, UIAspectRatioConstraint, UISizeConstraint, UITextSizeConstraint, UIListLayout, UIGridLayout; and, kept with whatever properties they get but not drawn, BillboardGui, SurfaceGui, ViewportFrame, Decal, Texture, lights, ParticleEmitter, Beam, Trail, Attachment, welds, Highlight, ProximityPrompt, ClickDetector, Animation, Tool, RemoteEvent, RemoteFunction and post effects.
+
+**`Enum`** has every enum these classes use (KeyCode, UserInputType, UserInputState, EasingStyle, EasingDirection, Font, FontWeight, Material, PartType, the GUI ones, CameraType, HumanoidStateType, CoreGuiType, RaycastFilterType, RenderPriority...): `Enum.KeyCode.E` with `Name`, `Value`, `EnumType`, `IsA`; `Enum.KeyCode:GetEnumItems()`, `FromName`, `FromValue`.
+
+**Not here:** a server (RemoteEvents go nowhere), physics, animations, Roblox assets (images, meshes, sounds by id), BillboardGuis and SurfaceGuis, and `require` of a ModuleScript Instance (use `require` of a folder mod's file, or `import`).
+"##;
+
+const EXECUTOR: &str = r##"
+Horizon Studio has the executor functions of the [sUNC](https://docs.sunc.io) standard, so scripts written for Roblox executors run as mods: closures and hooks, the debug library, metatables, Base64 and LZ4, the collector, environments, a file system, HTTP and WebSockets, the Drawing library, Instances, signals, scripts and hidden properties. Each has an entry here.
+
+```lua
+local old
+old = hookmetamethod(game, "__namecall", function(self, ...)
+  if getnamecallmethod() == "Destroy" and self == workspace then
+    return warn("not destroying the workspace")
+  end
+  return old(self, ...)
+end)
+
+writefile("hello.txt", "Hello from " .. identifyexecutor())
+local box = Drawing.new("Square")
+box.Size = Vector2.new(120, 40)
+box.Position = Vector2.new(20, 20)
+box.Filled = true
+box.Visible = true
+```
+
+**Environments.** A mod's globals are its own table; names it doesn't have come from `getgenv()` (the executor's: the studio's API and this library, shared by every mod), and from there from `getrenv()` (Roblox's: the standard library, `game`, `workspace`, `Instance`, the data types, `task`). `getgenv().x = 1` gives every mod an `x`; `getrenv().game = nil` takes `game` from them all.
+
+**What is different from a Roblox executor**, because the scripts are mods and the game is Minecraft:
+
+- Every Lua function and thread is the executor's: there are no game scripts. `checkcaller()` is always true, `getcallingscript()` and `getscriptfromthread()` are nil, and `filtergc`'s `IgnoreExecutor` (true by default) skips every Lua function: pass `IgnoreExecutor = false`.
+- `getgc`, `filtergc`, `getreg` and live protos see what was made after the studio began tracking objects: from the load of the first mod whose source names one of them (or their first call), as tracking costs a little on every function and table made.
+- Hooks are global: `hookfunction(print, ...)` changes `print` for every mod. They stay until `restorefunction` (or the game restarts), even after the mod that made them stops.
+- `getscriptbytecode` is the studio's own dump of a mod's compiled main file, not Luau bytecode; `getscripthash` hashes that. A ModuleScript runs under `require` from its hidden `Source` (set with `sethiddenproperty`).
+- `replicatesignal` errors: there is no server. `fireclickdetector`, `fireproximityprompt` and `firetouchinterest` fire the events here, deferred like every signal.
+- Files live in the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), which scripts can't leave. `request`, `game:HttpGet` and WebSockets reach the internet only, never this computer or its network.
+- Drawings are in dp, Horizon's logical pixels (the Camera's ViewportSize), over the HUD and the mods' GUIs. Images (Drawing's `Data` and ImageLabels with a `getcustomasset` id) are PNGs drawn as blocks of colour, up to 48 x 48 of them.
+- There is no `crypt` library (sUNC warns when one exists): `base64encode`, `base64decode`, `lz4compress` and `lz4decompress` are globals.
+
+These functions widen what a script can do (see the `limits` topic): run a script from someone you trust.
 "##;
 
 const ERRORS: &str = r##"
@@ -5786,6 +5908,2751 @@ if t.hour >= 22 then chat.show("It is late (UTC)") end
 ```lua
 local start = os.time()
 local elapsed = os.difftime(os.time(), start)
+```
+"##
+    ),
+    e!(
+        "task.wait",
+        "api",
+        r##"
+`task.wait([seconds])`
+
+Waits without stopping the game: the running thread yields and the scheduler resumes it once `seconds` have passed on the studio's clock (by default, on the next frame). Works at a mod's top level, in a command, in `task.spawn`/`task.defer`/`task.delay` threads and in Roblox signal handlers, which all run in threads of their own.
+
+- `seconds` (number, optional): 0 or more; `nil` waits one frame.
+- Returns: the seconds actually waited (a number).
+- Where: in a thread that can wait. `on(...)` handlers and timers (`after`, `every`) run on the main thread: there it errors `task.wait can't wait here: ... (run it with task.spawn)`.
+
+```lua
+print("start")
+task.wait(2)
+print("two seconds later")
+```
+"##
+    ),
+    e!(
+        "task.spawn",
+        "api",
+        r##"
+`task.spawn(fn_or_thread, ...)`
+
+Runs `fn` (or resumes a suspended coroutine) at once, in a thread of its own, with the arguments; the caller carries on when it first waits or ends. An error in it stops the mod, as any error does.
+
+- Returns: the thread.
+
+```lua
+task.spawn(function(name)
+  for i = 1, 3 do
+    print(name, i)
+    task.wait(1)
+  end
+end, "counter")
+```
+"##
+    ),
+    e!(
+        "task.defer",
+        "api",
+        r##"
+`task.defer(fn_or_thread, ...)`
+
+Like `task.spawn`, but runs once the current code is done (in the same frame), as Roblox's deferred events do.
+
+- Returns: the thread.
+
+```lua
+task.defer(print, "after")
+print("before")
+```
+"##
+    ),
+    e!(
+        "task.delay",
+        "api",
+        r##"
+`task.delay(seconds, fn_or_thread, ...)`
+
+Runs `fn` with the arguments in a thread of its own, `seconds` from now.
+
+- Returns: the thread, which `task.cancel` stops.
+
+```lua
+local t = task.delay(5, function() chat.show("five seconds") end)
+```
+"##
+    ),
+    e!(
+        "task.cancel",
+        "api",
+        r##"
+`task.cancel(thread)`
+
+Stops a thread that waits (a `task.delay` not started yet, or one inside `task.wait`). A thread that is running can't be cancelled.
+
+```lua
+local t = task.delay(10, print, "never")
+task.cancel(t)
+```
+"##
+    ),
+    e!(
+        "task.synchronize",
+        "api",
+        r##"
+`task.synchronize()`
+
+Does nothing: there is no parallel Luau here, so every script is already synchronized. Kept so Roblox code runs.
+
+```lua
+task.synchronize()
+```
+"##
+    ),
+    e!(
+        "task.desynchronize",
+        "api",
+        r##"
+`task.desynchronize()`
+
+Does nothing (no parallel Luau); kept so Roblox code runs.
+
+```lua
+task.desynchronize()
+```
+"##
+    ),
+    e!(
+        "wait",
+        "api",
+        r##"
+`wait([seconds])`
+
+Roblox's older `task.wait`: waits at least 1/30 of a second and returns the time waited and the studio's clock.
+
+```lua
+local waited, now = wait(0.5)
+```
+"##
+    ),
+    e!(
+        "spawn",
+        "api",
+        r##"
+`spawn(fn)`
+
+Roblox's older `task.defer`: runs `fn(0, clock)` in a thread of its own on the next frame.
+
+```lua
+spawn(function() print("later") end)
+```
+"##
+    ),
+    e!(
+        "delay",
+        "api",
+        r##"
+`delay(seconds, fn)`
+
+Roblox's older `task.delay`: calls `fn(waited, clock)` in a thread of its own after `seconds`.
+
+```lua
+delay(1, function(waited) print("waited", waited) end)
+```
+"##
+    ),
+    e!(
+        "tick",
+        "api",
+        r##"
+`tick()`
+
+Seconds since 1970 (UTC), with a fraction, as Roblox's `tick`.
+
+```lua
+local started = tick()
+```
+"##
+    ),
+    e!(
+        "time",
+        "api",
+        r##"
+`time()`
+
+Seconds since the studio started: the same clock as `game.time()` and `task.wait`.
+
+```lua
+print(time())
+```
+"##
+    ),
+    e!(
+        "warn",
+        "api",
+        r##"
+`warn(...)`
+
+Prints its arguments, joined with spaces, as a warning (in red) in the Studio console, after the mod's id.
+
+```lua
+warn("low health:", 3)
+```
+"##
+    ),
+    e!(
+        "typeof",
+        "stdlib",
+        r##"
+`typeof(value)`
+
+Luau's `typeof`: `type`, but a Roblox value's own type: `Vector3`, `CFrame`, `Instance`, `EnumItem`, `RBXScriptSignal`...
+
+```lua
+print(typeof(Vector3.new()), typeof(workspace), typeof(1))
+```
+"##
+    ),
+    e!(
+        "table.find",
+        "stdlib",
+        r##"
+`table.find(t, value[, init])`
+
+the first index from `init` (1) whose item is `value` (raw equality), or nil.
+
+```lua
+print(table.find({"a", "b"}, "b")) -- 2
+```
+"##
+    ),
+    e!(
+        "table.create",
+        "stdlib",
+        r##"
+`table.create(n[, value])`
+
+a list of `n` items, each `value` (empty when nil).
+
+```lua
+local zeros = table.create(10, 0)
+```
+"##
+    ),
+    e!(
+        "table.clear",
+        "stdlib",
+        r##"
+`table.clear(t)`
+
+removes every key, keeping the metatable.
+
+```lua
+local t = {1, 2}
+table.clear(t)
+```
+"##
+    ),
+    e!(
+        "table.clone",
+        "stdlib",
+        r##"
+`table.clone(t)`
+
+a shallow copy with the same metatable (not frozen).
+
+```lua
+local copy = table.clone({x = 1})
+```
+"##
+    ),
+    e!(
+        "table.freeze",
+        "stdlib",
+        r##"
+`table.freeze(t)`
+
+makes `t` read only (writes error `attempt to modify a readonly table`); returns it.
+
+```lua
+local CONFIG = table.freeze({speed = 2})
+```
+"##
+    ),
+    e!(
+        "table.isfrozen",
+        "stdlib",
+        r##"
+`table.isfrozen(t)`
+
+whether `table.freeze` froze it.
+
+```lua
+print(table.isfrozen({}))
+```
+"##
+    ),
+    e!(
+        "table.maxn",
+        "stdlib",
+        r##"
+`table.maxn(t)`
+
+the largest number key (0 without one).
+
+```lua
+print(table.maxn({[3] = 1}))
+```
+"##
+    ),
+    e!(
+        "table.getn",
+        "stdlib",
+        r##"
+`table.getn(t)`
+
+Lua 5.0's `#t`.
+
+```lua
+print(table.getn({1, 2}))
+```
+"##
+    ),
+    e!(
+        "table.foreach",
+        "stdlib",
+        r##"
+`table.foreach(t, fn)`
+
+calls `fn(k, v)` for each pair until one returns a value, which it returns.
+
+```lua
+table.foreach({a = 1}, print)
+```
+"##
+    ),
+    e!(
+        "table.foreachi",
+        "stdlib",
+        r##"
+`table.foreachi(t, fn)`
+
+calls `fn(i, v)` for each list item until one returns a value.
+
+```lua
+table.foreachi({"x"}, print)
+```
+"##
+    ),
+    e!(
+        "math.sign",
+        "stdlib",
+        r##"
+`math.sign(x)`
+
+-1, 0 or 1.
+
+```lua
+print(math.sign(-4))
+```
+"##
+    ),
+    e!(
+        "math.round",
+        "stdlib",
+        r##"
+`math.round(x)`
+
+the nearest whole number, halves away from zero.
+
+```lua
+print(math.round(2.5)) -- 3
+```
+"##
+    ),
+    e!(
+        "math.noise",
+        "stdlib",
+        r##"
+`math.noise(x[, y[, z]])`
+
+Perlin noise, about -1 to 1, 0 at whole numbers.
+
+```lua
+local h = math.noise(x or 0.5, 0.3) * 10
+```
+"##
+    ),
+    e!(
+        "math.lerp",
+        "stdlib",
+        r##"
+`math.lerp(a, b, t)`
+
+`a + (b - a) * t`, exactly `b` at `t` 1.
+
+```lua
+print(math.lerp(0, 10, 0.5))
+```
+"##
+    ),
+    e!(
+        "math.map",
+        "stdlib",
+        r##"
+`math.map(x, inmin, inmax, outmin, outmax)`
+
+`x` moved from one range to another.
+
+```lua
+print(math.map(5, 0, 10, 0, 100)) -- 50
+```
+"##
+    ),
+    e!(
+        "math.isnan",
+        "stdlib",
+        r##"
+`math.isnan(x)`
+
+whether `x` is NaN.
+
+```lua
+print(math.isnan(0/0))
+```
+"##
+    ),
+    e!(
+        "math.isinf",
+        "stdlib",
+        r##"
+`math.isinf(x)`
+
+whether `x` is infinite.
+
+```lua
+print(math.isinf(math.huge))
+```
+"##
+    ),
+    e!(
+        "math.isfinite",
+        "stdlib",
+        r##"
+`math.isfinite(x)`
+
+neither NaN nor infinite.
+
+```lua
+print(math.isfinite(1))
+```
+"##
+    ),
+    e!(
+        "bit32.band",
+        "stdlib",
+        r##"
+`bit32.band(...)`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): the bits set in all of them (all ones with none).
+
+```lua
+print(bit32.band(0xF0, 0x3C))
+```
+"##
+    ),
+    e!(
+        "bit32.bor",
+        "stdlib",
+        r##"
+`bit32.bor(...)`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): the bits set in any of them.
+
+```lua
+print(bit32.bor(0xF0, 0x3C))
+```
+"##
+    ),
+    e!(
+        "bit32.bxor",
+        "stdlib",
+        r##"
+`bit32.bxor(...)`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): the bits set in an odd number of them.
+
+```lua
+print(bit32.bxor(0xF0, 0x3C))
+```
+"##
+    ),
+    e!(
+        "bit32.btest",
+        "stdlib",
+        r##"
+`bit32.btest(...)`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): whether `band` of them is not 0.
+
+```lua
+print(bit32.btest(0xF0, 0x3C))
+```
+"##
+    ),
+    e!(
+        "bit32.bnot",
+        "stdlib",
+        r##"
+`bit32.bnot(x)`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): every bit flipped.
+
+```lua
+print(bit32.bnot(6))
+```
+"##
+    ),
+    e!(
+        "bit32.lshift",
+        "stdlib",
+        r##"
+`bit32.lshift(x, n)`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): `x` shifted left by `n` (right when negative); 32 or more gives 0.
+
+```lua
+print(bit32.lshift(6, 1))
+```
+"##
+    ),
+    e!(
+        "bit32.rshift",
+        "stdlib",
+        r##"
+`bit32.rshift(x, n)`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): `x` shifted right by `n`, zeros coming in.
+
+```lua
+print(bit32.rshift(6, 1))
+```
+"##
+    ),
+    e!(
+        "bit32.arshift",
+        "stdlib",
+        r##"
+`bit32.arshift(x, n)`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): `x` shifted right by `n`, the sign bit coming in.
+
+```lua
+print(bit32.arshift(6, 1))
+```
+"##
+    ),
+    e!(
+        "bit32.lrotate",
+        "stdlib",
+        r##"
+`bit32.lrotate(x, n)`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): `x` rotated left by `n`.
+
+```lua
+print(bit32.lrotate(6, 1))
+```
+"##
+    ),
+    e!(
+        "bit32.rrotate",
+        "stdlib",
+        r##"
+`bit32.rrotate(x, n)`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): `x` rotated right by `n`.
+
+```lua
+print(bit32.rrotate(6, 1))
+```
+"##
+    ),
+    e!(
+        "bit32.extract",
+        "stdlib",
+        r##"
+`bit32.extract(x, field[, width])`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): `width` (1) bits of `x` from bit `field`.
+
+```lua
+print(bit32.extract(0xABCD, 4, 8))
+```
+"##
+    ),
+    e!(
+        "bit32.replace",
+        "stdlib",
+        r##"
+`bit32.replace(x, v, field[, width])`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): `x` with `width` (1) bits from `field` set to `v`'s.
+
+```lua
+print(bit32.replace(0, 0xF, 8, 4))
+```
+"##
+    ),
+    e!(
+        "bit32.countlz",
+        "stdlib",
+        r##"
+`bit32.countlz(x)`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): the zero bits above the highest one (32 for 0).
+
+```lua
+print(bit32.countlz(6))
+```
+"##
+    ),
+    e!(
+        "bit32.countrz",
+        "stdlib",
+        r##"
+`bit32.countrz(x)`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): the zero bits below the lowest one (32 for 0).
+
+```lua
+print(bit32.countrz(6))
+```
+"##
+    ),
+    e!(
+        "bit32.byteswap",
+        "stdlib",
+        r##"
+`bit32.byteswap(x)`
+
+Luau's bit32, on 32-bit unsigned whole numbers (arguments are taken modulo 2^32): the four bytes in reverse order.
+
+```lua
+print(bit32.byteswap(6))
+```
+"##
+    ),
+    e!(
+        "Vector3.new",
+        "roblox",
+        r##"
+`Vector3.new([x, y, z])`
+
+A 3D vector (missing parts are 0). Fields `X`, `Y`, `Z` (also lowercase), `Magnitude`, `Unit`; methods `Lerp`, `Dot`, `Cross`, `FuzzyEq`, `Abs`, `Ceil`, `Floor`, `Sign`, `Min`, `Max`, `Angle`; `+ - * / //` with vectors and numbers, unary `-`, `==`. `Vector3.zero`, `one`, `xAxis`, `yAxis`, `zAxis`. A stud is a block.
+
+```lua
+local up = Vector3.new(0, 1, 0)
+print((up * 2 + Vector3.one).Magnitude)
+```
+"##
+    ),
+    e!(
+        "Vector3.FromNormalId",
+        "roblox",
+        r##"
+`Vector3.FromNormalId(normal)`
+
+The unit vector of an `Enum.NormalId` face.
+
+```lua
+print(Vector3.FromNormalId(Enum.NormalId.Top))
+```
+"##
+    ),
+    e!(
+        "Vector3.FromAxis",
+        "roblox",
+        r##"
+`Vector3.FromAxis(axis)`
+
+The unit vector of an `Enum.Axis`.
+
+```lua
+print(Vector3.FromAxis(Enum.Axis.X))
+```
+"##
+    ),
+    e!(
+        "Vector2.new",
+        "roblox",
+        r##"
+`Vector2.new([x, y])`
+
+A 2D vector: `X`, `Y`, `Magnitude`, `Unit`, the same methods and operators as Vector3 (`Cross` gives a number). `Vector2.zero`, `one`, `xAxis`, `yAxis`. GUI positions are Vector2s in dp.
+
+```lua
+local center = Vector2.new(480, 270)
+```
+"##
+    ),
+    e!(
+        "CFrame.new",
+        "roblox",
+        r##"
+`CFrame.new([x, y, z] | pos[, lookAt] | x, y, z, qx, qy, qz, qw | 12 numbers)`
+
+A position and rotation. Fields `Position`, `X`, `Y`, `Z`, `LookVector`, `RightVector`, `UpVector`, `XVector`, `YVector`, `ZVector`, `Rotation`; methods `Inverse`, `Lerp`, `ToWorldSpace`, `ToObjectSpace`, `PointToWorldSpace`, `PointToObjectSpace`, `VectorToWorldSpace`, `VectorToObjectSpace`, `GetComponents`, `ToEulerAnglesXYZ`, `ToEulerAnglesYXZ`, `ToOrientation`, `ToAxisAngle`, `Orthonormalize`, `FuzzyEq`. `cf * cf`, `cf * vector`, `cf + vector`, `cf - vector`. `CFrame.identity`.
+
+```lua
+local cf = CFrame.new(0, 5, 0) * CFrame.Angles(0, math.rad(90), 0)
+print(cf.LookVector)
+```
+"##
+    ),
+    e!(
+        "CFrame.lookAt",
+        "roblox",
+        r##"
+`CFrame.lookAt(at, target[, up])`
+
+A CFrame at `at` looking at `target` (-Z forward, as in Roblox).
+
+```lua
+local cam = CFrame.lookAt(Vector3.new(0, 10, 10), Vector3.zero)
+```
+"##
+    ),
+    e!(
+        "CFrame.lookAlong",
+        "roblox",
+        r##"
+`CFrame.lookAlong(at, direction[, up])`
+
+A CFrame at `at` looking along `direction`.
+
+```lua
+local cf = CFrame.lookAlong(Vector3.zero, Vector3.xAxis)
+```
+"##
+    ),
+    e!(
+        "CFrame.Angles",
+        "roblox",
+        r##"
+`CFrame.Angles(rx, ry, rz)`
+
+A rotation by radians about X, then Y, then Z (as `fromEulerAnglesXYZ`).
+
+```lua
+local turn = CFrame.Angles(0, math.pi, 0)
+```
+"##
+    ),
+    e!(
+        "CFrame.fromEulerAnglesXYZ",
+        "roblox",
+        r##"
+`CFrame.fromEulerAnglesXYZ(rx, ry, rz)`
+
+The same as `CFrame.Angles`.
+
+```lua
+local r = CFrame.fromEulerAnglesXYZ(0, 1, 0)
+```
+"##
+    ),
+    e!(
+        "CFrame.fromEulerAnglesYXZ",
+        "roblox",
+        r##"
+`CFrame.fromEulerAnglesYXZ(rx, ry, rz)`
+
+A rotation in Y, X, Z order.
+
+```lua
+local r = CFrame.fromEulerAnglesYXZ(0.2, 1, 0)
+```
+"##
+    ),
+    e!(
+        "CFrame.fromOrientation",
+        "roblox",
+        r##"
+`CFrame.fromOrientation(rx, ry, rz)`
+
+A rotation as a part's Orientation gives it (YXZ order), in radians.
+
+```lua
+local r = CFrame.fromOrientation(0, math.rad(45), 0)
+```
+"##
+    ),
+    e!(
+        "CFrame.fromEulerAngles",
+        "roblox",
+        r##"
+`CFrame.fromEulerAngles(rx, ry, rz[, order])`
+
+A rotation in an `Enum.RotationOrder` (XYZ by default).
+
+```lua
+local r = CFrame.fromEulerAngles(0, 1, 0, Enum.RotationOrder.YXZ)
+```
+"##
+    ),
+    e!(
+        "CFrame.fromAxisAngle",
+        "roblox",
+        r##"
+`CFrame.fromAxisAngle(axis, angle)`
+
+A rotation of `angle` radians about `axis`.
+
+```lua
+local r = CFrame.fromAxisAngle(Vector3.yAxis, math.pi / 2)
+```
+"##
+    ),
+    e!(
+        "CFrame.fromMatrix",
+        "roblox",
+        r##"
+`CFrame.fromMatrix(pos, vx, vy[, vz])`
+
+A CFrame from its position and its right, up (and back) vectors.
+
+```lua
+local cf = CFrame.fromMatrix(Vector3.zero, Vector3.xAxis, Vector3.yAxis)
+```
+"##
+    ),
+    e!(
+        "CFrame.fromRotationBetweenVectors",
+        "roblox",
+        r##"
+`CFrame.fromRotationBetweenVectors(from, to)`
+
+The smallest rotation turning `from` into `to`.
+
+```lua
+local r = CFrame.fromRotationBetweenVectors(Vector3.xAxis, Vector3.yAxis)
+```
+"##
+    ),
+    e!(
+        "Color3.new",
+        "roblox",
+        r##"
+`Color3.new([r, g, b])`
+
+A colour, each part 0 to 1. Fields `R`, `G`, `B`; methods `Lerp`, `ToHSV`, `ToHex`.
+
+```lua
+local red = Color3.new(1, 0, 0)
+```
+"##
+    ),
+    e!(
+        "Color3.fromRGB",
+        "roblox",
+        r##"
+`Color3.fromRGB(r, g, b)`
+
+A colour from 0 to 255 parts.
+
+```lua
+local dark = Color3.fromRGB(30, 30, 30)
+```
+"##
+    ),
+    e!(
+        "Color3.fromHSV",
+        "roblox",
+        r##"
+`Color3.fromHSV(h, s, v)`
+
+A colour from hue, saturation and value, each 0 to 1.
+
+```lua
+local c = Color3.fromHSV(0.6, 0.8, 1)
+```
+"##
+    ),
+    e!(
+        "Color3.fromHex",
+        "roblox",
+        r##"
+`Color3.fromHex(hex)`
+
+A colour from `"#rrggbb"` or `"rgb"` text.
+
+```lua
+local c = Color3.fromHex("#ff8800")
+```
+"##
+    ),
+    e!(
+        "Color3.toHSV",
+        "roblox",
+        r##"
+`Color3.toHSV(color)`
+
+Hue, saturation and value of a colour.
+
+```lua
+local h, s, v = Color3.toHSV(Color3.new(1, 0, 0))
+```
+"##
+    ),
+    e!(
+        "UDim.new",
+        "roblox",
+        r##"
+`UDim.new([scale, offset])`
+
+One GUI length: a fraction of the parent plus pixels (dp). Fields `Scale`, `Offset`; `+` and `-`.
+
+```lua
+local radius = UDim.new(0, 8)
+```
+"##
+    ),
+    e!(
+        "UDim2.new",
+        "roblox",
+        r##"
+`UDim2.new([xScale, xOffset, yScale, yOffset] | x, y)`
+
+A GUI position or size: `X` and `Y` UDims (also `Width`, `Height`); `Lerp`; `+` and `-`.
+
+```lua
+local size = UDim2.new(0.5, 0, 0, 40)
+```
+"##
+    ),
+    e!(
+        "UDim2.fromScale",
+        "roblox",
+        r##"
+`UDim2.fromScale(x, y)`
+
+A UDim2 of fractions only.
+
+```lua
+local full = UDim2.fromScale(1, 1)
+```
+"##
+    ),
+    e!(
+        "UDim2.fromOffset",
+        "roblox",
+        r##"
+`UDim2.fromOffset(x, y)`
+
+A UDim2 of pixels (dp) only.
+
+```lua
+local box = UDim2.fromOffset(200, 100)
+```
+"##
+    ),
+    e!(
+        "Rect.new",
+        "roblox",
+        r##"
+`Rect.new(min, max | minX, minY, maxX, maxY)`
+
+A rectangle: `Min`, `Max`, `Width`, `Height`.
+
+```lua
+local r = Rect.new(0, 0, 10, 10)
+```
+"##
+    ),
+    e!(
+        "NumberRange.new",
+        "roblox",
+        r##"
+`NumberRange.new(min[, max])`
+
+A range: `Min`, `Max`.
+
+```lua
+local r = NumberRange.new(1, 5)
+```
+"##
+    ),
+    e!(
+        "NumberSequence.new",
+        "roblox",
+        r##"
+`NumberSequence.new(n | n0, n1 | keypoints)`
+
+Numbers over time 0 to 1: `Keypoints`.
+
+```lua
+local fade = NumberSequence.new(0, 1)
+```
+"##
+    ),
+    e!(
+        "NumberSequenceKeypoint.new",
+        "roblox",
+        r##"
+`NumberSequenceKeypoint.new(time, value[, envelope])`
+
+One keypoint: `Time`, `Value`, `Envelope`.
+
+```lua
+local k = NumberSequenceKeypoint.new(0.5, 1)
+```
+"##
+    ),
+    e!(
+        "ColorSequence.new",
+        "roblox",
+        r##"
+`ColorSequence.new(color | c0, c1 | keypoints)`
+
+Colours over time 0 to 1 (UIGradient.Color): `Keypoints`.
+
+```lua
+local g = ColorSequence.new(Color3.new(1, 0, 0), Color3.new(0, 0, 1))
+```
+"##
+    ),
+    e!(
+        "ColorSequenceKeypoint.new",
+        "roblox",
+        r##"
+`ColorSequenceKeypoint.new(time, color)`
+
+One keypoint: `Time`, `Value`.
+
+```lua
+local k = ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1))
+```
+"##
+    ),
+    e!(
+        "TweenInfo.new",
+        "roblox",
+        r##"
+`TweenInfo.new([time, style, direction, repeatCount, reverses, delayTime])`
+
+How a tween runs: 1 second of Quad Out by default. Fields of the same names. `repeatCount` -1 repeats for ever.
+
+```lua
+local info = TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+```
+"##
+    ),
+    e!(
+        "BrickColor.new",
+        "roblox",
+        r##"
+`BrickColor.new(name | number | r, g, b | color)`
+
+One of Roblox's named colours: `Name`, `Number`, `Color`, `r`, `g`, `b`. A part's `BrickColor` sets its `Color`.
+
+```lua
+local red = BrickColor.new("Bright red")
+```
+"##
+    ),
+    e!(
+        "BrickColor.palette",
+        "roblox",
+        r##"
+`BrickColor.palette(i)`
+
+The palette's colour number `i` (0 to 127).
+
+```lua
+local c = BrickColor.palette(5)
+```
+"##
+    ),
+    e!(
+        "BrickColor.random",
+        "roblox",
+        r##"
+`BrickColor.random()`
+
+A random named colour.
+
+```lua
+local c = BrickColor.random()
+```
+"##
+    ),
+    e!(
+        "BrickColor.White",
+        "roblox",
+        r##"
+`BrickColor.White()`
+
+The named colour White.
+
+```lua
+local c = BrickColor.White()
+```
+"##
+    ),
+    e!(
+        "BrickColor.Gray",
+        "roblox",
+        r##"
+`BrickColor.Gray()`
+
+The named colour Gray.
+
+```lua
+local c = BrickColor.Gray()
+```
+"##
+    ),
+    e!(
+        "BrickColor.DarkGray",
+        "roblox",
+        r##"
+`BrickColor.DarkGray()`
+
+The named colour DarkGray.
+
+```lua
+local c = BrickColor.DarkGray()
+```
+"##
+    ),
+    e!(
+        "BrickColor.Black",
+        "roblox",
+        r##"
+`BrickColor.Black()`
+
+The named colour Black.
+
+```lua
+local c = BrickColor.Black()
+```
+"##
+    ),
+    e!(
+        "BrickColor.Red",
+        "roblox",
+        r##"
+`BrickColor.Red()`
+
+The named colour Red.
+
+```lua
+local c = BrickColor.Red()
+```
+"##
+    ),
+    e!(
+        "BrickColor.Yellow",
+        "roblox",
+        r##"
+`BrickColor.Yellow()`
+
+The named colour Yellow.
+
+```lua
+local c = BrickColor.Yellow()
+```
+"##
+    ),
+    e!(
+        "BrickColor.Green",
+        "roblox",
+        r##"
+`BrickColor.Green()`
+
+The named colour Green.
+
+```lua
+local c = BrickColor.Green()
+```
+"##
+    ),
+    e!(
+        "BrickColor.Blue",
+        "roblox",
+        r##"
+`BrickColor.Blue()`
+
+The named colour Blue.
+
+```lua
+local c = BrickColor.Blue()
+```
+"##
+    ),
+    e!(
+        "Font.new",
+        "roblox",
+        r##"
+`Font.new(family[, weight, style])`
+
+A font face (TextLabel.FontFace): `Family`, `Weight`, `Style`, `Bold`. Drawn with Geist: a mono family as Geist Mono, Medium weight or heavier as Geist Medium.
+
+```lua
+local f = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold)
+```
+"##
+    ),
+    e!(
+        "Font.fromEnum",
+        "roblox",
+        r##"
+`Font.fromEnum(font)`
+
+The face of an `Enum.Font`.
+
+```lua
+local f = Font.fromEnum(Enum.Font.GothamBold)
+```
+"##
+    ),
+    e!(
+        "Font.fromName",
+        "roblox",
+        r##"
+`Font.fromName(name[, weight, style])`
+
+A face of a family by its name.
+
+```lua
+local f = Font.fromName("RobotoMono")
+```
+"##
+    ),
+    e!(
+        "Font.fromId",
+        "roblox",
+        r##"
+`Font.fromId(assetId[, weight, style])`
+
+A face of a family asset (kept; drawn with Geist).
+
+```lua
+local f = Font.fromId(12187365364)
+```
+"##
+    ),
+    e!(
+        "Random.new",
+        "roblox",
+        r##"
+`Random.new([seed])`
+
+A random generator (Luau's PCG32): `NextInteger(min, max)`, `NextNumber([min, max])`, `NextUnitVector()`, `Shuffle(t)`, `Clone()`.
+
+```lua
+local rng = Random.new(42)
+print(rng:NextInteger(1, 6))
+```
+"##
+    ),
+    e!(
+        "Ray.new",
+        "roblox",
+        r##"
+`Ray.new(origin, direction)`
+
+A ray: `Origin`, `Direction`, `Unit`, `ClosestPoint(p)`, `Distance(p)`.
+
+```lua
+local r = Ray.new(Vector3.zero, Vector3.new(0, 0, -10))
+```
+"##
+    ),
+    e!(
+        "RaycastParams.new",
+        "roblox",
+        r##"
+`RaycastParams.new()`
+
+A table of `workspace:Raycast`'s options to set: `FilterType` (`Enum.RaycastFilterType.Exclude` or `Include`), `FilterDescendantsInstances` (a list), `IgnoreWater`.
+
+```lua
+local params = RaycastParams.new()
+params.FilterDescendantsInstances = { game.Players.LocalPlayer.Character }
+```
+"##
+    ),
+    e!(
+        "OverlapParams.new",
+        "roblox",
+        r##"
+`OverlapParams.new()`
+
+The same fields as RaycastParams, for code that makes one.
+
+```lua
+local params = OverlapParams.new()
+```
+"##
+    ),
+    e!(
+        "Instance.new",
+        "roblox",
+        r##"
+`Instance.new(className[, parent])`
+
+A new Instance of a class (see the topic for the classes), owned by the mod: it is destroyed when the mod stops or reloads. Errors `Unable to create an Instance of type "X"` for others.
+
+```lua
+local part = Instance.new("Part")
+part.Parent = workspace
+```
+"##
+    ),
+    e!(
+        "Instance.fromExisting",
+        "roblox",
+        r##"
+`Instance.fromExisting(instance)`
+
+A copy of an Instance's properties, without its children.
+
+```lua
+local copy = Instance.fromExisting(workspace.CurrentCamera)
+```
+"##
+    ),
+    e!(
+        "hookfunction",
+        "executor",
+        r##"
+`hookfunction(target, hook)`
+
+Calls of `target` (a Lua function, a `newcclosure` or a built-in such as `print`) run `hook` from now on, everywhere it is used. Returns a function that runs `target` as it was, for the hook to call.
+
+```lua
+local old
+old = hookfunction(print, function(...) return old("[hooked]", ...) end)
+```
+"##
+    ),
+    e!(
+        "replaceclosure",
+        "executor",
+        r##"
+`replaceclosure(target, hook)`
+
+The same function as `hookfunction`, under the name other executors use.
+
+```lua
+print(replaceclosure == hookfunction)
+```
+"##
+    ),
+    e!(
+        "restorefunction",
+        "executor",
+        r##"
+`restorefunction(f)`
+
+Undoes every `hookfunction` of `f`. Errors `restorefunction: function is not hooked` for one that isn't.
+
+```lua
+local function f() end
+hookfunction(f, function() end)
+restorefunction(f)
+```
+"##
+    ),
+    e!(
+        "hookmetamethod",
+        "executor",
+        r##"
+`hookmetamethod(object, name, hook)`
+
+Hooks the metamethod `name` (`"__index"`, `"__namecall"`, `"__newindex"`...) of the object's raw metatable and returns the original. Instances and `game` share one metatable, as in Roblox, so hooking `game`'s hooks every Instance's. A `__namecall` hook gets every method call; `getnamecallmethod()` names the method.
+
+```lua
+local old
+old = hookmetamethod(game, "__namecall", function(self, ...)
+  if getnamecallmethod() == "Kick" then return end
+  return old(self, ...)
+end)
+```
+"##
+    ),
+    e!(
+        "newcclosure",
+        "executor",
+        r##"
+`newcclosure(f)`
+
+`f` wrapped as a C function (`iscclosure` is true, it has no upvalues). It can still wait (`task.wait`) and returns what `f` returns.
+
+```lua
+local wrapped = newcclosure(function(x) return x * 2 end)
+print(wrapped(21), iscclosure(wrapped))
+```
+"##
+    ),
+    e!(
+        "clonefunction",
+        "executor",
+        r##"
+`clonefunction(f)`
+
+A new function that behaves as `f` does, with the same globals; hooking `f` later leaves the clone as it was.
+
+```lua
+local copy = clonefunction(print)
+```
+"##
+    ),
+    e!(
+        "getfunctionhash",
+        "executor",
+        r##"
+`getfunctionhash(f)`
+
+The SHA-384, in hex (96 characters), of a Lua function's constants and code: equal for functions with the same code. Errors on C closures.
+
+```lua
+print(getfunctionhash(function() end))
+```
+"##
+    ),
+    e!(
+        "checkcaller",
+        "executor",
+        r##"
+`checkcaller()`
+
+Whether the code calling is the executor's: always `true` here, since every script is a mod (there are no game scripts).
+
+```lua
+print(checkcaller())
+```
+"##
+    ),
+    e!(
+        "iscclosure",
+        "executor",
+        r##"
+`iscclosure(f)`
+
+Whether `f` is a C function: a built-in, a studio function or a `newcclosure`.
+
+```lua
+print(iscclosure(print))
+```
+"##
+    ),
+    e!(
+        "islclosure",
+        "executor",
+        r##"
+`islclosure(f)`
+
+Whether `f` is a Lua function.
+
+```lua
+print(islclosure(function() end))
+```
+"##
+    ),
+    e!(
+        "isexecutorclosure",
+        "executor",
+        r##"
+`isexecutorclosure(f)`
+
+Whether `f` is the executor's: any Lua function (every script is a mod's), the executor library's and the studio's functions, and `newcclosure`s; not Roblox's (`print`, `game`'s methods).
+
+```lua
+print(isexecutorclosure(getgenv), isexecutorclosure(print))
+```
+"##
+    ),
+    e!(
+        "checkclosure",
+        "executor",
+        r##"
+`checkclosure(f)`
+
+The same function as `isexecutorclosure`, under the name other executors use.
+
+```lua
+print(checkclosure == isexecutorclosure)
+```
+"##
+    ),
+    e!(
+        "isourclosure",
+        "executor",
+        r##"
+`isourclosure(f)`
+
+The same function as `isexecutorclosure`, under the name other executors use.
+
+```lua
+print(isourclosure == isexecutorclosure)
+```
+"##
+    ),
+    e!(
+        "loadstring",
+        "executor",
+        r##"
+`loadstring(source[, chunkname])`
+
+Compiles Luau into a function with the caller's globals. On a syntax error it returns `nil` and the message (`[string "chunkname"]:1: ...`) instead of erroring.
+
+```lua
+local f, err = loadstring("return 1 + 1")
+print(f())
+```
+"##
+    ),
+    e!(
+        "debug.info",
+        "executor",
+        r##"
+`debug.info(f_or_level, options)`
+
+Luau's: for each letter of `options`, `s` the source (`[C]` for a C function), `l` the line (where it was defined, or the level's current line), `n` the name, `a` the parameter count and whether it is vararg, `f` the function.
+
+```lua
+print(debug.info(print, "s"), debug.info(1, "l"))
+```
+"##
+    ),
+    e!(
+        "debug.traceback",
+        "executor",
+        r##"
+`debug.traceback([message])`
+
+The message and the calls in progress, one a line.
+
+```lua
+print(debug.traceback("here"))
+```
+"##
+    ),
+    e!(
+        "debug.getinfo",
+        "executor",
+        r##"
+`debug.getinfo(f_or_level)`
+
+A table: `source`, `short_src`, `currentline`, `linedefined`, `name`, `what` (`"Lua"` or `"C"`), `nups`, `numparams`, `is_vararg`, `func`.
+
+```lua
+print(debug.getinfo(print).what)
+```
+"##
+    ),
+    e!(
+        "debug.getconstants",
+        "executor",
+        r##"
+`debug.getconstants(f_or_level)`
+
+A Lua function's constants as Luau numbers them (strings, numbers, booleans; nil where Luau keeps an import or a closure). Errors on C closures.
+
+```lua
+for i, c in debug.getconstants(function() print("hi") end) do print(i, c) end
+```
+"##
+    ),
+    e!(
+        "debug.getconstant",
+        "executor",
+        r##"
+`debug.getconstant(f_or_level, index)`
+
+One constant (from 1), or nil.
+
+```lua
+print(debug.getconstant(function() print("hi") end, 1))
+```
+"##
+    ),
+    e!(
+        "debug.setconstant",
+        "executor",
+        r##"
+`debug.setconstant(f_or_level, index, value)`
+
+Replaces a constant (a number, string, boolean or nil) in that function: `game.Name` with "Name" set to "Players" reads `game.Players`.
+
+```lua
+local function f() return "a" end
+local i = table.find(debug.getconstants(f), "a")
+if i then debug.setconstant(f, i, "b") end
+```
+"##
+    ),
+    e!(
+        "debug.getprotos",
+        "executor",
+        r##"
+`debug.getprotos(f_or_level)`
+
+The functions defined inside a Lua function, as closures that can't be called (inactive protos: for `debug.info` and the like).
+
+```lua
+print(#debug.getprotos(function() local function inner() end end))
+```
+"##
+    ),
+    e!(
+        "debug.getproto",
+        "executor",
+        r##"
+`debug.getproto(f_or_level, index[, activated])`
+
+One nested function by index (from 1); with `activated` = true, a list of its live closures instead (those `getgc` sees), which can be called.
+
+```lua
+local function outer() return function() return 1 end end
+local live = debug.getproto(outer, 1, true)
+```
+"##
+    ),
+    e!(
+        "debug.getstack",
+        "executor",
+        r##"
+`debug.getstack(level[, index])`
+
+A register of the function `level` calls up (1: the caller), from 1, or all of them as a list. Errors for a level that isn't a Lua function.
+
+```lua
+local a = 5
+print(debug.getstack(1, 1))
+```
+"##
+    ),
+    e!(
+        "debug.setstack",
+        "executor",
+        r##"
+`debug.setstack(level, index, value)`
+
+Sets that register (a captured local's cell too).
+
+```lua
+local x = 1
+debug.setstack(1, 1, 2)
+```
+"##
+    ),
+    e!(
+        "debug.getupvalues",
+        "executor",
+        r##"
+`debug.getupvalues(f_or_level)`
+
+A Lua function's upvalues, in order. A local that is never assigned after a constant value is folded into its uses and isn't an upvalue here.
+
+```lua
+local n = 0
+local function f() n += 1 end
+print(debug.getupvalues(f)[1])
+```
+"##
+    ),
+    e!(
+        "debug.getupvalue",
+        "executor",
+        r##"
+`debug.getupvalue(f_or_level, index)`
+
+One upvalue (from 1); errors when out of range or on a C closure.
+
+```lua
+local n = 0
+local function f() n += 1 end
+print(debug.getupvalue(f, 1))
+```
+"##
+    ),
+    e!(
+        "debug.setupvalue",
+        "executor",
+        r##"
+`debug.setupvalue(f_or_level, index, value)`
+
+Replaces an upvalue: what the function and every other closure sharing that local see.
+
+```lua
+local n = 0
+local function f() n += 1 return n end
+debug.setupvalue(f, 1, 99)
+```
+"##
+    ),
+    e!(
+        "debug.getmetatable",
+        "executor",
+        r##"
+`debug.getmetatable(value)`
+
+The raw metatable, as `getrawmetatable`.
+
+```lua
+print(debug.getmetatable(game) ~= nil)
+```
+"##
+    ),
+    e!(
+        "debug.setmetatable",
+        "executor",
+        r##"
+`debug.setmetatable(value, mt)`
+
+As `setrawmetatable`.
+
+```lua
+debug.setmetatable({}, {})
+```
+"##
+    ),
+    e!(
+        "debug.getregistry",
+        "executor",
+        r##"
+`debug.getregistry()`
+
+As `getreg`.
+
+```lua
+print(type(debug.getregistry()))
+```
+"##
+    ),
+    e!(
+        "debug.profilebegin",
+        "executor",
+        r##"
+`debug.profilebegin(label)`
+
+Does nothing (Roblox's profiler isn't here).
+
+```lua
+debug.profilebegin("work")
+```
+"##
+    ),
+    e!(
+        "debug.profileend",
+        "executor",
+        r##"
+`debug.profileend()`
+
+Does nothing.
+
+```lua
+debug.profileend()
+```
+"##
+    ),
+    e!(
+        "debug.setmemorycategory",
+        "executor",
+        r##"
+`debug.setmemorycategory(name)`
+
+Does nothing.
+
+```lua
+debug.setmemorycategory("ui")
+```
+"##
+    ),
+    e!(
+        "debug.resetmemorycategory",
+        "executor",
+        r##"
+`debug.resetmemorycategory()`
+
+Does nothing.
+
+```lua
+debug.resetmemorycategory()
+```
+"##
+    ),
+    e!(
+        "getrawmetatable",
+        "executor",
+        r##"
+`getrawmetatable(value)`
+
+A table's or userdata's metatable, even when `__metatable` hides it (Instances' is read only).
+
+```lua
+local mt = getrawmetatable(game)
+```
+"##
+    ),
+    e!(
+        "setrawmetatable",
+        "executor",
+        r##"
+`setrawmetatable(value, mt)`
+
+Sets a table's or userdata's metatable past `__metatable`; returns the value.
+
+```lua
+local t = setrawmetatable({}, { __index = { x = 1 } })
+```
+"##
+    ),
+    e!(
+        "setreadonly",
+        "executor",
+        r##"
+`setreadonly(t, on)`
+
+Makes a table read only (writes error `attempt to modify a readonly table`) or writable again.
+
+```lua
+local mt = getrawmetatable(game)
+setreadonly(mt, false)
+setreadonly(mt, true)
+```
+"##
+    ),
+    e!(
+        "isreadonly",
+        "executor",
+        r##"
+`isreadonly(t)`
+
+Whether a table is read only (`table.freeze` or `setreadonly`).
+
+```lua
+print(isreadonly(getrawmetatable(game)))
+```
+"##
+    ),
+    e!(
+        "getnamecallmethod",
+        "executor",
+        r##"
+`getnamecallmethod()`
+
+The method name of the `obj:Method(...)` call in progress, inside a `__namecall` hook.
+
+```lua
+print(getnamecallmethod())
+```
+"##
+    ),
+    e!(
+        "getgenv",
+        "executor",
+        r##"
+`getgenv()`
+
+The executor's globals, shared by every mod: the studio's API and the executor library, and what scripts put there (`getgenv().x = 1` makes `x` a global of every mod that hasn't its own). Each mod's own globals fall back to it.
+
+```lua
+getgenv().shared_setting = true
+```
+"##
+    ),
+    e!(
+        "getrenv",
+        "executor",
+        r##"
+`getrenv()`
+
+Roblox's globals: the standard library, `game`, `workspace`, `Instance`, the data types, `task`. `getgenv()` falls back to it, so changing it changes what every mod sees.
+
+```lua
+print(getrenv().game == game)
+```
+"##
+    ),
+    e!(
+        "getfenv",
+        "executor",
+        r##"
+`getfenv([f_or_level])`
+
+A Lua function's globals (by default the caller's).
+
+```lua
+print(getfenv() == _G)
+```
+"##
+    ),
+    e!(
+        "setfenv",
+        "executor",
+        r##"
+`setfenv(f_or_level, globals)`
+
+Gives a Lua function other globals; returns it.
+
+```lua
+local f = function() return x end
+setfenv(f, { x = 1 })
+```
+"##
+    ),
+    e!(
+        "getgc",
+        "executor",
+        r##"
+`getgc([includeTables])`
+
+The live functions (and tables, with `true`) made since the studio started tracking them: from the load of the first mod whose source names `getgc`, `filtergc`, `getreg` or `getproto` (or the first call to one).
+
+```lua
+for _, f in getgc() do end
+```
+"##
+    ),
+    e!(
+        "filtergc",
+        "executor",
+        r##"
+`filtergc(kind, options[, returnOne])`
+
+`getgc` filtered: `kind` `"function"` with `Name`, `Hash` (getfunctionhash), `Constants` and `Upvalues` (every item must be there) and `IgnoreExecutor` (true by default, which skips every Lua function here: they are all mods'), or `"table"` with `Keys`, `Values`, `KeyValuePairs` and `Metatable`. A list, or the first match with `returnOne`.
+
+```lua
+local f = filtergc("function", { Name = "update", IgnoreExecutor = false }, true)
+```
+"##
+    ),
+    e!(
+        "getreg",
+        "executor",
+        r##"
+`getreg()`
+
+The live threads and functions the studio tracks (see `getgc`), as a list.
+
+```lua
+for _, v in getreg() do end
+```
+"##
+    ),
+    e!(
+        "newproxy",
+        "executor",
+        r##"
+`newproxy([withMetatable])`
+
+An empty userdata, with an empty metatable of its own when asked.
+
+```lua
+local p = newproxy(true)
+```
+"##
+    ),
+    e!(
+        "identifyexecutor",
+        "executor",
+        r##"
+`identifyexecutor()`
+
+`"Horizon Studio"` and the studio's version.
+
+```lua
+print(identifyexecutor())
+```
+"##
+    ),
+    e!(
+        "getexecutorname",
+        "executor",
+        r##"
+`getexecutorname()`
+
+The same function as `identifyexecutor`, under the name other executors use.
+
+```lua
+print(getexecutorname == identifyexecutor)
+```
+"##
+    ),
+    e!(
+        "getthreadidentity",
+        "executor",
+        r##"
+`getthreadidentity()`
+
+The running thread's identity: 8 unless `setthreadidentity` set another.
+
+```lua
+print(getthreadidentity())
+```
+"##
+    ),
+    e!(
+        "setthreadidentity",
+        "executor",
+        r##"
+`setthreadidentity(level)`
+
+Sets the running thread's identity (0 to 8). Below 3, `game:GetService("CoreGui")` gives nil.
+
+```lua
+setthreadidentity(8)
+```
+"##
+    ),
+    e!(
+        "getidentity",
+        "executor",
+        r##"
+`getidentity()`
+
+The same function as `getthreadidentity`, under the name other executors use.
+
+```lua
+print(getidentity == getthreadidentity)
+```
+"##
+    ),
+    e!(
+        "setidentity",
+        "executor",
+        r##"
+`setidentity(level)`
+
+The same function as `setthreadidentity`, under the name other executors use.
+
+```lua
+print(setidentity == setthreadidentity)
+```
+"##
+    ),
+    e!(
+        "base64encode",
+        "executor",
+        r##"
+`base64encode(data)`
+
+`data` (any bytes) as Base64 text.
+
+```lua
+print(base64encode("hi")) -- aGk=
+```
+"##
+    ),
+    e!(
+        "base64decode",
+        "executor",
+        r##"
+`base64decode(text)`
+
+Base64 text back to its bytes; errors on bad Base64.
+
+```lua
+print(base64decode("aGk="))
+```
+"##
+    ),
+    e!(
+        "lz4compress",
+        "executor",
+        r##"
+`lz4compress(data)`
+
+An LZ4 block of `data`.
+
+```lua
+local packed = lz4compress(string.rep("ab", 100))
+```
+"##
+    ),
+    e!(
+        "lz4decompress",
+        "executor",
+        r##"
+`lz4decompress(block[, size])`
+
+An LZ4 block's bytes (`size`, if given, is the most it may make).
+
+```lua
+print(lz4decompress(lz4compress("hello")))
+```
+"##
+    ),
+    e!(
+        "writefile",
+        "executor",
+        r##"
+`writefile(path, data)`
+
+Writes a file (and the folders on its way), replacing it. Paths are relative to the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), with `/` between folders; absolute paths and `..` are refused (`... is outside the workspace folder`). Files are 16 MiB at most, and executable or archive extensions (`.exe`, `.bat`, `.js`, `.zip`, ...) are refused.
+
+```lua
+writefile("notes.txt", "hello")
+```
+"##
+    ),
+    e!(
+        "readfile",
+        "executor",
+        r##"
+`readfile(path)`
+
+A file's bytes; errors when there is none. Paths are relative to the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), with `/` between folders; absolute paths and `..` are refused (`... is outside the workspace folder`).
+
+```lua
+local text = readfile("notes.txt")
+```
+"##
+    ),
+    e!(
+        "appendfile",
+        "executor",
+        r##"
+`appendfile(path, data)`
+
+Adds to the end of a file, making it if needed. Paths are relative to the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), with `/` between folders; absolute paths and `..` are refused (`... is outside the workspace folder`).
+
+```lua
+appendfile("log.txt", "line\n")
+```
+"##
+    ),
+    e!(
+        "isfile",
+        "executor",
+        r##"
+`isfile(path)`
+
+Whether a file is there.
+
+```lua
+print(isfile("notes.txt"))
+```
+"##
+    ),
+    e!(
+        "isfolder",
+        "executor",
+        r##"
+`isfolder(path)`
+
+Whether a folder is there.
+
+```lua
+print(isfolder("saves"))
+```
+"##
+    ),
+    e!(
+        "makefolder",
+        "executor",
+        r##"
+`makefolder(path)`
+
+Makes a folder (and those on its way).
+
+```lua
+makefolder("saves")
+```
+"##
+    ),
+    e!(
+        "delfile",
+        "executor",
+        r##"
+`delfile(path)`
+
+Deletes a file, if there is one.
+
+```lua
+delfile("notes.txt")
+```
+"##
+    ),
+    e!(
+        "delfolder",
+        "executor",
+        r##"
+`delfolder(path)`
+
+Deletes a folder and what is in it (not the workspace folder itself).
+
+```lua
+delfolder("saves")
+```
+"##
+    ),
+    e!(
+        "listfiles",
+        "executor",
+        r##"
+`listfiles([path])`
+
+The files and folders in a folder, as paths from the workspace folder (`"saves/a.txt"`), sorted.
+
+```lua
+for _, p in listfiles("") do print(p) end
+```
+"##
+    ),
+    e!(
+        "loadfile",
+        "executor",
+        r##"
+`loadfile(path)`
+
+Compiles a file of Luau into a function with the caller's globals; a syntax error errors.
+
+```lua
+writefile("m.lua", "return 1")
+print(loadfile("m.lua")())
+```
+"##
+    ),
+    e!(
+        "dofile",
+        "executor",
+        r##"
+`dofile(path)`
+
+Runs a file of Luau and returns what it returns.
+
+```lua
+writefile("m.lua", "return 1")
+print(dofile("m.lua"))
+```
+"##
+    ),
+    e!(
+        "getcustomasset",
+        "executor",
+        r##"
+`getcustomasset(path)`
+
+An asset id (`rbxasset://horizon-studio/<path>`) for a workspace file. An ImageLabel or ImageButton with it as its `Image` draws the PNG (in blocks of up to 48 x 48).
+
+```lua
+local img = Instance.new("ImageLabel")
+img.Image = getcustomasset("icon.png")
+```
+"##
+    ),
+    e!(
+        "request",
+        "executor",
+        r##"
+`request(options)`
+
+An HTTP request, waiting (the thread yields) for the answer: `options` has `Url`, `Method` (`GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `OPTIONS`, `PATCH`), and optional `Body`, `Headers` and `Cookies`. Returns `{Success, StatusCode, StatusMessage, Headers, Body}`; a request that got no answer has `StatusCode` 0 and the reason in `StatusMessage`. It reaches the internet only: addresses on this computer or its network are refused. It sends `User-Agent: Horizon Studio` and the `Horizon-Studio-User-Identifier` and `Horizon-Studio-Fingerprint` headers (a value made from the studio's folder, not the machine). `game:HttpGet(url)`, `game:HttpPost(url, data[, contentType])` and HttpService's `GetAsync`, `PostAsync` and `RequestAsync` use it and error when there is no answer.
+
+```lua
+local r = request({ Url = "https://httpbin.org/get", Method = "GET" })
+print(r.StatusCode)
+```
+"##
+    ),
+    e!(
+        "http_request",
+        "executor",
+        r##"
+`http_request(options)`
+
+The same function as `request`, under the name other executors use.
+
+```lua
+print(http_request == request)
+```
+"##
+    ),
+    e!(
+        "http.request",
+        "executor",
+        r##"
+`http.request(options)`
+
+The same function as `request`.
+
+```lua
+print(http.request == request)
+```
+"##
+    ),
+    e!(
+        "WebSocket.connect",
+        "executor",
+        r##"
+`WebSocket.connect(url)`
+
+Opens a `ws://` or `wss://` WebSocket, waiting until it is open (errors if it can't). The object has `Send(message)`, `Close()`, and the events `OnMessage(message)` and `OnClose()`. The internet only, as `request`.
+
+```lua
+local ws = WebSocket.connect("wss://ws.postman-echo.com/raw")
+ws.OnMessage:Connect(print)
+ws:Send("Hello")
+```
+"##
+    ),
+    e!(
+        "WebSocket.Connect",
+        "executor",
+        r##"
+`WebSocket.Connect(url)`
+
+The same function as `WebSocket.connect`.
+
+```lua
+print(WebSocket.Connect == WebSocket.connect)
+```
+"##
+    ),
+    e!(
+        "Drawing.new",
+        "executor",
+        r##"
+`Drawing.new(kind)`
+
+A drawing over the HUD, in screen dp (the Camera's ViewportSize): `Line` (`From`, `To`, `Thickness`), `Text` (`Text`, `Size`, `Position`, `Center`, `Outline`, `OutlineColor`, `Font` from `Drawing.Fonts`, read-only `TextBounds`), `Image` (`Data`: a PNG's bytes, `Size`, `Position`), `Circle` (`Position` its centre, `Radius`, `NumSides`, `Thickness`, `Filled`), `Square` (`Position`, `Size`, `Thickness`, `Filled`), `Quad` (`PointA` to `PointD`) and `Triangle` (`PointA` to `PointC`), each with `Thickness` and `Filled`. All have `Visible` (false at first), `ZIndex`, `Color`, `Transparency` (0 opaque, 1 invisible), `__OBJECT_EXISTS` and `Destroy()` (or `Remove()`). They go when their mod stops.
+
+```lua
+local c = Drawing.new("Circle")
+c.Radius = 30
+c.Position = workspace.CurrentCamera.ViewportSize / 2
+c.Visible = true
+```
+"##
+    ),
+    e!(
+        "Drawing.clear",
+        "executor",
+        r##"
+`Drawing.clear()`
+
+The same function as `cleardrawcache`.
+
+```lua
+Drawing.clear()
+```
+"##
+    ),
+    e!(
+        "cleardrawcache",
+        "executor",
+        r##"
+`cleardrawcache()`
+
+Destroys every Drawing.
+
+```lua
+cleardrawcache()
+```
+"##
+    ),
+    e!(
+        "getrenderproperty",
+        "executor",
+        r##"
+`getrenderproperty(drawing, property)`
+
+`drawing[property]`.
+
+```lua
+local c = Drawing.new("Circle")
+print(getrenderproperty(c, "Radius"))
+```
+"##
+    ),
+    e!(
+        "setrenderproperty",
+        "executor",
+        r##"
+`setrenderproperty(drawing, property, value)`
+
+`drawing[property] = value`.
+
+```lua
+local c = Drawing.new("Circle")
+setrenderproperty(c, "Radius", 10)
+```
+"##
+    ),
+    e!(
+        "isrenderobj",
+        "executor",
+        r##"
+`isrenderobj(value)`
+
+Whether the value is a Drawing.
+
+```lua
+print(isrenderobj(Drawing.new("Line")))
+```
+"##
+    ),
+    e!(
+        "cloneref",
+        "executor",
+        r##"
+`cloneref(instance)`
+
+Another reference to the Instance: it works the same but isn't `==` to the first (compare with `compareinstances`).
+
+```lua
+local p = cloneref(game.Players.LocalPlayer)
+```
+"##
+    ),
+    e!(
+        "compareinstances",
+        "executor",
+        r##"
+`compareinstances(a, b)`
+
+Whether two values are the same Instance, clonerefs included.
+
+```lua
+print(compareinstances(game, cloneref(game)))
+```
+"##
+    ),
+    e!(
+        "gethui",
+        "executor",
+        r##"
+`gethui()`
+
+A Folder outside the DataModel for GUIs: ScreenGuis parented there draw like the PlayerGui's, and nothing under `game` finds them.
+
+```lua
+local gui = Instance.new("ScreenGui")
+gui.Parent = gethui()
+```
+"##
+    ),
+    e!(
+        "getinstances",
+        "executor",
+        r##"
+`getinstances()`
+
+Every Instance that exists (destroyed ones aside), in or out of the DataModel.
+
+```lua
+print(#getinstances())
+```
+"##
+    ),
+    e!(
+        "getnilinstances",
+        "executor",
+        r##"
+`getnilinstances()`
+
+The Instances with no parent (besides `game` and `gethui()`).
+
+```lua
+print(#getnilinstances())
+```
+"##
+    ),
+    e!(
+        "fireclickdetector",
+        "executor",
+        r##"
+`fireclickdetector(detector[, distance[, event]])`
+
+Fires a ClickDetector's `MouseClick` (or `RightMouseClick`, `MouseHoverEnter`, `MouseHoverLeave`) with the LocalPlayer.
+
+```lua
+local cd = Instance.new("ClickDetector")
+fireclickdetector(cd)
+```
+"##
+    ),
+    e!(
+        "fireproximityprompt",
+        "executor",
+        r##"
+`fireproximityprompt(prompt)`
+
+Triggers a ProximityPrompt at once: PromptButtonHoldBegan, Triggered, PromptButtonHoldEnded and TriggerEnded, with the LocalPlayer.
+
+```lua
+local p = Instance.new("ProximityPrompt")
+fireproximityprompt(p)
+```
+"##
+    ),
+    e!(
+        "firetouchinterest",
+        "executor",
+        r##"
+`firetouchinterest(part1, part2, toggle)`
+
+Fires each part's `Touched` with the other (`toggle` true or 0), or `TouchEnded` (false or 1).
+
+```lua
+local a, b = Instance.new("Part"), Instance.new("Part")
+firetouchinterest(a, b, true)
+```
+"##
+    ),
+    e!(
+        "getcallbackvalue",
+        "executor",
+        r##"
+`getcallbackvalue(instance, property)`
+
+A callback property's function (`OnInvoke`, `OnClientInvoke`...), or nil.
+
+```lua
+local bf = Instance.new("BindableFunction")
+print(getcallbackvalue(bf, "OnInvoke"))
+```
+"##
+    ),
+    e!(
+        "getconnections",
+        "executor",
+        r##"
+`getconnections(signal)`
+
+A signal's connections, each a table: `Enabled`, `ForeignState` (false), `LuaConnection` (true), `Function`, `Thread` (that connected it), and `Fire(...)`, `Defer(...)`, `Disconnect()`, `Disable()`, `Enable()`.
+
+```lua
+for _, c in getconnections(workspace.ChildAdded) do c:Disable() end
+```
+"##
+    ),
+    e!(
+        "firesignal",
+        "executor",
+        r##"
+`firesignal(signal, ...)`
+
+Runs every enabled connection of the signal now, each in a thread of its own, with these arguments.
+
+```lua
+firesignal(workspace.ChildAdded, workspace)
+```
+"##
+    ),
+    e!(
+        "replicatesignal",
+        "executor",
+        r##"
+`replicatesignal(signal, ...)`
+
+Errors: there is no Roblox server here to replicate to.
+
+```lua
+print(pcall(replicatesignal, workspace.ChildAdded))
+```
+"##
+    ),
+    e!(
+        "getscripts",
+        "executor",
+        r##"
+`getscripts()`
+
+Every LocalScript, Script and ModuleScript Instance, including each mod's `script`.
+
+```lua
+print(#getscripts())
+```
+"##
+    ),
+    e!(
+        "getrunningscripts",
+        "executor",
+        r##"
+`getrunningscripts()`
+
+The `script` of every running mod.
+
+```lua
+print(#getrunningscripts())
+```
+"##
+    ),
+    e!(
+        "getloadedmodules",
+        "executor",
+        r##"
+`getloadedmodules()`
+
+The ModuleScripts `require` has run.
+
+```lua
+print(#getloadedmodules())
+```
+"##
+    ),
+    e!(
+        "getcallingscript",
+        "executor",
+        r##"
+`getcallingscript()`
+
+nil: the code calling is always the executor's here (every script is a mod).
+
+```lua
+print(getcallingscript())
+```
+"##
+    ),
+    e!(
+        "getscriptfromthread",
+        "executor",
+        r##"
+`getscriptfromthread(thread)`
+
+nil, as every thread is the executor's here.
+
+```lua
+print(getscriptfromthread(coroutine.running()))
+```
+"##
+    ),
+    e!(
+        "getsenv",
+        "executor",
+        r##"
+`getsenv(script)`
+
+A running mod's own globals, by its `script`; errors for a script that isn't running.
+
+```lua
+print(getsenv(script) == getfenv())
+```
+"##
+    ),
+    e!(
+        "getscriptclosure",
+        "executor",
+        r##"
+`getscriptclosure(script)`
+
+A new function of a running mod's main file (not the one running), or nil.
+
+```lua
+local main = getscriptclosure(script)
+```
+"##
+    ),
+    e!(
+        "getscriptfunction",
+        "executor",
+        r##"
+`getscriptfunction(script)`
+
+The same function as `getscriptclosure`, under the name other executors use.
+
+```lua
+print(getscriptfunction == getscriptclosure)
+```
+"##
+    ),
+    e!(
+        "getscriptbytecode",
+        "executor",
+        r##"
+`getscriptbytecode(script)`
+
+A running mod's compiled main file, as the studio's own text dump of its bytecode (it is not Luau bytecode), or nil.
+
+```lua
+print(#getscriptbytecode(script))
+```
+"##
+    ),
+    e!(
+        "dumpstring",
+        "executor",
+        r##"
+`dumpstring(script)`
+
+The same function as `getscriptbytecode`, under the name other executors use.
+
+```lua
+print(dumpstring == getscriptbytecode)
+```
+"##
+    ),
+    e!(
+        "getscripthash",
+        "executor",
+        r##"
+`getscripthash(script)`
+
+The SHA-384, in hex, of `getscriptbytecode(script)`, or nil.
+
+```lua
+print(getscripthash(script))
+```
+"##
+    ),
+    e!(
+        "gethiddenproperty",
+        "executor",
+        r##"
+`gethiddenproperty(instance, property)`
+
+A property's value and whether it is hidden: Roblox's properties here give `false`; others are hidden ones, kept per Instance (nil until set). A ModuleScript's hidden `Source` is what `require` runs.
+
+```lua
+print(gethiddenproperty(Instance.new("Part"), "Name"))
+```
+"##
+    ),
+    e!(
+        "sethiddenproperty",
+        "executor",
+        r##"
+`sethiddenproperty(instance, property, value)`
+
+Sets a property, hidden or not; returns whether it was hidden.
+
+```lua
+local m = Instance.new("ModuleScript")
+sethiddenproperty(m, "Source", "return 1")
+print(require(m))
+```
+"##
+    ),
+    e!(
+        "isscriptable",
+        "executor",
+        r##"
+`isscriptable(instance, property)`
+
+Whether scripts can read and write a property (nil when there is no such property).
+
+```lua
+print(isscriptable(Instance.new("Part"), "Name"))
+```
+"##
+    ),
+    e!(
+        "setscriptable",
+        "executor",
+        r##"
+`setscriptable(instance, property, on)`
+
+Makes a property unreadable to scripts (false), or a hidden one readable (true); returns whether it was scriptable before.
+
+```lua
+local p = Instance.new("Part")
+setscriptable(p, "Name", false)
 ```
 "##
     ),

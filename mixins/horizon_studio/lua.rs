@@ -173,14 +173,24 @@ pub struct Native {
     pub name: Rc<str>,
     pub kind: NativeKind,
     pub state: RefCell<Vec<Value>>,
+    /// What a call runs instead (`hookfunction`).
+    redirect: RefCell<Option<Value>>,
 }
 
+#[derive(Clone)]
 pub enum NativeKind {
     Builtin(Builtin),
     Host(u32),
     /// `pcall` (false) or `xpcall` (true): the VM runs these itself, so a
     /// coroutine can yield inside them.
     Pcall(bool),
+    /// A Lua function wrapped as a native (`newcclosure`): the VM runs the
+    /// function in its place, so it can yield.
+    Wrap(Value),
+    /// The method call in progress (`getnamecallmethod`), looked up on the
+    /// first argument and called with the rest: `__namecall` as it is
+    /// without a hook.
+    Namecall,
 }
 
 impl Native {
@@ -188,26 +198,31 @@ impl Native {
         Native::with_state(name, f, Vec::new())
     }
     pub fn with_state(name: &str, f: Builtin, state: Vec<Value>) -> Value {
-        Value::Native(Rc::new(Native {
-            name: name.into(),
-            kind: NativeKind::Builtin(f),
-            state: RefCell::new(state),
-        }))
+        Native::of(name, NativeKind::Builtin(f), state)
     }
     pub fn host(name: &str, id: u32) -> Value {
-        Value::Native(Rc::new(Native {
-            name: name.into(),
-            kind: NativeKind::Host(id),
-            state: RefCell::new(Vec::new()),
-        }))
+        Native::of(name, NativeKind::Host(id), Vec::new())
     }
     /// `pcall`, or `xpcall` with `handler`.
     pub fn pcall(name: &str, handler: bool) -> Value {
+        Native::of(name, NativeKind::Pcall(handler), Vec::new())
+    }
+    /// A native of any kind.
+    pub fn of(name: &str, kind: NativeKind, state: Vec<Value>) -> Value {
         Value::Native(Rc::new(Native {
             name: name.into(),
-            kind: NativeKind::Pcall(handler),
-            state: RefCell::new(Vec::new()),
+            kind,
+            state: RefCell::new(state),
+            redirect: RefCell::new(None),
         }))
+    }
+    /// What a call to it runs instead, if it is hooked.
+    pub fn redirect(&self) -> Option<Value> {
+        self.redirect.borrow().clone()
+    }
+    /// Hooks it (Some) or unhooks it (None); the hook before.
+    pub fn set_redirect(&self, to: Option<Value>) -> Option<Value> {
+        std::mem::replace(&mut *self.redirect.borrow_mut(), to)
     }
 }
 
@@ -746,6 +761,11 @@ enum Tok {
     Str(Str),
     /// A keyword or a symbol.
     Op(&'static str),
+    /// Luau's interpolated strings, `` `a{x}b{y}c` ``: the text before the
+    /// first expression, between two, and after the last.
+    InterpBegin(Str),
+    InterpMid(Str),
+    InterpEnd(Str),
     Eof,
 }
 
@@ -754,10 +774,12 @@ const KEYWORDS: [&str; 22] = [
     "not", "or", "repeat", "return", "then", "true", "until", "while",
 ];
 
-// Longest first, so `...` wins over `..` and `.`.
-const SYMBOLS: [&str; 33] = [
-    "...", "..", "==", "~=", "<=", ">=", "//", "::", "<<", ">>", "+", "-", "*", "/", "%", "^", "#", "&", "~", "|", "<",
-    ">", "=", "(", ")", "{", "}", "[", "]", ";", ":", ",", ".",
+// Longest first, so `...` wins over `..` and `.`. Luau adds the compound
+// assignments, `->` and `?` (in types) and `@` (attributes).
+const SYMBOLS: [&str; 44] = [
+    "...", "..=", "//=", "..", "==", "~=", "<=", ">=", "//", "::", "<<", ">>", "+=", "-=", "*=", "/=", "%=", "^=",
+    "->", "+", "-", "*", "/", "%", "^", "#", "&", "~", "|", "<", ">", "=", "(", ")", "{", "}", "[", "]", ";", ":", ",",
+    ".", "@", "?",
 ];
 
 fn tok_text(t: &Tok) -> String {
@@ -766,6 +788,7 @@ fn tok_text(t: &Tok) -> String {
         Tok::Num(n) => fmt_num(*n),
         Tok::Str(s) => String::from_utf8_lossy(s).into_owned(),
         Tok::Op(o) => (*o).to_owned(),
+        Tok::InterpBegin(s) | Tok::InterpMid(s) | Tok::InterpEnd(s) => format!("`{}", String::from_utf8_lossy(s)),
         Tok::Eof => "<eof>".into(),
     }
 }
@@ -781,6 +804,9 @@ fn lex(src: &[u8], chunk: &str) -> Result<Lexed, String> {
     let mut line = 1u32;
     let err = |line: u32, msg: &str| format!("{chunk}:{line}: {msg}");
     let mark = |at: usize| SYNTAX_AT.with(|s| s.set(Some(at)));
+    // The interpolated strings open around here: the braces open inside the
+    // expression of each (a `}` at 0 goes back to its string).
+    let mut braces: Vec<u32> = Vec::new();
     // A `#!` first line, as lua allows.
     if src.starts_with(b"#!") {
         while i < src.len() && src[i] != b'\n' {
@@ -828,16 +854,16 @@ fn lex(src: &[u8], chunk: &str) -> Result<Lexed, String> {
         }
         if c.is_ascii_digit() || (c == b'.' && src.get(i + 1).is_some_and(u8::is_ascii_digit)) {
             let start = i;
-            if c == b'0' && matches!(src.get(i + 1), Some(b'x' | b'X')) {
+            if c == b'0' && matches!(src.get(i + 1), Some(b'x' | b'X' | b'b' | b'B')) {
                 i += 2;
-                while i < src.len() && (src[i].is_ascii_hexdigit()) {
+                while i < src.len() && (src[i].is_ascii_hexdigit() || src[i] == b'_') {
                     i += 1;
                 }
             } else {
                 while i < src.len() {
                     let d = src[i];
                     let exp_sign = matches!(d, b'+' | b'-') && matches!(src[i - 1], b'e' | b'E');
-                    if d.is_ascii_alphanumeric() || d == b'.' || exp_sign {
+                    if d.is_ascii_alphanumeric() || d == b'.' || d == b'_' || exp_sign {
                         i += 1;
                     } else {
                         break;
@@ -845,7 +871,13 @@ fn lex(src: &[u8], chunk: &str) -> Result<Lexed, String> {
                 }
             }
             let text = &src[start..i];
-            let n = str_to_num(text).ok_or_else(|| {
+            // Luau's `1_000_000` and `0b1010`.
+            let plain: Vec<u8> = text.iter().copied().filter(|&b| b != b'_').collect();
+            let n = match plain.get(..2) {
+                Some(b"0b" | b"0B") => bin_to_num(&plain[2..]),
+                _ => str_to_num(&plain),
+            };
+            let n = n.ok_or_else(|| {
                 mark(start);
                 err(
                     line,
@@ -866,6 +898,52 @@ fn lex(src: &[u8], chunk: &str) -> Result<Lexed, String> {
             line += lines;
             i = end;
             continue;
+        }
+        // A backtick string, or the rest of one after an expression in it.
+        let resume = c == b'}' && braces.last() == Some(&0);
+        if c == b'`' || resume {
+            if resume {
+                braces.pop();
+            }
+            let (s, end, lines) = string_body(src, i + 1, b"`{").map_err(|m| {
+                mark(i);
+                err(line, m)
+            })?;
+            starts.push(i);
+            let open = src[end] == b'{';
+            if open && src.get(end + 1) == Some(&b'{') {
+                mark(end);
+                return Err(err(
+                    line,
+                    "double braces are not permitted within interpolated strings; did you mean '\\{'?",
+                ));
+            }
+            let s: Str = s.into();
+            out.push((
+                match (resume, open) {
+                    (false, false) => Tok::Str(s),
+                    (false, true) => Tok::InterpBegin(s),
+                    (true, true) => Tok::InterpMid(s),
+                    (true, false) => Tok::InterpEnd(s),
+                },
+                line,
+            ));
+            if open {
+                braces.push(0);
+            }
+            line += lines;
+            i = end + 1;
+            continue;
+        }
+        if c == b'{'
+            && let Some(depth) = braces.last_mut()
+        {
+            *depth += 1;
+        }
+        if c == b'}'
+            && let Some(depth) = braces.last_mut()
+        {
+            *depth -= 1;
         }
         if c == b'['
             && let Some(level) = long_bracket(src, i)
@@ -894,6 +972,9 @@ fn lex(src: &[u8], chunk: &str) -> Result<Lexed, String> {
                 ));
             }
         }
+    }
+    if !braces.is_empty() {
+        return Err(err(line, "unfinished interpolated string"));
     }
     starts.push(src.len());
     out.push((Tok::Eof, line));
@@ -952,16 +1033,21 @@ fn long_string(src: &[u8], i: usize, level: usize) -> Option<(Vec<u8>, usize, u3
 }
 
 fn short_string(src: &[u8], i: usize) -> Result<(Vec<u8>, usize, u32), &'static str> {
-    let quote = src[i];
-    let mut j = i + 1;
+    let (out, end, lines) = string_body(src, i + 1, &[src[i]])?;
+    Ok((out, end + 1, lines))
+}
+
+/// A quoted string's text from `j` up to the first of `stop` (not escaped):
+/// the text, where that stop is, and the newlines in it.
+fn string_body(src: &[u8], mut j: usize, stop: &[u8]) -> Result<(Vec<u8>, usize, u32), &'static str> {
     let mut out = Vec::new();
     let mut lines = 0;
     loop {
         let Some(&c) = src.get(j) else {
             return Err("unfinished string");
         };
-        if c == quote {
-            return Ok((out, j + 1, lines));
+        if stop.contains(&c) {
+            return Ok((out, j, lines));
         }
         if c == b'\n' {
             return Err("unfinished string");
@@ -987,6 +1073,8 @@ fn short_string(src: &[u8], i: usize) -> Result<(Vec<u8>, usize, u32), &'static 
             b'\\' => out.push(b'\\'),
             b'"' => out.push(b'"'),
             b'\'' => out.push(b'\''),
+            b'`' => out.push(b'`'),
+            b'{' => out.push(b'{'),
             b'\n' => {
                 out.push(b'\n');
                 lines += 1;
@@ -1036,6 +1124,14 @@ fn short_string(src: &[u8], i: usize) -> Result<(Vec<u8>, usize, u32), &'static 
             _ => return Err("invalid escape sequence"),
         }
     }
+}
+
+/// Luau's binary literal's digits (after `0b`).
+fn bin_to_num(digits: &[u8]) -> Option<f64> {
+    if digits.is_empty() || !digits.iter().all(|b| matches!(b, b'0' | b'1')) {
+        return None;
+    }
+    Some(digits.iter().fold(0f64, |v, b| v * 2.0 + f64::from(b - b'0')))
 }
 
 /// Lua's `tonumber` of a string: decimal, exponent, hexadecimal integers.
@@ -1130,6 +1226,7 @@ struct VarAst {
 
 /// An upvalue as the parser resolved it: `index` is a local of the
 /// enclosing function (`from_local`) or one of its upvalues.
+#[derive(Clone)]
 pub struct UpDesc {
     pub name: Rc<str>,
     pub from_local: bool,
@@ -1185,6 +1282,8 @@ enum StmtKind {
     },
     Return(Vec<Expr>),
     Break,
+    /// Luau's `continue`.
+    Continue,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -1245,6 +1344,10 @@ enum Expr {
     Un(UnOp, Box<Expr>),
     Table(Vec<Item>),
     Paren(Box<Expr>),
+    /// Luau's `if c then a else b` (an `elseif` is another one in the else).
+    IfElse(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// One of the interpreter's own functions (`builtin_value`), as a constant.
+    Builtin(&'static str),
 }
 
 impl Expr {
@@ -1616,10 +1719,241 @@ impl Parser {
                 StmtKind::Break
             }
             Tok::Op("goto" | "::") => return self.error("goto and labels are not supported"),
+            // Luau's attributes (`@native`, `@checked`) change nothing here.
+            Tok::Op("@") => {
+                self.advance();
+                self.name()?;
+                return Ok(None);
+            }
+            Tok::Name(n) if &**n == "continue" && self.ends_word() => {
+                self.advance();
+                if self.fs().loops == 0 {
+                    return Err(format!("{}:{line}: continue outside a loop", self.chunk));
+                }
+                StmtKind::Continue
+            }
+            Tok::Name(n) if &**n == "type" && matches!(self.peek2(), Tok::Name(_)) => {
+                self.advance();
+                self.type_alias()?;
+                return Ok(None);
+            }
+            Tok::Name(n) if &**n == "export" && matches!(self.peek2(), Tok::Name(t) if &**t == "type") => {
+                self.advance();
+                self.advance();
+                self.type_alias()?;
+                return Ok(None);
+            }
             _ => self.expr_stat()?,
         };
         Ok(Some(Stmt { line, kind }))
     }
+    /// Whether a contextual keyword (`continue`) stands alone: what follows
+    /// can't go on an expression that starts with it.
+    fn ends_word(&self) -> bool {
+        !matches!(
+            self.peek2(),
+            Tok::Op("(" | "=" | "." | "[" | ":" | "," | "{" | "+=" | "-=" | "*=" | "/=" | "//=" | "%=" | "^=" | "..=")
+                | Tok::Str(_)
+                | Tok::InterpBegin(_)
+        )
+    }
+
+    // --------------------------------------------------------- Luau's types
+    // Types are read and dropped: they change nothing at run time.
+
+    /// `type Name<T> = Type` (after `type`), or a `type function`.
+    fn type_alias(&mut self) -> PResult<()> {
+        if matches!(self.peek(), Tok::Op("function")) {
+            return self.error("type functions are not supported");
+        }
+        self.name()?;
+        if self.check("<") {
+            self.generics()?;
+        }
+        self.expect("=", "")?;
+        self.ty()
+    }
+    /// `<T, U..., V = number>`.
+    fn generics(&mut self) -> PResult<()> {
+        self.expect("<", "")?;
+        loop {
+            if self.close_angle() {
+                return Ok(());
+            }
+            if self.check("...") {
+                self.advance();
+                self.ty()?;
+            } else {
+                self.name()?;
+                self.accept("...");
+                if self.accept("=") {
+                    self.type_or_pack()?;
+                }
+            }
+            if !self.accept(",") {
+                if self.close_angle() {
+                    return Ok(());
+                }
+                return self.error("'>' expected");
+            }
+        }
+    }
+    /// A `>` closing type arguments, also the first half of `>>` or `>=`.
+    fn close_angle(&mut self) -> bool {
+        match self.peek() {
+            Tok::Op(">") => {
+                self.advance();
+                true
+            }
+            Tok::Op(">>") => {
+                self.toks[self.pos].0 = Tok::Op(">");
+                true
+            }
+            Tok::Op(">=") => {
+                self.toks[self.pos].0 = Tok::Op("=");
+                true
+            }
+            _ => false,
+        }
+    }
+    /// A `: Type` annotation, if there is one.
+    fn annotation(&mut self) -> PResult<()> {
+        if self.accept(":") {
+            self.type_or_pack()?;
+        }
+        Ok(())
+    }
+    /// A type, or a pack: `...T`, `T...`, `(A, B)`.
+    fn type_or_pack(&mut self) -> PResult<()> {
+        if self.accept("...") {
+            return self.ty();
+        }
+        self.ty()?;
+        self.accept("...");
+        Ok(())
+    }
+    /// A type: unions and intersections of simple types, `?` for optional.
+    fn ty(&mut self) -> PResult<()> {
+        self.enter()?;
+        if !self.accept("|") {
+            self.accept("&");
+        }
+        loop {
+            self.simple_type()?;
+            while self.accept("?") {}
+            if !self.accept("|") && !self.accept("&") {
+                break;
+            }
+        }
+        self.depth -= 1;
+        Ok(())
+    }
+    fn simple_type(&mut self) -> PResult<()> {
+        match self.peek().clone() {
+            Tok::Op("nil" | "true" | "false") | Tok::Str(_) => {
+                self.advance();
+            }
+            Tok::Name(n) if &*n == "typeof" && matches!(self.peek2(), Tok::Op("(")) => {
+                self.advance();
+                self.skip_balanced("(", ")")?;
+            }
+            Tok::Name(_) => {
+                self.advance();
+                while self.accept(".") {
+                    self.name()?;
+                }
+                if self.check("<") {
+                    self.advance();
+                    loop {
+                        if self.close_angle() {
+                            break;
+                        }
+                        self.type_or_pack()?;
+                        if !self.accept(",") {
+                            if self.close_angle() {
+                                break;
+                            }
+                            return self.error("'>' expected");
+                        }
+                    }
+                }
+            }
+            Tok::Op("{") => {
+                let line = self.line();
+                self.advance();
+                while !self.check("}") {
+                    if self.accept("[") {
+                        self.ty()?;
+                        self.expect("]", "")?;
+                        self.expect(":", "")?;
+                        self.ty()?;
+                    } else if matches!(self.peek(), Tok::Name(_)) && matches!(self.peek2(), Tok::Op(":")) {
+                        self.advance();
+                        self.advance();
+                        self.ty()?;
+                    } else if matches!(self.peek(), Tok::Name(m) if &**m == "read" || &**m == "write")
+                        && matches!(self.peek2(), Tok::Name(_) | Tok::Op("["))
+                    {
+                        self.advance();
+                        continue;
+                    } else {
+                        self.ty()?;
+                    }
+                    if !self.accept(",") && !self.accept(";") {
+                        break;
+                    }
+                }
+                self.expect_match("}", "{", line)?;
+            }
+            Tok::Op("<") => {
+                self.generics()?;
+                self.function_type()?;
+            }
+            Tok::Op("(") => self.function_type()?,
+            Tok::Op("...") => {
+                self.advance();
+                self.ty()?;
+            }
+            _ => return self.error("type expected"),
+        }
+        Ok(())
+    }
+    /// `(A, b: B, ...C) -> R`, or a type in brackets (a pack without `->`).
+    fn function_type(&mut self) -> PResult<()> {
+        let line = self.line();
+        self.expect("(", "")?;
+        while !self.check(")") {
+            if matches!(self.peek(), Tok::Name(_)) && matches!(self.peek2(), Tok::Op(":")) {
+                self.advance();
+                self.advance();
+            }
+            self.type_or_pack()?;
+            if !self.accept(",") {
+                break;
+            }
+        }
+        self.expect_match(")", "(", line)?;
+        if self.accept("->") {
+            self.type_or_pack()?;
+        }
+        Ok(())
+    }
+    /// Tokens from an `open` to its matching `close`.
+    fn skip_balanced(&mut self, open: &str, close: &str) -> PResult<()> {
+        self.expect(open, "")?;
+        let mut depth = 1;
+        while depth > 0 {
+            match self.peek() {
+                Tok::Eof => return self.error(&format!("'{close}' expected")),
+                Tok::Op(o) if *o == open => depth += 1,
+                Tok::Op(o) if *o == close => depth -= 1,
+                _ => {}
+            }
+            self.advance();
+        }
+        Ok(())
+    }
+
     fn if_stat(&mut self, line: u32) -> PResult<StmtKind> {
         self.advance();
         let mut arms = Vec::new();
@@ -1646,6 +1980,7 @@ impl Parser {
     fn for_stat(&mut self, line: u32) -> PResult<StmtKind> {
         self.advance();
         let first = self.name()?;
+        self.annotation()?;
         if self.accept("=") {
             let start = self.expr()?;
             self.expect(",", "")?;
@@ -1673,6 +2008,7 @@ impl Parser {
         let mut names = vec![first];
         while self.accept(",") {
             names.push(self.name()?);
+            self.annotation()?;
         }
         self.expect("in", "")?;
         let exprs = self.exprlist()?;
@@ -1729,9 +2065,11 @@ impl Parser {
     }
     fn local_stat(&mut self) -> PResult<StmtKind> {
         let mut names = vec![self.name()?];
+        self.annotation()?;
         self.attrib()?;
         while self.accept(",") {
             names.push(self.name()?);
+            self.annotation()?;
             self.attrib()?;
         }
         let exprs = if self.accept("=") { self.exprlist()? } else { Vec::new() };
@@ -1751,6 +2089,21 @@ impl Parser {
     }
     fn expr_stat(&mut self) -> PResult<StmtKind> {
         let e = self.suffixed()?;
+        let compound = match self.peek() {
+            Tok::Op("+=") => Some(BinOp::Add),
+            Tok::Op("-=") => Some(BinOp::Sub),
+            Tok::Op("*=") => Some(BinOp::Mul),
+            Tok::Op("/=") => Some(BinOp::Div),
+            Tok::Op("//=") => Some(BinOp::IDiv),
+            Tok::Op("%=") => Some(BinOp::Mod),
+            Tok::Op("^=") => Some(BinOp::Pow),
+            Tok::Op("..=") => Some(BinOp::Concat),
+            _ => None,
+        };
+        if let Some(op) = compound {
+            self.advance();
+            return self.compound(e, op);
+        }
         if self.check("=") || self.check(",") {
             let mut targets = vec![e];
             while self.accept(",") {
@@ -1777,20 +2130,75 @@ impl Parser {
         }
         Ok(StmtKind::Call(e))
     }
+    /// `target op= value`, as Luau runs it: the target's table and key are
+    /// worked out once, then read, combined with the value and stored.
+    fn compound(&mut self, target: Expr, op: BinOp) -> PResult<StmtKind> {
+        let line = self.line();
+        let value = self.expr()?;
+        let assign = |target: Expr, read: Expr| {
+            StmtKind::Assign(vec![target], vec![Expr::Bin(op, Box::new(read), Box::new(value))])
+        };
+        let plain = |e: &Expr| -> Option<Expr> {
+            Some(match e {
+                Expr::Local(v, n) => Expr::Local(*v, n.clone()),
+                Expr::Upval(i, n) => Expr::Upval(*i, n.clone()),
+                Expr::Global(n) => Expr::Global(n.clone()),
+                Expr::Str(s) => Expr::Str(s.clone()),
+                Expr::Num(n) => Expr::Num(*n),
+                _ => return None,
+            })
+        };
+        match target {
+            Expr::Local(..) | Expr::Upval(..) | Expr::Global(_) => {
+                self.written(&target);
+                let read = plain(&target).expect("a name");
+                Ok(assign(target, read))
+            }
+            Expr::Index(o, k) => {
+                if let (Some(o2), Some(k2)) = (plain(&o), plain(&k)) {
+                    let read = Expr::Index(Box::new(o2), Box::new(k2));
+                    return Ok(assign(Expr::Index(o, k), read));
+                }
+                // `t[f()] += 1`: the table and the key in hidden locals.
+                self.open_scope();
+                let t = self.declare("(compound table)".into());
+                let key = self.declare("(compound key)".into());
+                self.close_scope();
+                let at = |v: VarId, n: &str| Expr::Local(v, n.into());
+                let place = || Expr::Index(Box::new(at(t, "(compound table)")), Box::new(at(key, "(compound key)")));
+                Ok(StmtKind::Do(vec![
+                    Stmt {
+                        line,
+                        kind: StmtKind::Local(vec![t, key], vec![*o, *k]),
+                    },
+                    Stmt {
+                        line,
+                        kind: assign(place(), place()),
+                    },
+                ]))
+            }
+            _ => Err(format!("{}:{line}: syntax error (cannot assign to this)", self.chunk)),
+        }
+    }
     fn body(&mut self, name: String, debug_name: Option<Rc<str>>, method: bool, line: u32) -> PResult<Box<FuncAst>> {
         self.fs.push(FuncState::new(false));
         self.open_scope();
         if method {
             self.declare("self".into());
         }
+        if self.check("<") {
+            self.generics()?;
+        }
         self.expect("(", "")?;
         if !self.check(")") {
             loop {
                 if self.accept("...") {
                     self.fs().vararg = true;
+                    self.annotation()?;
                     break;
                 }
                 let n = self.name()?;
+                self.annotation()?;
                 self.declare(n);
                 if !self.accept(",") {
                     break;
@@ -1798,6 +2206,7 @@ impl Parser {
             }
         }
         self.expect(")", "")?;
+        self.annotation()?;
         let nparams = self.fs().actives.len();
         let body = self.statements()?;
         self.expect_match("end", "function", line)?;
@@ -1853,6 +2262,10 @@ impl Parser {
             }
             _ => self.simple()?,
         };
+        // Luau's type assertion, `x :: T`.
+        while self.accept("::") {
+            self.ty()?;
+        }
         loop {
             let (op, left, right) = match self.peek() {
                 Tok::Op("or") => (None, 1, 1),
@@ -1928,8 +2341,51 @@ impl Parser {
                 self.advance();
                 Expr::Function(self.body(String::new(), None, false, line)?)
             }
+            Tok::Op("if") => {
+                self.advance();
+                self.if_else()?
+            }
+            Tok::InterpBegin(first) => {
+                self.advance();
+                let mut args = Vec::new();
+                if !first.is_empty() {
+                    args.push(Expr::Str(first));
+                }
+                loop {
+                    args.push(Expr::Paren(Box::new(self.expr()?)));
+                    match self.peek().clone() {
+                        Tok::InterpMid(s) | Tok::InterpEnd(s) => {
+                            let end = matches!(self.peek(), Tok::InterpEnd(_));
+                            self.advance();
+                            if !s.is_empty() {
+                                args.push(Expr::Str(s));
+                            }
+                            if end {
+                                break;
+                            }
+                        }
+                        _ => return self.error("'}' expected in the interpolated string"),
+                    }
+                }
+                Expr::Call(Box::new(Expr::Builtin("interpolate")), args)
+            }
             _ => self.suffixed()?,
         })
+    }
+    /// An if-expression after its `if`: `c then a [elseif ...] else b`.
+    fn if_else(&mut self) -> PResult<Expr> {
+        self.enter()?;
+        let cond = self.expr()?;
+        self.expect("then", "")?;
+        let yes = self.expr()?;
+        let no = if self.accept("elseif") {
+            self.if_else()?
+        } else {
+            self.expect("else", " (an if-expression needs an else)")?;
+            self.expr()?
+        };
+        self.depth -= 1;
+        Ok(Expr::IfElse(Box::new(cond), Box::new(yes), Box::new(no)))
     }
     fn primary(&mut self) -> PResult<Expr> {
         match self.peek().clone() {
@@ -2158,6 +2614,7 @@ pub struct LocalVar {
 
 /// A compiled function.
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct Proto {
     /// `function 'name'`, `function <main.lua:12>` or `main chunk`.
     pub name: Rc<str>,
@@ -2192,6 +2649,21 @@ pub struct Proto {
 
 #[allow(dead_code)]
 impl Proto {
+    /// A copy with constant `i` (from 0) set to `v`: a number, a string,
+    /// a boolean or nil (`debug.setconstant`); None for a slot that holds
+    /// no plain value.
+    pub fn with_constant(&self, i: usize, v: Value) -> Option<Proto> {
+        if i >= self.constants.len() || self.specials.iter().any(|s| s.0 as usize == i) {
+            return None;
+        }
+        let mut p = self.clone();
+        p.keys[i] = match &v {
+            Value::Str(_) => key_of(&v),
+            _ => None,
+        };
+        p.constants[i] = v;
+        Some(p)
+    }
     /// The constants as Luau numbers them: None for an import, a table
     /// template or a shared closure.
     pub fn constant_slots(&self) -> Vec<Option<Value>> {
@@ -2245,6 +2717,7 @@ enum KKey {
     Import(Vec<u32>),
     Table(Vec<u32>),
     Closure(usize),
+    Builtin(&'static str),
 }
 
 /// A place a multiple assignment stores to.
@@ -2287,6 +2760,8 @@ struct Gen<'a> {
     line: u32,
     loops: u32,
     breaks: Vec<Vec<usize>>,
+    /// The `continue`s of each loop being compiled, to patch.
+    continues: Vec<Vec<usize>>,
 }
 
 impl<'a> Gen<'a> {
@@ -2316,6 +2791,7 @@ impl<'a> Gen<'a> {
             line: f.line,
             loops: 0,
             breaks: Vec::new(),
+            continues: Vec::new(),
         }
     }
     fn finish(mut self, chunk: &Rc<str>) -> Proto {
@@ -2656,6 +3132,13 @@ impl<'a> Compiler<'a> {
                 let x = self.fold(a)?;
                 if x.truthy() { x } else { self.fold(b)? }
             }
+            Expr::IfElse(c, a, b) => {
+                if self.fold(c)?.truthy() {
+                    self.fold(a)?
+                } else {
+                    self.fold(b)?
+                }
+            }
             _ => return None,
         })
     }
@@ -2785,6 +3268,24 @@ impl<'a> Compiler<'a> {
                 }
             }
             Expr::Paren(inner) => self.exp_to(inner, dest),
+            Expr::IfElse(c, a, b) => {
+                if dest < self.g.nactive {
+                    return self.exp_via_temp(e, dest);
+                }
+                if let Some(x) = self.fold(c) {
+                    return self.exp_to(if x.truthy() { a } else { b }, dest);
+                }
+                let skip = self.jump_if_false(c);
+                self.exp_to(a, dest);
+                let end = self.emit(Op::Jmp(0));
+                self.patch_here(&skip);
+                self.exp_to(b, dest);
+                self.patch_here(&[end]);
+            }
+            Expr::Builtin(name) => {
+                let k = self.konst(KKey::Builtin(name), builtin_value(name), None);
+                self.emit(Op::LoadK(d, k));
+            }
             Expr::Nil | Expr::True | Expr::False | Expr::Num(_) | Expr::Str(_) => {
                 self.emit(Op::LoadNil(d, 1));
             }
@@ -3199,13 +3700,17 @@ impl<'a> Compiler<'a> {
         self.g.nactive = nactive;
         self.g.free = nactive;
     }
-    /// A loop's body: the breaks in it.
-    fn loop_body(&mut self, stmts: &'a [Stmt]) -> Vec<usize> {
+    /// A loop's body: the breaks and the continues in it.
+    fn loop_body(&mut self, stmts: &'a [Stmt]) -> (Vec<usize>, Vec<usize>) {
         self.g.breaks.push(Vec::new());
+        self.g.continues.push(Vec::new());
         self.g.loops += 1;
         self.block(stmts);
         self.g.loops -= 1;
-        self.g.breaks.pop().unwrap_or_default()
+        (
+            self.g.breaks.pop().unwrap_or_default(),
+            self.g.continues.pop().unwrap_or_default(),
+        )
     }
     /// Declares `var` in register `reg` (a cell if a closure captured it).
     fn declare(&mut self, var: VarId, reg: usize) {
@@ -3275,9 +3780,12 @@ impl<'a> Compiler<'a> {
                     Some(_) => Vec::new(),
                     None => self.jump_if_false(cond),
                 };
-                let breaks = self.loop_body(body);
+                let (breaks, continues) = self.loop_body(body);
                 let j = self.emit(Op::Jmp(0));
                 self.patch(j, top);
+                for c in continues {
+                    self.patch(c, top);
+                }
                 self.patch_here(&exits);
                 self.patch_here(&breaks);
             }
@@ -3285,10 +3793,13 @@ impl<'a> Compiler<'a> {
                 let top = self.pc();
                 let (nactive, scope) = (self.g.nactive, self.g.scope.len());
                 self.g.breaks.push(Vec::new());
+                self.g.continues.push(Vec::new());
                 self.g.loops += 1;
                 for s in body {
                     self.stmt(s);
                 }
+                let continues = self.g.continues.pop().unwrap_or_default();
+                self.patch_here(&continues);
                 match self.fold(cond) {
                     Some(v) if v.truthy() => {}
                     Some(_) => {
@@ -3353,6 +3864,12 @@ impl<'a> Compiler<'a> {
                 let j = self.emit(Op::Jmp(0));
                 if let Some(b) = self.g.breaks.last_mut() {
                     b.push(j);
+                }
+            }
+            StmtKind::Continue => {
+                let j = self.emit(Op::Jmp(0));
+                if let Some(c) = self.g.continues.last_mut() {
+                    c.push(j);
                 }
             }
         }
@@ -3634,7 +4151,8 @@ impl<'a> Compiler<'a> {
         self.g.loops += 1;
         self.declare(var, a + 4);
         self.g.loops -= 1;
-        let breaks = self.loop_body(body);
+        let (breaks, continues) = self.loop_body(body);
+        self.patch_here(&continues);
         let lp = self.emit(Op::ForLoop(a16, 0));
         self.patch(lp, top);
         self.patch_here(&[prep]);
@@ -3668,14 +4186,54 @@ impl<'a> Compiler<'a> {
             self.declare(v, a + 3 + i);
         }
         self.g.loops -= 1;
-        let breaks = self.loop_body(body);
+        let (breaks, continues) = self.loop_body(body);
         let j = self.emit(Op::Jmp(0));
         self.patch(j, top);
+        for c in continues {
+            self.patch(c, top);
+        }
         self.patch_here(&[exit]);
         self.patch_here(&breaks);
         self.close_locals(scope);
         self.g.nactive = a;
     }
+}
+
+/// The interpreter's own functions that compiled code calls as constants.
+fn builtin_value(name: &'static str) -> Value {
+    match name {
+        "interpolate" => Native::builtin("interpolate", interpolate),
+        "next" => Native::builtin("next", raw_next),
+        _ => Value::Nil,
+    }
+}
+
+/// `next` without `__pairs`, for generalized iteration.
+fn raw_next(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let Some(Value::Table(t)) = args.first() else {
+        return Err(lua.rt_error("bad argument #1 to 'next' (table expected)"));
+    };
+    let k = args.get(1).cloned().unwrap_or_default();
+    match t.borrow().next(&k) {
+        Ok(Some((k, v))) => Ok(vec![k, v]),
+        Ok(None) => Ok(vec![Value::Nil]),
+        Err(()) => Err(lua.rt_error("invalid key to 'next'")),
+    }
+}
+
+/// An interpolated string: its pieces, each as `tostring` gives it, joined.
+fn interpolate(lua: &mut Lua, h: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let mut out: Vec<u8> = Vec::new();
+    for a in &args {
+        match a {
+            Value::Str(s) => out.extend_from_slice(s),
+            other => out.extend_from_slice(lua.tostring(h, other)?.as_bytes()),
+        }
+        if out.len() > MAX_STRING {
+            return Err(lua.rt_error("string length overflow"));
+        }
+    }
+    Ok(vec![Value::Str(out.into())])
 }
 
 // ----------------------------------------------------------------- closures
@@ -3684,6 +4242,8 @@ impl<'a> Compiler<'a> {
 /// what an existing closure runs and keep its identity.
 pub struct Closure {
     body: RefCell<Rc<Body>>,
+    /// What a call runs instead (`hookfunction`).
+    redirect: RefCell<Option<Value>>,
 }
 
 /// What a closure runs: its function, its upvalues and its globals.
@@ -3701,7 +4261,16 @@ impl Closure {
     pub fn from_body(body: Rc<Body>) -> Closure {
         Closure {
             body: RefCell::new(body),
+            redirect: RefCell::new(None),
         }
+    }
+    /// What a call to it runs instead, if it is hooked.
+    pub fn redirect(&self) -> Option<Value> {
+        self.redirect.borrow().clone()
+    }
+    /// Hooks it (Some) or unhooks it (None); the hook before.
+    pub fn set_redirect(&self, to: Option<Value>) -> Option<Value> {
+        std::mem::replace(&mut *self.redirect.borrow_mut(), to)
     }
     pub fn body(&self) -> Rc<Body> {
         self.body.borrow().clone()
@@ -3803,6 +4372,7 @@ struct ThreadState {
 struct Registry {
     closures: Vec<Weak<Closure>>,
     tables: Vec<Weak<RefCell<Table>>>,
+    threads: Vec<Weak<Thread>>,
     prune_at: usize,
 }
 
@@ -4070,8 +4640,26 @@ impl Lua {
         let mut f = f.clone();
         for _ in 0..64 {
             match f {
-                Value::Func(c) => return self.call_lua(h, c, args),
+                Value::Func(c) => match c.redirect() {
+                    Some(to) => f = to,
+                    None => return self.call_lua(h, c, args),
+                },
                 Value::Native(n) => {
+                    if let Some(to) = n.redirect() {
+                        f = to;
+                        continue;
+                    }
+                    match &n.kind {
+                        NativeKind::Wrap(inner) => {
+                            f = inner.clone();
+                            continue;
+                        }
+                        NativeKind::Namecall => {
+                            f = self.namecall_target(h, args.first().cloned().unwrap_or_default())?;
+                            continue;
+                        }
+                        _ => {}
+                    }
                     self.step()?;
                     return self.call_native(h, &n, args);
                 }
@@ -4109,11 +4697,31 @@ impl Lua {
         r
     }
     fn call_native(&mut self, h: &mut dyn Host, n: &Rc<Native>, args: Vec<Value>) -> Res {
-        match n.kind {
+        match &n.kind {
             NativeKind::Builtin(f) => f(self, h, n, args),
-            NativeKind::Host(id) => h.call(self, id, args),
-            NativeKind::Pcall(handler) => self.pcall_nested(h, handler, args),
+            NativeKind::Host(id) => h.call(self, *id, args),
+            NativeKind::Pcall(handler) => self.pcall_nested(h, *handler, args),
+            NativeKind::Wrap(_) | NativeKind::Namecall => self.call_value(h, &Value::Native(n.clone()), args),
         }
+    }
+    /// The method `obj:Name(...)` calls, for `__namecall` without a hook.
+    fn namecall_target(&mut self, h: &mut dyn Host, obj: Value) -> Result<Value, Throw> {
+        let Some(name) = self.namecall.clone() else {
+            return Err(self.rt_error("__namecall called without a method call"));
+        };
+        let f = self.index_raw_meta(h, &obj, &Value::Str(name.clone()))?;
+        if !f.is_callable() && self.meta(&f, Ev::Call).is_none() {
+            return Err(self.rt_error(format!(
+                "attempt to call a {} value (method '{}')",
+                f.type_name(),
+                String::from_utf8_lossy(&name)
+            )));
+        }
+        Ok(f)
+    }
+    /// `obj[key]` through `__index`, never `__namecall`.
+    fn index_raw_meta(&mut self, h: &mut dyn Host, obj: &Value, key: &Value) -> Result<Value, Throw> {
+        self.index(h, obj, key)
     }
     /// pcall and xpcall called from Rust (not from Lua code, where the VM
     /// runs them): protected calls of their own.
@@ -4431,7 +5039,7 @@ impl Lua {
                         }
                     }
                     Op::Namecall(a, kk) => {
-                        if let (Value::Userdata(_), Value::Str(name)) =
+                        if let (Value::Userdata(_) | Value::Table(_), Value::Str(name)) =
                             (&self.cur.stack[base + a as usize + 1], &k[kk as usize])
                         {
                             self.namecall = Some(name.clone());
@@ -4732,10 +5340,34 @@ impl Lua {
                         }
                     }
                     Op::TForPrep(a) => {
-                        let it = &self.cur.stack[base + a as usize];
+                        let i = base + a as usize;
+                        let it = self.cur.stack[i].clone();
                         if !it.is_callable() && !matches!(it, Value::Table(_) | Value::Userdata(_)) {
                             let t = it.type_name();
                             break 'inner self.rt_error(format!("attempt to call a {t} value (for iterator)"));
+                        }
+                        // Luau's generalized iteration: `for k, v in t` runs
+                        // the table's __iter, or goes through it with next.
+                        if matches!(it, Value::Table(_) | Value::Userdata(_)) && self.meta(&it, Ev::Call).is_none() {
+                            match self.metamethod(&it, "__iter") {
+                                Some(f) => {
+                                    self.cur.frames[fi].pc = pc;
+                                    match self.call(h, &f, vec![it]) {
+                                        Ok(r) => {
+                                            for j in 0..3 {
+                                                self.cur.stack[i + j] = r.get(j).cloned().unwrap_or_default();
+                                            }
+                                        }
+                                        Err(e) => break 'inner e,
+                                    }
+                                }
+                                None if matches!(it, Value::Table(_)) => {
+                                    self.cur.stack[i] = builtin_value("next");
+                                    self.cur.stack[i + 1] = it;
+                                    self.cur.stack[i + 2] = Value::Nil;
+                                }
+                                None => {}
+                            }
                         }
                     }
                     Op::TForCall(a, n) => {
@@ -4818,6 +5450,10 @@ impl Lua {
             let f = self.cur.stack[func].clone();
             match f {
                 Value::Func(c) => {
+                    if let Some(to) = c.redirect() {
+                        self.cur.stack[func] = to;
+                        continue;
+                    }
                     if self.cur.frames.len() >= MAX_DEPTH {
                         return Err(self.rt_error("stack overflow"));
                     }
@@ -4826,6 +5462,23 @@ impl Lua {
                     return Ok(true);
                 }
                 Value::Native(nat) => {
+                    if let Some(to) = nat.redirect() {
+                        self.cur.stack[func] = to;
+                        continue;
+                    }
+                    match &nat.kind {
+                        NativeKind::Wrap(inner) => {
+                            self.cur.stack[func] = inner.clone();
+                            continue;
+                        }
+                        NativeKind::Namecall => {
+                            let target =
+                                self.namecall_target(h, self.cur.stack.get(func + 1).cloned().unwrap_or_default())?;
+                            self.cur.stack[func] = target;
+                            continue;
+                        }
+                        _ => {}
+                    }
                     self.step()?;
                     if let NativeKind::Pcall(handler) = nat.kind {
                         return self.op_pcall(h, func, n, nres, handler, ret);
@@ -5156,8 +5809,10 @@ impl Lua {
         if !matches!(obj, Value::Table(_) | Value::Str(_) | Value::Userdata(_)) {
             return Err(self.rt_error(format!("attempt to index a {} value{}", obj.type_name(), p.desc(pc, 0))));
         }
-        // A userdata's `__namecall` takes every method call on it.
-        if let Value::Userdata(_) = obj
+        // A userdata's `__namecall` takes every method call on it (and a
+        // table's, as executors' hookmetamethod needs).
+        if matches!(obj, Value::Userdata(_) | Value::Table(_))
+            && obj.metatable().is_some()
             && let Some(nc) = self.meta(&obj, Ev::Namecall)
             && nc.is_callable()
         {
@@ -5605,7 +6260,7 @@ impl Lua {
 
     /// A coroutine that will run `f`.
     pub fn new_thread(&mut self, f: Value) -> Rc<Thread> {
-        Rc::new(Thread {
+        let t = Rc::new(Thread {
             state: RefCell::new(Some(ThreadState {
                 start: Some(f),
                 ..ThreadState::default()
@@ -5613,7 +6268,12 @@ impl Lua {
             status: std::cell::Cell::new(Status::Suspended),
             main: false,
             error: RefCell::new(None),
-        })
+        });
+        if let Some(r) = &mut self.registry {
+            r.threads.push(Rc::downgrade(&t));
+            r.prune();
+        }
+        t
     }
     /// The running thread (the main one outside coroutines).
     pub fn current_thread(&self) -> Rc<Thread> {
@@ -5679,7 +6339,22 @@ impl Lua {
     /// The running coroutine starts, or goes on from its yield.
     fn run_thread(&mut self, h: &mut dyn Host, args: Vec<Value>) -> Res {
         self.cur.runs = 1;
-        let r = if let Some(f) = self.cur.start.take() {
+        let r = if let Some(mut f) = self.cur.start.take() {
+            // A hooked function runs its hook; a newcclosure, what it wraps.
+            for _ in 0..64 {
+                let next = match &f {
+                    Value::Func(c) => c.redirect(),
+                    Value::Native(n) => n.redirect().or_else(|| match &n.kind {
+                        NativeKind::Wrap(inner) => Some(inner.clone()),
+                        _ => None,
+                    }),
+                    _ => None,
+                };
+                match next {
+                    Some(to) => f = to,
+                    None => break,
+                }
+            }
             match f {
                 Value::Func(c) => match self.step() {
                     Err(e) => Err(e),
@@ -5832,6 +6507,17 @@ impl Lua {
             r.prune();
         }
     }
+    /// Whether `getgc`'s tracking is on.
+    pub fn tracking(&self) -> bool {
+        self.registry.is_some()
+    }
+    /// The tracked threads still alive (`getreg`).
+    pub fn live_threads(&mut self) -> Vec<Rc<Thread>> {
+        self.registry
+            .as_ref()
+            .map(|r| r.threads.iter().filter_map(Weak::upgrade).collect())
+            .unwrap_or_default()
+    }
     /// The tracked closures still alive.
     pub fn live_closures(&mut self) -> Vec<Rc<Closure>> {
         self.registry
@@ -5853,6 +6539,7 @@ impl Registry {
         }
         self.closures.retain(|w| w.strong_count() > 0);
         self.tables.retain(|w| w.strong_count() > 0);
+        self.threads.retain(|w| w.strong_count() > 0);
         self.prune_at = ((self.closures.len() + self.tables.len()) * 2).max(1024);
     }
 }

@@ -11,7 +11,7 @@ import re
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ORDER = [
     "hello", "coords", "clock", "compass", "frame_graph", "zoom", "notes", "night_watch", "ore_finder", "miner",
-    "waypoints", "selection", "playground", "outfit", "statue", "uikit", "uikit_demo", "viahorizon",
+    "waypoints", "selection", "playground", "outfit", "statue", "uikit", "uikit_demo", "viahorizon", "roblox_shop",
 ]
 
 

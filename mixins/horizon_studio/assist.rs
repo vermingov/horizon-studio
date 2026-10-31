@@ -466,6 +466,105 @@ pub const STDLIB: &[(&str, &str, &str)] = &[
         "A time (default now) as text, always in UTC (a leading ! is accepted and changes nothing)",
     ),
     ("os.difftime", "os.difftime(t2[, t1])", "local start = os.time()"),
+    // Luau's.
+    (
+        "typeof",
+        "typeof(value)",
+        "Luau's typeof: type, but a Roblox value's own type: Vector3, CFrame, Instance, EnumItem, RBXScriptSi...",
+    ),
+    (
+        "table.find",
+        "table.find(t, value[, init])",
+        "the first index from init (1) whose item is value (raw equality), or nil",
+    ),
+    (
+        "table.create",
+        "table.create(n[, value])",
+        "a list of n items, each value (empty when nil)",
+    ),
+    (
+        "table.clear",
+        "table.clear(t)",
+        "removes every key, keeping the metatable",
+    ),
+    (
+        "table.clone",
+        "table.clone(t)",
+        "a shallow copy with the same metatable (not frozen)",
+    ),
+    (
+        "table.freeze",
+        "table.freeze(t)",
+        "makes t read only (writes error attempt to modify a readonly table); returns it",
+    ),
+    ("table.isfrozen", "table.isfrozen(t)", "whether table.freeze froze it"),
+    ("table.maxn", "table.maxn(t)", "the largest number key (0 without one)"),
+    ("table.getn", "table.getn(t)", "Lua 5.0's #t"),
+    (
+        "table.foreach",
+        "table.foreach(t, fn)",
+        "calls fn(k, v) for each pair until one returns a value, which it returns",
+    ),
+    (
+        "table.foreachi",
+        "table.foreachi(t, fn)",
+        "calls fn(i, v) for each list item until one returns a value",
+    ),
+    ("math.sign", "math.sign(x)", "-1, 0 or 1"),
+    (
+        "math.round",
+        "math.round(x)",
+        "the nearest whole number, halves away from zero",
+    ),
+    (
+        "math.noise",
+        "math.noise(x[, y[, z]])",
+        "Perlin noise, about -1 to 1, 0 at whole numbers",
+    ),
+    ("math.lerp", "math.lerp(a, b, t)", "a + (b - a) * t, exactly b at t 1"),
+    (
+        "math.map",
+        "math.map(x, inmin, inmax, outmin, outmax)",
+        "x moved from one range to another",
+    ),
+    ("math.isnan", "math.isnan(x)", "whether x is NaN"),
+    ("math.isinf", "math.isinf(x)", "whether x is infinite"),
+    ("math.isfinite", "math.isfinite(x)", "neither NaN nor infinite"),
+    ("bit32.band", "bit32.band(...)", "The bits set in al... (32 bits)"),
+    ("bit32.bor", "bit32.bor(...)", "The bits set in an... (32 bits)"),
+    ("bit32.bxor", "bit32.bxor(...)", "The bits set in an... (32 bits)"),
+    ("bit32.btest", "bit32.btest(...)", "Whether band of th... (32 bits)"),
+    ("bit32.bnot", "bit32.bnot(x)", "Every bit flipped (32 bits)"),
+    ("bit32.lshift", "bit32.lshift(x, n)", "X shifted left by ... (32 bits)"),
+    ("bit32.rshift", "bit32.rshift(x, n)", "X shifted right by... (32 bits)"),
+    (
+        "bit32.arshift",
+        "bit32.arshift(x, n)",
+        "X shifted right by... (32 bits)",
+    ),
+    (
+        "bit32.lrotate",
+        "bit32.lrotate(x, n)",
+        "X rotated left by ... (32 bits)",
+    ),
+    (
+        "bit32.rrotate",
+        "bit32.rrotate(x, n)",
+        "X rotated right by... (32 bits)",
+    ),
+    (
+        "bit32.extract",
+        "bit32.extract(x, field[, width])",
+        "Width (1) bits of ... (32 bits)",
+    ),
+    (
+        "bit32.replace",
+        "bit32.replace(x, v, field[, width])",
+        "X with width (1) b... (32 bits)",
+    ),
+    ("bit32.countlz", "bit32.countlz(x)", "The zero bits abov... (32 bits)"),
+    ("bit32.countrz", "bit32.countrz(x)", "The zero bits belo... (32 bits)"),
+    ("bit32.byteswap", "bit32.byteswap(x)", "The four bytes in ... (32 bits)"),
 ];
 
 pub const KEYWORDS: &[&str] = &[

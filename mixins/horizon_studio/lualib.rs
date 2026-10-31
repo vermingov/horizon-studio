@@ -17,9 +17,10 @@ pub fn new_env(lua: &mut Lua) -> TableRef {
     let env = Rc::new(RefCell::new(Table::new()));
     {
         let mut g = env.borrow_mut();
-        let base: [(&str, super::hstudio_lua::Builtin); 20] = [
+        let base: [(&str, super::hstudio_lua::Builtin); 21] = [
             ("print", print),
             ("type", type_),
+            ("typeof", typeof_),
             ("tostring", tostring),
             ("tonumber", tonumber),
             ("pairs", pairs),
@@ -56,6 +57,7 @@ pub fn new_env(lua: &mut Lua) -> TableRef {
         g.set_str("os", Value::Table(os_lib()));
         g.set_str("utf8", Value::Table(utf8_lib()));
         g.set_str("coroutine", Value::Table(coroutine_lib()));
+        g.set_str("bit32", Value::Table(bit32_lib()));
     }
     if lua.string_lib.is_none()
         && let Value::Table(s) = env.borrow().get_str("string")
@@ -93,6 +95,14 @@ fn type_(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
         return Err(bad_arg(lua, 0, "type", "value expected"));
     }
     one(Value::str(args[0].type_name()))
+}
+
+/// Luau's `typeof`: a userdata's own type name (`Vector3`, `Instance`), else `type`.
+fn typeof_(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    if args.is_empty() {
+        return Err(bad_arg(lua, 0, "typeof", "value expected"));
+    }
+    one(Value::str(&lua.type_of(&args[0])))
 }
 
 fn tostring(lua: &mut Lua, h: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
@@ -296,8 +306,11 @@ fn load(lua: &mut Lua, _: &mut dyn Host, me: &Native, args: Vec<Value>) -> Res {
         || "load".to_owned(),
         |n| String::from_utf8_lossy(&n).trim_start_matches(['=', '@']).to_owned(),
     );
-    let env = match args.get(3) {
-        Some(Value::Table(t)) => t.clone(),
+    // The chunk gets the globals of the code that loads it.
+    let caller = lua.frame_info(1).map(|f| f.closure.env());
+    let env = match (args.get(3), caller) {
+        (Some(Value::Table(t)), _) => t.clone(),
+        (_, Some(env)) => env,
         _ => match me.state.borrow().first() {
             Some(Value::Table(t)) => t.clone(),
             _ => return Err(lua.rt_error("load has no environment")),
@@ -1337,6 +1350,15 @@ fn math_lib() -> TableRef {
         ("tointeger", m_tointeger),
         ("type", m_type),
         ("clamp", m_clamp),
+        // Luau's.
+        ("sign", m_sign),
+        ("round", m_round),
+        ("noise", m_noise),
+        ("lerp", m_lerp),
+        ("map", m_map),
+        ("isnan", m_isnan),
+        ("isinf", m_isinf),
+        ("isfinite", m_isfinite),
         ("rad", m_rad),
         ("deg", m_deg),
         ("ult", m_ult),
@@ -1491,6 +1513,121 @@ fn m_clamp(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res
     one(Value::Num(x.max(lo).min(hi)))
 }
 
+fn m_sign(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let x = check_num(lua, &args, 0, "sign")?;
+    one(Value::Num(if x > 0.0 {
+        1.0
+    } else if x < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }))
+}
+
+/// Rounds half away from zero, as Luau does.
+fn m_round(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    one(Value::Num(check_num(lua, &args, 0, "round")?.round()))
+}
+
+fn m_lerp(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let a = check_num(lua, &args, 0, "lerp")?;
+    let b = check_num(lua, &args, 1, "lerp")?;
+    let t = check_num(lua, &args, 2, "lerp")?;
+    one(Value::Num(if t == 1.0 { b } else { a + (b - a) * t }))
+}
+
+/// `math.map(x, inmin, inmax, outmin, outmax)`.
+fn m_map(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let x = check_num(lua, &args, 0, "map")?;
+    let a = check_num(lua, &args, 1, "map")?;
+    let b = check_num(lua, &args, 2, "map")?;
+    let c = check_num(lua, &args, 3, "map")?;
+    let d = check_num(lua, &args, 4, "map")?;
+    one(Value::Num(c + (x - a) * (d - c) / (b - a)))
+}
+
+fn m_isnan(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    one(Value::Bool(check_num(lua, &args, 0, "isnan")?.is_nan()))
+}
+
+fn m_isinf(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    one(Value::Bool(check_num(lua, &args, 0, "isinf")?.is_infinite()))
+}
+
+fn m_isfinite(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    one(Value::Bool(check_num(lua, &args, 0, "isfinite")?.is_finite()))
+}
+
+/// Luau's `math.noise(x[, y[, z]])`: Perlin's improved noise, 0 at whole
+/// numbers, about -1 to 1.
+fn m_noise(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let x = check_num(lua, &args, 0, "noise")?;
+    let y = opt_num(lua, &args, 1, "noise", 0.0)?;
+    let z = opt_num(lua, &args, 2, "noise", 0.0)?;
+    one(Value::Num(perlin(x, y, z)))
+}
+
+/// Ken Perlin's permutation.
+const PERM: [u8; 256] = [
+    151, 160, 137, 91, 90, 15, 131, 13, 201, 95, 96, 53, 194, 233, 7, 225, 140, 36, 103, 30, 69, 142, 8, 99, 37, 240,
+    21, 10, 23, 190, 6, 148, 247, 120, 234, 75, 0, 26, 197, 62, 94, 252, 219, 203, 117, 35, 11, 32, 57, 177, 33, 88,
+    237, 149, 56, 87, 174, 20, 125, 136, 171, 168, 68, 175, 74, 165, 71, 134, 139, 48, 27, 166, 77, 146, 158, 231, 83,
+    111, 229, 122, 60, 211, 133, 230, 220, 105, 92, 41, 55, 46, 245, 40, 244, 102, 143, 54, 65, 25, 63, 161, 1, 216,
+    80, 73, 209, 76, 132, 187, 208, 89, 18, 169, 200, 196, 135, 130, 116, 188, 159, 86, 164, 100, 109, 198, 173, 186,
+    3, 64, 52, 217, 226, 250, 124, 123, 5, 202, 38, 147, 118, 126, 255, 82, 85, 212, 207, 206, 59, 227, 47, 16, 58, 17,
+    182, 189, 28, 42, 223, 183, 170, 213, 119, 248, 152, 2, 44, 154, 163, 70, 221, 153, 101, 155, 167, 43, 172, 9, 129,
+    22, 39, 253, 19, 98, 108, 110, 79, 113, 224, 232, 178, 185, 112, 104, 218, 246, 97, 228, 251, 34, 242, 193, 238,
+    210, 144, 12, 191, 179, 162, 241, 81, 51, 145, 235, 249, 14, 239, 107, 49, 192, 214, 31, 181, 199, 106, 157, 184,
+    84, 204, 176, 115, 121, 50, 45, 127, 4, 150, 254, 138, 236, 205, 93, 222, 114, 67, 29, 24, 72, 243, 141, 128, 195,
+    78, 66, 215, 61, 156, 180,
+];
+
+fn perlin(x: f64, y: f64, z: f64) -> f64 {
+    if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+        return 0.0;
+    }
+    let p = |i: i64| i64::from(PERM[(i & 255) as usize]);
+    let fade = |t: f64| t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+    let lerp = |t: f64, a: f64, b: f64| a + t * (b - a);
+    let grad = |hash: i64, x: f64, y: f64, z: f64| {
+        let h = hash & 15;
+        let u = if h < 8 { x } else { y };
+        let v = if h < 4 {
+            y
+        } else if h == 12 || h == 14 {
+            x
+        } else {
+            z
+        };
+        (if h & 1 == 0 { u } else { -u }) + (if h & 2 == 0 { v } else { -v })
+    };
+    let (fx, fy, fz) = (x.floor(), y.floor(), z.floor());
+    let (xi, yi, zi) = (fx as i64, fy as i64, fz as i64);
+    let (x, y, z) = (x - fx, y - fy, z - fz);
+    let (u, v, w) = (fade(x), fade(y), fade(z));
+    let a = p(xi) + yi;
+    let (aa, ab) = (p(a) + zi, p(a + 1) + zi);
+    let b = p(xi + 1) + yi;
+    let (ba, bb) = (p(b) + zi, p(b + 1) + zi);
+    lerp(
+        w,
+        lerp(
+            v,
+            lerp(u, grad(p(aa), x, y, z), grad(p(ba), x - 1.0, y, z)),
+            lerp(u, grad(p(ab), x, y - 1.0, z), grad(p(bb), x - 1.0, y - 1.0, z)),
+        ),
+        lerp(
+            v,
+            lerp(u, grad(p(aa + 1), x, y, z - 1.0), grad(p(ba + 1), x - 1.0, y, z - 1.0)),
+            lerp(
+                u,
+                grad(p(ab + 1), x, y - 1.0, z - 1.0),
+                grad(p(bb + 1), x - 1.0, y - 1.0, z - 1.0),
+            ),
+        ),
+    )
+}
+
 /// xorshift64*: the next draw in [0, 1).
 pub fn random01(lua: &mut Lua) -> f64 {
     let mut x = lua.rng;
@@ -1553,7 +1690,285 @@ fn table_lib() -> TableRef {
         ("unpack", unpack),
         ("pack", t_pack),
         ("move", t_move),
+        // Luau's.
+        ("find", t_find),
+        ("create", t_create),
+        ("clear", t_clear),
+        ("clone", t_clone),
+        ("freeze", t_freeze),
+        ("isfrozen", t_isfrozen),
+        ("maxn", t_maxn),
+        ("getn", t_getn),
+        ("foreach", t_foreach),
+        ("foreachi", t_foreachi),
     ])
+}
+
+/// `table.find(t, value[, init])`: the first index from `init` holding it.
+fn t_find(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let t = check_table(lua, &args, 0, "find")?;
+    let want = arg(&args, 1);
+    let init = opt_int(lua, &args, 2, "find", 1)?;
+    if init < 1 {
+        return Err(bad_arg(lua, 2, "find", "index out of range"));
+    }
+    let t = t.borrow();
+    let mut i = init;
+    loop {
+        let v = t.get_int(i);
+        if v.is_nil() {
+            return one(Value::Nil);
+        }
+        if v.raw_eq(&want) {
+            return one(Value::Num(i as f64));
+        }
+        i += 1;
+        lua.charge(1)?;
+    }
+}
+
+/// `table.create(n[, value])`: a list of `n` copies.
+fn t_create(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let n = check_int(lua, &args, 0, "create")?;
+    if !(0..=super::hstudio_lua::MAX_TABLE as i64).contains(&n) {
+        return Err(bad_arg(lua, 0, "create", "size out of range"));
+    }
+    lua.charge(n as usize)?;
+    let v = arg(&args, 1);
+    let mut t = Table::with_capacity(n as usize, 0);
+    if !v.is_nil() {
+        t.set_list(vec![v; n as usize]);
+    }
+    one(Value::table(t))
+}
+
+fn t_clear(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let t = check_table(lua, &args, 0, "clear")?;
+    readonly(lua, &t)?;
+    let mut t = t.borrow_mut();
+    let meta = t.meta.take();
+    *t = Table::new();
+    t.meta = meta;
+    Ok(Vec::new())
+}
+
+/// A shallow copy with the same metatable, not frozen.
+fn t_clone(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let t = check_table(lua, &args, 0, "clone")?;
+    let src = t.borrow();
+    lua.charge(src.len())?;
+    let mut out = Table::new();
+    for (k, v) in src.entries() {
+        out.set(k, v).map_err(|m| lua.rt_error(m))?;
+    }
+    out.meta = src.meta.clone();
+    one(Value::table(out))
+}
+
+fn t_freeze(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let t = check_table(lua, &args, 0, "freeze")?;
+    t.borrow_mut().set_readonly(true);
+    one(Value::Table(t))
+}
+
+fn t_isfrozen(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let t = check_table(lua, &args, 0, "isfrozen")?;
+    one(Value::Bool(t.borrow().is_readonly()))
+}
+
+fn t_maxn(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let t = check_table(lua, &args, 0, "maxn")?;
+    let max = t
+        .borrow()
+        .entries()
+        .iter()
+        .filter_map(|(k, _)| k.as_num())
+        .fold(0.0, f64::max);
+    one(Value::Num(max))
+}
+
+fn t_getn(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let t = check_table(lua, &args, 0, "getn")?;
+    one(Value::Num(t.borrow().len() as f64))
+}
+
+/// `table.foreach(t, f)`: f(k, v) for each pair until one returns non-nil.
+fn t_foreach(lua: &mut Lua, h: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let t = check_table(lua, &args, 0, "foreach")?;
+    let f = check_func(lua, &args, 1, "foreach")?;
+    let entries = t.borrow().entries();
+    for (k, v) in entries {
+        let r = lua.call1(h, &f, vec![k, v])?;
+        if !r.is_nil() {
+            return one(r);
+        }
+    }
+    Ok(Vec::new())
+}
+
+fn t_foreachi(lua: &mut Lua, h: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let t = check_table(lua, &args, 0, "foreachi")?;
+    let f = check_func(lua, &args, 1, "foreachi")?;
+    let items = t.borrow().list();
+    for (i, v) in items.into_iter().enumerate() {
+        let r = lua.call1(h, &f, vec![Value::Num(i as f64 + 1.0), v])?;
+        if !r.is_nil() {
+            return one(r);
+        }
+    }
+    Ok(Vec::new())
+}
+
+// ----------------------------------------------------------------- bit32
+
+fn bit32_lib() -> TableRef {
+    lib(&[
+        ("band", b_band),
+        ("bor", b_bor),
+        ("bxor", b_bxor),
+        ("btest", b_btest),
+        ("bnot", b_bnot),
+        ("lshift", b_lshift),
+        ("rshift", b_rshift),
+        ("arshift", b_arshift),
+        ("lrotate", b_lrotate),
+        ("rrotate", b_rrotate),
+        ("extract", b_extract),
+        ("replace", b_replace),
+        ("countlz", b_countlz),
+        ("countrz", b_countrz),
+        ("byteswap", b_byteswap),
+    ])
+}
+
+/// A number as bit32 takes it: modulo 2^32.
+fn u32_arg(lua: &Lua, args: &[Value], i: usize, fname: &str) -> Result<u32, Throw> {
+    let n = check_num(lua, args, i, fname)?;
+    if !n.is_finite() {
+        return Ok(0);
+    }
+    Ok(n.trunc().rem_euclid(4_294_967_296.0) as u32)
+}
+
+fn u32_res(n: u32) -> Res {
+    one(Value::Num(f64::from(n)))
+}
+
+fn fold_bits(lua: &Lua, args: &[Value], fname: &str, start: u32, f: fn(u32, u32) -> u32) -> Result<u32, Throw> {
+    let mut acc = start;
+    for i in 0..args.len() {
+        acc = f(acc, u32_arg(lua, args, i, fname)?);
+    }
+    Ok(acc)
+}
+
+fn b_band(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    u32_res(fold_bits(lua, &args, "band", u32::MAX, |a, b| a & b)?)
+}
+
+fn b_bor(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    u32_res(fold_bits(lua, &args, "bor", 0, |a, b| a | b)?)
+}
+
+fn b_bxor(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    u32_res(fold_bits(lua, &args, "bxor", 0, |a, b| a ^ b)?)
+}
+
+fn b_btest(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    one(Value::Bool(
+        fold_bits(lua, &args, "btest", u32::MAX, |a, b| a & b)? != 0,
+    ))
+}
+
+fn b_bnot(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    u32_res(!u32_arg(lua, &args, 0, "bnot")?)
+}
+
+/// The value and a shift count, which may be negative (the other way).
+fn shift_args(lua: &Lua, args: &[Value], fname: &str) -> Result<(u32, i64), Throw> {
+    Ok((u32_arg(lua, args, 0, fname)?, check_int(lua, args, 1, fname)?))
+}
+
+fn shl(x: u32, n: i64) -> u32 {
+    match n {
+        n if n <= -32 || n >= 32 => 0,
+        n if n >= 0 => x << n,
+        n => x >> -n,
+    }
+}
+
+fn b_lshift(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let (x, n) = shift_args(lua, &args, "lshift")?;
+    u32_res(shl(x, n))
+}
+
+fn b_rshift(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let (x, n) = shift_args(lua, &args, "rshift")?;
+    u32_res(shl(x, -n))
+}
+
+fn b_arshift(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let (x, n) = shift_args(lua, &args, "arshift")?;
+    if n < 0 {
+        return u32_res(shl(x, -n));
+    }
+    u32_res(((x as i32) >> n.min(31)) as u32)
+}
+
+fn b_lrotate(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let (x, n) = shift_args(lua, &args, "lrotate")?;
+    u32_res(x.rotate_left(n.rem_euclid(32) as u32))
+}
+
+fn b_rrotate(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let (x, n) = shift_args(lua, &args, "rrotate")?;
+    u32_res(x.rotate_right(n.rem_euclid(32) as u32))
+}
+
+/// The field and width bit32.extract and replace take, checked.
+fn field_args(lua: &Lua, args: &[Value], i: usize, fname: &str) -> Result<(u32, u32), Throw> {
+    let f = check_int(lua, args, i, fname)?;
+    let w = opt_int(lua, args, i + 1, fname, 1)?;
+    if f < 0 {
+        return Err(bad_arg(lua, i, fname, "field cannot be negative"));
+    }
+    if w <= 0 {
+        return Err(bad_arg(lua, i + 1, fname, "width must be positive"));
+    }
+    if f + w > 32 {
+        return Err(lua.rt_error("trying to access non-existent bits"));
+    }
+    Ok((f as u32, w as u32))
+}
+
+fn mask(w: u32) -> u32 {
+    if w >= 32 { u32::MAX } else { (1 << w) - 1 }
+}
+
+fn b_extract(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let x = u32_arg(lua, &args, 0, "extract")?;
+    let (f, w) = field_args(lua, &args, 1, "extract")?;
+    u32_res((x >> f) & mask(w))
+}
+
+fn b_replace(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let x = u32_arg(lua, &args, 0, "replace")?;
+    let v = u32_arg(lua, &args, 1, "replace")?;
+    let (f, w) = field_args(lua, &args, 2, "replace")?;
+    let m = mask(w) << f;
+    u32_res((x & !m) | ((v << f) & m))
+}
+
+fn b_countlz(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    u32_res(u32_arg(lua, &args, 0, "countlz")?.leading_zeros())
+}
+
+fn b_countrz(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    u32_res(u32_arg(lua, &args, 0, "countrz")?.trailing_zeros())
+}
+
+fn b_byteswap(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    u32_res(u32_arg(lua, &args, 0, "byteswap")?.swap_bytes())
 }
 
 /// `table.move(a1, f, e, t[, a2])`: a1[f..e] into a2 from t (a2 is a1 by
