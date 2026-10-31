@@ -697,6 +697,12 @@ impl ImageCache {
         Some(bytes)
     }
 
+    /// Whether a workspace file is an image that draws (a PNG it can decode).
+    pub fn loads(&mut self, workspace: &Path, rel: &str) -> bool {
+        self.file(workspace, rel)
+            .is_some_and(|bytes| self.get(&bytes).is_some())
+    }
+
     fn get(&mut self, bytes: &[u8]) -> Option<Rc<super::hstudio_meshes::Texture>> {
         let key = {
             let h = super::hstudio_crypt::sha256(bytes);

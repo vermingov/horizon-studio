@@ -198,7 +198,6 @@ const GUI_OBJECT: &[P] = &[
     p("AutomaticSize", K::Enum("AutomaticSize"), D::E("None")),
     p("SizeConstraint", K::Enum("SizeConstraint"), D::E("RelativeXY")),
     p("Draggable", Bool, B(false)),
-    p("Transparency", Num, N(0.0)),
 ];
 
 const TEXT: &[P] = &[
@@ -247,7 +246,11 @@ const IMAGE: &[P] = &[
     p("SliceCenter", K::Rect, D::Rect0),
     p("SliceScale", Num, N(1.0)),
     p("ResampleMode", K::Enum("ResamplerMode"), D::E("Default")),
+    p("TileSize", K::UD2, D::UD2(1.0, 0.0, 1.0, 0.0)),
 ];
+
+/// An ImageButton's images while the pointer is over it and while it is pressed.
+const IMAGE_BUTTON: &[P] = &[p("HoverImage", Str, S("")), p("PressedImage", Str, S(""))];
 
 const PART: &[P] = &[
     p("CFrame", K::CF, D::CF0),
@@ -692,13 +695,17 @@ pub static CLASSES: &[C] = &[
                 p("MultiLine", Bool, B(false)),
                 p("TextEditable", Bool, B(true)),
                 p("CursorPosition", Int, N(1.0)),
+                p("SelectionStart", Int, N(-1.0)),
                 p("ShowNativeInput", Bool, B(true)),
             ],
             &["FocusLost", "Focused", "ReturnPressedFromOnScreenKeyboard"],
         )
     },
     class("ImageLabel", "GuiObject", IMAGE, &[]),
-    class("ImageButton", "GuiButton", IMAGE, &[]),
+    C {
+        more: IMAGE_BUTTON,
+        ..class("ImageButton", "GuiButton", IMAGE, &[])
+    },
     class(
         "ScrollingFrame",
         "GuiObject",
@@ -718,7 +725,7 @@ pub static CLASSES: &[C] = &[
                 K::Enum("VerticalScrollBarPosition"),
                 D::E("Right"),
             ),
-            p("ElasticBehavior", Str, S("WhenScrollable")),
+            p("ElasticBehavior", K::Enum("ElasticBehavior"), D::E("WhenScrollable")),
             p("TopImage", Str, S("")),
             p("MidImage", Str, S("")),
             p("BottomImage", Str, S("")),
@@ -1490,6 +1497,21 @@ impl Rbx {
             self.fire(id, "Changed", vec![Value::str(name)]);
         }
         self.fire(id, &format!("prop:{name}"), Vec::new());
+        self.derived_changed(id, name);
+    }
+
+    /// The signals of the read-only properties made of `name`: ContentText
+    /// follows Text and RichText, GuiState follows Interactable.
+    fn derived_changed(&mut self, id: Id, name: &str) {
+        let Some(c) = self.insts.get(&id).map(|i| i.class) else {
+            return;
+        };
+        if matches!(name, "Text" | "RichText") && find_prop(c, "RichText").is_some() {
+            self.fire(id, "prop:ContentText", Vec::new());
+        }
+        if name == "Interactable" && is_a(c, "GuiObject") {
+            self.fire(id, "prop:GuiState", Vec::new());
+        }
     }
 
     // ------------------------------------------------------------- the tree
@@ -2234,6 +2256,11 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
         let snap = env_snapshot(env);
         env.rbx().refresh(id, &k, snap.as_ref());
     }
+    if k == "IsLoaded"
+        && let Some(loaded) = env.rbx().image_loaded(id)
+    {
+        return Ok(vec![Value::Bool(loaded)]);
+    }
     let rbx = env.rbx();
     let inst = rbx.inst(id);
     let c = inst.class;
@@ -2279,6 +2306,21 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
         }
         "Value" if is_a(c, "ValueBase") => Some(inst.get("Value")),
         "Focus" | "CFrame" if c.name == "Camera" => Some(inst.get(&k)),
+        // The text as drawn: Text without rich text's tags.
+        "ContentText" if find_prop(c, "RichText").is_some() => {
+            let text = inst.get("Text").as_text().unwrap_or_default();
+            Some(Value::str(&if inst.get("RichText").truthy() {
+                super::hstudio_rbx_draw::strip_tags(&text)
+            } else {
+                text
+            }))
+        }
+        "GuiState" if is_a(c, "GuiObject") => Some(enum_value(enum_item(
+            "GuiState",
+            super::hstudio_rbx_draw::gui_state(rbx, id),
+        ))),
+        // GuiObject's deprecated Transparency is its BackgroundTransparency.
+        "Transparency" if is_a(c, "GuiObject") => Some(inst.get("BackgroundTransparency")),
         _ => None,
     };
     if let Some(v) = derived {
@@ -2341,6 +2383,20 @@ impl Rbx {
             self.quiet_set(id, "ViewSizeX", Value::Num(snap.view.0));
             self.quiet_set(id, "ViewSizeY", Value::Num(snap.view.1));
         }
+    }
+
+    /// An image object's IsLoaded: whether its Image draws, which only a
+    /// workspace file (getcustomasset's) that is a PNG does. None for an
+    /// instance without an Image.
+    pub fn image_loaded(&mut self, id: Id) -> Option<bool> {
+        let inst = self.insts.get(&id)?;
+        find_prop(inst.class, "Image")?;
+        let image = inst.get("Image").as_text().unwrap_or_default();
+        let Some(file) = image.strip_prefix("rbxasset://horizon-studio/") else {
+            return Some(false);
+        };
+        let dir = self.workspace_dir.clone();
+        Some(self.screen_images.loads(&dir, file))
     }
 }
 
@@ -2433,6 +2489,21 @@ fn newindex(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Result<(), Thro
             rbx.raw_set(id, "FontFace", wrap(Data::Font(face)));
             rbx.fire(id, "prop:Font", Vec::new());
             Ok(())
+        }
+        "Transparency" if is_a(c, "GuiObject") => {
+            let value = coerce(rbx, K::Num, &v).ok_or_else(|| bad("number", &v))?;
+            rbx.raw_set(id, "BackgroundTransparency", value);
+            rbx.fire(id, "prop:Transparency", Vec::new());
+            Ok(())
+        }
+        "ContentText" | "GuiState" | "IsLoaded"
+            if match key.as_str() {
+                "ContentText" => find_prop(c, "RichText").is_some(),
+                "GuiState" => is_a(c, "GuiObject"),
+                _ => find_prop(c, "Image").is_some(),
+            } =>
+        {
+            Err(lua.rt_error(format!("Unable to assign property {key}. Property is read only")))
         }
         _ if c.lenient || rbx.inst(id).revealed.contains(&key) => {
             rbx.inst_mut(id).extra.insert(key, v);
@@ -2573,6 +2644,9 @@ pub fn tween_goal(rbx: &Rbx, id: Id, prop: &str, v: &Value) -> Result<&'static s
                 v.type_name()
             ));
         }
+        // GuiObject's Transparency is its BackgroundTransparency.
+        "Transparency" if is_a(c, "GuiObject") => find_prop(c, "BackgroundTransparency")
+            .ok_or_else(|| format!("{prop} is not a valid member of {}", c.name))?,
         _ => find_prop(c, prop).ok_or_else(|| format!("{prop} is not a valid member of {}", c.name))?,
     };
     if !matches!(

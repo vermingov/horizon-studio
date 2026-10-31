@@ -412,6 +412,19 @@ fn component(rbx: &Rbx, id: Id, class: &str) -> Option<Id> {
     })
 }
 
+/// The image an image object shows: an ImageButton's PressedImage while it
+/// is pressed and its HoverImage while the pointer is over it, when they
+/// are set, else its Image.
+fn shown_image(inst: &super::hstudio_rbx::Inst, hover: bool, pressed: bool) -> String {
+    let set = |k: &str| inst.get(k).as_text().filter(|s| !s.is_empty());
+    let state = match inst.class.name {
+        "ImageButton" if pressed => set("PressedImage").or_else(|| hover.then(|| set("HoverImage")).flatten()),
+        "ImageButton" if hover => set("HoverImage"),
+        _ => None,
+    };
+    state.or_else(|| set("Image")).unwrap_or_default()
+}
+
 /// How opaque CanvasGroups above `id` leave it.
 fn group_alpha(rbx: &Rbx, id: Id) -> f64 {
     let mut a = 1.0;
@@ -477,7 +490,7 @@ pub fn draw(
         }
         // Images aren't loaded here: an ImageLabel shows its tint faintly.
         if find(inst.class, "Image") {
-            let img = inst.get("Image").as_text().unwrap_or_default();
+            let img = shown_image(inst, hover && p.interactable, pressed && p.interactable);
             let ia = (1.0 - inst.get("ImageTransparency").to_num().unwrap_or(0.0)) * ga;
             // getcustomasset's images draw; Roblox's asset ids don't load here.
             let file = img
@@ -984,15 +997,78 @@ pub fn screen_call(env: &mut dyn Env, lua: &mut Lua, which: u32, args: &[Value])
 }
 
 fn leave_all(rbx: &mut Rbx) {
+    let before = gui_states(rbx);
     let (x, y) = (rbx.pointer.x, rbx.pointer.y);
     for id in std::mem::take(&mut rbx.pointer.hover) {
         rbx.fire(id, "MouseLeave", vec![Value::Num(x), Value::Num(y)]);
     }
     rbx.pointer.pressed = None;
     rbx.pointer.drag = None;
+    gui_states_changed(rbx, before);
+}
+
+/// A GuiObject's GuiState: NonInteractable unless Interactable, then Press
+/// while it is the button pressed, Hover while the pointer is over it, and
+/// Idle.
+pub fn gui_state(rbx: &Rbx, id: Id) -> &'static str {
+    if rbx.try_inst(id).is_some_and(|i| !i.get("Interactable").truthy()) {
+        "NonInteractable"
+    } else if rbx.pointer.pressed.is_some_and(|(p, _)| p == id) {
+        "Press"
+    } else if rbx.pointer.hover.contains(&id) {
+        "Hover"
+    } else {
+        "Idle"
+    }
+}
+
+/// The GuiState of each object the pointer is over or pressing.
+fn gui_states(rbx: &Rbx) -> Vec<(Id, &'static str)> {
+    let mut ids = rbx.pointer.hover.clone();
+    if let Some((p, _)) = rbx.pointer.pressed
+        && !ids.contains(&p)
+    {
+        ids.push(p);
+    }
+    ids.into_iter()
+        .filter(|&id| rbx.try_inst(id).is_some())
+        .map(|id| (id, gui_state(rbx, id)))
+        .collect()
+}
+
+/// Fires GuiState's signal for each object whose state is not what it was
+/// in `before` (an object in only one of the two was at rest in the other).
+fn gui_states_changed(rbx: &mut Rbx, before: Vec<(Id, &'static str)>) {
+    let after = gui_states(rbx);
+    let resting = |rbx: &Rbx, id: Id| {
+        if rbx.try_inst(id).is_some_and(|i| !i.get("Interactable").truthy()) {
+            "NonInteractable"
+        } else {
+            "Idle"
+        }
+    };
+    let mut changed = Vec::new();
+    for &(id, old) in &before {
+        let new = after
+            .iter()
+            .find(|a| a.0 == id)
+            .map_or_else(|| resting(rbx, id), |a| a.1);
+        if new != old {
+            changed.push(id);
+        }
+    }
+    for &(id, new) in &after {
+        if !before.iter().any(|b| b.0 == id) && new != resting(rbx, id) {
+            changed.push(id);
+        }
+    }
+    for id in changed {
+        rbx.fire(id, "prop:GuiState", Vec::new());
+    }
 }
 
 pub fn pointer_moved(rbx: &mut Rbx, x: f64, y: f64) {
+    let before = gui_states(rbx);
     let (ox, oy) = (rbx.pointer.x, rbx.pointer.y);
     rbx.pointer.x = x;
     rbx.pointer.y = y;
@@ -1033,6 +1109,7 @@ pub fn pointer_moved(rbx: &mut Rbx, x: f64, y: f64) {
         rbx.quiet_set(mouse, "Y", Value::Num(y));
         rbx.fire(mouse, "Move", Vec::new());
     }
+    gui_states_changed(rbx, before);
 }
 
 /// The topmost Active object under the pointer, and the button there.
@@ -1046,6 +1123,7 @@ fn hits(rbx: &Rbx) -> (Option<Id>, Option<Id>) {
 }
 
 pub fn pointer_button(rbx: &mut Rbx, left: bool, down: bool) {
+    let before = gui_states(rbx);
     let kind = if left { "MouseButton1" } else { "MouseButton2" };
     rbx.pointer.buttons[usize::from(!left)] = down;
     let (top, button) = hits(rbx);
@@ -1099,6 +1177,7 @@ pub fn pointer_button(rbx: &mut Rbx, left: bool, down: bool) {
             }
         }
     }
+    gui_states_changed(rbx, before);
 }
 
 pub fn wheel(rbx: &mut Rbx, steps: f64) {
