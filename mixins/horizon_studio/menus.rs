@@ -46,8 +46,10 @@ pub fn right_press(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
 /// The Menu key (or Shift+F10): the menu of what has the keys, where it
 /// is: the code's at the cursor (its line's own menu, the cursor left
 /// where it is), an input line's under the line, the Library's chosen mod
-/// at its row, the Problems' chosen problem at its row; else the menu of
-/// what is under the pointer. Its first item is lit, for the keys.
+/// at its row (the list's own menu under its title while it lists none),
+/// the Problems' chosen problem at its row (the panel's own menu under its
+/// tab while it lists none); else the menu of what is under the pointer.
+/// Its first item is lit, for the keys.
 pub fn key_menu(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
     st.s.ui.menu = None;
     let ui = &st.s.ui;
@@ -91,7 +93,11 @@ pub fn key_menu(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
                     let items = library_items(st, i);
                     open(st, at, h, items, Some(r))
                 }
-                None => false,
+                // No mod's row: the list's own menu, under its title.
+                None => match spot_rect(st, Spot::Scripts) {
+                    Some(r) => open_spot(st, game, Spot::Scripts, r, [r[0] + 12.0, r[1] + 30.0]),
+                    None => false,
+                },
             }
         }
         Target::Elsewhere if ui.tab == Tab::Editor && ui.panel == Panel::Problems => {
@@ -102,7 +108,15 @@ pub fn key_menu(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
                     let items = problem_items(st, k);
                     open(st, at, h, items, Some(r))
                 }
-                None => false,
+                // No problem's row: the panel's own menu, under its tab
+                // (the last of the panel's spots drawn).
+                None => {
+                    let spot = Spot::Panel(Panel::Problems);
+                    match spot_rect(st, spot) {
+                        Some(r) => open_spot(st, game, spot, r, below(r).0),
+                        None => false,
+                    }
+                }
             }
         }
         Target::Elsewhere => {
@@ -198,9 +212,7 @@ fn panel_items(st: &mut Studio, p: Panel) -> Vec<MenuItem> {
     let mut items = match p {
         Panel::Console => vec![
             MenuItem::new("Copy all", MenuCmd::CopyAll(AREA_LOG)).enabled(!st.s.log.is_empty()),
-            MenuItem::new("Clear", MenuCmd::Act(Action::ClearLog))
-                .keys("Ctrl L")
-                .enabled(!st.s.log.is_empty()),
+            clear_item(st, "Clear"),
         ],
         Panel::Problems => vec![
             MenuItem::new("Copy all problems", MenuCmd::Copy(all_problems(st)))
@@ -496,11 +508,21 @@ fn text_items(st: &Studio, area: u8) -> Vec<MenuItem> {
         copy,
         MenuItem::new("Copy all", MenuCmd::CopyAll(AREA_LOG)).enabled(!st.s.log.is_empty()),
         MenuItem::separator(),
-        MenuItem::new("Clear", MenuCmd::Act(Action::ClearLog))
-            .keys("Ctrl L")
-            .enabled(!st.s.log.is_empty()),
+        clear_item(st, "Clear"),
         MenuItem::new("Jump to the newest", MenuCmd::LogEnd).enabled(st.s.ui.log_scroll > 0),
     ]
+}
+
+/// The item that clears the console's lines, called `label`. Its hint is
+/// Ctrl+L only while the console's input has the keys, the one place that
+/// key clears them.
+fn clear_item(st: &Studio, label: &str) -> MenuItem {
+    let item = MenuItem::new(label, MenuCmd::Act(Action::ClearLog)).enabled(!st.s.log.is_empty());
+    if target(&st.s.ui) == Target::Console {
+        item.keys("Ctrl L")
+    } else {
+        item
+    }
 }
 
 /// The menu of the console's input line or the agent's: the clipboard and
@@ -534,9 +556,7 @@ fn field_items(st: &Studio, field: u8) -> Vec<MenuItem> {
         MenuItem::new("Run", field_cmd(FieldCmd::Submit))
             .keys("⏎")
             .enabled(typed),
-        MenuItem::new("Clear the console", MenuCmd::Act(Action::ClearLog))
-            .keys("Ctrl L")
-            .enabled(!st.s.log.is_empty()),
+        clear_item(st, "Clear the console"),
     ]
 }
 
@@ -874,11 +894,12 @@ fn fixer(st: &mut Studio) -> Option<(String, bool)> {
     Some((agent, !agent_busy(st)))
 }
 
-/// What every mod's menu has, after what its list puts first: Reload, Turn
-/// off or on, Rename, Duplicate, Make it a module (a script), Delete, its
-/// folder and its path, and for a mod that failed Copy the error and Fix
-/// with the agent (`agent`: its name and whether it is free). With `keys`,
-/// the Library's keys for them.
+/// What every mod's menu has, after what its list puts first: Reload (not
+/// for a mod turned off, which Turn on starts), Turn off or on, Rename,
+/// Duplicate, Make it a module (a script), Delete, its folder and its path,
+/// and for a mod that failed Copy the error and Fix with the agent
+/// (`agent`: its name and whether it is free). With `keys`, the Library's
+/// keys for them.
 fn mod_items(st: &Studio, i: usize, keys: bool, agent: Option<&(String, bool)>) -> Vec<MenuItem> {
     let Some(m) = st.s.mods.get(i) else {
         return Vec::new();
@@ -887,7 +908,7 @@ fn mod_items(st: &Studio, i: usize, keys: bool, agent: Option<&(String, bool)>) 
     let cmd = |c: ModCmd| MenuCmd::Mod(m.id.clone(), c);
     let toggle = if m.enabled { "Turn off" } else { "Turn on" };
     let mut items = vec![
-        key(MenuItem::new("Reload", cmd(ModCmd::Reload)), "R"),
+        key(MenuItem::new("Reload", cmd(ModCmd::Reload)).enabled(m.enabled), "R"),
         key(MenuItem::new(toggle, cmd(ModCmd::Toggle)), "Space"),
         MenuItem::separator(),
         MenuItem::new("Rename...", cmd(ModCmd::Rename)),
@@ -991,7 +1012,9 @@ fn mod_cmd(st: &mut Studio, game: &mut dyn GameApi, id: &str, cmd: ModCmd) -> Ui
     };
     match cmd {
         ModCmd::Edit => return act(st, game, Action::Edit(i)),
-        ModCmd::Reload => return act(st, game, Action::Reload(i)),
+        // Not one turned off since the menu opened: a reload turns it on.
+        ModCmd::Reload if st.s.mods[i].enabled => return act(st, game, Action::Reload(i)),
+        ModCmd::Reload => {}
         ModCmd::Toggle => return act(st, game, Action::Toggle(i)),
         ModCmd::Rename => open_naming(st, NamingKind::RenameMod(id.to_owned()), id),
         ModCmd::Duplicate => open_naming(st, NamingKind::Duplicate(id.to_owned()), &format!("{id}_copy")),
@@ -1036,9 +1059,9 @@ pub(crate) fn open_library_menu(st: &mut Studio, i: usize, at: [f32; 4]) {
 /// The Library's items for mod `i` (its "...", the . key, a right click on
 /// its row): a module's files (one chosen opens), New file, and Rename and
 /// Delete for the one of its files the editor has open (not main.lua); a
-/// script's Edit; then what every mod's menu has, with the Library's keys.
-/// In the executor styles, which have no script list, a module's files are
-/// reached so.
+/// script's Edit; then what every mod's menu has, with the Library's keys,
+/// and last New mod (its N key). In the executor styles, which have no
+/// script list, a module's files are reached so.
 fn library_items(st: &mut Studio, i: usize) -> Vec<MenuItem> {
     const SHOWN: usize = 12;
     let agent = fixer(st);
@@ -1080,6 +1103,8 @@ fn library_items(st: &mut Studio, i: usize) -> Vec<MenuItem> {
     };
     items.push(MenuItem::separator());
     items.extend(mod_items(st, i, true, agent.as_ref()));
+    items.push(MenuItem::separator());
+    items.push(MenuItem::new("New mod...", MenuCmd::Act(Action::NewMod)).keys("N"));
     items
 }
 

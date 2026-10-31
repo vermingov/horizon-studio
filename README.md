@@ -108,7 +108,7 @@ In a world, press **F8** (or type `/studio`). Escape or F8 closes it. The world 
 |---|---|---|
 | **Console** | Runs Lua at once. An expression's value is printed, tables expanded. What you register here (`on`, `command`, `every`) runs until `clear()`. Suggestions show as you type. | Enter run · Tab complete · Up/Down history (or choose a suggestion) · Esc close the suggestions · Page Up/Down scroll · Ctrl+L clear |
 | **Editor** | Edits a mod's file (or `scratch.lua`), with the script list beside it and the console, the problems and the agent in a panel under it. Saving reloads the mod. | Ctrl+S save · Ctrl+Enter run in the console (a module's file: save and reload the module) · Ctrl+Space suggest · Tab take a suggestion · Ctrl+\` or Ctrl+J show or hide the panel · Esc back to the code · Ctrl+Z/Y undo/redo · Ctrl+C/X/V · Ctrl+A · Ctrl+D duplicate line · Ctrl+/ comment · Tab/Shift+Tab indent · mouse click and drag · right click or the Menu key: its menu |
-| **Library** | Your script mods and the examples, a module with its files; each mod's **...** (or a right click on its row) has its menu: a module's files to open and New file, or a script's Edit, then Reload, Turn off or on, Rename, Duplicate, Make it a module, Delete, Show in folder and Copy path. Open folder shows the mods folder. | Up/Down choose · Enter edit · Space on/off · R reload · N new script or module · F new file in a module · M make a script a module · . or the Menu key: its menu |
+| **Library** | Your script mods and the examples, a module with its files; each mod's **...** (or a right click on its row) has its menu: a module's files to open and New file, or a script's Edit, then Reload, Turn off or on, Rename, Duplicate, Make it a module, Delete, Show in folder, Copy path and New mod. Open folder shows the mods folder. | Up/Down choose · Enter edit · Space on/off · R reload · N new script or module · F new file in a module · M make a script a module · . or the Menu key: its menu |
 | **Docs** | The API. | Up/Down, Page Up/Down, wheel |
 | **Settings** | How the studio looks: see [Themes](#themes-and-the-window). | Up/Down, Page Up/Down, wheel |
 
@@ -157,10 +157,11 @@ Ctrl+1 to Ctrl+5 switch tabs. In chat: `/studio` opens it, `/studio reload` relo
 A right click opens the menu of what is under the pointer, at the pointer: the code, the file's name, the console's
 lines and the agent's conversation and their input lines, the rows of the script list and the Library, the examples,
 the panel's tabs, the problems, the title bar and the header, and the Docs. The **Menu key** (or **Shift+F10**) opens
-the menu of what has the keys: the code's at the cursor, an input line's, the Library's chosen mod's. Up and Down
-choose (Home and End go to the first and the last), Enter or Space does it, a letter goes to the next item that starts
-with it, and Escape, a click outside or the wheel closes it. A menu taller than the screen scrolls. Items that can't
-do anything now are greyed out, and each shows its shortcut.
+the menu of what has the keys: the code's at the cursor, an input line's, the Library's chosen mod's and the Problems'
+chosen problem's (the list's own menu while it is empty). Up and Down choose (Home and End go to the first and the
+last), Enter or Space does it, a letter goes to the next item that starts with it, and Escape, or a click or the wheel
+outside it, closes it. A menu taller than the screen scrolls. Items that can't do anything now are greyed out, and
+each shows its shortcut.
 
 - **The code**: Go to definition (in the file, or in a module's other files, which it opens), Open the library an
   `import("...")` names or the file a `require("...")` loads, Show the function in the Docs; Cut, Copy, Paste, Select
@@ -170,17 +171,18 @@ do anything now are greyed out, and each shows its shortcut.
 - **The file's name** (and Synapse's tab): Save, Save as a script for scratch code, Revert to saved (one edit: Ctrl+Z
   brings yours back), Rename, Show in folder, Copy path.
 - **A mod** (a row of the script list, of Synapse's list, of the Library): Open or Edit (a module's New file and its
-  files), Reload, Turn off or on, Rename..., Duplicate..., Make it a module, Delete..., Show in folder, Copy path, and
-  for a mod that failed Copy the error and Fix with the agent. Rename gives the mod's file or folder a new id in
-  place: its on/off state and its saved data (`storage/<id>`) go with it, and its name in the Library too when it was
-  the old id's (a name written by hand stays); mods that import it fail until they import the new id (the prompt says
-  which), and mods that were waiting for the new id start. An id that another mod has is refused, whatever its file is
-  called (`My Mod.lua` has the id `my_mod`). A duplicate starts turned off, as it would register the same commands
-  twice. Delete asks first and moves the mod to `trash/` in the studio's folder. The lists' empty space offers New
-  script, New module, New file in the module open, Reload all and the mods folder; an example offers Install and Copy
-  its code.
+  files), Reload (while it is on), Turn off or on, Rename..., Duplicate..., Make it a module, Delete..., Show in
+  folder, Copy path, for a mod that failed Copy the error and Fix with the agent, and in the Library New mod. Rename
+  gives the mod's file or folder a new id in place: its on/off state and its saved data (`storage/<id>`) go with it,
+  and its name in the Library too when it was the old id's (a name written by hand stays); mods that import it fail
+  until they import the new id (the prompt says which), and mods that were waiting for the new id start. An id that
+  another mod has is refused, whatever its file is called (`My Mod.lua` has the id `my_mod`). A duplicate starts
+  turned off, as it would register the same commands twice. Delete asks first and moves the mod to `trash/` in the
+  studio's folder. The lists' empty space offers New script, New module, New file in the module open, Reload all and
+  the mods folder; an example offers Install and Copy its code.
 - **The console's lines** and **the agent's conversation**: Copy what is selected, Copy all, Clear (or Stop and New
-  conversation). **Their input lines**: Paste, Copy, Cut and Clear the line, Run (or Send).
+  conversation). **Their input lines**: the console's Paste, Copy, Cut and Clear the line, Run and Clear the console;
+  the agent's Paste, Clear the line, Send and Stop.
 - **The panel's tabs**: Copy all, Clear, Copy all problems, the agents found and Look for agents again, Model ›, Hide
   the panel. **A problem**: Go to it, Copy, Fix with the agent.
 - **The title bar** and **the header**: Roll up, Fill the screen, Reset window, In a window or Full screen, Theme ›,

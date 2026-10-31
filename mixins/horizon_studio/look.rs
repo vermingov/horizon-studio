@@ -486,6 +486,11 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
     let (w, h) = (dw / s, dh / s);
     // Back after a while (opened again): nothing glides from before.
     let fresh = now - st.s.ui.last_draw > 0.25;
+    // Back since the last frame (opened again, or from a script's screen):
+    // what the left button held then has ended, its release gone elsewhere.
+    if st.s.ui.opened_at > st.s.ui.last_draw {
+        super::hstudio_ui::let_go(st);
+    }
     let dt = {
         let ui = &mut st.s.ui;
         // A menu left open goes when the studio opens again (or comes back

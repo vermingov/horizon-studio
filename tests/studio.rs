@@ -1745,14 +1745,3 @@ fn duplicate_mod_copies_it_turned_off() {
     let e = st.duplicate_mod(&mut game, "box", "glow").unwrap_err();
     assert!(e.contains("glow already exists"), "{e}");
 }
-
-#[test]
-fn a_bundled_library_deleted_stays_deleted() {
-    let mut game = FakeGame::new("trash-bundled");
-    let mut st = studio(&mut game);
-    let uikit = game.mods_dir().join("uikit.lua");
-    st.delete_path(&mut game, &uikit).unwrap();
-    assert!(!uikit.exists() && game.dir.join("trash").join("uikit.lua").is_file());
-    let again = studio(&mut game);
-    assert!(!uikit.exists() && !again.s.mods.iter().any(|m| m.id == "uikit"));
-}

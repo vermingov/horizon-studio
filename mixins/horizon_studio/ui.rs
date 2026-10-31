@@ -2122,11 +2122,30 @@ pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult
     if st.s.editor.revision != revision {
         st.s.editor.edited_at = st.s.now;
     }
-    // A menu goes with the studio.
+    // A menu goes with the studio, and so does what the left button holds:
+    // its release won't reach a studio closing.
     if out == UiResult::Close {
         st.s.ui.menu = None;
+        let_go(st);
     }
     out
+}
+
+/// The left button let go, or its release went elsewhere (the studio closed,
+/// a script's screen took the input): what it dragged ends, a window moved
+/// stays where it is, and a selection of no text goes.
+pub(crate) fn let_go(st: &mut Studio) {
+    let ui = &mut st.s.ui;
+    ui.scroll_drag = None;
+    ui.text_drag = false;
+    if ui.text_sel.is_some_and(|s| s.anchor == s.head) {
+        ui.text_sel = None;
+    }
+    ui.dragging = false;
+    ui.panel_drag = None;
+    if ui.drag.take().is_some() {
+        ui.look.save(&st.s.dir);
+    }
 }
 
 /// Where typing goes now.
@@ -2164,9 +2183,11 @@ pub(crate) struct SiblingCache {
 }
 
 /// The other files of the module the editor's file is in, for its checks
-/// and suggestions (None outside a module). They are read again only when
-/// the scan saw the module's files change (its stamp), and then the live
-/// check looks again, though the buffer didn't change.
+/// and suggestions (None outside a module), their lines as the editor shows
+/// a file (its indent for a tab), so a place found in one is that place
+/// once it opens. They are read again only when the scan saw the module's
+/// files change (its stamp), and then the live check looks again, though
+/// the buffer didn't change.
 pub(crate) fn editor_siblings(st: &mut Studio) -> Option<std::rc::Rc<super::hstudio_assist::Siblings>> {
     let path = st.s.editor.path.clone()?;
     let Some((i, folder)) = st
@@ -2195,7 +2216,7 @@ pub(crate) fn editor_siblings(st: &mut Studio) -> Option<std::rc::Rc<super::hstu
                 Ok(meta) if meta.len() <= 512 << 10 => std::fs::read_to_string(&p).unwrap_or_default(),
                 _ => String::new(),
             };
-            (f, text.lines().map(str::to_owned).collect())
+            (f, text.replace('\t', INDENT).lines().map(str::to_owned).collect())
         })
         .collect();
     let data = std::rc::Rc::new(super::hstudio_assist::Siblings { file: rel, others });
@@ -2393,16 +2414,7 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 };
             }
             if !down {
-                st.s.ui.scroll_drag = None;
-                st.s.ui.text_drag = false;
-                if st.s.ui.text_sel.is_some_and(|s| s.anchor == s.head) {
-                    st.s.ui.text_sel = None;
-                }
-                st.s.ui.dragging = false;
-                st.s.ui.panel_drag = None;
-                if st.s.ui.drag.take().is_some() {
-                    st.s.ui.look.save(&st.s.dir);
-                }
+                let_go(st);
                 return UiResult::Used;
             }
             if st.s.ui.naming.is_some() {

@@ -880,7 +880,7 @@ The studio reads the table again every frame: change a field (or a widget's `tex
 
 ## Keys on a screen
 
-`key(key, down)` gets short names, not the `key.keyboard.*` names of `on("key")`: `"enter"`, `"backspace"`, `"delete"`, `"tab"`, `"left"`, `"right"`, `"up"`, `"down"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, a lowercase letter `"a"`..`"z"` or digit `"0"`..`"9"`, `"/"`, `" "` (Space), `` "`" `` (the backquote), and `"other"` for the rest (the Menu key too). Escape and the studio's key (F8) close the screen when pressed, so `key` only sees them released (`"escape"`, `"toggle"`). `text(t)` gets typed characters (not while Control is held). Function keys stay with the game.
+`key(key, down)` gets short names, not the `key.keyboard.*` names of `on("key")`: `"enter"`, `"backspace"`, `"delete"`, `"tab"`, `"left"`, `"right"`, `"up"`, `"down"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, a lowercase letter `"a"`..`"z"` or digit `"0"`..`"9"`, `"/"`, `" "` (Space), `` "`" `` (the backquote), and `"other"` for the rest (the Menu key too). Escape and the studio's key (F8) close the screen when pressed, so `key` only sees them released (`"escape"`, `"toggle"`). `text(t)` gets typed characters (not while Control is held). Function keys stay with the game, but for Shift+F10, which comes as the Menu key does (`"other"`).
 
 ## Focus
 
