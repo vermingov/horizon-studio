@@ -1274,9 +1274,10 @@ fn chat_commands(st: &mut Studio, host: &mut Host<'_, '_>) {
 
 /// The chat's completion request, before the game sends it to the server
 /// (remote.rs, send_suggestion_request): one for a command the studio takes
-/// stays in the game and is answered at the frame, so nothing typed for it
-/// reaches the server; any other is sent as the game sends it. False when
-/// the chat has no request: the game then sends a command block's, as before.
+/// stays in the game and is answered at the frame, so nothing typed after
+/// its name reaches the server; any other, one made while a name is still
+/// being typed among them, is sent as the game sends it. False when the
+/// chat has no request: the game then sends a command block's, as before.
 pub(super) fn suggestion_request(game: &mut Game<'_>) -> bool {
     if game.remote.is_none() || !game.native_window() || !game.native_on(ID) {
         return false;

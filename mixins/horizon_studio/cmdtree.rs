@@ -113,8 +113,8 @@ pub struct Asked {
     pub line: String,
     /// The argument the chat completes (from 0) and the byte its text starts
     /// at, when the chat's parse reached one of the studio's nodes; None
-    /// when it completes something else (the command's name), and gets no
-    /// completions from the studio.
+    /// when it reached none of them (the tree does not have the command
+    /// yet), and gets no completions from the studio.
     pub at: Option<(usize, usize)>,
     /// The tree it was made in.
     generation: u64,
@@ -232,13 +232,17 @@ impl ChatSync {
 
     /// A completion request the chat made (`line`: the command up to the
     /// cursor, with its `/`): whether it is the studio's, and so never sent
-    /// to the server. It is when the studio takes the command the line
-    /// names (`takes`) or the tree has that command from it. It is kept to
-    /// answer, unless the tree changed since the chat parsed the line (the
-    /// server sent another): an answer would reach a parse of a tree that
-    /// is gone, so it is dropped.
+    /// to the server. It is when the cursor is past the command's name and
+    /// the studio takes the command the line names (`takes`) or the tree has
+    /// that command from it. It is kept to answer, unless the tree changed
+    /// since the chat parsed the line (the server sent another): an answer
+    /// would reach a parse of a tree that is gone, so it is dropped.
     pub fn request(&mut self, tree: Option<&dyn Tree>, id: i32, line: &str, takes: bool) -> bool {
-        let Some((name, _)) = split_line(line) else {
+        // While the name is being typed (an old server's root argument,
+        // through ViaProxy, asks then), the line holds that name alone: it
+        // goes to the server as before, and the chat lists the server's
+        // commands that start so beside the studio's own.
+        let Some((name, Some(_))) = split_line(line) else {
             return false;
         };
         if !takes && !self.linked().iter().any(|c| c.name == name) {

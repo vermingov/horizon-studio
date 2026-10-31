@@ -394,11 +394,15 @@ fn requests_for_the_studios_commands_stay_in_the_game() {
         sync.request(Some(&tree), 1, line, takes)
             .then(|| sync.take_asked(Some(&tree)).map(|a| a.at).expect("kept to answer"))
     };
+    assert_eq!(ask(&mut sync, "/wp ", true), Some(Some((0, 4))));
     assert_eq!(ask(&mut sync, "/wp re", true), Some(Some((0, 4))));
     assert_eq!(ask(&mut sync, "/wp add ho", true), Some(Some((1, 8))));
     assert_eq!(ask(&mut sync, "/hello there you", true), Some(Some((0, 7))));
-    // The name being typed (a root argument asks): the studio's, nothing to add.
-    assert_eq!(ask(&mut sync, "/wp", true), Some(None));
+    // The name being typed (a root argument asks): the line is that name
+    // alone, and goes to the server, whose commands that start so the chat
+    // lists beside the studio's.
+    assert_eq!(ask(&mut sync, "/wp", true), None);
+    assert_eq!(ask(&mut sync, "/hello", false), None);
     // A command the tree has from the studio that its mod just dropped.
     assert_eq!(ask(&mut sync, "/hello x", false), Some(Some((0, 7))));
     // Everything else goes to the server, /execute run included: the
