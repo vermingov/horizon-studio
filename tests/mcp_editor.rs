@@ -130,6 +130,13 @@ fn an_agent_opens_and_reads_the_players_scripts() {
         assert_eq!(t["inputSchema"]["type"], "object");
         assert!(t["inputSchema"]["properties"]["scratch"].is_object(), "{name}");
     }
+    let wait = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "wait_for_player")
+        .expect("wait_for_player is listed");
+    assert!(wait["inputSchema"]["properties"]["timeout_s"].is_object());
     let (r, error) = call_json(
         &mut s,
         "write_mod",
