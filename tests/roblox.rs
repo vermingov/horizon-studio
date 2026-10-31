@@ -470,3 +470,118 @@ fn luau_ui_script_with_types_runs() {
     assert!(drawn.iter().any(|d| d.starts_with("text 1. Play")), "{drawn:#?}");
     assert!(drawn.iter().any(|d| d.starts_with("text 3. Quit")), "{drawn:#?}");
 }
+
+/// Writes module `id` (its files by their paths in it) and lets it run `seconds`.
+fn load_module(game: &mut FakeGame, st: &mut Studio, id: &str, files: &[(&str, &str)], seconds: f64) {
+    let dir = game.mods_dir().join(id);
+    for (rel, src) in files {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, src).unwrap();
+    }
+    run_for(st, game, seconds);
+    let i = mod_index(st, id);
+    if let ModState::Failed(msg, trace) = &st.s.mods[i].state {
+        panic!("{id} failed: {msg}\n{trace}\n{:?}", log(st));
+    }
+}
+
+#[test]
+fn a_modules_files_are_module_scripts_under_script() {
+    let mut game = FakeGame::new("rbx-module-scripts");
+    let mut st = studio(&mut game);
+    load_module(
+        &mut game,
+        &mut st,
+        "kit",
+        &[
+            (
+                "main.lua",
+                "print(script.ClassName, script.lib.ClassName, script.lib.util.ClassName, script.shared.ClassName)\n\
+                 local a = require(script.lib)\n\
+                 print(a == require('lib'), a.shared == require(script.shared), libglobal)\n\
+                 print(require(script.lib.util).deep, require('lib.util') == require(script.lib.util))\n",
+            ),
+            (
+                "lib.lua",
+                "print('lib runs', script.Name, script.ClassName, script.Parent.Name, script.Parent.ClassName)\n\
+                 libglobal = 'set in lib'\n\
+                 local shared = require(script.Parent.shared)\n\
+                 return { shared = shared }\n",
+            ),
+            (
+                "lib/util.lua",
+                "print('util', script.Name, script.Parent.Name)\nreturn { deep = 'deep' }\n",
+            ),
+            ("shared.lua", "return { n = 1 }\n"),
+        ],
+        0.6,
+    );
+    let lines = printed(&st, "kit");
+    let has = |l: &str| lines.iter().any(|x| x == l);
+    assert!(
+        has("LocalScript    ModuleScript    ModuleScript    ModuleScript"),
+        "{lines:?}"
+    );
+    assert!(
+        has("lib runs    lib    ModuleScript    kit    LocalScript"),
+        "{lines:?}"
+    );
+    assert_eq!(lines.iter().filter(|l| l.starts_with("lib runs")).count(), 1, "once");
+    assert!(has("true    true    set in lib"), "{lines:?}");
+    assert!(has("deep    true"), "{lines:?}");
+    assert!(
+        has("util    util    lib"),
+        "a file and a folder of one name nest: {lines:?}"
+    );
+    // getloadedmodules has them, and after a reload only the live ones.
+    let loaded = |st: &Studio| {
+        let rbx = &st.s.rbx;
+        let live = rbx.loaded_modules.iter().all(|(id, _)| rbx.try_inst(*id).is_some());
+        (rbx.loaded_modules.len(), live)
+    };
+    assert_eq!(loaded(&st), (3, true));
+    std::fs::write(
+        game.mods_dir().join("kit").join("shared.lua"),
+        "return { n = 2, more = true }\n",
+    )
+    .unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    assert!(st.s.mods[mod_index(&st, "kit")].running());
+    assert_eq!(loaded(&st), (3, true), "no holes after a reload");
+    let out: Vec<String> = st
+        .run_console(
+            &mut game,
+            "local n = 0 for _, m in getloadedmodules() do n = n + 1 end return n",
+        )
+        .into_iter()
+        .map(|(_, t)| t)
+        .collect();
+    assert_eq!(out, ["3"]);
+}
+
+#[test]
+fn another_mods_module_script_is_not_required() {
+    let mut game = FakeGame::new("rbx-module-other");
+    let mut st = studio(&mut game);
+    load_module(
+        &mut game,
+        &mut st,
+        "a",
+        &[("main.lua", "print('a runs')\n"), ("lib.lua", "return 1\n")],
+        0.6,
+    );
+    load(
+        &mut game,
+        &mut st,
+        "b",
+        "print(pcall(require, game.Players.LocalPlayer.PlayerScripts.a.lib))\n",
+        0.6,
+    );
+    let lines = printed(&st, "b");
+    assert!(lines[0].starts_with("false"), "{lines:?}");
+    assert!(
+        lines[0].contains("PlayerScripts.a.lib is a file of the mod 'a': use import(\"a\")"),
+        "{lines:?}"
+    );
+}

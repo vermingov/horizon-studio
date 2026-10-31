@@ -1891,7 +1891,19 @@ end)
 
 **`Enum`** has every enum these classes use (KeyCode, UserInputType, UserInputState, EasingStyle, EasingDirection, Font, FontWeight, Material, PartType, the GUI ones, CameraType, HumanoidStateType, CoreGuiType, RaycastFilterType, RenderPriority...): `Enum.KeyCode.E` with `Name`, `Value`, `EnumType`, `IsA`; `Enum.KeyCode:GetEnumItems()`, `FromName`, `FromValue`.
 
-**Not here:** a server (RemoteEvents go nowhere), physics, animations, Roblox assets (images, meshes, sounds by id), BillboardGuis and SurfaceGuis, and `require` of a ModuleScript Instance (use `require` of a folder mod's file, or `import`).
+**Modules and ModuleScripts.** In a module (a folder whose `main.lua` requires its other files), `script` in main.lua is the mod's LocalScript, and every other file is a ModuleScript under it, named after the file: `lib.lua` is `script.lib`, and `lib/util.lua` is `script.lib.util` (a folder in a file's path is a Folder, or the ModuleScript of a file of the same name, as Rojo nests them). Inside a file, `script` is that file's own ModuleScript, so `require(script.Parent.shared)` works there as in Roblox, and `require(script.lib)` gives the same value as `require("lib")`: each file runs once. The files still share the mod's globals (a file's `getfenv()` is a table of its own that only holds `script`). A file named after an Instance member (`Name.lua`, `Parent.lua`) is reached with `script:FindFirstChild("Name")`, and `init.lua` is not special. Another mod's file ModuleScripts can't be required: share values with `export` and `import`.
+
+```lua
+-- mymod/main.lua
+local lib = require(script.lib)   -- mymod/lib.lua, the same as require("lib")
+print(lib.greet("you"))
+
+-- mymod/lib.lua would be:
+-- local shared = require(script.Parent.shared)
+-- return { greet = function(name) return shared.greeting .. ", " .. name end }
+```
+
+**Not here:** a server (RemoteEvents go nowhere), physics, animations, Roblox assets (images, meshes, sounds by id), BillboardGuis and SurfaceGuis.
 "##;
 
 const EXECUTOR: &str = r##"
@@ -1921,7 +1933,7 @@ box.Visible = true
 - Every Lua function and thread is the executor's: there are no game scripts. `checkcaller()` is always true, `getcallingscript()` and `getscriptfromthread()` are nil, and `filtergc`'s `IgnoreExecutor` (true by default) skips every Lua function: pass `IgnoreExecutor = false`.
 - `getgc`, `filtergc`, `getreg` and live protos see what was made after the studio began tracking objects: from the load of the first mod whose source names one of them (or their first call), as tracking costs a little on every function and table made.
 - Hooks are global: `hookfunction(print, ...)` changes `print` for every mod. They stay until `restorefunction` (or the game restarts), even after the mod that made them stops.
-- `getscriptbytecode` is the studio's own dump of a mod's compiled main file, not Luau bytecode; `getscripthash` hashes that. A ModuleScript runs under `require` from its hidden `Source` (set with `sethiddenproperty`).
+- `getscriptbytecode` is the studio's own dump of a mod's compiled main file, not Luau bytecode; `getscripthash` hashes that. A ModuleScript runs under `require` from its hidden `Source` (set with `sethiddenproperty`). A module's files are ModuleScripts too (see `roblox`), but their `Source` is nil: `require` runs the file itself, and `getloadedmodules` lists them once required.
 - `replicatesignal` errors: there is no server. `fireclickdetector`, `fireproximityprompt` and `firetouchinterest` fire the events here, deferred like every signal.
 - Files live in the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), which scripts can't leave. `request`, `game:HttpGet` and WebSockets reach the internet only, never this computer or its network.
 - Drawings are in dp, Horizon's logical pixels (the Camera's ViewportSize), over the HUD and the mods' GUIs. Images (Drawing's `Data` and ImageLabels with a `getcustomasset` id) are PNGs drawn as blocks of colour, up to 48 x 48 of them.
@@ -1964,6 +1976,7 @@ Errors have the form `<file>:<line>: <message>`; in a handler the event's name c
 | `module 'lib.x' not found (lib/x.lua; the module has main.lua, util.lua)` / `bad module name '../x': ...` | no such file in the module / a name with `..`, a leading `/` or `.`, or other characters | a file of the module, with `.` or `/` between folders |
 | `require: 'lib' is already loading (main.lua -> lib.lua -> shared.lua -> lib.lua): ...` | two files require each other while they load | move what both need to a third file, or `require` inside a function that runs later |
 | `require: main.lua starts the module and runs once by itself; ...` | a file requires `main` | move what the other files need from main.lua into a file they require |
+| `require: Players.LocalPlayer.PlayerScripts.a.lib is a file of the mod 'a': use import("a") for another mod's values` | `require` of another mod's file ModuleScript | have that mod `export` what it shares, and `import` it |
 | `storage keys are 1 to 64 letters, digits, '_', '-' or '.'` | a key with spaces or symbols | use a simple key |
 | `functions cannot be stored` / `value too large to store` / `tables nested too deep to store (or a cycle)` | storing what storage cannot keep | store plain data |
 | `this mod stores too many keys (256)` | over 256 keys | keep one table under one key |
@@ -2122,14 +2135,16 @@ after(5, function() cancel(blink) end)
         "require",
         "libraries",
         r##"
-`require(name)`
+`require(name)` or `require(moduleScript)`
 
 Loads another file of a module (a folder `<id>/` that starts at `main.lua`) and returns its result. The file runs once, in the mod's own globals, with `name` as its `...`; its first result is kept (`true` when it returns nothing), and every later `require` of that file returns the kept value without running it again, however the name is written: `require("lib.util")`, `require("lib/util")` and `require("lib/util.lua")` are the same file and give the same value.
+
+Each file of a module is also a ModuleScript under `script` (see `roblox`), and requiring that is requiring the file: `require(script.lib)` in main.lua, or `require(script.Parent.shared)` in lib.lua, gives the same value as `require("lib")` or `require("shared")`. Another mod's file ModuleScripts can't be required (use `import`). A ModuleScript made with `Instance.new` runs its hidden `Source` instead (see `executor`).
 
 - `name` (string): a file of the module, with `.` or `/` between folders, without or with `.lua`: `"util"` is `util.lua`, `"lib.util"` and `"lib/util"` are `lib/util.lua`. Each part is letters, digits, `_` and `-`, at most three folders deep, so a name never reaches outside the module's folder.
 - Returns: the file's value.
 - Where: anywhere in a module (usually at the top of a file). A required file's top level runs inside the `require` call, so it can't wait (`task.wait`).
-- Errors: `require works in modules (a folder with main.lua): a one-file script can't load other files`; `bad module name '../x': name a file of the module, as "lib" or "lib.util"`; `module 'lib.x' not found (lib/x.lua; the module has main.lua, shared.lua)`; `require: 'lib' is already loading (main.lua -> lib.lua -> shared.lua -> lib.lua): ...` when two files require each other while they load; `require: main.lua starts the module and runs once by itself; ...`; the file's own syntax or runtime errors (`mymod/lib/util.lua:3: ...`).
+- Errors: `require works in modules (a folder with main.lua): a one-file script can't load other files`; `bad module name '../x': name a file of the module, as "lib" or "lib.util"`; `module 'lib.x' not found (lib/x.lua; the module has main.lua, shared.lua)`; `require: 'lib' is already loading (main.lua -> lib.lua -> shared.lua -> lib.lua): ...` when two files require each other while they load; `require: main.lua starts the module and runs once by itself; ...`; `require: Players.LocalPlayer.PlayerScripts.a.lib is a file of the mod 'a': use import("a") for another mod's values`; the file's own syntax or runtime errors (`mymod/lib/util.lua:3: ...`).
 
 A change to any `.lua` file of the module reloads the whole module. For code shared between mods, use a library (`export`/`import`).
 

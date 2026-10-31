@@ -627,6 +627,9 @@ pub struct ScriptMod {
     /// The files whose `require` is under way, outermost first: requiring
     /// one of these again is a loop.
     pub loading: Vec<String>,
+    /// A module's other files as ModuleScripts under `script`: each one's
+    /// Instance and the file's path in the module.
+    pub module_scripts: Vec<(u32, String)>,
     /// Agent replies to come, and the callbacks for them.
     pub pending: Vec<(Receiver<String>, Value)>,
     /// Callbacks with their results, for the next frame.
@@ -667,6 +670,7 @@ impl ScriptMod {
             zoom: None,
             modules: HashMap::new(),
             loading: Vec::new(),
+            module_scripts: Vec::new(),
             pending: Vec::new(),
             ready: Vec::new(),
             stamp: Vec::new(),
@@ -690,6 +694,7 @@ impl ScriptMod {
         self.zoom = None;
         self.modules.clear();
         self.loading.clear();
+        self.module_scripts.clear();
         self.pending.clear();
         self.ready.clear();
         self.models.clear();
@@ -1262,15 +1267,43 @@ impl Studio {
         let env = self.make_env(false);
         let chunk = self.s.mods[i].chunk();
         self.s.mods[i].env = Some(env.clone());
-        // `script`: a LocalScript named after the mod, in PlayerScripts.
+        // `script`: a LocalScript named after the mod, in PlayerScripts. A
+        // module's other files are ModuleScripts under it, named after
+        // them; a folder in a file's path is the child of that name (the
+        // ModuleScript of a file of the same name, as Rojo nests lib.lua and
+        // lib/util.lua), else a Folder.
         {
+            let owner = Some(Owner::Mod(i));
+            let files = self.s.mods[i].files();
             let rbx = &mut self.s.rbx;
-            let sc = rbx.make("LocalScript", Some(Owner::Mod(i)));
+            let sc = rbx.make("LocalScript", owner);
             rbx.inst_mut(sc).name = self.s.mods[i].id.clone();
             let ps = rbx.child_named(rbx.local_player, "PlayerScripts");
             let _ = rbx.set_parent(sc, ps);
             env.borrow_mut().set_str("script", rbx.value(sc));
+            let mut made = Vec::new();
+            for rel in files.into_iter().filter(|f| f != "main.lua") {
+                let parts: Vec<&str> = rel.split('/').collect();
+                let mut parent = sc;
+                for dir in &parts[..parts.len() - 1] {
+                    parent = match rbx.child_named(parent, dir) {
+                        Some(c) => c,
+                        None => {
+                            let f = rbx.make("Folder", owner);
+                            rbx.inst_mut(f).name = (*dir).to_owned();
+                            let _ = rbx.set_parent(f, Some(parent));
+                            f
+                        }
+                    };
+                }
+                let file = parts[parts.len() - 1];
+                let ms = rbx.make("ModuleScript", owner);
+                rbx.inst_mut(ms).name = file.strip_suffix(".lua").unwrap_or(file).to_owned();
+                let _ = rbx.set_parent(ms, Some(parent));
+                made.push((ms, rel));
+            }
             self.s.mods[i].script = Some(sc);
+            self.s.mods[i].module_scripts = made;
         }
         // getgc and filtergc find what was made after tracking starts.
         if [&b"getgc"[..], b"filtergc", b"getreg", b"getproto"]
@@ -3794,9 +3827,27 @@ impl Ctx<'_> {
         });
         Ok(vec![Value::Num(f64::from(id))])
     }
-    /// `require(moduleScript)`: its Source (a hidden property here) runs
-    /// once, and what it returns is kept.
+    /// `require(moduleScript)`: a module's file's ModuleScript is that file,
+    /// required as by its name, and only by its own mod. Another one's
+    /// Source (a hidden property here) runs once, and what it returns is
+    /// kept.
     fn require_module(&mut self, lua: &mut Lua, m: u32) -> Res {
+        let file = self.s.mods.iter().enumerate().find_map(|(j, md)| {
+            md.module_scripts
+                .iter()
+                .find(|(id, _)| *id == m)
+                .map(|(_, rel)| (j, rel.clone()))
+        });
+        if let Some((j, rel)) = file {
+            if Owner::Mod(j) != self.owner {
+                let id = self.s.mods[j].id.clone();
+                return Err(lua.rt_error(format!(
+                    "require: {} is a file of the mod '{id}': use import(\"{id}\") for another mod's values",
+                    self.s.rbx.full_name(m)
+                )));
+            }
+            return self.require_file(lua, &rel, &super::hstudio_modfiles::require_name(&rel));
+        }
         let rbx = &self.s.rbx;
         if rbx.inst(m).class.name != "ModuleScript" {
             return Err(bad_arg(lua, 0, "require", "ModuleScript expected"));
@@ -3863,6 +3914,16 @@ impl Ctx<'_> {
             .env
             .clone()
             .ok_or_else(|| lua.rt_error("require: the mod is not running"))?;
+        let ms = self
+            .me()
+            .module_scripts
+            .iter()
+            .find(|(_, r)| r == rel)
+            .map(|(id, _)| *id);
+        let env = match ms {
+            Some(ms) => self.file_env(ms, &env),
+            None => env,
+        };
         let chunk = format!("{}/{rel}", self.s.owner_name(self.owner));
         let f = lua.load_bytes(&src, &chunk, &env).map_err(|e| lua.rt_error(e))?;
         self.me().loading.push(rel.to_owned());
@@ -3873,7 +3934,24 @@ impl Ctx<'_> {
             _ => Value::Bool(true),
         };
         self.me().modules.insert(rel.to_owned(), v.clone());
+        if let Some(ms) = ms {
+            self.s.rbx.loaded_modules.push((ms, v.clone()));
+        }
         Ok(vec![v])
+    }
+
+    /// The globals a module's file runs in: the mod's own, seen through a
+    /// table of the file's where `script` is its ModuleScript (as each script
+    /// has its own `script` in Roblox). Everything else it reads and sets is
+    /// the mod's, so the files still share their globals.
+    fn file_env(&mut self, ms: u32, env: &TableRef) -> TableRef {
+        let mut t = Table::new();
+        t.set_str("script", self.s.rbx.value(ms));
+        let mut meta = Table::new();
+        meta.set_str("__index", Value::Table(env.clone()));
+        meta.set_str("__newindex", Value::Table(env.clone()));
+        t.meta = Some(Rc::new(std::cell::RefCell::new(meta)));
+        Rc::new(std::cell::RefCell::new(t))
     }
     fn storage_dir(&self) -> PathBuf {
         self.s.dir.join("storage").join(self.s.owner_name(self.owner))
