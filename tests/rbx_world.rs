@@ -1237,3 +1237,95 @@ fn terrain_reads_the_map() {
     // Reading the map doesn't mirror the world's entities.
     assert_eq!(game.entity_asks, 0);
 }
+
+#[test]
+fn characters_have_r6_limbs_in_a_rest_pose() {
+    let mut game = FakeGame::new("rbxw-limbs");
+    // Another player five blocks north, facing south.
+    game.players = Some(vec![listed("Alex", 0x42, Some(12), 0, false)]);
+    game.entities = vec![player_entity(12, "Alex", 12.5, -8.25)];
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{FMT}{}",
+        r#"
+        local char = game.Players.LocalPlayer.Character
+        local names = {}
+        for _, c in char:GetChildren() do table.insert(names, c.Name) end
+        print(table.concat(names, ", "))
+        print(v(char.Torso.Size), v(char["Right Arm"].Size), v(char["Left Leg"].Size))
+        -- Facing north: the right arm is to the east.
+        print(v(char.Torso.Position), v(char["Right Arm"].Position), v(char["Left Arm"].Position))
+        print(v(char["Left Leg"].Position), v(char["Right Leg"].Position))
+        local unit = true
+        for _, c in char:GetChildren() do
+            if c:IsA("BasePart") and math.abs(c.CFrame.LookVector.Magnitude - 1) > 1e-9 then unit = false end
+        end
+        print(unit)
+        -- Another player's limbs can be hit: facing south, his right arm is to the west.
+        local alex = workspace:WaitForChild("Alex")
+        local arm = alex["Right Arm"]
+        local hit = workspace:Raycast(arm.Position - Vector3.new(2, 0, 0), Vector3.new(4, 0, 0))
+        print(hit.Instance == arm, #alex:GetChildren(), v(arm.Position))
+        command("crouched", function() print(v(char["Left Leg"].Position), v(char.Torso.Position)) end)
+    "#
+    );
+    load(&mut game, &mut st, "limbs", &src, 0.6);
+    // Crouching, the torso is lower and the legs still stand on the feet.
+    game.pose = Some(PlayerPose {
+        pose: "crouching".into(),
+        on_ground: true,
+        ..PlayerPose::default()
+    });
+    run_for(&mut st, &mut game, 0.05);
+    assert!(st.command("crouched"));
+    run_for(&mut st, &mut game, 0.05);
+    let p = printed(&st, "limbs");
+    assert_eq!(
+        p[0],
+        "HumanoidRootPart, Head, Humanoid, Torso, Left Arm, Right Arm, Left Leg, Right Leg"
+    );
+    assert_eq!(p[1], "0.469 0.703 0.234    0.234 0.703 0.234    0.234 0.703 0.234");
+    assert_eq!(
+        p[2],
+        "10.500 65.055 -3.250    10.852 65.055 -3.250    10.148 65.055 -3.250"
+    );
+    assert_eq!(p[3], "10.389 64.352 -3.250    10.611 64.352 -3.250");
+    assert_eq!(p[4], "true");
+    assert_eq!(p[5], "true    8    12.148 65.055 -8.250");
+    assert_eq!(p[6], "10.389 64.352 -3.250    10.500 64.879 -3.250");
+}
+
+#[test]
+fn the_limbs_are_where_the_games_model_has_them() {
+    // The headless game poses the player's model standing: each limb's centre
+    // is its frame's origin moved as the model's boxes are (an arm 4 pixels
+    // down and 1 out, a leg 6 down), whichever way they face.
+    let source = Source::Files {
+        id: "limbs".into(),
+        files: vec![("limbs.lua".into(), "local me = game.Players.LocalPlayer\n".into())],
+        libraries: None,
+    };
+    let mut run = Run::new(&source).unwrap();
+    let lua = r#"
+        local char = game.Players.LocalPlayer.Character
+        local function frame(name)
+            local f = player.part(name)
+            return Vector3.new(f.x, f.y, f.z), Vector3.new(f.up.x, f.up.y, f.up.z), Vector3.new(f.left.x, f.left.y, f.left.z)
+        end
+        local o, up, left = frame("right_arm")
+        local arm = o - up * (4 / 16) - left * (1 / 16)
+        local lo, lup = frame("left_leg")
+        local leg = lo - lup * (6 / 16)
+        print((char["Right Arm"].Position - arm).Magnitude < 1e-6, (char["Left Leg"].Position - leg).Magnitude < 1e-6)
+    "#;
+    let report = run_steps(
+        &mut run,
+        &[
+            json!({ "lua": lua, "expect_output": "true    true" }),
+            json!({ "player": { "yaw": 90 } }),
+            json!({ "frames": 1 }),
+            json!({ "lua": lua, "expect_output": "true    true" }),
+        ],
+    );
+    assert_eq!(report["ok"], true, "{report:#}");
+}

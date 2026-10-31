@@ -29,6 +29,18 @@ const PX: f64 = 0.9375 / 16.0;
 /// The torso's centre above the feet of a player standing: the legs' 12
 /// pixels and half the body's.
 pub const TORSO_Y: f64 = 18.0 * PX;
+/// The legs' centre above the feet: half their 12 pixels.
+const LEG_Y: f64 = 6.0 * PX;
+/// An R6 character's limbs, all 12 pixels tall and 4 deep: their names,
+/// their widths, how far their centres are to the right of the torso's, and
+/// whether they are legs (under the torso, down to the feet), in pixels.
+const LIMBS: [(&str, f64, f64, bool); 5] = [
+    ("Torso", 8.0, 0.0, false),
+    ("Left Arm", 4.0, -6.0, false),
+    ("Right Arm", 4.0, 6.0, false),
+    ("Left Leg", 4.0, -1.9, true),
+    ("Right Leg", 4.0, 1.9, true),
+];
 /// The eyes above the feet of a player standing.
 pub const EYES_Y: f64 = 1.62;
 /// The player's box, standing.
@@ -84,6 +96,8 @@ pub struct World {
     pub running: f64,
     /// Humanoid:MoveTo's walk, while it goes.
     pub walk: Option<Walk>,
+    /// The local character's Torso and limbs (LIMBS' order).
+    pub limbs: [Id; 5],
     /// The scripts that looked at the world: while one of them runs, the
     /// game's entities are mirrored. The console's look lapses (`lapse`).
     pub lookers: Vec<Owner>,
@@ -114,6 +128,7 @@ impl Default for World {
             on_ground: true,
             running: 0.0,
             walk: None,
+            limbs: [0; 5],
             lookers: Vec::new(),
             console_looked: 0.0,
             mirrors: BTreeMap::new(),
@@ -146,6 +161,8 @@ pub struct Mirror {
     pub root: Id,
     pub head: Option<Id>,
     pub humanoid: Option<Id>,
+    /// A player's Torso and limbs.
+    pub limbs: Option<[Id; 5]>,
     pub name: String,
     pub health: f32,
     pub max_health: f32,
@@ -170,20 +187,22 @@ pub struct Walk {
 
 // ---------------------------------------------------------------- the character
 
-/// A character's instances.
+/// A character's instances: its Torso and limbs in LIMBS' order.
 #[derive(Clone, Copy, Debug)]
 pub struct Rig {
     pub model: Id,
     pub root: Id,
     pub head: Id,
     pub humanoid: Id,
+    pub limbs: [Id; 5],
 }
 
 /// A player's character, R6 in blocks: a Model named `name` whose
 /// PrimaryPart, the HumanoidRootPart, is the torso's box, a Head (the head's
-/// 8-pixel cube) and a Humanoid. Its parts are invisible (the game draws the
-/// player), anchored, and touch nothing; like the services it is locked, so
-/// scripts can add to it but not take it apart. Not in the Workspace yet.
+/// 8-pixel cube), a Humanoid, and the Torso, Left Arm, Right Arm, Left Leg
+/// and Right Leg. Its parts are invisible (the game draws the player),
+/// anchored, and touch nothing; like the services it is locked, so scripts
+/// can add to it but not take it apart. Not in the Workspace yet.
 pub fn build_character(rbx: &mut Rbx, name: &str) -> Rig {
     let model = rbx.make("Model", None);
     rbx.inst_mut(model).name = name.into();
@@ -203,7 +222,8 @@ pub fn build_character(rbx: &mut Rbx, name: &str) -> Rig {
     rbx.raw_set(humanoid, "HipHeight", Value::Num(12.0 * PX));
     let _ = rbx.set_parent(humanoid, Some(model));
     rbx.raw_set(model, "PrimaryPart", root_v);
-    for id in [model, root, head, humanoid] {
+    let limbs = LIMBS.map(|(limb, width, _, _)| rig_part(rbx, model, limb, Vector3::new(width, 12.0, 4.0) * PX));
+    for id in [model, root, head, humanoid].into_iter().chain(limbs) {
         rbx.inst_mut(id).locked = true;
     }
     Rig {
@@ -211,6 +231,18 @@ pub fn build_character(rbx: &mut Rbx, name: &str) -> Rig {
         root,
         head,
         humanoid,
+        limbs,
+    }
+}
+
+/// A character's Torso and limbs in the rest pose, placed with its root part
+/// (at `root`, `root_y` above the feet): the torso on it, the arms beside it
+/// and the legs under it, standing on the feet however low the pose has the
+/// torso. The game's animation of the limbs isn't followed.
+fn place_limbs(rbx: &mut Rbx, limbs: &[Id; 5], root: CFrame, root_y: f64) {
+    for (&id, &(_, _, right, leg)) in limbs.iter().zip(LIMBS.iter()) {
+        let up = if leg { LEG_Y - root_y } else { 0.0 };
+        rbx.quiet_set(id, "CFrame", cf(root * CFrame::new(right * PX, up, 0.0)));
     }
 }
 
@@ -267,8 +299,11 @@ fn sync_local(rbx: &mut Rbx, p: &PlayerInfo, pose: Option<&PlayerPose>) {
     let head = feet + Vector3::new(0.0, eyes, 0.0);
     let (rp, hd, hum) = (rbx.root_part, rbx.head, rbx.humanoid);
     // Kept quiet so a script's teleport isn't undone by the player's own place.
-    rbx.quiet_set(rp, "CFrame", cf(CFrame::look_at(root, root + flat, Vector3::Y_AXIS)));
+    let root_cf = CFrame::look_at(root, root + flat, Vector3::Y_AXIS);
+    rbx.quiet_set(rp, "CFrame", cf(root_cf));
     rbx.fire(rp, "prop:CFrame", Vec::new());
+    let limbs = rbx.world.limbs;
+    place_limbs(rbx, &limbs, root_cf, rbx.world.root_y);
     rbx.quiet_set(hd, "CFrame", cf(CFrame::look_at(head, head + look, Vector3::Y_AXIS)));
     rbx.raw_set(hum, "MaxHealth", Value::Num(f64::from(p.max_health) * HEALTH_SCALE));
     let health = f64::from(p.health) * HEALTH_SCALE;
@@ -440,6 +475,7 @@ fn respawn(rbx: &mut Rbx) {
     rbx.root_part = rig.root;
     rbx.head = rig.head;
     rbx.humanoid = rig.humanoid;
+    rbx.world.limbs = rig.limbs;
     rbx.destroy(old);
     let cv = rbx.value(rig.model);
     rbx.raw_set(player, "Character", cv.clone());
@@ -608,6 +644,7 @@ fn choose<'a>(mirrors: &BTreeMap<u32, Mirror>, list: &'a [EntityInfo]) -> Vec<&'
 /// scripts can put things in it, but not take it out of the Workspace.
 fn build_mirror(rbx: &mut Rbx, e: &EntityInfo) {
     let name = mirror_name(rbx, e);
+    let mut limbs = None;
     let (model, root, head, humanoid) = match &e.item {
         Some((item, n)) => {
             let part = invisible_part(rbx, &name, Vector3::ONE);
@@ -621,6 +658,7 @@ fn build_mirror(rbx: &mut Rbx, e: &EntityInfo) {
         }
         None if e.kind == PLAYER => {
             let rig = build_character(rbx, &name);
+            limbs = Some(rig.limbs);
             (rig.model, rig.root, Some(rig.head), Some(rig.humanoid))
         }
         None => {
@@ -658,6 +696,7 @@ fn build_mirror(rbx: &mut Rbx, e: &EntityInfo) {
             root,
             head,
             humanoid,
+            limbs,
             name,
             health: e.health,
             max_health: e.max_health,
@@ -682,7 +721,7 @@ fn update_mirror(rbx: &mut Rbx, e: &EntityInfo, fresh: bool) {
     let Some(m) = rbx.world.mirrors.get(&e.id) else {
         return;
     };
-    let (model, root, head, humanoid) = (m.model, m.root, m.head, m.humanoid);
+    let (model, root, head, humanoid, limbs) = (m.model, m.root, m.head, m.humanoid, m.limbs);
     let (name, health, max_health, speed, state, count, shape) = (
         m.name.clone(),
         m.health,
@@ -693,6 +732,10 @@ fn update_mirror(rbx: &mut Rbx, e: &EntityInfo, fresh: bool) {
         m.shape,
     );
     place(rbx, e, root, head, shape != (e.width, e.height, e.eye));
+    if let Some(limbs) = limbs {
+        let at = as_cf(&rbx.raw_get(root, "CFrame")).unwrap_or_default();
+        place_limbs(rbx, &limbs, at, TORSO_Y * e.height / HEIGHT);
+    }
     let v = v3(Vector3::new(e.velocity[0], e.velocity[1], e.velocity[2]));
     rbx.quiet_set(root, "AssemblyLinearVelocity", v.clone());
     rbx.quiet_set(root, "Velocity", v);

@@ -1349,6 +1349,7 @@ impl Rbx {
         self.root_part = rig.root;
         self.head = rig.head;
         self.humanoid = rig.humanoid;
+        self.world.limbs = rig.limbs;
         let _ = self.set_parent(rig.model, Some(self.workspace));
         let cv = self.value(rig.model);
         self.raw_set(player, "Character", cv);
