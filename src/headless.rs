@@ -57,6 +57,8 @@ pub struct HeadlessGame {
     pub camera_mode: String,
     /// The player's pose ("standing", "crouching"...).
     pub pose: String,
+    /// Whether the player stands on the ground (a jump or a fall: not).
+    pub on_ground: bool,
     /// How many of `sent` reached the mods' commands.
     routed: usize,
 }
@@ -102,6 +104,7 @@ impl HeadlessGame {
             meshes: Vec::new(),
             camera_mode: "third_back".into(),
             pose: "standing".into(),
+            on_ground: true,
             routed: 0,
         }
     }
@@ -289,7 +292,7 @@ impl GameApi for HeadlessGame {
         Some(PlayerPose {
             pose: self.pose.clone(),
             sprinting: false,
-            on_ground: true,
+            on_ground: self.on_ground,
             flying: false,
             camera: self.camera_mode.clone(),
         })
@@ -739,6 +742,13 @@ fn player_patch(p: &mut PlayerInfo, patch: &Json) {
     {
         p.uuid = uuid;
     }
+    // How the player moves, in blocks a second.
+    if let Some(Json::Array(v)) = patch.get("velocity") {
+        let n: Vec<f64> = v.iter().filter_map(Json::as_f64).collect();
+        if let [x, y, z] = n[..] {
+            p.velocity = [x, y, z];
+        }
+    }
     match patch.get("held") {
         Some(Json::String(item)) => p.held = Some((item.clone(), 1)),
         Some(Json::Null) => p.held = None,
@@ -825,6 +835,9 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
                 (_, None) => failures.push(
                     "the player is gone (set \"player\": {...} after null to bring one back is not supported)".into(),
                 ),
+            }
+            if let Some(on) = patch.get("on_ground").and_then(Json::as_bool) {
+                run.game.on_ground = on;
             }
             frames(run, 1, &mut drawn);
         } else if let Some(at) = step.get("block").and_then(Json::as_array) {
@@ -1071,9 +1084,10 @@ pub const STEPS_HELP: &str = "Each step is an object with one action and any exp
 presses and releases a key: on(\"key\") gets that name as for a real press (\"key.keyboard.space\", \"key.mouse.left\"; \
 headless, keys.down sees it held), or with \"down\": true/false; {\"lua\": \"code\"} runs Lua in the console \
 (globals; import(\"id\") gets a library; assert() fails the step); {\"player\": {\"x\":..,\"y\":..,\"z\":..,\"health\":..,\
-\"mode\":\"creative\",\"held\":\"minecraft:stick\",\"name\":\"Steve\",\"uuid\":\"8667ba71-b85a-4004-af54-457a9734eed7\"}} \
-moves or changes the player (name and uuid are their profile's, which Roblox scripts see as the LocalPlayer's Name \
-and UserId); {\"block\": [x,y,z], \"id\": \
+\"mode\":\"creative\",\"held\":\"minecraft:stick\",\"name\":\"Steve\",\"uuid\":\"8667ba71-b85a-4004-af54-457a9734eed7\",\
+\"velocity\":[0,6,0],\"on_ground\":false}} moves or changes the player (name and uuid are their profile's, which Roblox \
+scripts see as the LocalPlayer's Name and UserId; velocity, in blocks a second, and on_ground are how they move, which \
+the Roblox Humanoid's MoveDirection and state follow); {\"block\": [x,y,z], \"id\": \
 \"minecraft:stone\"} sets a block (live: not available); {\"time\": 13000} sets the day time; {\"click\": \"label\"} \
 clicks text on the open script screen; {\"type\": \"text\"} types into it; {\"reload\": \"id\"} (or true) reloads; \
 {\"camera\": \"first\"|\"third_back\"|\"third_front\"} and {\"pose\": \"crouching\"} set the view and the player's pose \

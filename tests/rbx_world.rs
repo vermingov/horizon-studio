@@ -162,6 +162,20 @@ fn a_headless_test_names_the_player() {
         ],
     );
     assert_eq!(report["ok"], true, "{report:#}");
+    // How the player moves, which the Humanoid follows.
+    let lua = "local h = game.LocalPlayer.Character.Humanoid print(h:GetState().Name, h.MoveDirection.X)";
+    let report = run_steps(
+        &mut run,
+        &[
+            json!({ "lua": lua, "expect_output": "Running    0" }),
+            json!({ "player": { "velocity": [3, 6, 0], "on_ground": false } }),
+            json!({ "lua": lua, "expect_output": "Jumping    1" }),
+            json!({ "player": { "velocity": [0, 0, 0], "on_ground": true } }),
+            json!({ "frames": 2 }),
+            json!({ "lua": lua, "expect_output": "Running    0" }),
+        ],
+    );
+    assert_eq!(report["ok"], true, "{report:#}");
 }
 
 /// Runs a mod's command and a frame or two after: what the game was sent.
