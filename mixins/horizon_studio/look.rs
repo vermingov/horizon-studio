@@ -1797,11 +1797,17 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     let text_x = panel[0] + gutter;
     let text_w = panel[2] - gutter - 18.0;
     let ed = &mut st.s.editor;
-    if ed.row < ed.scroll {
-        ed.scroll = ed.row;
-    }
-    if ed.row >= ed.scroll + rows {
-        ed.scroll = ed.row + 1 - rows;
+    // The view follows the cursor when it moves or the text changes, not
+    // when the wheel scrolls away from it.
+    let now_at = (ed.row, ed.col, ed.revision);
+    if ed.followed != Some(now_at) {
+        ed.followed = Some(now_at);
+        if ed.row < ed.scroll {
+            ed.scroll = ed.row;
+        }
+        if ed.row >= ed.scroll + rows {
+            ed.scroll = ed.row + 1 - rows;
+        }
     }
     ed.scroll = ed.scroll.min(ed.lines.len().saturating_sub(1));
     let cur_chars = ed.lines[ed.row][..ed.col].chars().count();

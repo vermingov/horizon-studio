@@ -403,6 +403,10 @@ pub struct Editor {
     pub scroll: usize,
     /// Chars of each line scrolled off to the left.
     pub hscroll: usize,
+    /// The cursor (row, col) and revision the view last scrolled to: it
+    /// follows the cursor only when one of them changes, so the wheel can
+    /// look elsewhere without moving the cursor or the selection.
+    pub followed: Option<(usize, usize, u64)>,
     pub dirty: bool,
     /// The line of the last error in this file, 1-based.
     pub error_line: Option<usize>,
@@ -440,6 +444,7 @@ impl Default for Editor {
             anchor: None,
             scroll: 0,
             hscroll: 0,
+            followed: None,
             dirty: false,
             error_line: None,
             goal: None,
@@ -960,9 +965,6 @@ impl Editor {
             self.anchor = None;
         }
         self.last_kind = None;
-    }
-    fn char_col(&self) -> usize {
-        self.lines[self.row][..self.col].chars().count()
     }
     fn set_char_col(&mut self, n: usize) {
         let line = &self.lines[self.row];
@@ -1595,7 +1597,8 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 return UiResult::Used;
             }
             if st.s.ui.dragging {
-                editor_point(st, game, x, y, true);
+                let drawn = st.s.ui.smooth[1];
+                editor_point(st, game, x, y, true, drawn);
             }
             UiResult::Used
         }
@@ -1641,7 +1644,8 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
             if let Some(action) = hit {
                 return act(st, game, action);
             }
-            if st.s.ui.tab == Tab::Editor && editor_point(st, game, at.0, at.1, false) {
+            let drawn = st.s.ui.smooth[1];
+            if st.s.ui.tab == Tab::Editor && editor_point(st, game, at.0, at.1, false, drawn) {
                 st.s.ui.dragging = true;
                 st.s.ui.panel_focus = false;
             }
@@ -1686,12 +1690,12 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                     } else {
                         (ed.scroll + n).min(ed.lines.len().saturating_sub(1))
                     };
-                    // Keep the cursor on screen as the view scrolls.
-                    let rows = st.s.ui.page.max(1);
-                    if ed.row < ed.scroll {
-                        ed.click(ed.scroll, ed.char_col(), ed.anchor.is_some());
-                    } else if ed.row >= ed.scroll + rows {
-                        ed.click(ed.scroll + rows - 1, ed.char_col(), ed.anchor.is_some());
+                    // The cursor and the selection stay where they are; a
+                    // drag in progress follows the pointer onto the new lines.
+                    if st.s.ui.dragging {
+                        let (x, y) = st.s.ui.mouse;
+                        let top = st.s.editor.scroll as f32;
+                        editor_point(st, game, x, y, true, top);
                     }
                 }
                 Tab::Library => {
@@ -1788,7 +1792,7 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
 
 /// A click or drag in the editor's text: moves the cursor there (a drag
 /// keeps the selection's other end).
-fn editor_point(st: &mut Studio, game: &mut dyn GameApi, x: f32, y: f32, drag: bool) -> bool {
+fn editor_point(st: &mut Studio, game: &mut dyn GameApi, x: f32, y: f32, drag: bool, drawn: f32) -> bool {
     let Some(v) = st.s.ui.view else {
         return false;
     };
@@ -1796,8 +1800,8 @@ fn editor_point(st: &mut Studio, game: &mut dyn GameApi, x: f32, y: f32, drag: b
         return false;
     }
     // The line drawn under the pointer: rows glide as the view scrolls, so
-    // the view as drawn (not where it is going) says which.
-    let (drawn, scale) = (st.s.ui.smooth[1], st.s.ui.look.scale);
+    // the view as drawn (not where it is going) says which, given as `drawn`.
+    let scale = st.s.ui.look.scale;
     let ed = &mut st.s.editor;
     let at = drawn.max(0.0) + ((y - v.y) / code_line()).clamp(0.0, v.rows as f32);
     let row = (at.floor() as usize).min(ed.lines.len() - 1);
@@ -1805,6 +1809,8 @@ fn editor_point(st: &mut Studio, game: &mut dyn GameApi, x: f32, y: f32, drag: b
     let anchor = if drag { ed.anchor } else { None };
     ed.click(row, col, drag);
     ed.anchor = Some(anchor.unwrap_or((ed.row, ed.col)));
+    // Put under the pointer, the cursor is on screen: the view stays.
+    ed.followed = Some((ed.row, ed.col, ed.revision));
     true
 }
 

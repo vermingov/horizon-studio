@@ -951,3 +951,53 @@ fn the_window_stays_on_a_smaller_screen() {
         "as it was, where it fits"
     );
 }
+
+#[test]
+fn the_wheel_scrolls_without_moving_the_selection() {
+    let mut game = FakeGame::new("ui-wheel");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.now = 10.0;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    let text: Vec<String> = (1..=200).map(|i| format!("local line{i} = {i}")).collect();
+    st.s.editor.set_text(&text.join("\n"));
+    redraw(&mut st, &mut game);
+    // Select the first two lines with a drag, and let go.
+    let first = text_at(&game, "line1");
+    let second = text_at(&game, "line2");
+    handle(&mut st, &mut game, Input::Mouse(first.0 - 30.0, first.1 + 2.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    handle(&mut st, &mut game, Input::Mouse(second.0 + 40.0, second.1 + 2.0));
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    let selected = st.s.editor.selection();
+    assert!(selected.is_some());
+    assert_eq!(st.s.editor.row, 1);
+    // Scrolling far down leaves the cursor, the selection and the view alone.
+    for _ in 0..10 {
+        handle(&mut st, &mut game, Input::Wheel(-1.0));
+        redraw(&mut st, &mut game);
+    }
+    assert_eq!(st.s.editor.selection(), selected);
+    assert_eq!(st.s.editor.row, 1);
+    assert_eq!(st.s.editor.scroll, 30, "the view stayed where it was scrolled to");
+    // Typing (over the selection) brings the view back to the cursor.
+    type_text(&mut st, &mut game, "x");
+    redraw(&mut st, &mut game);
+    assert!(st.s.editor.scroll <= 1);
+    // Held down, the selection follows the pointer onto the lines scrolled in.
+    let at = text_at(&game, "line5");
+    handle(&mut st, &mut game, Input::Mouse(at.0, at.1 + 2.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    let row = st.s.editor.row;
+    handle(&mut st, &mut game, Input::Wheel(-1.0));
+    assert_eq!(st.s.editor.row, row + 3, "the drag's end moved with the view");
+    assert!(st.s.editor.selection().is_some());
+}
