@@ -339,7 +339,7 @@ impl Session {
             *total += 1;
         }
         st.frame(game, 0.05);
-        let new: Vec<String> = game.g.sent.drain(..).collect();
+        let new: Vec<String> = std::mem::take(&mut game.g.sent);
         for line in new {
             if let Some(cmd) = line.strip_prefix('/')
                 && !st.command(cmd)

@@ -1758,7 +1758,7 @@ pub fn xxh64(data: &[u8]) -> u64 {
     let (stripes, tail) = data.split_at(data.len() / 32 * 32);
     let mut h = if data.len() >= 32 {
         let mut v = [P1.wrapping_add(P2), P2, 0, 0u64.wrapping_sub(P1)];
-        for stripe in stripes.chunks_exact(32) {
+        for stripe in stripes.as_chunks::<32>().0 {
             for (k, lane) in v.iter_mut().enumerate() {
                 *lane = round(*lane, u64_at(&stripe[8 * k..]));
             }
@@ -1770,14 +1770,13 @@ pub fn xxh64(data: &[u8]) -> u64 {
         P5
     };
     h = h.wrapping_add(data.len() as u64);
-    let mut words = tail.chunks_exact(8);
-    for w in &mut words {
-        h = (h ^ round(0, u64_at(w)))
+    let (words, mut rest) = tail.as_chunks::<8>();
+    for w in words {
+        h = (h ^ round(0, u64::from_le_bytes(*w)))
             .rotate_left(27)
             .wrapping_mul(P1)
             .wrapping_add(P4);
     }
-    let mut rest = words.remainder();
     if rest.len() >= 4 {
         h ^= u64::from(le32(rest)).wrapping_mul(P1);
         h = h.rotate_left(23).wrapping_mul(P2).wrapping_add(P3);
@@ -2381,7 +2380,9 @@ impl Xml {
             }
             "NumberSequence" => V::NumberSequence(
                 floats(text, 3)?
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .map(|k| NumberKeypoint {
                         time: k[0],
                         value: k[1],
@@ -2391,7 +2392,9 @@ impl Xml {
             ),
             "ColorSequence" => V::ColorSequence(
                 floats(text, 5)?
-                    .chunks_exact(5)
+                    .as_chunks::<5>()
+                    .0
+                    .iter()
                     .map(|k| ColorKeypoint {
                         time: k[0],
                         color: Color3 {
