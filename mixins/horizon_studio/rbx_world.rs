@@ -585,6 +585,12 @@ fn clear(rbx: &mut Rbx, players: bool) {
 /// gone for those no longer chosen. An id that comes back as another type of
 /// entity gets a new mirror.
 fn sync_entities(rbx: &mut Rbx, game: &mut dyn GameApi) {
+    // A mirror something else destroyed (nothing should: they are locked) is
+    // let go as it is, and its entity gets a new one.
+    let insts = &rbx.insts;
+    rbx.world
+        .mirrors
+        .retain(|_, m| insts.get(&m.model).is_some_and(|i| !i.destroyed));
     let list = game.entities(KEEP_RANK);
     let chosen = choose(&rbx.world.mirrors, &list);
     let keep: BTreeSet<u32> = chosen.iter().map(|e| e.id).collect();
@@ -869,15 +875,15 @@ fn remove_mirror(rbx: &mut Rbx, id: u32) {
 /// ("minecraft:cave_spider" is "Cave Spider"); a dropped item after the
 /// item, an orb "Experience Orb".
 fn mirror_name(rbx: &Rbx, e: &EntityInfo) -> String {
-    let listed = rbx
-        .world
-        .others
-        .iter()
-        .find(|o| e.kind == PLAYER && o.entity == Some(e.id))
-        .map(|o| rbx.inst(o.player).name.clone());
     match &e.item {
         _ if !e.name.is_empty() => e.name.clone(),
-        None => listed.unwrap_or_else(|| title(&e.kind)),
+        None => rbx
+            .world
+            .others
+            .iter()
+            .find(|o| e.kind == PLAYER && o.entity == Some(e.id))
+            .and_then(|o| rbx.try_inst(o.player))
+            .map_or_else(|| title(&e.kind), |p| p.name.clone()),
         Some(_) if e.kind == ORB => "Experience Orb".into(),
         Some((item, _)) => title(item),
     }
@@ -915,6 +921,16 @@ pub fn mob_boxes(width: f64, height: f64, eye: f64) -> (f64, f64) {
 /// there before it, with their Characters; one who joins after gets theirs a
 /// frame after PlayerAdded, so its handlers can connect CharacterAdded.
 fn sync_players(rbx: &mut Rbx, game: &mut dyn GameApi, looking: bool) {
+    // A Player something else destroyed (nothing should: they are locked) is
+    // let go, and the list, read again at once, gives that player a new one.
+    let insts = &rbx.insts;
+    let before = rbx.world.others.len();
+    rbx.world
+        .others
+        .retain(|o| insts.get(&o.player).is_some_and(|i| !i.destroyed));
+    if rbx.world.others.len() != before {
+        rbx.world.next_list = 0.0;
+    }
     if rbx.now < rbx.world.next_list {
         return;
     }
@@ -1108,7 +1124,7 @@ pub fn player_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, args:
             let n = check_text(lua, args, 1, name)?;
             let found = players_of(rbx)
                 .into_iter()
-                .find(|&p| rbx.inst(p).name.eq_ignore_ascii_case(&n));
+                .find(|&p| rbx.try_inst(p).is_some_and(|i| i.name.eq_ignore_ascii_case(&n)));
             match found {
                 Some(p) => one(rbx.raw_get(p, "UserId")),
                 None => Err(lua.rt_error(format!(
@@ -1401,14 +1417,19 @@ pub fn uuid_text(uuid: u128) -> String {
 }
 
 /// Renames an instance as a script's `inst.Name = name` does: Changed fires,
-/// and a WaitForChild waiting for the new name gets it.
+/// and a WaitForChild waiting for the new name gets it. One that is gone
+/// stays gone.
 pub fn rename(rbx: &mut Rbx, id: Id, name: &str) {
-    if rbx.inst(id).name == name {
+    let Some(inst) = rbx.insts.get_mut(&id) else {
+        return;
+    };
+    if inst.name == name {
         return;
     }
-    rbx.inst_mut(id).name = name.to_owned();
+    inst.name = name.to_owned();
+    let parent = inst.parent;
     rbx.changed(id, "Name", &Value::Nil);
-    if let Some(p) = rbx.inst(id).parent {
+    if let Some(p) = parent {
         rbx.child_arrived(p, id);
     }
 }
@@ -1435,9 +1456,13 @@ pub fn title(id: &str) -> String {
         .join(" ")
 }
 
-/// Sets an attribute as SetAttribute does, with its events when it changes.
+/// Sets an attribute as SetAttribute does, with its events when it changes,
+/// on an instance that is still there.
 pub fn set_attribute(rbx: &mut Rbx, id: Id, name: &str, v: Value) {
-    let attrs = &mut rbx.inst_mut(id).attributes;
+    let Some(inst) = rbx.insts.get_mut(&id) else {
+        return;
+    };
+    let attrs = &mut inst.attributes;
     match attrs.iter().position(|(k, _)| k == name) {
         Some(i) if super::hstudio_rbx::same_value(&attrs[i].1, &v) => return,
         Some(i) => attrs[i].1 = v,

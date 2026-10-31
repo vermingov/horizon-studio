@@ -1531,11 +1531,18 @@ fn step_events(rbx: &mut Rbx, now: f64, dt: f64, frame_no: u64) {
         rbx.deferred.push((owner, f, vec![Value::Num(dt)]));
     }
     super::hstudio_rbx_methods::step_tweens(rbx, dt);
-    // Debris whose time came.
+    // Debris whose time came. What Destroy can't destroy (a service, the
+    // character, the world's mirrors and other players) stays, as in Roblox.
     let due: Vec<Id> = rbx.debris.iter().filter(|d| d.1 <= now).map(|d| d.0).collect();
     rbx.debris.retain(|d| d.1 > now);
     for id in due {
-        rbx.destroy(id);
+        match rbx.try_inst(id) {
+            Some(i) if i.locked && i.parent.is_some() && !i.destroyed => {
+                let note = format!("Debris can't destroy {}: its Parent property is locked", i.name);
+                rbx.warnings.push(note);
+            }
+            _ => rbx.destroy(id),
+        }
     }
     // WaitForChild's timeouts, and its warning after 5 seconds.
     let mut i = 0;

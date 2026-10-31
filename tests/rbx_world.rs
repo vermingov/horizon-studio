@@ -1386,3 +1386,111 @@ fn a_mobs_humanoid_walks_no_one() {
     assert!(game.agent_calls.is_empty(), "{:?}", game.agent_calls);
     assert_eq!(printed(&st, "mobwalk"), ["Running    true", "finished    false"]);
 }
+
+#[test]
+fn debris_leaves_the_worlds_instances_alone() {
+    let mut game = FakeGame::new("rbxw-debris");
+    game.players = Some(vec![listed("Alex", 0x42, Some(12), 0, false)]);
+    game.entities = vec![
+        zombie(5, 12.5, -3.25),
+        player_entity(12, "Alex", 8.5, -6.0),
+        dropped(7, "minecraft:diamond", 3, 9.5, -1.5),
+    ];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local Debris = game:GetService("Debris")
+        local first = workspace:WaitForChild("Zombie"):GetDebugId()
+        -- Every one of them as Debris gets it from a script: through a lookup, none kept.
+        Debris:AddItem(workspace.Zombie, 0)
+        Debris:AddItem(workspace.Zombie.HumanoidRootPart, 0)
+        Debris:AddItem(workspace.Diamond, 0)
+        Debris:AddItem(game.Players:FindFirstChild("Alex"), 0)
+        Debris:AddItem(workspace.Alex, 0)
+        Debris:AddItem(game.Players.LocalPlayer.Character, 0)
+        local mine = Instance.new("Part", workspace)
+        mine.Name = "Mine"
+        Debris:AddItem(mine, 0)
+        mine = nil
+        command("check", function()
+            local z = workspace:FindFirstChild("Zombie")
+            print(z and z:GetDebugId() == first, z and z:FindFirstChild("HumanoidRootPart") ~= nil, workspace:FindFirstChild("Mine"))
+            local alex = game.Players:FindFirstChild("Alex")
+            print(workspace.Diamond:GetAttribute("Count"), alex ~= nil and alex.Character == workspace.Alex, #game.Players:GetPlayers(), workspace:FindFirstChild("Bob") ~= nil)
+        end)
+    "#;
+    load(&mut game, &mut st, "debris", src, 0.6);
+    // Past the layer's sweep of what is destroyed (every 120 frames), with
+    // the list read every half second.
+    run_for(&mut st, &mut game, 7.0);
+    // The game changes them: a stack grows, the zombie gets a name.
+    game.entities[2].item = Some(("minecraft:diamond".into(), 5));
+    game.entities[0].name = "Bob".into();
+    run_for(&mut st, &mut game, 0.6);
+    game.entities[0].name.clear();
+    run_for(&mut st, &mut game, 0.6);
+    assert!(st.command("check"));
+    run_for(&mut st, &mut game, 0.05);
+    let p = printed(&st, "debris");
+    assert_eq!(p[0], "true    true    nil");
+    assert_eq!(p[1], "5    true    2    false");
+    // Debris says why they stay, as Destroy does; the script's own part went.
+    let warnings: Vec<String> = log(&st)
+        .into_iter()
+        .filter(|l| l.contains("Debris can't destroy"))
+        .collect();
+    assert_eq!(warnings.len(), 6, "{warnings:?}");
+    assert!(
+        warnings[0].contains("Zombie: its Parent property is locked"),
+        "{}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn the_world_mends_what_something_else_destroyed() {
+    // Nothing a script does destroys a mirror or another player's Player
+    // (they are locked), but should something, the world lets it go: the
+    // entity gets a new mirror, the player a new Player.
+    let mut game = FakeGame::new("rbxw-mend");
+    game.players = Some(vec![listed("Alex", 0x42, Some(12), 0, false)]);
+    game.entities = vec![
+        zombie(5, 12.5, -3.25),
+        player_entity(12, "Alex", 8.5, -6.0),
+        dropped(7, "minecraft:diamond", 3, 9.5, -1.5),
+    ];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local log = {}
+        workspace.ChildAdded:Connect(function(c) table.insert(log, "added " .. c.Name) end)
+        game.Players.PlayerAdded:Connect(function(p) table.insert(log, "joined " .. p.Name) end)
+        command("check", function()
+            local alex = game.Players:FindFirstChild("Alex")
+            print(table.concat(log, ", "))
+            print(workspace.Zombie.Humanoid.Health, workspace.Diamond:GetAttribute("Count"), alex.Character == workspace.Alex, #game.Players:GetPlayers())
+        end)
+    "#;
+    load(&mut game, &mut st, "mend", src, 0.6);
+    let rbx = &mut st.s.rbx;
+    let (ws, players) = (rbx.workspace, rbx.players);
+    let (zombie, diamond, alex) = (
+        rbx.child_named(ws, "Zombie").unwrap(),
+        rbx.child_named(ws, "Diamond").unwrap(),
+        rbx.child_named(players, "Alex").unwrap(),
+    );
+    for id in [zombie, diamond, alex] {
+        rbx.destroy(id);
+    }
+    // The zombie's model and Alex's Player are let go of at once, as the
+    // layer's sweep lets go of what no script holds; the diamond's is kept.
+    rbx.insts.remove(&zombie);
+    rbx.insts.remove(&alex);
+    game.entities[0].health = 10.0;
+    game.entities[2].item = Some(("minecraft:diamond".into(), 5));
+    game.players.as_mut().unwrap()[0].latency = 30;
+    run_for(&mut st, &mut game, 1.0);
+    assert!(st.command("check"));
+    run_for(&mut st, &mut game, 0.05);
+    let p = printed(&st, "mend");
+    assert_eq!(p[0], "joined Alex, added Zombie, added Diamond");
+    assert_eq!(p[1], "50    5    true    2");
+}
