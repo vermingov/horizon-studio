@@ -565,6 +565,45 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         p.dy = 0.0;
         naming(st, &mut p, &name, w, h, dt);
     }
+    if st.s.ui.notice.is_some() {
+        use_look(&look, true);
+        p.dy = 0.0;
+        notice(st, &mut p, w, h);
+    }
+}
+
+/// What a menu's item just did ("Copied 42 characters"), at the bottom of
+/// the studio a moment: the HUD's toast is not drawn while it is open.
+fn notice(st: &mut Studio, p: &mut P, w: f32, h: f32) {
+    let now = st.s.now;
+    let Some((text, at)) = st.s.ui.notice.clone() else {
+        return;
+    };
+    if now - at > TOAST_SECS || now < at {
+        st.s.ui.notice = None;
+        return;
+    }
+    let arrive = progress(now, at, MOVE);
+    let leave = 1.0 - progress(now, at + TOAST_SECS - 0.3, QUICK);
+    let (a, dy) = (p.alpha, p.dy);
+    p.alpha = a * arrive * leave;
+    p.dy = (1.0 - arrive) * RISE;
+    let text = p.fit(&text, w - 80.0, 13.0, Font::Regular);
+    let tw = p.measure(&text, 13.0, Font::Regular);
+    let r = [((w - tw) / 2.0 - 28.0).floor(), (h - 92.0).floor(), tw + 46.0, 36.0];
+    p.rect(r, 18.0, pal().surface);
+    p.border(r, 18.0, pal().rule);
+    p.rect([r[0] + 16.0, r[1] + 15.0, 6.0, 6.0], 3.0, pal().accent);
+    p.text(
+        &text,
+        r[0] + 30.0,
+        top(r[1] + 18.0, 13.0),
+        13.0,
+        Font::Regular,
+        pal().ink,
+    );
+    p.alpha = a;
+    p.dy = dy;
 }
 
 /// The open menu: its items in a plate at its place, kept on the screen
@@ -594,14 +633,18 @@ fn draw_menu(st: &mut Studio, p: &mut P, w: f32, h: f32, dt: f32) {
         .floor()
         .clamp(20.0, 26.0);
     let item_h = |i: usize| if menu.items[i].separator { SEP } else { row };
-    let mut mw: f32 = 168.0;
-    for it in menu.items.iter().filter(|i| !i.separator) {
-        let hint = if it.hint.is_empty() {
+    // A label starts 26 in, and a hint ends 10 from the right, 18 after it.
+    let hint_w = |p: &mut P, hint: &str| {
+        if hint.is_empty() {
             0.0
         } else {
-            p.measure(&it.hint, 11.5, Font::Mono) + 18.0
-        };
-        mw = mw.max(p.measure(&it.label, size, Font::Regular) + hint + 46.0);
+            p.measure(hint, 11.5, Font::Mono) + 18.0
+        }
+    };
+    let mut mw: f32 = 168.0;
+    for it in menu.items.iter().filter(|i| !i.separator) {
+        let hint = hint_w(p, &it.hint);
+        mw = mw.max(p.measure(&it.label, size, Font::Regular) + hint + 2.0 * PAD + 36.0);
     }
     let mw = mw.min(w - 16.0);
     // What shows: everything, or from its scroll as much as fits, the lit
@@ -703,7 +746,8 @@ fn draw_menu(st: &mut Studio, p: &mut P, w: f32, h: f32, dt: f32) {
             (true, true) => legible(pal().danger, bg, 4.5),
             (true, false) => legible(pal().ink, bg, 4.5),
         };
-        let label = p.fit(&it.label, r[2] - 40.0, size, Font::Regular);
+        let room = r[2] - 36.0 - hint_w(p, &it.hint) + 0.5;
+        let label = p.fit(&it.label, room, size, Font::Regular);
         p.text(&label, r[0] + 26.0, top(ry + row / 2.0, size), size, Font::Regular, c);
         if !it.hint.is_empty() {
             let hw = p.measure(&it.hint, 11.5, Font::Mono);
@@ -1112,6 +1156,9 @@ fn draw_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let f = [x + 10.0, y + h - 10.0 - field_h, w - 20.0, field_h];
     p.rect(f, 12.0, pal().page);
     p.border(f, 12.0, fade(pal().accent, 0.45));
+    st.s.ui
+        .hits
+        .push((f, Action::Spot(Spot::Field(super::hstudio_ui::FIELD_CONSOLE))));
     let cy = f[1] + field_h / 2.0;
     p.text("›", f[0] + 16.0, top(cy, 16.0), 16.0, Font::Mono, pal().accent);
     let input = st.s.ui.input.clone();
@@ -1173,6 +1220,9 @@ pub(super) fn draw_log(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], scrol
     let need = rows + scroll + 2;
     let text_w = w - 20.0;
     st.s.ui.text_areas.push((super::hstudio_ui::AREA_LOG, [x, y, w, h]));
+    st.s.ui
+        .hits
+        .push(([x, y, w, h], Action::Spot(Spot::Text(super::hstudio_ui::AREA_LOG))));
     // Each piece with its line's number (log_seq counts every line written) and place, for selecting.
     let mut shown: Vec<LogRow> = Vec::new();
     let newest = st.s.log_seq;
@@ -1785,6 +1835,9 @@ fn panel_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let fo = glide(&mut st.s.ui, id("panel-input", 0), focused, dt);
     p.rect(f, 9.0, pal().page);
     p.border(f, 9.0, mix(pal().rule, fade(pal().accent, 0.55), fo));
+    st.s.ui
+        .hits
+        .push((f, Action::Spot(Spot::Field(super::hstudio_ui::FIELD_CONSOLE))));
     let cy = f[1] + field_h / 2.0;
     let size = code_size();
     p.text("›", f[0] + 10.0, top(cy, size), size, Font::Mono, pal().accent);
@@ -1940,6 +1993,10 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
     st.s.ui
         .text_areas
         .push((super::hstudio_ui::AREA_AGENT, [x, y, w, log_h]));
+    st.s.ui.hits.push((
+        [x, y, w, log_h],
+        Action::Spot(Spot::Text(super::hstudio_ui::AREA_AGENT)),
+    ));
     let newest = st.s.ui.agent.seq;
     for (r, line) in st.s.ui.agent.lines.iter().rev().enumerate() {
         let seq = newest.saturating_sub(r as u64);
@@ -2090,6 +2147,9 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
     let fo = glide(&mut st.s.ui, id("agent-input", 0), focused, dt);
     p.rect(f, 9.0, pal().page);
     p.border(f, 9.0, mix(pal().rule, fade(pal().accent, 0.55), fo));
+    st.s.ui
+        .hits
+        .push((f, Action::Spot(Spot::Field(super::hstudio_ui::FIELD_AGENT))));
     let cy = f[1] + field_h / 2.0;
     p.text("›", f[0] + 10.0, top(cy, 14.0), 14.0, Font::Mono, pal().accent);
     let input = st.s.ui.agent_input.clone();
@@ -2343,6 +2403,9 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     if panel[3] < 24.0 + code_line() {
         return;
     }
+    // A right click on the code (its line numbers too) opens its menu; the
+    // scroll bar, a banner and the suggestions, drawn later, are over it.
+    st.s.ui.hits.push((panel, Action::Spot(Spot::Code)));
     let rows = ((panel[3] - 24.0) / code_line()).max(1.0) as usize;
     st.s.ui.page = rows;
     let gutter = p.measure("0000", 12.0, Font::Mono) + 30.0;

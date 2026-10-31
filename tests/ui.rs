@@ -2311,3 +2311,337 @@ fn a_click_outside_closes_the_menu_and_goes_no_further() {
     assert!(st.s.ui.menu.is_none());
     assert!(st.s.ui.naming.is_some());
 }
+
+/// The open menu's items that can be chosen, by label.
+fn usable(st: &horizon_studio::game::hstudio::Studio) -> Vec<String> {
+    menu_labels(st)
+        .into_iter()
+        .filter(|(l, on)| *on && !l.is_empty())
+        .map(|(l, _)| l)
+        .collect()
+}
+
+/// The open menu's lit item.
+fn lit(st: &horizon_studio::game::hstudio::Studio) -> String {
+    let menu = st.s.ui.menu.as_ref().expect("a menu");
+    menu.sel.map(|i| menu.items[i].label.clone()).unwrap_or_default()
+}
+
+/// Chooses the open menu's item `label`, by a click where it was drawn.
+fn choose(st: &mut horizon_studio::game::hstudio::Studio, game: &mut FakeGame, label: &str) {
+    redraw(st, game);
+    let at = last_text_at(game, label);
+    click(st, game, at);
+}
+
+/// A studio on the Editor tab with `text` in the editor, drawn.
+fn editing(name: &str, text: &str) -> (FakeGame, horizon_studio::game::hstudio::Studio) {
+    let mut game = FakeGame::new(name);
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    st.s.editor.set_text(text);
+    redraw(&mut st, &mut game);
+    (game, st)
+}
+
+#[test]
+fn right_click_on_the_code_opens_its_menu_at_the_pointer() {
+    let (mut game, mut st) = editing("ui-code-menu", "local a = 1\nprint(a)");
+    // Suggestions open, from typing at the end of the first line.
+    st.s.editor.click(0, 11, false);
+    type_text(&mut st, &mut game, " pla");
+    assert!(st.s.ui.suggest.is_some());
+    redraw(&mut st, &mut game);
+    let print = text_at(&game, "print");
+    let at = (print.0 + 8.0, print.1 + 4.0);
+    right_click(&mut st, &mut game, at);
+    let menu = st.s.ui.menu.clone().expect("the code's menu");
+    assert_eq!(menu.at, [at.0, at.1], "at the pointer");
+    assert_eq!(
+        usable(&st),
+        [
+            "Cut",
+            "Copy",
+            "Paste",
+            "Select all",
+            "Toggle comment",
+            "Indent",
+            "Outdent",
+            "Duplicate line",
+            "Run",
+            "Save"
+        ]
+    );
+    let hints: Vec<String> = menu.items.iter().map(|i| i.hint.clone()).collect();
+    assert_eq!(hints[0], "Ctrl X");
+    assert_eq!((st.s.editor.row, st.s.editor.col), (1, 1), "the cursor went there");
+    assert!(st.s.ui.suggest.is_none());
+    // Paste with nothing on the clipboard does nothing.
+    choose(&mut st, &mut game, "Paste");
+    assert!(st.s.ui.menu.is_none());
+    assert_eq!(st.s.editor.text(), "local a = 1 pla\nprint(a)");
+}
+
+#[test]
+fn choosing_an_editor_item_runs_it_and_closes_the_menu() {
+    let (mut game, mut st) = editing("ui-code-items", "local a = 1\nprint(a)");
+    let print = text_at(&game, "print");
+    right_click(&mut st, &mut game, (print.0 + 2.0, print.1 + 4.0));
+    choose(&mut st, &mut game, "Toggle comment");
+    assert!(st.s.ui.menu.is_none());
+    assert_eq!(st.s.editor.lines[1], "-- print(a)");
+    // Copy with nothing selected copies the line, its line break too.
+    redraw(&mut st, &mut game);
+    let local = text_at(&game, "local");
+    right_click(&mut st, &mut game, (local.0 + 2.0, local.1 + 4.0));
+    choose(&mut st, &mut game, "Copy");
+    assert_eq!(game.clipboard, "local a = 1\n");
+    redraw(&mut st, &mut game);
+    assert!(drawn_text(&game, "Copied 12 characters"), "it says so");
+    // Paste puts the clipboard at the cursor; Indent indents the line itself.
+    game.clipboard = "x".into();
+    right_click(&mut st, &mut game, (local.0 + 0.5, local.1 + 4.0));
+    choose(&mut st, &mut game, "Paste");
+    assert_eq!(st.s.editor.lines[0], "xlocal a = 1");
+    redraw(&mut st, &mut game);
+    right_click(&mut st, &mut game, (local.0 + 2.0, local.1 + 4.0));
+    choose(&mut st, &mut game, "Indent");
+    assert_eq!(st.s.editor.lines[0], "  xlocal a = 1");
+    redraw(&mut st, &mut game);
+    right_click(&mut st, &mut game, (local.0 + 2.0, local.1 + 4.0));
+    choose(&mut st, &mut game, "Outdent");
+    assert_eq!(st.s.editor.lines[0], "xlocal a = 1");
+    redraw(&mut st, &mut game);
+    right_click(&mut st, &mut game, (local.0 + 2.0, local.1 + 4.0));
+    choose(&mut st, &mut game, "Duplicate line");
+    assert_eq!(st.s.editor.lines[..2], ["xlocal a = 1", "xlocal a = 1"]);
+    redraw(&mut st, &mut game);
+    right_click(&mut st, &mut game, (local.0 + 2.0, local.1 + 4.0));
+    choose(&mut st, &mut game, "Cut");
+    assert_eq!(game.clipboard, "xlocal a = 1\n");
+    assert_eq!(st.s.editor.text(), "xlocal a = 1\n-- print(a)");
+    // Run runs it in the console.
+    st.s.editor.set_text("print('ran from the menu')");
+    redraw(&mut st, &mut game);
+    let code = text_at(&game, "print");
+    right_click(&mut st, &mut game, (code.0 + 2.0, code.1 + 4.0));
+    choose(&mut st, &mut game, "Run");
+    assert_eq!(log(&st).last().map(String::as_str), Some("ran from the menu"));
+}
+
+#[test]
+fn a_right_click_inside_the_selection_keeps_it() {
+    let (mut game, mut st) = editing("ui-code-selection", "local a = 1\nprint(a)");
+    let local = text_at(&game, "local");
+    handle(&mut st, &mut game, Input::Mouse(local.0, local.1 + 4.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    handle(&mut st, &mut game, Input::Mouse(local.0 + 6.0 * 5.0, local.1 + 4.0));
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    assert_eq!(st.s.editor.selected_text().as_deref(), Some("local"));
+    right_click(&mut st, &mut game, (local.0 + 8.0, local.1 + 4.0));
+    assert_eq!(st.s.editor.selected_text().as_deref(), Some("local"), "kept");
+    choose(&mut st, &mut game, "Copy");
+    assert_eq!(game.clipboard, "local");
+    // On another line it goes, and the cursor goes there.
+    redraw(&mut st, &mut game);
+    let print = text_at(&game, "print");
+    right_click(&mut st, &mut game, (print.0 + 2.0, print.1 + 4.0));
+    assert_eq!(st.s.editor.selection(), None);
+    assert_eq!(st.s.editor.row, 1);
+}
+
+#[test]
+fn the_menus_keys_choose_skip_and_close() {
+    let (mut game, mut st) = editing("ui-menu-keys", "local a = 1\nprint(a)");
+    let print = text_at(&game, "print");
+    let at = (print.0 + 2.0, print.1 + 4.0);
+    right_click(&mut st, &mut game, at);
+    assert_eq!(lit(&st), "", "nothing lit at first");
+    handle(&mut st, &mut game, key(Key::Down, NONE));
+    assert_eq!(lit(&st), "Cut");
+    for _ in 0..3 {
+        handle(&mut st, &mut game, key(Key::Down, NONE));
+    }
+    assert_eq!(lit(&st), "Select all");
+    handle(&mut st, &mut game, key(Key::Down, NONE));
+    assert_eq!(lit(&st), "Toggle comment", "over the separator");
+    handle(&mut st, &mut game, key(Key::Up, NONE));
+    assert_eq!(lit(&st), "Select all");
+    // A letter lights the next item that starts with it, and types nothing.
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    right_click(&mut st, &mut game, at);
+    type_text(&mut st, &mut game, "s");
+    assert_eq!(lit(&st), "Select all");
+    type_text(&mut st, &mut game, "s");
+    assert_eq!(lit(&st), "Save");
+    type_text(&mut st, &mut game, "s");
+    assert_eq!(lit(&st), "Select all", "round again");
+    assert_eq!(st.s.editor.text(), "local a = 1\nprint(a)");
+    // Space chooses it.
+    handle(&mut st, &mut game, Input::Text(" ".into()));
+    assert!(st.s.ui.menu.is_none());
+    assert_eq!(st.s.editor.selected_text().as_deref(), Some("local a = 1\nprint(a)"));
+    // Enter chooses the lit item; with none lit it waits.
+    right_click(&mut st, &mut game, at);
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert!(st.s.ui.menu.is_some());
+    handle(&mut st, &mut game, key(Key::Down, NONE));
+    handle(&mut st, &mut game, key(Key::Down, NONE));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert!(st.s.ui.menu.is_none());
+    assert_eq!(game.clipboard, "local a = 1\nprint(a)", "Copy, on the selection");
+    // Escape closes the menu, not the studio; the studio's key closes both.
+    right_click(&mut st, &mut game, at);
+    assert_eq!(handle(&mut st, &mut game, key(Key::Escape, NONE)), UiResult::Used);
+    assert!(st.s.ui.menu.is_none() && st.s.ui.open);
+    right_click(&mut st, &mut game, at);
+    assert_eq!(handle(&mut st, &mut game, key(Key::Toggle, NONE)), UiResult::Close);
+    assert!(st.s.ui.menu.is_none());
+}
+
+#[test]
+fn console_text_and_input_menus_copy_paste_and_clear() {
+    use horizon_studio::game::hstudio::LogKind;
+    let mut game = FakeGame::new("ui-console-menus");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.s.now = 10.0;
+    handle(&mut st, &mut game, key(Key::Char('1'), CTRL));
+    st.s.log(LogKind::Info, "alpha bravo charlie");
+    st.s.log(LogKind::Info, "delta echo foxtrot");
+    redraw(&mut st, &mut game);
+    // A selection, and Copy in its menu.
+    let a = text_at(&game, "alpha bravo charlie");
+    let b = text_at(&game, "delta echo foxtrot");
+    handle(&mut st, &mut game, Input::Mouse(a.0 - 2.0, a.1 + 4.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    redraw(&mut st, &mut game);
+    handle(&mut st, &mut game, Input::Mouse(b.0 + 2000.0, b.1 + 4.0));
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    redraw(&mut st, &mut game);
+    right_click(&mut st, &mut game, (a.0 + 12.0, a.1 + 4.0));
+    assert_eq!(usable(&st), ["Copy", "Copy all", "Clear"]);
+    choose(&mut st, &mut game, "Copy");
+    assert_eq!(game.clipboard, "alpha bravo charlie\ndelta echo foxtrot");
+    // Copy all: every line.
+    redraw(&mut st, &mut game);
+    right_click(&mut st, &mut game, (a.0 + 12.0, a.1 + 4.0));
+    choose(&mut st, &mut game, "Copy all");
+    assert!(
+        game.clipboard
+            .contains("Type Lua and press Enter; help() lists the API.")
+    );
+    assert!(game.clipboard.ends_with("alpha bravo charlie\ndelta echo foxtrot"));
+    // The input: Paste, then Run.
+    game.clipboard = "6 * 7".into();
+    redraw(&mut st, &mut game);
+    let field = text_at(&game, "Type Lua and press Enter. Tab completes, help() lists the API.");
+    right_click(&mut st, &mut game, (field.0 + 2.0, field.1 + 4.0));
+    assert_eq!(usable(&st), ["Paste", "Clear the console"]);
+    choose(&mut st, &mut game, "Paste");
+    assert_eq!(st.s.ui.input.text, "6 * 7");
+    redraw(&mut st, &mut game);
+    right_click(&mut st, &mut game, (field.0 + 2.0, field.1 + 4.0));
+    assert!(usable(&st).contains(&"Copy the line".to_owned()));
+    choose(&mut st, &mut game, "Run");
+    assert_eq!(log(&st).last().map(String::as_str), Some("42"));
+    assert_eq!(st.s.ui.input.text, "");
+    // Cut the line and Clear the line.
+    st.s.ui.input.set("print(1)");
+    redraw(&mut st, &mut game);
+    right_click(&mut st, &mut game, (field.0 + 2.0, field.1 + 4.0));
+    choose(&mut st, &mut game, "Cut the line");
+    assert_eq!((game.clipboard.as_str(), st.s.ui.input.text.as_str()), ("print(1)", ""));
+    // Clear empties the console.
+    redraw(&mut st, &mut game);
+    let line = text_at(&game, "42");
+    right_click(&mut st, &mut game, (line.0 + 2.0, line.1 + 4.0));
+    choose(&mut st, &mut game, "Clear");
+    assert!(st.s.log.is_empty());
+}
+
+#[test]
+fn the_agents_conversation_and_input_have_menus() {
+    use horizon_studio::game::hstudio_ui::{Panel, agent_new_conversation};
+    let (mut game, mut st) = editing("ui-agent-menus", "");
+    st.s.ui.agent.agents = Some(Vec::new());
+    st.s.ui.panel = Panel::Agent;
+    agent_new_conversation(&mut st);
+    redraw(&mut st, &mut game);
+    let said = text_at(&game, "New conversation.");
+    right_click(&mut st, &mut game, (said.0 + 2.0, said.1 + 4.0));
+    assert_eq!(usable(&st), ["Copy the conversation", "New conversation"]);
+    choose(&mut st, &mut game, "Copy the conversation");
+    assert_eq!(game.clipboard, "New conversation.");
+    // Its input: Paste, then Clear the line; it takes the keys.
+    game.clipboard = "make it glow".into();
+    redraw(&mut st, &mut game);
+    let field = text_at(&game, "No agent found.");
+    right_click(&mut st, &mut game, (field.0 + 2.0, field.1 + 4.0));
+    assert!(st.s.ui.panel_focus);
+    assert_eq!(usable(&st), ["Paste"], "nothing to send without an agent's line");
+    choose(&mut st, &mut game, "Paste");
+    assert_eq!(st.s.ui.agent_input.text, "make it glow");
+    redraw(&mut st, &mut game);
+    let field = text_at(&game, "make it glow");
+    right_click(&mut st, &mut game, (field.0 + 2.0, field.1 + 4.0));
+    choose(&mut st, &mut game, "Clear the line");
+    assert_eq!(st.s.ui.agent_input.text, "");
+}
+
+#[test]
+fn left_clicks_pass_through_context_spots() {
+    let (mut game, mut st) = editing("ui-spots-click", "abcdef\nsecond line");
+    let at = text_at(&game, "second");
+    right_click(&mut st, &mut game, (at.0 + 2.0, at.1 + 4.0));
+    assert!(st.s.ui.menu.is_some(), "a right click there has a menu");
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    let first = text_at(&game, "abcdef");
+    click(&mut st, &mut game, (first.0 + 6.0 * 3.0 + 1.0, first.1 + 4.0));
+    assert_eq!(
+        (st.s.editor.row, st.s.editor.col),
+        (0, 3),
+        "a left click still moves the cursor"
+    );
+}
+
+#[test]
+fn no_menu_on_the_scroll_bar_the_suggestions_or_a_banner() {
+    let text: Vec<String> = (1..=300).map(|i| format!("local v{i} = {i}")).collect();
+    let (mut game, mut st) = editing("ui-no-menu", &text.join("\n"));
+    let sb = st.s.ui.scrollbar.expect("a scroll bar");
+    right_click(&mut st, &mut game, (sb.x, sb.top + 2.0));
+    assert!(st.s.ui.menu.is_none(), "the scroll bar");
+    // The suggestions under the cursor.
+    st.s.editor.click(0, 0, false);
+    type_text(&mut st, &mut game, "player.");
+    redraw(&mut st, &mut game);
+    let first = st.s.ui.suggest.as_ref().expect("suggestions").items[0].label.clone();
+    let at = last_text_at(&game, &first);
+    right_click(&mut st, &mut game, at);
+    assert!(st.s.ui.menu.is_none(), "the suggestions");
+    // The banner of a file changed on disk.
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    st.s.editor.conflict = true;
+    redraw(&mut st, &mut game);
+    let said = text_at(&game, "This file changed on disk while you were editing it.");
+    right_click(&mut st, &mut game, (said.0 + 2.0, said.1 + 4.0));
+    assert!(st.s.ui.menu.is_none(), "the banner");
+}

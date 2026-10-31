@@ -230,6 +230,45 @@ pub enum MenuCmd {
     MakeModule(String),
     /// A folder shown in the system's file manager.
     Reveal(PathBuf),
+    /// What a click does.
+    Act(Action),
+    /// The editor's commands, on its selection or its cursor's line.
+    Edit(EditCmd),
+    /// The console's input line or the agent's (`FIELD_CONSOLE`, `FIELD_AGENT`).
+    Field(u8, FieldCmd),
+    /// To the clipboard: the text selected in the console or the agent's
+    /// conversation, all of one of them (`AREA_LOG`, `AREA_AGENT`), or this.
+    CopySelection,
+    CopyAll(u8),
+    Copy(String),
+    /// The console back at its newest line.
+    LogEnd,
+    /// The agent's conversation started afresh.
+    NewConversation,
+}
+
+/// The editor's commands in its menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditCmd {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+    Comment,
+    Indent,
+    Outdent,
+    DuplicateLine,
+}
+
+/// An input line's commands in its menu: Submit runs the console's line or
+/// sends the agent its question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldCmd {
+    Paste,
+    Copy,
+    Cut,
+    Clear,
+    Submit,
 }
 
 /// A row of a menu: its label, a hint at the right (a shortcut, or "›" for
@@ -600,6 +639,18 @@ fn text_pos_at(ui: &Ui, (x, y): (f32, f32), area: Option<u8>) -> Option<(u8, Tex
     Some((area, (row.key, col)))
 }
 
+/// Whether `at` is in the text selected in `area`.
+pub(crate) fn in_text_selection(ui: &Ui, area: u8, at: (f32, f32)) -> bool {
+    let Some(sel) = ui.text_sel.filter(|s| s.area == area && s.anchor != s.head) else {
+        return false;
+    };
+    let Some((_, pos)) = text_pos_at(ui, at, Some(area)) else {
+        return false;
+    };
+    let (a, b) = sel.range();
+    a <= pos && pos <= b
+}
+
 /// The selected text, as it was written: wrapped pieces joined by what
 /// separated them. Only rows drawn this frame are known.
 pub(crate) fn selected_text(ui: &Ui) -> Option<String> {
@@ -640,6 +691,9 @@ pub struct Ui {
     pub naming_kind: NamingKind,
     /// The menu open over everything, if one is.
     pub menu: Option<Menu>,
+    /// A line about what a menu's item did ("Copied 42 characters", why a
+    /// rename failed) and when it was said, shown in the studio a moment.
+    pub notice: Option<(String, f64)>,
     /// Where the agent's model chip was drawn (its menu opens under it).
     pub(crate) model_chip: Option<[f32; 4]>,
     /// Where the script list's + was drawn (its menu opens under it).
@@ -1546,12 +1600,18 @@ impl Editor {
             None => (self.row, self.row),
         }
     }
+    /// Tab and Shift+Tab: the lines selected in or out a level; Tab with
+    /// nothing selected types an indent at the cursor.
     pub fn indent(&mut self, out: bool) {
-        let (r1, r2) = self.rows();
         if !out && self.selection().is_none() {
             self.insert(INDENT);
             return;
         }
+        self.indent_lines(out);
+    }
+    /// The lines selected, or the cursor's line, in or out a level.
+    pub fn indent_lines(&mut self, out: bool) {
+        let (r1, r2) = self.rows();
         self.begin(EditKind::Other);
         for r in r1..=r2 {
             let line = &mut self.lines[r];
@@ -1653,6 +1713,62 @@ impl Editor {
         self.set_char_col(char_col);
         self.goal = None;
         self.last_kind = None;
+    }
+    /// Whether a place (a row and a byte of it) is in the selection, its
+    /// ends included.
+    pub fn in_selection(&self, row: usize, col: usize) -> bool {
+        self.selection()
+            .is_some_and(|(a, b)| a <= (row, col) && (row, col) <= b)
+    }
+    /// Selects the cursor's line, from its first non-space to its end.
+    pub fn select_line(&mut self) {
+        let line = &self.lines[self.row];
+        self.anchor = Some((self.row, line.len() - line.trim_start().len()));
+        self.col = line.len();
+        self.goal = None;
+        self.last_kind = None;
+    }
+    /// Selects bytes `start..end` of `row` (a name gone to), the cursor at its end.
+    pub fn select_span(&mut self, row: usize, start: usize, end: usize) {
+        let row = row.min(self.lines.len() - 1);
+        let line = &self.lines[row];
+        let fit = |i: usize| {
+            let mut i = i.min(line.len());
+            while !line.is_char_boundary(i) {
+                i -= 1;
+            }
+            i
+        };
+        let (start, end) = (fit(start), fit(end));
+        self.row = row;
+        self.anchor = (start < end).then_some((row, start));
+        self.col = end;
+        self.goal = None;
+        self.last_kind = None;
+    }
+    /// The whole text replaced as one edit, which Ctrl+Z takes back.
+    pub fn replace_text(&mut self, text: &str) {
+        self.begin(EditKind::Other);
+        self.set_text(text);
+        self.anchor = None;
+    }
+    /// Reads the file again from disk, dropping the unsaved edits as one
+    /// edit (Ctrl+Z brings them back). False when it can't be read.
+    pub fn revert(&mut self) -> bool {
+        let Some(path) = self.path.clone() else {
+            return false;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return false;
+        };
+        let scroll = self.scroll;
+        self.replace_text(&text);
+        self.dirty = false;
+        self.conflict = false;
+        self.removed = false;
+        self.disk = disk_stamp(&path);
+        self.scroll = scroll.min(self.lines.len().saturating_sub(1));
+        true
     }
 }
 
@@ -2242,11 +2358,17 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 return UiResult::Used;
             }
             let at = st.s.ui.mouse;
-            if let Some(menu) = &st.s.ui.menu
-                && !menu.rect.is_some_and(|r| inside(r, at))
-            {
-                st.s.ui.menu = None;
-                return UiResult::Used;
+            if let Some(menu) = &st.s.ui.menu {
+                // A press outside the menu closes it and goes no further; one
+                // on it chooses the item there, and leaves what is under it be.
+                if !menu.rect.is_some_and(|r| inside(r, at)) {
+                    st.s.ui.menu = None;
+                    return UiResult::Used;
+                }
+                return match hit_at(&st.s.ui, at) {
+                    Some(Action::MenuPick(i)) => menu_pick(st, game, usize::from(i)),
+                    _ => UiResult::Used,
+                };
             }
             let hit = hit_at(&st.s.ui, at);
             // A press on the console's or the agent's text starts selecting it;
@@ -2531,6 +2653,23 @@ fn as_drawn(st: &Studio, action: Action) -> Option<Action> {
     })
 }
 
+/// The place in the editor's text drawn under `(x, y)`: its row and char
+/// column. Rows glide as the view scrolls, so the view as drawn (its first
+/// row, not where it is going) says which, given as `drawn`. Left of the
+/// text (over the line numbers) it is the line's start.
+pub(crate) fn editor_pos(st: &Studio, game: &mut dyn GameApi, x: f32, y: f32, drawn: f32) -> Option<(usize, usize)> {
+    let v = st.s.ui.view?;
+    let ed = &st.s.editor;
+    let at = drawn.max(0.0) + ((y - v.y) / code_line()).clamp(0.0, v.rows as f32);
+    let row = (at.floor() as usize).min(ed.lines.len() - 1);
+    let col = if x < v.x {
+        0
+    } else {
+        ed.hscroll + column_at(game, &ed.lines[row], ed.hscroll, x - v.x, st.s.ui.look.scale)
+    };
+    Some((row, col))
+}
+
 /// A click or drag in the editor's text: moves the cursor there (a drag
 /// keeps the selection's other end).
 fn editor_point(st: &mut Studio, game: &mut dyn GameApi, x: f32, y: f32, drag: bool, drawn: f32) -> bool {
@@ -2540,13 +2679,10 @@ fn editor_point(st: &mut Studio, game: &mut dyn GameApi, x: f32, y: f32, drag: b
     if !drag && (x < v.x - 30.0 || y < v.y || y > v.y + code_line() * v.rows as f32 || x > v.x + v.w + 4.0) {
         return false;
     }
-    // The line drawn under the pointer: rows glide as the view scrolls, so
-    // the view as drawn (not where it is going) says which, given as `drawn`.
-    let scale = st.s.ui.look.scale;
+    let Some((row, col)) = editor_pos(st, game, x, y, drawn) else {
+        return false;
+    };
     let ed = &mut st.s.editor;
-    let at = drawn.max(0.0) + ((y - v.y) / code_line()).clamp(0.0, v.rows as f32);
-    let row = (at.floor() as usize).min(ed.lines.len() - 1);
-    let col = ed.hscroll + column_at(game, &ed.lines[row], ed.hscroll, x - v.x, scale);
     let anchor = if drag { ed.anchor } else { None };
     ed.click(row, col, drag);
     ed.anchor = Some(anchor.unwrap_or((ed.row, ed.col)));
@@ -2668,6 +2804,21 @@ fn script_row(st: &mut Studio, game: &mut dyn GameApi, k: usize) {
             }
         }
     }
+}
+
+/// Says something in the studio a moment (`Ui::notice`): what a menu's
+/// item did, or why it couldn't.
+pub(crate) fn notice(st: &mut Studio, text: impl Into<String>) {
+    st.s.ui.notice = Some((text.into(), st.s.now));
+}
+
+/// Puts `text` on the clipboard and says how much it was (nothing for no text).
+pub(crate) fn copy_text(st: &mut Studio, game: &mut dyn GameApi, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    game.set_clipboard(text);
+    notice(st, format!("Copied {} characters", text.chars().count()));
 }
 
 /// Opens the naming prompt for `kind`, its field holding `text`.
@@ -2898,7 +3049,7 @@ fn open_model_menu(st: &mut Studio) {
     st.s.ui.menu = Some(menu);
 }
 
-fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
+pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
     // A row drawn last frame may be gone (the folder changed since).
     if let Action::Select(i)
     | Action::Toggle(i)
@@ -3180,8 +3331,7 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
         && key == Key::Char('c')
         && let Some(text) = selected_text(&st.s.ui)
     {
-        game.set_clipboard(&text);
-        st.s.toast(format!("Copied {} characters", text.chars().count()));
+        copy_text(st, game, &text);
         return UiResult::Used;
     }
     if key == Key::Escape && st.s.ui.suggest.take().is_some() {
@@ -3258,15 +3408,19 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
     UiResult::Used
 }
 
+/// The console's input line run, and emptied for the next.
+pub(crate) fn run_console_line(st: &mut Studio, game: &mut dyn GameApi) {
+    let ui = &mut st.s.ui;
+    let line = std::mem::take(&mut ui.input);
+    ui.hist = None;
+    ui.log_scroll = 0;
+    st.run_console(game, &line.text);
+}
+
 fn console_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
     let ui = &mut st.s.ui;
     match key {
-        Key::Enter => {
-            let line = std::mem::take(&mut ui.input);
-            ui.hist = None;
-            ui.log_scroll = 0;
-            st.run_console(game, &line.text);
-        }
+        Key::Enter => run_console_line(st, game),
         Key::Up | Key::Down => {
             let n = st.s.history.len();
             if n == 0 {
@@ -3603,15 +3757,39 @@ fn problems_key(st: &mut Studio, key: Key) {
     }
 }
 
+/// The agent asked what is typed in its line, which empties (while it
+/// works, what is typed waits there).
+pub(crate) fn agent_send(st: &mut Studio) {
+    if agent_busy(st) {
+        return;
+    }
+    let ask = std::mem::take(&mut st.s.ui.agent_input).text;
+    agent_ask(st, ask.trim());
+}
+
+/// A new conversation: its lines go, and the next question starts afresh
+/// (not while the agent works).
+pub fn agent_new_conversation(st: &mut Studio) {
+    if agent_busy(st) {
+        return;
+    }
+    let now = st.s.now;
+    if st.s.ui.text_sel.is_some_and(|s| s.area == AREA_AGENT) {
+        st.s.ui.text_sel = None;
+    }
+    let pane = &mut st.s.ui.agent;
+    pane.lines.clear();
+    pane.session = None;
+    pane.scroll = 0.0;
+    pane.say(AgentLineKind::Done, "New conversation.", now);
+}
+
 /// The Agent panel's input: Enter asks, the rest edits the line.
 fn agent_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
     let _ = game;
     match key {
         // While it works, what is typed waits in the line.
-        Key::Enter if !agent_busy(st) => {
-            let ask = std::mem::take(&mut st.s.ui.agent_input).text;
-            agent_ask(st, ask.trim());
-        }
+        Key::Enter if !agent_busy(st) => agent_send(st),
         Key::Enter => {}
         Key::Char('v') if mods.ctrl => {
             let clip = game.clipboard();

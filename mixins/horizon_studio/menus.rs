@@ -10,8 +10,10 @@
 use super::hstudio::{GameApi, Studio};
 use super::hstudio_modfiles::{path_in, rel_in};
 use super::hstudio_ui::{
-    Action, Menu, MenuCmd, MenuItem, NamingKind, ScriptRow, Spot, UiResult, agent_model, file_in_module, inside,
-    make_module, menu_pick, open_module, open_naming, open_path, set_agent_model, spot_at,
+    AREA_AGENT, AREA_LOG, Action, EditCmd, FIELD_AGENT, FieldCmd, Menu, MenuCmd, MenuItem, NamingKind, Panel,
+    ScriptRow, Spot, Tab, UiResult, act, agent_busy, agent_model, agent_new_conversation, agent_send, copy_text,
+    editor_pos, file_in_module, in_text_selection, inside, make_module, menu_pick, open_module, open_naming, open_path,
+    run_console_line, selected_text, set_agent_model, spot_at,
 };
 
 /// A right press at the pointer: an open menu closes (a press on it does
@@ -29,25 +31,238 @@ pub fn right_press(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
     }
     st.s.ui.menu = None;
     if let Some((spot, rect)) = spot_at(&st.s.ui, at) {
-        let _ = game;
-        open_spot(st, spot, rect, [at.0, at.1]);
+        open_spot(st, game, spot, rect, [at.0, at.1]);
     }
     UiResult::Used
 }
 
-/// Opens the menu of `spot`, drawn at `rect`, with its top left at `at`.
-/// False when it has none (or nothing in it can be chosen now).
-fn open_spot(st: &mut Studio, spot: Spot, rect: [f32; 4], at: [f32; 2]) -> bool {
-    let items = match spot {
-        Spot::Row(k) => row_items(st, usize::from(k)),
+/// Opens the menu of `spot`, drawn at `rect`, with its top left at `at`
+/// (the pointer), after what a right click there does first: the code's
+/// cursor goes there unless that is in the selection, a Library row is
+/// chosen, the panel's input takes the keys. Text selected in the console
+/// or the agent's conversation stays only for a click in it (Ctrl+C would
+/// copy it, not what was clicked). False when the spot has no menu, or
+/// nothing in it can be chosen now.
+fn open_spot(st: &mut Studio, game: &mut dyn GameApi, spot: Spot, rect: [f32; 4], at: [f32; 2]) -> bool {
+    let keep_text = matches!(spot, Spot::Text(area) if in_text_selection(&st.s.ui, area, (at[0], at[1])));
+    if !keep_text {
+        st.s.ui.text_sel = None;
+    }
+    let (items, target) = match spot {
+        Spot::Code => {
+            let drawn = st.s.ui.smooth[1];
+            if let Some((row, col)) = editor_pos(st, game, at[0], at[1], drawn) {
+                let ed = &mut st.s.editor;
+                let line = &ed.lines[row];
+                let byte = line.char_indices().nth(col).map_or(line.len(), |(i, _)| i);
+                if !ed.in_selection(row, byte) {
+                    ed.click(row, col, false);
+                    // Put under the pointer, the cursor is on screen: the view stays.
+                    ed.followed = Some((ed.row, ed.col, ed.revision));
+                }
+            }
+            st.s.ui.panel_focus = false;
+            (code_items(st), None)
+        }
+        Spot::Text(area) => (text_items(st, area), None),
+        Spot::Field(field) => {
+            let ui = &mut st.s.ui;
+            if ui.tab == Tab::Editor {
+                ui.panel = if field == FIELD_AGENT {
+                    Panel::Agent
+                } else {
+                    Panel::Console
+                };
+                ui.panel_focus = true;
+            }
+            (field_items(st, field), None)
+        }
+        Spot::Row(k) => (row_items(st, usize::from(k)), Some(rect)),
         Spot::Mod(k) => {
             let Some(i) = drawn_mod(st, k) else { return false };
             st.s.ui.library_sel = i;
-            library_items(st, i)
+            (library_items(st, i), Some(rect))
         }
         _ => return false,
     };
-    open(st, at, 0.0, items, Some(rect))
+    open(st, at, 0.0, items, target)
+}
+
+// ----------------------------------------------------------------- the code, the text, the input lines
+
+/// The code's menu: the clipboard and the selection, the line commands,
+/// then running and saving.
+fn code_items(st: &Studio) -> Vec<MenuItem> {
+    let _ = st;
+    let edit = |label: &str, keys: &str, cmd: EditCmd| MenuItem::new(label, MenuCmd::Edit(cmd)).keys(keys);
+    vec![
+        edit("Cut", "Ctrl X", EditCmd::Cut),
+        edit("Copy", "Ctrl C", EditCmd::Copy),
+        // Always there: the clipboard is read only when it is chosen.
+        edit("Paste", "Ctrl V", EditCmd::Paste),
+        edit("Select all", "Ctrl A", EditCmd::SelectAll),
+        MenuItem::separator(),
+        edit("Toggle comment", "Ctrl /", EditCmd::Comment),
+        edit("Indent", "Tab", EditCmd::Indent),
+        edit("Outdent", "Shift Tab", EditCmd::Outdent),
+        edit("Duplicate line", "Ctrl D", EditCmd::DuplicateLine),
+        MenuItem::separator(),
+        MenuItem::new("Run", MenuCmd::Act(Action::Run)).keys("Ctrl ⏎"),
+        MenuItem::new("Save", MenuCmd::Act(Action::Save)).keys("Ctrl S"),
+    ]
+}
+
+/// The menu of the console's lines or the agent's conversation: copying
+/// what is selected there or all of it, then clearing the console (or
+/// stopping the agent, a new conversation).
+fn text_items(st: &Studio, area: u8) -> Vec<MenuItem> {
+    let selected = st.s.ui.text_sel.is_some_and(|s| s.area == area && s.anchor != s.head);
+    let copy = MenuItem::new("Copy", MenuCmd::CopySelection)
+        .keys("Ctrl C")
+        .enabled(selected);
+    if area == AREA_AGENT {
+        let busy = agent_busy(st);
+        let said = !st.s.ui.agent.lines.is_empty();
+        return vec![
+            copy,
+            MenuItem::new("Copy the conversation", MenuCmd::CopyAll(AREA_AGENT)).enabled(said),
+            MenuItem::separator(),
+            MenuItem::new("Stop", MenuCmd::Act(Action::AgentStop)).enabled(busy),
+            MenuItem::new("New conversation", MenuCmd::NewConversation).enabled(!busy && said),
+        ];
+    }
+    vec![
+        copy,
+        MenuItem::new("Copy all", MenuCmd::CopyAll(AREA_LOG)).enabled(!st.s.log.is_empty()),
+        MenuItem::separator(),
+        MenuItem::new("Clear", MenuCmd::Act(Action::ClearLog))
+            .keys("Ctrl L")
+            .enabled(!st.s.log.is_empty()),
+        MenuItem::new("Jump to the newest", MenuCmd::LogEnd).enabled(st.s.ui.log_scroll > 0),
+    ]
+}
+
+/// The menu of the console's input line or the agent's: the clipboard and
+/// the line, then running it (or sending it).
+fn field_items(st: &Studio, field: u8) -> Vec<MenuItem> {
+    let field_cmd = |cmd: FieldCmd| MenuCmd::Field(field, cmd);
+    if field == FIELD_AGENT {
+        let typed = !st.s.ui.agent_input.text.trim().is_empty();
+        let busy = agent_busy(st);
+        return vec![
+            MenuItem::new("Paste", field_cmd(FieldCmd::Paste)).keys("Ctrl V"),
+            MenuItem::new("Clear the line", field_cmd(FieldCmd::Clear)).enabled(typed),
+            MenuItem::separator(),
+            MenuItem::new("Send", field_cmd(FieldCmd::Submit))
+                .keys("⏎")
+                .enabled(typed && !busy),
+            MenuItem::new("Stop", MenuCmd::Act(Action::AgentStop)).enabled(busy),
+        ];
+    }
+    let typed = !st.s.ui.input.text.is_empty();
+    vec![
+        MenuItem::new("Paste", field_cmd(FieldCmd::Paste)).keys("Ctrl V"),
+        MenuItem::new("Copy the line", field_cmd(FieldCmd::Copy))
+            .keys("Ctrl C")
+            .enabled(typed),
+        MenuItem::new("Cut the line", field_cmd(FieldCmd::Cut))
+            .keys("Ctrl X")
+            .enabled(typed),
+        MenuItem::new("Clear the line", field_cmd(FieldCmd::Clear)).enabled(typed),
+        MenuItem::separator(),
+        MenuItem::new("Run", field_cmd(FieldCmd::Submit))
+            .keys("⏎")
+            .enabled(typed),
+        MenuItem::new("Clear the console", MenuCmd::Act(Action::ClearLog))
+            .keys("Ctrl L")
+            .enabled(!st.s.log.is_empty()),
+    ]
+}
+
+/// An editor command from its menu, as its keys do it.
+fn edit(st: &mut Studio, game: &mut dyn GameApi, cmd: EditCmd) {
+    let ed = &mut st.s.editor;
+    match cmd {
+        EditCmd::Cut => {
+            let t = ed.cut();
+            copy_text(st, game, &t);
+        }
+        EditCmd::Copy => {
+            let t = ed.copy();
+            copy_text(st, game, &t);
+        }
+        EditCmd::Paste => {
+            let clip = game.clipboard();
+            if !clip.is_empty() {
+                ed.insert(&clip);
+            }
+        }
+        EditCmd::SelectAll => ed.select_all(),
+        EditCmd::Comment => ed.toggle_comment(),
+        EditCmd::Indent => ed.indent_lines(false),
+        EditCmd::Outdent => ed.indent_lines(true),
+        EditCmd::DuplicateLine => ed.duplicate_line(),
+    }
+    let ui = &mut st.s.ui;
+    ui.suggest = None;
+    ui.panel_focus = false;
+    ui.tab = Tab::Editor;
+}
+
+/// An input line's command from its menu.
+fn field(st: &mut Studio, game: &mut dyn GameApi, which: u8, cmd: FieldCmd) {
+    let agent = which == FIELD_AGENT;
+    let text = if agent {
+        st.s.ui.agent_input.text.clone()
+    } else {
+        st.s.ui.input.text.clone()
+    };
+    match cmd {
+        FieldCmd::Paste => {
+            let clip = game.clipboard();
+            let line = if agent {
+                &mut st.s.ui.agent_input
+            } else {
+                &mut st.s.ui.input
+            };
+            line.insert(&clip);
+        }
+        FieldCmd::Copy => copy_text(st, game, &text),
+        FieldCmd::Cut | FieldCmd::Clear => {
+            if cmd == FieldCmd::Cut {
+                copy_text(st, game, &text);
+            }
+            if agent {
+                st.s.ui.agent_input.set("");
+            } else {
+                st.s.ui.input.set("");
+                st.s.ui.hist = None;
+            }
+        }
+        FieldCmd::Submit if agent => agent_send(st),
+        FieldCmd::Submit => run_console_line(st, game),
+    }
+}
+
+/// All of the console's lines, or the agent's conversation (what the
+/// player asked marked with "> "), as text.
+fn all_text(st: &Studio, area: u8) -> String {
+    if area == AREA_AGENT {
+        use super::hstudio_ui::AgentLineKind;
+        let lines: Vec<String> =
+            st.s.ui
+                .agent
+                .lines
+                .iter()
+                .map(|l| match l.kind {
+                    AgentLineKind::You => format!("> {}", l.text),
+                    _ => l.text.clone(),
+                })
+                .collect();
+        return lines.join("\n");
+    }
+    let lines: Vec<&str> = st.s.log.iter().map(|l| l.text.as_str()).collect();
+    lines.join("\n")
 }
 
 /// The mod a Library row was drawn for (`k`, its place in the list then),
@@ -151,6 +366,21 @@ pub fn run(st: &mut Studio, game: &mut dyn GameApi, cmd: MenuCmd, place: [f32; 4
             }
         }
         MenuCmd::Reveal(path) => game.open_folder(&path),
+        MenuCmd::Act(a) => return act(st, game, a),
+        MenuCmd::Edit(cmd) => edit(st, game, cmd),
+        MenuCmd::Field(which, cmd) => field(st, game, which, cmd),
+        MenuCmd::CopySelection => {
+            if let Some(text) = selected_text(&st.s.ui) {
+                copy_text(st, game, &text);
+            }
+        }
+        MenuCmd::CopyAll(area) => {
+            let text = all_text(st, area);
+            copy_text(st, game, &text);
+        }
+        MenuCmd::Copy(text) => copy_text(st, game, &text),
+        MenuCmd::LogEnd => st.s.ui.log_scroll = 0,
+        MenuCmd::NewConversation => agent_new_conversation(st),
     }
     UiResult::Used
 }
