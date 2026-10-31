@@ -1948,6 +1948,22 @@ fn find_method(c: &'static C, name: &str) -> Option<usize> {
     })
 }
 
+/// The names of the methods instances of `class` have, their class's and
+/// those they inherit (for the editor's suggestions).
+pub fn method_names(class: &str) -> Vec<&'static str> {
+    let Some(c) = class_def(class) else {
+        return Vec::new();
+    };
+    let mut names: Vec<&'static str> = METHODS
+        .iter()
+        .filter(|(_, owner)| is_a(c, owner))
+        .map(|(m, _)| *m)
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
 fn kind_name(k: K) -> String {
     match k {
         K::Bool => "bool".into(),
