@@ -1132,7 +1132,12 @@ impl Studio {
                     shift(&mut r.0);
                 }
                 self.s.log(LogKind::Info, format!("Removed {}", m.id));
-                self.s.ui.library_sel = self.s.ui.library_sel.min(self.s.mods.len().saturating_sub(1));
+                // The Library keeps the mod chosen there, wherever it is listed now.
+                let sel = &mut self.s.ui.library_sel;
+                if *sel > i {
+                    *sel -= 1;
+                }
+                *sel = (*sel).min(self.s.mods.len().saturating_sub(1));
             }
         }
         if self

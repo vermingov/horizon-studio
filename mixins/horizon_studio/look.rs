@@ -465,8 +465,12 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         ui.text_areas.clear();
         ui.view = None;
         ui.scripts_at = None;
+        ui.library_dots = None;
+        ui.drawn_files.clear();
         tick(ui, now)
     };
+    // The hits name mods by their place in this list.
+    st.s.ui.drawn_mods = st.s.mods.iter().map(|m| m.id.clone()).collect();
     // The open file changed on disk (an agent wrote it): read it again.
     if now - st.s.ui.disk_at >= 0.5 {
         st.s.ui.disk_at = now;
@@ -903,7 +907,13 @@ fn footer(st: &mut Studio, p: &mut P, x: f32, cy: f32, w: f32) {
             ("Ctrl Z", "undo"),
             ("Ctrl /", "comment"),
         ],
-        Tab::Library => &[("⏎", "edit"), ("Space", "on or off"), ("R", "reload"), ("N", "new mod")],
+        Tab::Library => &[
+            ("⏎", "edit"),
+            ("Space", "on or off"),
+            ("R", "reload"),
+            ("N", "new mod"),
+            (".", "menu"),
+        ],
         Tab::Docs => &[("↑ ↓", "scroll"), ("PgUp PgDn", "page")],
         Tab::Settings => &[("↑ ↓", "scroll"), ("Esc", "close")],
     };
@@ -1227,32 +1237,9 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         ui.hits.push((chip, Action::PanelTab(Panel::Problems)));
         px += cw + 14.0;
     }
-    // A module that failed in another of its files: where, and a click opens it there.
-    let elsewhere =
-        st.s.editor
-            .path
-            .as_deref()
-            .and_then(|path| st.mod_of_path(path))
-            .filter(|&i| st.s.mods[i].folder.is_some())
-            .and_then(|i| {
-                let (file, line) = st.failure_place(i)?;
-                let m = &st.s.mods[i];
-                let k = m.files().iter().position(|f| *f == file)?;
-                (m.chunk_of(&file) != st.s.editor.title).then_some((i, k, file, line))
-            });
-    if let Some((i, k, file, line)) = elsewhere {
-        let label = format!("Failed in {file}:{line}");
-        let lw = p.measure(&label, 12.0, Font::Medium);
-        let chip = [px - 8.0, y + 4.0, lw + 34.0, 24.0];
-        if chip[0] + chip[2] < bx - 16.0 {
-            let ui = &mut st.s.ui;
-            let hv = hover(ui, id("failed-chip", 0), inside(chip, ui.mouse), dt);
-            p.rect(chip, 12.0, fade(pal().danger, 0.12 + 0.08 * hv));
-            p.rect([px, y + 12.5, 7.0, 7.0], 3.5, pal().danger);
-            p.text(&label, px + 14.0, top(y + 16.0, 12.0), 12.0, Font::Medium, pal().danger);
-            ui.hits.push((chip, Action::EditFile(i, k.min(65535) as u16)));
-            px += chip[2] + 6.0;
-        }
+    let chip = failed_chip(st, p, px - 8.0, y + 4.0, bx - 16.0, dt);
+    if chip > 0.0 {
+        px += chip + 6.0;
     }
     if let Some(problem) = st.s.editor.problem.clone() {
         let msg = p.fit(
@@ -1314,6 +1301,57 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         ui.panel_at = None;
         draw_code(st, p, [x, by, w, bh], dt);
     }
+}
+
+/// When the module of the editor's file failed in another of its files:
+/// that file's path, and what its chip says ("Failed in lib.lua:5").
+fn failed_elsewhere(st: &Studio) -> Option<(std::path::PathBuf, String)> {
+    let i = st.s.editor.path.as_deref().and_then(|path| st.mod_of_path(path))?;
+    let m = &st.s.mods[i];
+    let folder = m.folder.as_deref()?;
+    let (file, line) = st.failure_place(i)?;
+    if !m.files().contains(&file) || m.chunk_of(&file) == st.s.editor.title {
+        return None;
+    }
+    Some((
+        super::hstudio_modfiles::path_in(folder, &file),
+        format!("Failed in {file}:{line}"),
+    ))
+}
+
+/// How wide the Failed in chip is, when there is one to draw.
+pub(super) fn failed_chip_width(st: &Studio, p: &mut P) -> Option<f32> {
+    let (_, label) = failed_elsewhere(st)?;
+    Some(p.measure(&label, 12.0, Font::Medium) + 34.0)
+}
+
+/// Where the module of the editor's file failed, when that is another of
+/// its files: "Failed in lib.lua:5", a chip 24 high at (x, y) that a click
+/// opens there, drawn when it ends before `right`. Returns its width (0
+/// when it isn't drawn). Every layout has it by its editor.
+pub(super) fn failed_chip(st: &mut Studio, p: &mut P, x: f32, y: f32, right: f32, dt: f32) -> f32 {
+    let Some((path, label)) = failed_elsewhere(st) else {
+        return 0.0;
+    };
+    let lw = p.measure(&label, 12.0, Font::Medium);
+    let chip = [x, y, lw + 34.0, 24.0];
+    if chip[0] + chip[2] >= right {
+        return 0.0;
+    }
+    let ui = &mut st.s.ui;
+    let hv = hover(ui, id("failed-chip", 0), inside(chip, ui.mouse), dt);
+    p.rect(chip, 12.0, fade(pal().danger, 0.12 + 0.08 * hv));
+    p.rect([x + 8.0, y + 8.5, 7.0, 7.0], 3.5, pal().danger);
+    p.text(&label, x + 22.0, top(y + 12.0, 12.0), 12.0, Font::Medium, pal().danger);
+    edit_file_hit(ui, chip, path);
+    chip[2]
+}
+
+/// A click in `r` that opens `path`, a file of a mod (`Action::EditFile`).
+pub(super) fn edit_file_hit(ui: &mut super::hstudio_ui::Ui, r: [f32; 4], path: std::path::PathBuf) {
+    let k = ui.drawn_files.len().min(65535) as u16;
+    ui.drawn_files.push(path);
+    ui.hits.push((r, Action::EditFile(k)));
 }
 
 /// A small filled triangle of 1 dp rects in a 7 x 7 box at (x, y),
@@ -2637,7 +2675,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         } else {
             p.measure(&ver, 11.0, Font::Mono)
         };
-        let room = if buttons { list_w - 52.0 - 230.0 } else { list_w - 52.0 };
+        let room = if buttons { list_w - 52.0 - 274.0 } else { list_w - 52.0 };
         let name_w = room.max(40.0) - vw;
         let name = p.fit(&m.name, name_w, 14.0, Font::Medium);
         let failed = match &m.state {
@@ -2674,7 +2712,9 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             let enabled = st.s.mods[i].enabled;
             let toggle = if enabled { "Turn off" } else { "Turn on" };
             let mut bx = x + list_w - 8.0;
+            // Its "..." has the rest: a module's files, New file, Make it a module, Delete.
             for (key, label, action) in [
+                ("n-menu", "...", Action::LibraryMenu(i)),
                 ("n-reload", "Reload", Action::Reload(i)),
                 ("n-toggle", toggle, Action::Toggle(i)),
                 ("n-edit", "Edit", Action::Edit(i)),
@@ -2685,7 +2725,10 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
                 } else {
                     Style::Quiet
                 };
-                pill(&mut st.s.ui, p, key, label, bx, cy - 13.0, 26.0, style, action, dt);
+                let bw = pill(&mut st.s.ui, p, key, label, bx, cy - 13.0, 26.0, style, action, dt);
+                if action == Action::LibraryMenu(i) {
+                    st.s.ui.library_dots = Some([bx, cy - 13.0, bw, 26.0]);
+                }
                 bx -= 4.0;
             }
         }
@@ -2806,7 +2849,8 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let i = st.s.ui.library_sel;
     let name = m.name.clone();
     let (label, c) = status(&m.state, m.enabled);
-    let module = m.folder.is_some();
+    let folder = m.folder.clone();
+    let module = folder.is_some();
     let files = m.files();
     let file = if module {
         format!("module  ·  {}", files_text(files.len()))
@@ -2957,7 +3001,26 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         dy += 40.0;
         bx = dx;
     }
-    pill(&mut st.s.ui, p, key, more, bx, dy, 32.0, Style::Quiet, action, dt);
+    bx += pill(&mut st.s.ui, p, key, more, bx, dy, 32.0, Style::Quiet, action, dt) + 8.0;
+    // The rest (deleting it, a module's files renamed or deleted) is in its menu.
+    let dots_w = p.measure("...", 13.0, Font::Medium) + 28.0;
+    if bx + dots_w > dx + dw {
+        dy += 40.0;
+        bx = dx;
+    }
+    pill(
+        &mut st.s.ui,
+        p,
+        "library-menu",
+        "...",
+        bx,
+        dy,
+        32.0,
+        Style::Quiet,
+        Action::LibraryMenu(i),
+        dt,
+    );
+    st.s.ui.library_dots = Some([bx, dy, dots_w, 32.0]);
     dy += 50.0;
     // A module's files: a click opens one.
     if module && dy + 46.0 <= bottom {
@@ -2974,7 +3037,10 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             p.rect(r, 6.0, fade(pal().ink, 0.06 * hv));
             let shown = p.fit(rel, r[2] - 12.0, 13.0, Font::Mono);
             p.text(&shown, dx, dy, 13.0, Font::Mono, mix(pal().ink_soft, pal().ink, hv));
-            st.s.ui.hits.push((r, Action::EditFile(i, k.min(65535) as u16)));
+            if let Some(folder) = &folder {
+                let path = super::hstudio_modfiles::path_in(folder, rel);
+                edit_file_hit(&mut st.s.ui, r, path);
+            }
             dy += 22.0;
         }
         if files.len() > SHOWN && dy + 22.0 <= bottom {
@@ -3035,7 +3101,7 @@ fn docs() -> Vec<Doc> {
     let mut out = vec![
         Doc::Heading("Script mods".into()),
         Doc::Para("Script mods live in horizon-mods/.horizon-mod-data/horizon_studio/mods/. A script is one file, name.lua. A module is a folder, name/, whose main.lua loads its other files with require(\"lib\") for lib.lua: each file runs once, however its name is written, and the files share the mod's globals. The New prompt (the Library's New mod, or + in the Editor's script list) makes either; a new module has main.lua, shared.lua and lib.lua. The main file runs when the mod loads; what it registers with on(), command() and every() then runs in the game. Save any of its files, in the Editor or any other editor, and the mod reloads at once. A mod that fails stops alone: the Library shows the error, and the Editor marks its line in the file it is in.".into()),
-        Doc::Para("In the Editor's script list a module is a folder that folds open to its files. A row's ... (or a right click) adds, renames and deletes a module's files, deletes a mod and makes a script a module; what is deleted goes to the trash folder beside mods. Ctrl+Enter on a module's file saves it and reloads the module.".into()),
+        Doc::Para("In the Editor's script list a module is a folder that folds open to its files. A row's ... (or a right click) adds, renames and deletes a module's files, deletes a mod and makes a script a module; what is deleted goes to the trash folder beside mods. In the Library each mod's ... (or the . key) has the same, with a module's files to open. Ctrl+Enter on a module's file saves it and reloads the module.".into()),
         Doc::Para("Drop a .lua file, a mod folder or a .zip on the game window to install it. Lines -- name:, -- version:, -- author: and -- description: at the top name it in the Library.".into()),
         Doc::Heading("Libraries".into()),
         Doc::Para("A mod can be a library for others: it calls export(table), or its main file returns a table, and other mods take it with local kit = import(\"uikit\"). Libraries load first; when one reloads, the mods that use it reload too. A library's functions run as the mod that calls them, so what they draw, register or store belongs to that mod. Mods talk to each other with emit(\"name:event\", ...) and on(\"name:event\", fn), and json.encode and json.decode turn tables into text and back.".into()),

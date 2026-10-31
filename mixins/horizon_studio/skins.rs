@@ -8,12 +8,16 @@
 // File saves the open file of a mod and reloads the mod, Save File saves it
 // (scratch code as a new script, named first), the script list is the
 // Editor's (scripts, and modules that fold open to their files), Open File
-// is the Library, Attach and Inject reload every mod, Options is Settings.
-// The other pages show in the editor's place, with the studio's tabs above.
+// is the Library (where the styles with no script list open a module's
+// other files, from its "..."), Attach and Inject reload every mod, Options
+// is Settings. The other pages show in the editor's place, with the
+// studio's tabs above, and a module that failed in another of its files
+// says where by the editor, as the studio's own layout does.
 
 use super::hstudio::{Font, Studio};
 use super::hstudio_look::{
-    P, chevron, draw_code, draw_log, fade, hover, id, inside, mix, on, page, pal, set_pal, state_dot, top,
+    P, chevron, draw_code, draw_log, fade, failed_chip, failed_chip_width, hover, id, inside, mix, on, page, pal,
+    set_pal, state_dot, top,
 };
 use super::hstudio_theme::{Layout, Palette, Theme};
 use super::hstudio_ui::{Action, ScriptRow, Tab, open_row, row_label, script_rows, scripts_first};
@@ -201,6 +205,8 @@ fn synapse(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             Action::NewMod,
             dt,
         );
+        // A module that failed in another of its files says where, beside its tab.
+        failed_chip(st, p, area[0] + tw + 32.0, area[1], area[0] + area[2], dt);
         draw_code(st, p, [area[0], area[1] + 24.0, area[2], area[3] - 24.0], dt);
     } else {
         tabbed_page(st, p, area, btn, dt);
@@ -228,6 +234,25 @@ fn synapse(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     }
     strip(st, p, btn, &left[..shown], x + pad, by, bar_h, dt);
     strip(st, p, btn, &right, x + w - pad - rw, by, bar_h, dt);
+}
+
+/// The editor of the styles with no tab for its file: its code in `area`,
+/// and over its top right, when a module failed in another of its files,
+/// the chip that says where (a click opens it there).
+fn code_with_chip(st: &mut Studio, p: &mut P, area: [f32; 4], dt: f32) {
+    draw_code(st, p, area, dt);
+    let ed = &st.s.editor;
+    if ed.conflict || ed.removed {
+        // The banner over the code says more just now.
+        return;
+    }
+    if let Some(w) = failed_chip_width(st, p) {
+        let (x, y) = (area[0] + area[2] - w - 16.0, area[1] + 8.0);
+        if x > area[0] + 60.0 {
+            p.rect([x, y, w, 24.0], 12.0, pal().plate_soft);
+            failed_chip(st, p, x, y, area[0] + area[2], dt);
+        }
+    }
 }
 
 /// Synapse's script list at the right, its column `[x, y, w, h]`: the
@@ -328,7 +353,7 @@ fn protosmasher(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let out_h = (h * 0.24).max(56.0);
     let area = [x + pad, y + pad, w - 2.0 * pad, h - 5.0 * pad - row_h - out_h - foot_h];
     if st.s.ui.tab == Tab::Editor {
-        draw_code(st, p, area, dt);
+        code_with_chip(st, p, area, dt);
     } else {
         tabbed_page(st, p, area, btn, dt);
     }
@@ -406,7 +431,7 @@ fn protoclassic(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let out_h = (h * 0.22).max(52.0);
     let area = [x + pad, y + pad, w - 2.0 * pad, h - 5.0 * pad - row_h - out_h - foot_h];
     if st.s.ui.tab == Tab::Editor {
-        draw_code(st, p, area, dt);
+        code_with_chip(st, p, area, dt);
     } else {
         tabbed_page(st, p, area, btn, dt);
     }
@@ -483,7 +508,7 @@ fn rc7(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         h - 3.0 * pad - bottom_h,
     ];
     if st.s.ui.tab == Tab::Editor {
-        draw_code(st, p, area, dt);
+        code_with_chip(st, p, area, dt);
     } else {
         sub_page(st, p, area, dt);
     }

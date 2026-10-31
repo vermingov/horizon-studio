@@ -106,12 +106,14 @@ pub(crate) enum Action {
     /// click opens its file or folds its module; and its "..." menu.
     ScriptRow(u16),
     ScriptMenu(u16),
-    /// The New file prompt for module `i`; script `i` made a module.
+    /// The New file prompt for module `i`; script `i` made a module; the
+    /// Library's menu of mod `i` (its "...").
     NewFileIn(usize),
     MakeModule(usize),
-    /// File `k` of mod `i` (its place in `ScriptMod::files`) opened, the
-    /// cursor at the line it failed at.
-    EditFile(usize, u16),
+    LibraryMenu(usize),
+    /// A file of a mod opened (by its place in `Ui::drawn_files`), the
+    /// cursor at the line its mod failed at.
+    EditFile(u16),
     /// The executor styles' Execute File: the open file of a mod saved and
     /// the mod reloaded, else the code run.
     ExecuteFile,
@@ -238,6 +240,17 @@ impl MenuItem {
     pub fn enabled(mut self, on: bool) -> MenuItem {
         self.enabled = on;
         self
+    }
+    /// A line that says something and can't be chosen.
+    pub fn note(label: impl Into<String>) -> MenuItem {
+        MenuItem {
+            label: label.into(),
+            hint: String::new(),
+            enabled: false,
+            checked: false,
+            separator: false,
+            cmd: None,
+        }
     }
 }
 
@@ -555,6 +568,14 @@ pub struct Ui {
     pub(crate) model_chip: Option<[f32; 4]>,
     /// Where the script list's + was drawn (its menu opens under it).
     pub(crate) new_button: Option<[f32; 4]>,
+    /// Where the Library's "..." for the mod chosen there was drawn.
+    pub(crate) library_dots: Option<[f32; 4]>,
+    /// The mods' ids as the last frame listed them: a click on a mod, by its
+    /// place in that list, goes to the same mod wherever a scan has put it
+    /// since. And the files the frame drew a click for (`Action::EditFile`
+    /// is a place in them).
+    pub(crate) drawn_mods: Vec<String>,
+    pub(crate) drawn_files: Vec<PathBuf>,
     /// The modules unfolded in the script list, by id (for the session).
     pub expanded: std::collections::HashSet<String>,
     /// The script list's rows as drawn last (`Action::ScriptRow` is a place
@@ -2095,7 +2116,7 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 if !inside(st.s.ui.menu.as_ref().and_then(|m| m.rect).unwrap_or_default(), at) {
                     st.s.ui.menu = None;
                     let hit = st.s.ui.hits.iter().rev().find(|(r, _)| inside(*r, at)).map(|(_, a)| *a);
-                    if let Some(hit) = hit {
+                    if let Some(hit) = hit.and_then(|a| as_drawn(st, a)) {
                         context_menu(st, hit, at);
                     }
                 }
@@ -2160,7 +2181,10 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 st.s.ui.suggest = None;
             }
             if let Some(action) = hit {
-                return act(st, game, action);
+                return match as_drawn(st, action) {
+                    Some(action) => act(st, game, action),
+                    None => UiResult::Used,
+                };
             }
             let drawn = st.s.ui.smooth[1];
             if st.s.ui.tab == Tab::Editor && editor_point(st, game, at.0, at.1, false, drawn) {
@@ -2307,6 +2331,26 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                         }
                     }
                     "n" | "N" => return act(st, game, Action::NewMod),
+                    // A new file of the module chosen, or the script chosen made a module.
+                    "f" | "F" => {
+                        let i = st.s.ui.library_sel;
+                        if st.s.mods.get(i).is_some_and(|m| m.folder.is_some()) {
+                            return act(st, game, Action::NewFileIn(i));
+                        }
+                    }
+                    "m" | "M" => {
+                        let i = st.s.ui.library_sel;
+                        if st.s.mods.get(i).is_some_and(|m| m.folder.is_none()) {
+                            return act(st, game, Action::MakeModule(i));
+                        }
+                    }
+                    // Its menu, as its "..." opens it: Up/Down and Enter choose.
+                    "." => {
+                        let i = st.s.ui.library_sel;
+                        let (x, y) = st.s.ui.mouse;
+                        let at = st.s.ui.library_dots.unwrap_or([x, y, 0.0, 0.0]);
+                        open_library_menu(st, i, at);
+                    }
                     _ => {}
                 },
                 Tab::Docs => {}
@@ -2321,6 +2365,26 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
             key_down(st, game, key, mods)
         }
     }
+}
+
+/// A click's action for what the last frame drew: a mod named by its place
+/// in the list then is found by its id now, as a scan since may have taken
+/// away a mod listed before it. None when that mod is gone.
+fn as_drawn(st: &Studio, action: Action) -> Option<Action> {
+    let now = |i: usize| {
+        let id = st.s.ui.drawn_mods.get(i)?;
+        st.s.mods.iter().position(|m| &m.id == id)
+    };
+    Some(match action {
+        Action::Select(i) => Action::Select(now(i)?),
+        Action::Toggle(i) => Action::Toggle(now(i)?),
+        Action::Edit(i) => Action::Edit(now(i)?),
+        Action::Reload(i) => Action::Reload(now(i)?),
+        Action::NewFileIn(i) => Action::NewFileIn(now(i)?),
+        Action::MakeModule(i) => Action::MakeModule(now(i)?),
+        Action::LibraryMenu(i) => Action::LibraryMenu(now(i)?),
+        other => other,
+    })
 }
 
 /// A click or drag in the editor's text: moves the cursor there (a drag
@@ -2521,13 +2585,74 @@ pub(crate) fn open_row_menu(st: &mut Studio, k: usize, at: (f32, f32)) {
     });
 }
 
+/// The Library's menu of mod `i`, under `at` (its "...", or the pointer):
+/// a module's files (one chosen opens), a new file, renaming and deleting
+/// the one of its files the editor has open (not main.lua), its folder,
+/// and deleting it; a script's Make it a module and Delete. In the executor
+/// styles, which have no script list, a module's files are reached so.
+pub(crate) fn open_library_menu(st: &mut Studio, i: usize, at: [f32; 4]) {
+    const SHOWN: usize = 12;
+    let Some(m) = st.s.mods.get(i) else { return };
+    let open = st.s.editor.path.clone();
+    let items = match &m.folder {
+        Some(folder) => {
+            let files = m.files();
+            let mut items: Vec<MenuItem> = files
+                .iter()
+                .take(SHOWN)
+                .map(|rel| {
+                    let path = super::hstudio_modfiles::path_in(folder, rel);
+                    let on = open.as_ref() == Some(&path);
+                    MenuItem::new(rel.clone(), MenuCmd::Open(path)).checked(on)
+                })
+                .collect();
+            if files.len() > SHOWN {
+                let more = files.len() - SHOWN;
+                items.push(MenuItem::note(format!(
+                    "and {more} more: the console's edit(\"{}\", file) opens any",
+                    m.id
+                )));
+            }
+            items.push(MenuItem::separator());
+            items.push(MenuItem::new("New file...", MenuCmd::NewFile(folder.clone())));
+            if let Some(path) = open.filter(|p| p.starts_with(folder))
+                && let Some(rel) = super::hstudio_modfiles::rel_in(folder, &path).filter(|r| r != "main.lua")
+            {
+                items.push(MenuItem::new(format!("Rename {rel}..."), MenuCmd::Rename(path.clone())));
+                items.push(MenuItem::new(format!("Delete {rel}..."), MenuCmd::Delete(path)));
+            }
+            items.push(MenuItem::new("Show in folder", MenuCmd::Reveal(folder.clone())));
+            items.push(MenuItem::new("Delete module...", MenuCmd::Delete(folder.clone())));
+            items
+        }
+        None => vec![
+            MenuItem::new("Make it a module", MenuCmd::MakeModule(m.id.clone())),
+            MenuItem::new("Delete...", MenuCmd::Delete(m.main.clone())),
+        ],
+    };
+    st.s.ui.menu = Some(Menu {
+        at: [at[0], at[1] + at[3] + 4.0],
+        items,
+        sel: None,
+        opened_at: st.s.now,
+        rect: None,
+        anchor_h: at[3],
+    });
+}
+
 /// A right press on what was drawn at `at` (`action` is its hit): opens
 /// the menu of what is there, if it has one, and says whether it did. A
-/// script list row's is its "..." menu.
+/// script list row's is its "..." menu, and a Library row's the Library's
+/// menu of that mod.
 pub(crate) fn context_menu(st: &mut Studio, action: Action, at: (f32, f32)) -> bool {
     match action {
         Action::ScriptRow(k) | Action::ScriptMenu(k) => {
             open_row_menu(st, usize::from(k), at);
+            st.s.ui.menu.is_some()
+        }
+        Action::Select(i) | Action::LibraryMenu(i) => {
+            st.s.ui.library_sel = i;
+            open_library_menu(st, i, [at.0, at.1, 0.0, 0.0]);
             st.s.ui.menu.is_some()
         }
         _ => false,
@@ -2788,7 +2913,7 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
     | Action::Reload(i)
     | Action::NewFileIn(i)
     | Action::MakeModule(i)
-    | Action::EditFile(i, _) = action
+    | Action::LibraryMenu(i) = action
         && i >= st.s.mods.len()
     {
         return UiResult::Used;
@@ -2861,16 +2986,16 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
             }
         }
         Action::MakeModule(i) => make_module(st, game, i),
-        Action::EditFile(i, k) => {
-            let m = &st.s.mods[i];
-            let path = match &m.folder {
-                Some(folder) => m
-                    .files()
-                    .get(usize::from(k))
-                    .map(|rel| super::hstudio_modfiles::path_in(folder, rel)),
-                None => Some(m.main.clone()),
-            };
-            if let Some(path) = path {
+        Action::LibraryMenu(i) => {
+            st.s.ui.library_sel = i;
+            let (x, y) = st.s.ui.mouse;
+            let at = st.s.ui.library_dots.unwrap_or([x, y, 0.0, 0.0]);
+            open_library_menu(st, i, at);
+        }
+        Action::EditFile(k) => {
+            // The file drawn, while it is still a file of a mod.
+            let path = st.s.ui.drawn_files.get(usize::from(k)).cloned();
+            if let Some(path) = path.filter(|p| p.is_file() && st.mod_of_path(p).is_some()) {
                 open_path(st, game, &path);
                 // At the line it failed at, if it did.
                 let ed = &mut st.s.editor;

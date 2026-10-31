@@ -108,7 +108,7 @@ In a world, press **F8** (or type `/studio`). Escape or F8 closes it. The world 
 |---|---|---|
 | **Console** | Runs Lua at once. An expression's value is printed, tables expanded. What you register here (`on`, `command`, `every`) runs until `clear()`. Suggestions show as you type. | Enter run · Tab complete · Up/Down history (or choose a suggestion) · Esc close the suggestions · Page Up/Down scroll · Ctrl+L clear |
 | **Editor** | Edits a mod's file (or `scratch.lua`), with the script list beside it and the console, the problems and the agent in a panel under it. Saving reloads the mod. | Ctrl+S save · Ctrl+Enter run in the console (a module's file: save and reload the module) · Ctrl+Space suggest · Tab take a suggestion · Ctrl+\` or Ctrl+J show or hide the panel · Esc back to the code · Ctrl+Z/Y undo/redo · Ctrl+C/X/V · Ctrl+A · Ctrl+D duplicate line · Ctrl+/ comment · Tab/Shift+Tab indent · mouse click and drag |
-| **Library** | Your script mods and the examples, a module with its files; Open folder shows the mods folder. | Up/Down choose · Enter edit · Space on/off · R reload · N new script or module |
+| **Library** | Your script mods and the examples, a module with its files; each mod's **...** (or a right click on its row) has its menu: a module's files to open, New file, Rename and Delete for the file open, Show in folder and Delete module, or a script's Make it a module and Delete. Open folder shows the mods folder. | Up/Down choose · Enter edit · Space on/off · R reload · N new script or module · F new file in a module · M make a script a module · . its menu |
 | **Docs** | The API. | Up/Down, Page Up/Down, wheel |
 | **Settings** | How the studio looks: see [Themes](#themes-and-the-window). | Up/Down, Page Up/Down, wheel |
 
@@ -197,7 +197,10 @@ window. Only their shape and colours are copied; the window says Horizon Studio,
 Their buttons do the studio's work: Execute runs the editor's code, Clear empties it, Execute File saves the open
 file of a mod and reloads the mod, Save File saves it (scratch code as a new script, named first), Open File shows
 the Library, Attach and Inject reload every mod, New Tab starts a new script or module, and Options shows Settings.
-The console, the Library and the docs show in the editor's place, with their tabs above.
+The console, the Library and the docs show in the editor's place, with their tabs above. In the styles with no
+script list, a module's other files open from the Library, from the **...** of the mod chosen there. When a module
+fails in another of its files, the chip that says where (*Failed in lib.lua:5*) is beside Synapse's tab and over the
+code in the others.
 
 | | |
 |---|---|
