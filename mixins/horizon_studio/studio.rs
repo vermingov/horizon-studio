@@ -2179,6 +2179,7 @@ impl Studio {
         if !ours && !pending && self.s.rbx.pointer.free {
             // Its screen went (closed by the studio): the pointer is the game's.
             self.s.rbx.pointer.free = false;
+            super::hstudio_rbx_draw::let_go(&mut self.s.rbx);
         }
         let wants = super::hstudio_rbx_draw::wants_pointer(&self.s.rbx);
         if !wants {
@@ -2187,6 +2188,7 @@ impl Studio {
                 self.s.screen = None;
                 self.s.screen_request = None;
                 self.s.rbx.pointer.free = false;
+                super::hstudio_rbx_draw::let_go(&mut self.s.rbx);
             }
         } else if !ours
             && !pending

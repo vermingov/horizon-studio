@@ -1052,6 +1052,74 @@ fn scrolling_frames_scroll_their_way() {
 }
 
 #[test]
+fn a_held_scroll_bar_lets_go_with_the_screen() {
+    // A ScrollingFrame's bar held when the GUI's screen goes is let go of
+    // there: a move after it (the next screen's, or mousemoveabs) scrolls
+    // nothing. So with Escape, and when nothing wants the pointer any more.
+    let mut game = FakeGame::new("rbx-held");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local sf = Instance.new("ScrollingFrame", gui)
+        sf.Size = UDim2.fromOffset(200, 100)
+        sf.CanvasSize = UDim2.fromOffset(200, 300)
+        sf.ScrollBarThickness = 10
+        sf.ScrollingDirection = Enum.ScrollingDirection.Y
+        local modal = Instance.new("TextButton", gui)
+        modal.Position = UDim2.fromOffset(300, 0)
+        modal.Size = UDim2.fromOffset(50, 20)
+        modal.Modal = true
+        command("pos", function() return tostring(sf.CanvasPosition) end)
+        command("hide", function() modal.Visible = false end)
+        command("show", function() modal.Visible = true end)
+    "#;
+    load(&mut game, &mut st, "held", src, 0.6);
+    // The Modal button asks for the pointer, and the GUI's screen opens.
+    let open = |st: &mut Studio, game: &mut FakeGame| {
+        hud(st, game);
+        st.frame(game, 0.016);
+        assert!(st.accept_screen(), "the Modal button asked for the pointer");
+    };
+    let grab = |st: &mut Studio, game: &mut FakeGame| {
+        handle_screen(st, game, Input::Mouse(195.0, 10.0));
+        handle_screen(st, game, Input::Button { left: true, down: true });
+        handle_screen(st, game, Input::Mouse(195.0, 40.0));
+        say(st, game, "pos")
+    };
+    open(&mut st, &mut game);
+    let dragged = grab(&mut st, &mut game);
+    assert_ne!(dragged, "0, 0");
+    let r = handle_screen(
+        &mut st,
+        &mut game,
+        Input::Key {
+            key: Key::Escape,
+            down: true,
+            repeat: false,
+            mods: NONE,
+        },
+    );
+    assert_eq!(r, UiResult::Close);
+    st.close_screen(&mut game);
+    pointer_moved(&mut st.s.rbx, 195.0, 80.0);
+    assert_eq!(say(&mut st, &mut game, "pos"), dragged);
+    // Once nothing asks, the GUI may ask again.
+    say(&mut st, &mut game, "hide");
+    hud(&mut st, &mut game);
+    st.frame(&mut game, 0.016);
+    say(&mut st, &mut game, "show");
+    open(&mut st, &mut game);
+    let held = grab(&mut st, &mut game);
+    // The button goes while the bar is held: the screen goes with it.
+    say(&mut st, &mut game, "hide");
+    draw_screen(&mut st, &mut game);
+    st.frame(&mut game, 0.016);
+    assert!(st.s.screen.is_none(), "nothing wants the pointer");
+    pointer_moved(&mut st.s.rbx, 195.0, 90.0);
+    assert_eq!(say(&mut st, &mut game, "pos"), held);
+}
+
+#[test]
 fn services_scripts_ask_for_exist() {
     let mut game = FakeGame::new("rbx-services");
     let mut st = studio(&mut game);
@@ -2031,6 +2099,50 @@ fn page_layout_shows_one_page_and_jumps() {
 }
 
 #[test]
+fn page_turns_end_with_their_layouts() {
+    // A turn moves the GUI each frame until it is there; one whose layout
+    // was destroyed, or whose mod stopped, ends at once.
+    let mut game = FakeGame::new("rbx-turns");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local function book(y)
+            local b = Instance.new("Frame", gui)
+            b.Position = UDim2.fromOffset(0, y)
+            b.Size = UDim2.fromOffset(200, 100)
+            local pages = Instance.new("UIPageLayout", b)
+            pages.TweenTime = 1000
+            for i = 1, 2 do
+                Instance.new("Frame", b).Size = UDim2.fromScale(1, 1)
+            end
+            return b, pages
+        end
+        local first, turning = book(0)
+        local _, slow = book(100)
+        command("turn", function()
+            turning:Next()
+            slow:Next()
+        end)
+        command("gone", function() first:Destroy() end)
+    "#;
+    load(&mut game, &mut st, "turns", src, 0.6);
+    hud(&mut st, &mut game);
+    say(&mut st, &mut game, "turn");
+    assert_eq!(st.s.rbx.page_turns.len(), 2);
+    let epoch = st.s.rbx.gui_epoch;
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.s.rbx.gui_epoch > epoch, "the pages move");
+    say(&mut st, &mut game, "gone");
+    assert_eq!(st.s.rbx.page_turns.len(), 1);
+    let i = mod_index(&st, "turns");
+    st.set_enabled(&mut game, i, false);
+    assert!(st.s.rbx.page_turns.is_empty());
+    let epoch = st.s.rbx.gui_epoch;
+    run_for(&mut st, &mut game, 0.1);
+    assert_eq!(st.s.rbx.gui_epoch, epoch);
+}
+
+#[test]
 fn table_layouts_from_a_script() {
     let mut game = FakeGame::new("rbx-table");
     let mut st = studio(&mut game);
@@ -2227,6 +2339,7 @@ fn starter_gui_screens_are_copied_into_the_player_gui() {
     st.set_enabled(&mut game, i, false);
     run_for(&mut st, &mut game, 0.1);
     assert!(st.s.rbx.children(st.s.rbx.player_gui).is_empty());
+    assert!(st.s.rbx.starter_copied.is_empty(), "nothing is kept of it");
 }
 
 #[test]

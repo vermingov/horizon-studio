@@ -1923,12 +1923,19 @@ impl Rbx {
         }
         self.sockets.retain(|s| s.owner != owner);
         self.drawings.retain(|d| d.owner != owner);
+        // Its UIPageLayouts stop turning, and its GUIs in StarterGui are
+        // no longer counted as copied.
+        let insts = &self.insts;
+        self.page_turns.retain(|t| insts.contains_key(&t.layout));
+        self.starter_copied.retain(|id| insts.contains_key(id));
         if self.pointer.focus.is_some_and(|f| !self.insts.contains_key(&f)) {
             self.pointer.focus = None;
         }
         self.pointer.hover.retain(|h| self.insts.contains_key(h));
         self.pointer.pressed = None;
         self.pointer.drag = None;
+        self.pointer.bar = None;
+        self.pointer.selecting = None;
         self.layout = None;
     }
 

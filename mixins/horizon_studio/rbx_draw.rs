@@ -1100,8 +1100,12 @@ pub fn turn_page(rbx: &mut Rbx, layout: Id, page: Id, forward: Option<bool>) {
     rbx.gui_epoch += 1;
 }
 
-/// The page turns' frame: each moves on, and Stopped fires as one ends.
+/// The page turns' frame: each moves on, and Stopped fires as one ends. A
+/// layout destroyed since stops turning.
 fn step_pages(rbx: &mut Rbx, dt: f64) {
+    let insts = &rbx.insts;
+    rbx.page_turns
+        .retain(|t| insts.get(&t.layout).is_some_and(|i| !i.destroyed));
     if rbx.page_turns.is_empty() {
         return;
     }
@@ -2352,6 +2356,21 @@ fn leave_all(rbx: &mut Rbx) {
     }
     rbx.pointer.pressed = None;
     rbx.pointer.drag = None;
+    rbx.pointer.bar = None;
+    rbx.pointer.selecting = None;
+    gui_states_changed(rbx, before);
+}
+
+/// The GUI's screen went without its button's release reaching the GUI
+/// (nothing wanted the pointer any more, or the studio closed it): what
+/// the held button was doing ends, a press, a Draggable's drag, a scroll
+/// bar held or a selection.
+pub fn let_go(rbx: &mut Rbx) {
+    let before = gui_states(rbx);
+    rbx.pointer.pressed = None;
+    rbx.pointer.drag = None;
+    rbx.pointer.bar = None;
+    rbx.pointer.selecting = None;
     gui_states_changed(rbx, before);
 }
 
