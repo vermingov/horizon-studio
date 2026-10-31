@@ -241,6 +241,12 @@ fn kept_classes_take_any_property() {
         pages.Unknown = 3
         grid.Unknown = 4
         print(flex.Unknown, board.Unknown, pages.Unknown, grid.Unknown)
+        -- Kept and inert: nothing drags by it, and its events never fire.
+        local knob = Instance.new("Frame")
+        local drag = Instance.new("UIDragDetector", knob)
+        drag.ResponseStyle = "Offset"
+        drag.DragContinue:Connect(function() print("dragged") end)
+        print(drag.Enabled, drag.ResponseStyle, drag.DragStyle, drag:IsA("UIComponent"))
     "#;
     load(&mut game, &mut st, "kept", src, 0.6);
     let p = printed(&st, "kept");
@@ -249,7 +255,8 @@ fn kept_classes_take_any_property() {
         [
             "true    rbxassetid://1    true    Player1",
             "false    true    Grow    nil",
-            "1    2    3    4"
+            "1    2    3    4",
+            "true    Offset    nil    true"
         ]
     );
 }

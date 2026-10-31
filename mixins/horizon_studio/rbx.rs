@@ -922,6 +922,16 @@ pub static CLASSES: &[C] = &[
     ),
     // Kept with whatever properties scripts give them; nothing draws them.
     kept("SurfaceGui", "LayerCollector"),
+    // Kept, and inert: nothing drags by it, and its events never fire.
+    C {
+        lenient: true,
+        ..class(
+            "UIDragDetector",
+            "UIComponent",
+            &[p("Enabled", Bool, B(true))],
+            &["DragStart", "DragContinue", "DragEnd"],
+        )
+    },
     // Laid out and drawn as Frames (what they show, a 3D view or a video,
     // isn't), and lenient as they were when only kept.
     C {

@@ -490,7 +490,7 @@ changes the screen:
 | `widgets` | The panel's rows, top to bottom (below). |
 | `draw(w, h)` | Called each frame after the panel: draw anything with `hud.text`, `hud.rect`... A screen with neither `title` nor `widgets` is yours alone to draw. |
 | `click(x, y, button)`, `key(key, down, mods)`, `text(t)`, `wheel(steps)` | Input outside the widgets (`button` is `"left"` or `"right"`; `key` is `"enter"`, `"left"`, `"a"`..., and `mods` is `{ctrl, shift, alt}`). |
-| `escape()` | Called when Escape is pressed: returning true keeps the screen open (a field of your own drops its focus), else it closes. |
+| `escape()` | Called when Escape is pressed while no input has focus: returning true keeps the screen open (a field of your own drops its focus), else it closes. |
 | `close()` | Called when the screen closes. |
 | `canvas` | `true`: the screen is yours to draw, in dp with `gfx.*`. `draw(w, h)` gets the size in dp, and the pointer calls come in dp too, with `move(x, y)` and `release(x, y, button)` added. `backdrop = false` drops the dimmed backdrop. |
 
@@ -655,16 +655,17 @@ end)
   `workspace:Raycast` goes through the world's blocks and the parts.
 - **Services:** Players, RunService (Heartbeat, RenderStepped, Stepped, BindToRenderStep), UserInputService,
   TweenService, Debris, HttpService (JSON and GUIDs), TextService (`GetTextSize`, `GetTextBoundsAsync`), GuiService,
-  StarterGui (`SetCore` notifications in chat; its ScreenGuis are copied into the PlayerGui), CollectionService,
-  ContextActionService, Lighting (the world's time) and the containers. Services with nothing to do here that scripts
-  still get at their top (TeleportService, VirtualUser, Stats and the like) are there too, taking any property.
+  StarterGui (`SetCore` notifications in chat; its ScreenGuis are copied into the PlayerGui, and their events are
+  connected on the copies), CollectionService, ContextActionService, Lighting (the world's time) and the containers.
+  Services with nothing to do here that scripts still get at their top (TeleportService, VirtualUser, Stats and the
+  like) are there too, taking any property.
 - **Data types and `Enum`:** Vector2, Vector3, CFrame, Color3, UDim, UDim2, Rect, NumberRange, NumberSequence,
   ColorSequence, TweenInfo, BrickColor, Font, Random, Ray, RaycastParams, with their constructors, properties,
   methods and operators, and the Enum tree (`Enum.KeyCode.E`).
 
 Not there: a server (RemoteEvents go nowhere), physics, animations, Roblox's assets (images, meshes and sounds by id),
-SurfaceGuis, and what ViewportFrames and VideoFrames show. The MCP's `roblox` topic (`docs`) lists every class, member
-and difference.
+SurfaceGuis, dragging by UIDragDetectors, and what ViewportFrames and VideoFrames show. The MCP's `roblox` topic
+(`docs`) lists every class, member and difference.
 
 ### Executor functions (sUNC)
 
