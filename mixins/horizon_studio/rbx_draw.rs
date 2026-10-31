@@ -661,7 +661,15 @@ pub fn draw(
     workspace: &std::path::Path,
 ) {
     let Some(frame) = &rbx.layout else { return };
+    // ScrollingFrames' bars, each drawn over what its frame holds: once the
+    // drawing has gone past that.
+    let mut bars_over: Vec<(Id, Vec<[f32; 4]>, f32, u32)> = Vec::new();
     for &n in &frame.layout.draw_order {
+        while let Some((sf, _, _, _)) = bars_over.last()
+            && !rbx.is_descendant_of(frame.node_inst[n], *sf)
+        {
+            draw_bars(game, bars_over.pop());
+        }
         let Some(p) = frame.layout.get(n) else { continue };
         if !p.shown {
             continue;
@@ -819,29 +827,189 @@ pub fn draw(
                 game.dp_rect([cx as f32 + 1.0, cy as f32, 1.5, size], 0.0, argb(tc, ta));
             }
         }
-        // A ScrollingFrame's bar.
-        if inst.class.name == "ScrollingFrame" && p.canvas_size.y > p.window_size.y + 0.5 {
-            let thick = inst.get("ScrollBarThickness").to_num().unwrap_or(12.0);
-            if thick > 0.0 {
-                let ratio = (p.window_size.y / p.canvas_size.y).clamp(0.05, 1.0);
-                let travel = p.size.y * (1.0 - ratio);
-                let off = if p.canvas_size.y > p.window_size.y {
-                    p.canvas_position.y / (p.canvas_size.y - p.window_size.y)
-                } else {
-                    0.0
-                };
-                let bx = p.position.x + p.size.x - thick;
-                let by = p.position.y + travel * off.clamp(0.0, 1.0);
+        // A ScrollingFrame's bars, over what it holds.
+        if inst.class.name == "ScrollingFrame" {
+            let bars = scroll_bars(inst, p);
+            if let Some(b) = bars.first() {
                 let ca = (1.0 - inst.get("ScrollBarImageTransparency").to_num().unwrap_or(0.0)) * ga;
                 let c = argb(color(inst, "ScrollBarImageColor3"), ca * 0.7);
-                game.dp_rect(
-                    [bx as f32, by as f32, thick as f32, (p.size.y * ratio) as f32],
-                    (thick / 2.0) as f32,
-                    c,
-                );
+                let thumbs = bars.iter().map(|b| rect4(b.thumb)).collect();
+                bars_over.push((id, thumbs, (b.thickness / 2.0) as f32, c));
             }
         }
     }
+    while let Some(bars) = bars_over.pop() {
+        draw_bars(game, Some(bars));
+    }
+}
+
+/// Draws a ScrollingFrame's thumbs: (the frame, the thumbs, their corner
+/// radius and colour).
+fn draw_bars(game: &mut dyn GameApi, bars: Option<(Id, Vec<[f32; 4]>, f32, u32)>) {
+    let Some((_, thumbs, radius, c)) = bars else {
+        return;
+    };
+    for r in thumbs {
+        game.dp_rect(r, radius, c);
+    }
+}
+
+/// A ScrollingFrame's scroll bar on screen: its track, its thumb, and
+/// whether it scrolls down (else across).
+#[derive(Clone, Copy, Debug)]
+struct Bar {
+    vertical: bool,
+    track: Rect,
+    thumb: Rect,
+    thickness: f64,
+}
+
+impl Bar {
+    /// Where a rectangle starts along the bar, and how long it is.
+    fn along(&self, r: Rect) -> (f64, f64) {
+        if self.vertical {
+            (r.min.y, r.max.y - r.min.y)
+        } else {
+            (r.min.x, r.max.x - r.min.x)
+        }
+    }
+}
+
+/// The scroll bars a ScrollingFrame shows: the vertical one, on its right
+/// (or its left, with VerticalScrollBarPosition Left), while its canvas is
+/// taller than its window and it scrolls down; the horizontal one at its
+/// bottom while the canvas is wider and it scrolls across. When both show,
+/// neither runs into the corner they share.
+fn scroll_bars(inst: &super::hstudio_rbx::Inst, p: &layout::Placed) -> Vec<Bar> {
+    let thick = inst.get("ScrollBarThickness").to_num().unwrap_or(12.0) * p.scale;
+    if thick <= 0.0 {
+        return Vec::new();
+    }
+    let direction = enum_name(&inst.get("ScrollingDirection"));
+    let down = direction != "X" && p.canvas_size.y > p.window_size.y + 0.5;
+    let across = direction != "Y" && p.canvas_size.x > p.window_size.x + 0.5;
+    let left = enum_name(&inst.get("VerticalScrollBarPosition")) == "Left";
+    // How far the canvas scrolls each way, in its own (unscaled) units.
+    let room = (p.canvas_size - p.window_size) / p.scale.max(1e-9);
+    let mut bars = Vec::new();
+    let mut bar = |vertical: bool, track: Rect, window: f64, canvas: f64, at: f64, room: f64| {
+        let ratio = (window / canvas).clamp(0.05, 1.0);
+        let off = if room > 0.0 { (at / room).clamp(0.0, 1.0) } else { 0.0 };
+        let thumb = if vertical {
+            let len = track.height() * ratio;
+            let y = track.min.y + (track.height() - len) * off;
+            Rect::new(Vector2::new(track.min.x, y), Vector2::new(track.max.x, y + len))
+        } else {
+            let len = track.width() * ratio;
+            let x = track.min.x + (track.width() - len) * off;
+            Rect::new(Vector2::new(x, track.min.y), Vector2::new(x + len, track.max.y))
+        };
+        bars.push(Bar {
+            vertical,
+            track,
+            thumb,
+            thickness: thick,
+        });
+    };
+    let (x, y, w, h) = (p.position.x, p.position.y, p.size.x, p.size.y);
+    if down {
+        let bx = if left { x } else { x + w - thick };
+        let bottom = y + h - if across { thick } else { 0.0 };
+        let track = Rect::new(Vector2::new(bx, y), Vector2::new(bx + thick, bottom));
+        bar(
+            true,
+            track,
+            p.window_size.y,
+            p.canvas_size.y,
+            p.canvas_position.y,
+            room.y,
+        );
+    }
+    if across {
+        let from = x + if down && left { thick } else { 0.0 };
+        let to = x + w - if down && !left { thick } else { 0.0 };
+        let track = Rect::new(Vector2::new(from, y + h - thick), Vector2::new(to, y + h));
+        bar(
+            false,
+            track,
+            p.window_size.x,
+            p.canvas_size.x,
+            p.canvas_position.x,
+            room.x,
+        );
+    }
+    bars
+}
+
+/// The bar of a ScrollingFrame under the pointer it is over, topmost first.
+fn bar_at(rbx: &Rbx) -> Option<(Id, Bar)> {
+    let f = rbx.layout.as_ref()?;
+    let at = Vector2::new(rbx.pointer.x, rbx.pointer.y);
+    rbx.pointer.hover.iter().find_map(|&id| {
+        let inst = rbx.try_inst(id).filter(|i| i.class.name == "ScrollingFrame")?;
+        if !inst.get("ScrollingEnabled").truthy() {
+            return None;
+        }
+        let p = f.layout.get(*f.inst_node.get(&id)?)?;
+        let inside = |r: Rect| at.x >= r.min.x && at.x < r.max.x && at.y >= r.min.y && at.y < r.max.y;
+        scroll_bars(inst, p)
+            .into_iter()
+            .find(|b| inside(b.track))
+            .map(|b| (id, b))
+    })
+}
+
+/// A press on a ScrollingFrame's bar takes hold of its thumb (a press on
+/// the track beside the thumb brings the thumb's middle there first).
+fn grab_bar(rbx: &mut Rbx) -> bool {
+    let Some((id, bar)) = bar_at(rbx) else {
+        return false;
+    };
+    let at = if bar.vertical { rbx.pointer.y } else { rbx.pointer.x };
+    let (start, len) = bar.along(bar.thumb);
+    let grip = if at >= start && at < start + len {
+        at - start
+    } else {
+        len / 2.0
+    };
+    rbx.pointer.bar = Some((id, bar.vertical, grip));
+    drag_bar(rbx);
+    true
+}
+
+/// The thumb held follows the pointer, and the canvas with it.
+fn drag_bar(rbx: &mut Rbx) {
+    let Some((id, vertical, grip)) = rbx.pointer.bar else {
+        return;
+    };
+    let Some(f) = &rbx.layout else { return };
+    let Some(p) = f.inst_node.get(&id).and_then(|&n| f.layout.get(n)) else {
+        return;
+    };
+    // The frame may have gone since the press.
+    let Some(inst) = rbx.try_inst(id).filter(|i| !i.destroyed) else {
+        rbx.pointer.bar = None;
+        return;
+    };
+    let Some(bar) = scroll_bars(inst, p).into_iter().find(|b| b.vertical == vertical) else {
+        return;
+    };
+    let room = (p.canvas_size - p.window_size) / p.scale.max(1e-9);
+    let (track, track_len) = bar.along(bar.track);
+    let (_, len) = bar.along(bar.thumb);
+    let at = if vertical { rbx.pointer.y } else { rbx.pointer.x };
+    let off = if track_len > len {
+        ((at - grip - track) / (track_len - len)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let pos = as_v2(&rbx.raw_get(id, "CanvasPosition")).unwrap_or_default();
+    let next = if vertical {
+        Vector2::new(pos.x, off * room.y.max(0.0))
+    } else {
+        Vector2::new(off * room.x.max(0.0), pos.y)
+    };
+    rbx.raw_set(id, "CanvasPosition", v2(next));
 }
 
 /// The GuiObjects under a point, topmost first.
@@ -1338,6 +1506,7 @@ pub fn pointer_moved(rbx: &mut Rbx, x: f64, y: f64) {
         }
         rbx.pointer.drag = Some((id, x, y));
     }
+    drag_bar(rbx);
     let over = objects_at(rbx, x, y);
     let old = std::mem::take(&mut rbx.pointer.hover);
     for &id in old.iter().filter(|i| !over.contains(i)) {
@@ -1380,6 +1549,15 @@ pub fn pointer_button(rbx: &mut Rbx, left: bool, down: bool) {
     let before = gui_states(rbx);
     let kind = if left { "MouseButton1" } else { "MouseButton2" };
     rbx.pointer.buttons[usize::from(!left)] = down;
+    // A press on a ScrollingFrame's bar takes hold of it, and is the GUI's.
+    if left && !down {
+        rbx.pointer.bar = None;
+    }
+    if left && down && grab_bar(rbx) {
+        mouse_input(rbx, kind, true, true);
+        gui_states_changed(rbx, before);
+        return;
+    }
     let (top, button) = hits(rbx);
     let over_gui = top.is_some();
     let state = if down { "Begin" } else { "End" };
@@ -1475,12 +1653,18 @@ pub fn wheel(rbx: &mut Rbx, steps: f64) {
     let Some(p) = f.inst_node.get(&sf).and_then(|&n| f.layout.get(n)) else {
         return;
     };
+    // How far the canvas scrolls, in its own units (a UIScale scales the frame).
     let max = Vector2::new(
         (p.canvas_size.x - p.window_size.x).max(0.0),
         (p.canvas_size.y - p.window_size.y).max(0.0),
-    );
+    ) / p.scale.max(1e-9);
     let pos = as_v2(&rbx.raw_get(sf, "CanvasPosition")).unwrap_or_default();
-    let vertical = max.y > 0.0;
+    // ScrollingDirection X scrolls across, Y down, and XY down while it can.
+    let vertical = match enum_name(&rbx.raw_get(sf, "ScrollingDirection")) {
+        "X" => false,
+        "Y" => true,
+        _ => max.y > 0.0,
+    };
     let delta = -steps * 40.0;
     let next = if vertical {
         Vector2::new(pos.x, (pos.y + delta).clamp(0.0, max.y))

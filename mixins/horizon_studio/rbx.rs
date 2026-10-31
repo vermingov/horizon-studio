@@ -176,6 +176,14 @@ const fn kept(name: &'static str, base: &'static str) -> C {
         ..class(name, base, &[], &[])
     }
 }
+/// A service with nothing to do here, which scripts ask for anyway: it
+/// takes any property, and a member it hasn't is nil.
+const fn lenient_service(name: &'static str) -> C {
+    C {
+        lenient: true,
+        ..service(name, &[], &[])
+    }
+}
 
 use D::{B, N, Rgb, S};
 use K::{Bool, Int, Num, Obj, Str};
@@ -416,6 +424,25 @@ pub static CLASSES: &[C] = &[
     service("TextChatService", &[], &[]),
     service("MarketplaceService", &[], &[]),
     service("LogService", &[], &["MessageOut"]),
+    // Services scripts get at their top, though they can do nothing here.
+    lenient_service("TeleportService"),
+    lenient_service("VirtualUser"),
+    lenient_service("VirtualInputManager"),
+    lenient_service("Stats"),
+    lenient_service("PathfindingService"),
+    lenient_service("PhysicsService"),
+    lenient_service("SocialService"),
+    lenient_service("BadgeService"),
+    lenient_service("GroupService"),
+    lenient_service("LocalizationService"),
+    lenient_service("PolicyService"),
+    lenient_service("ProximityPromptService"),
+    lenient_service("VRService"),
+    lenient_service("HapticService"),
+    lenient_service("GamepadService"),
+    lenient_service("AssetService"),
+    lenient_service("InsertService"),
+    lenient_service("MaterialService"),
     abstract_class(
         "Player",
         "Instance",
@@ -728,6 +755,8 @@ pub static CLASSES: &[C] = &[
                 D::E("Right"),
             ),
             p("ElasticBehavior", K::Enum("ElasticBehavior"), D::E("WhenScrollable")),
+            // A ScrollingFrame clips what it holds unless told otherwise.
+            p("ClipsDescendants", Bool, B(true)),
             p("TopImage", Str, S("")),
             p("MidImage", Str, S("")),
             p("BottomImage", Str, S("")),
@@ -1123,6 +1152,9 @@ pub struct Pointer {
     pub drag: Option<(Id, f64, f64)>,
     /// The TextBox whose text the held button is selecting.
     pub selecting: Option<Id>,
+    /// A ScrollingFrame's bar being dragged: the frame, whether it is the
+    /// vertical bar, and where along the thumb the pointer holds it.
+    pub bar: Option<(Id, bool, f64)>,
     pub held: HashSet<&'static str>,
     pub buttons: [bool; 3],
 }

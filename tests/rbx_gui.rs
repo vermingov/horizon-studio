@@ -8,7 +8,7 @@ mod common;
 use common::{FakeGame, log, mod_index, run_for, studio};
 use horizon_studio::game::hstudio::{ModState, Studio};
 use horizon_studio::game::hstudio_look::draw_screen;
-use horizon_studio::game::hstudio_rbx_draw::{OUTPUTS, fresh_layout, lay_out, pointer_button, pointer_moved};
+use horizon_studio::game::hstudio_rbx_draw::{OUTPUTS, fresh_layout, lay_out, pointer_button, pointer_moved, wheel};
 use horizon_studio::game::hstudio_rbx_values::get;
 use horizon_studio::game::hstudio_ui::{Input, Key, Mods, UiResult, handle_screen};
 
@@ -718,4 +718,118 @@ fn clicks_and_drags_place_the_caret_and_select() {
         },
     );
     assert_eq!(state(&mut st, &mut game), "hello world|1|-1");
+}
+
+/// The rectangles drawn after the first that starts with `first`.
+fn drawn_after(drawn: &[String], first: &str) -> Vec<String> {
+    let at = drawn
+        .iter()
+        .position(|d| d.starts_with(first))
+        .unwrap_or_else(|| panic!("{first} not drawn: {drawn:#?}"));
+    drawn[at + 1..].to_vec()
+}
+
+#[test]
+fn scrolling_frames_scroll_their_way() {
+    let mut game = FakeGame::new("rbx-scroll");
+    let mut st = studio(&mut game);
+    // A 200 x 100 window on a 400 x 300 canvas, with 10 dp bars; a row as
+    // wide as the canvas lies under them.
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local sf = Instance.new("ScrollingFrame", gui)
+        sf.Size = UDim2.fromOffset(200, 100)
+        sf.CanvasSize = UDim2.fromOffset(400, 300)
+        sf.ScrollBarThickness = 10
+        sf.ScrollingDirection = Enum.ScrollingDirection.X
+        sf.BorderSizePixel = 0
+        local row = Instance.new("Frame", sf)
+        row.Size = UDim2.new(1, 0, 0, 300)
+        row.BackgroundColor3 = Color3.new(1, 0, 0)
+        row.BorderSizePixel = 0
+        command("pos", function() return tostring(sf.CanvasPosition) .. " " .. tostring(sf.ClipsDescendants) end)
+        command("both", function() sf.ScrollingDirection = Enum.ScrollingDirection.XY end)
+        command("left", function() sf.VerticalScrollBarPosition = Enum.VerticalScrollBarPosition.Left end)
+    "#;
+    load(&mut game, &mut st, "scroll", src, 0.6);
+    st.s.rbx.pointer.free = true;
+    // The row, scrolled and cut to the window as a ScrollingFrame clips.
+    let row = "rect [0.0, 0.0, 200.0, 100.0] r0 ffff0000";
+    // ScrollingDirection X: the wheel scrolls across, and only the bottom bar shows.
+    hud(&mut st, &mut game);
+    pointer_moved(&mut st.s.rbx, 50.0, 50.0);
+    wheel(&mut st.s.rbx, -1.0);
+    assert_eq!(say(&mut st, &mut game, "pos"), "40, 0 true");
+    let over = drawn_after(&hud(&mut st, &mut game), row);
+    assert_eq!(
+        over,
+        ["rect [20.0, 90.0, 100.0, 10.0] r5 b3000000"],
+        "the bar is over the row"
+    );
+    // XY: both bars, which leave each other the corner, and the wheel scrolls down.
+    say(&mut st, &mut game, "both");
+    let over = drawn_after(&hud(&mut st, &mut game), row);
+    assert_eq!(
+        over,
+        [
+            "rect [190.0, 0.0, 10.0, 30.0] r5 b3000000",
+            "rect [19.0, 90.0, 95.0, 10.0] r5 b3000000"
+        ]
+    );
+    wheel(&mut st.s.rbx, -1.0);
+    assert_eq!(say(&mut st, &mut game, "pos"), "40, 40 true");
+    // VerticalScrollBarPosition Left.
+    say(&mut st, &mut game, "left");
+    let over = drawn_after(&hud(&mut st, &mut game), row);
+    assert_eq!(
+        over,
+        [
+            "rect [0.0, 12.0, 10.0, 30.0] r5 b3000000",
+            "rect [29.0, 90.0, 95.0, 10.0] r5 b3000000"
+        ]
+    );
+    // Dragging the thumb: held 8 below its top, which goes to 30 of 60.
+    pointer_moved(&mut st.s.rbx, 5.0, 20.0);
+    pointer_button(&mut st.s.rbx, true, true);
+    pointer_moved(&mut st.s.rbx, 5.0, 38.0);
+    pointer_button(&mut st.s.rbx, true, false);
+    assert_eq!(say(&mut st, &mut game, "pos"), "40, 100 true");
+    // A press on the track below the thumb brings it there, to the end.
+    hud(&mut st, &mut game);
+    pointer_moved(&mut st.s.rbx, 5.0, 85.0);
+    pointer_button(&mut st.s.rbx, true, true);
+    pointer_button(&mut st.s.rbx, true, false);
+    assert_eq!(say(&mut st, &mut game, "pos"), "40, 200 true");
+    // The bottom bar drags across.
+    hud(&mut st, &mut game);
+    pointer_moved(&mut st.s.rbx, 30.0, 95.0);
+    pointer_button(&mut st.s.rbx, true, true);
+    pointer_moved(&mut st.s.rbx, 0.0, 95.0);
+    pointer_button(&mut st.s.rbx, true, false);
+    assert_eq!(say(&mut st, &mut game, "pos"), "0, 200 true");
+}
+
+#[test]
+fn services_scripts_ask_for_exist() {
+    let mut game = FakeGame::new("rbx-services");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local names = { "TeleportService", "VirtualUser", "Stats", "PathfindingService", "VirtualInputManager", "MaterialService" }
+        for _, name in names do
+            local s = game:GetService(name)
+            assert(s and s == game:FindService(name) and s.ClassName == name and s.Parent == game, name)
+        end
+        local tp = game:GetService("TeleportService")
+        tp.CustomLoadingScreen = "kept"
+        print(tp.CustomLoadingScreen, tp.Nothing, game.TeleportService == tp)
+        print(pcall(function() game:GetService("NoSuchService") end))
+    "#;
+    load(&mut game, &mut st, "services", src, 0.6);
+    let p = printed(&st, "services");
+    assert_eq!(p[0], "kept    nil    true");
+    assert!(
+        p[1].starts_with("false    ") && p[1].contains("'NoSuchService' is not a valid Service name"),
+        "{}",
+        p[1]
+    );
 }

@@ -640,8 +640,8 @@ end)
   ZIndex) and drawn on the HUD with Horizon's shapes and Geist fonts, UICorner, UIStroke and borders included. A GUI
   pixel is a dp. The GUI takes the mouse while a visible button has `Modal = true` or a TextBox has focus, or after
   **Left Alt**; Escape gives it back (first letting go of a TextBox). Then hovers, clicks (`MouseButton1Click`,
-  `Activated`), TextBoxes (a caret, selecting with Shift or a drag, the clipboard, `MultiLine`), scrolling and dragging
-  work.
+  `Activated`), TextBoxes (a caret, selecting with Shift or a drag, the clipboard, `MultiLine`), scrolling (the wheel
+  each way `ScrollingDirection` allows, and both bars, which drag) and dragging work.
 - **Input.** Keys and mouse buttons fire UserInputService's `InputBegan` and `InputEnded` (`input.KeyCode`), and
   ContextActionService's actions; `UIS:IsKeyDown`, `Player:GetMouse()`.
 - **The world.** The LocalPlayer's Character follows the player (a stud is a block), `workspace.CurrentCamera`
@@ -649,7 +649,9 @@ end)
   `workspace:Raycast` goes through the world's blocks and the parts.
 - **Services:** Players, RunService (Heartbeat, RenderStepped, Stepped, BindToRenderStep), UserInputService,
   TweenService, Debris, HttpService (JSON and GUIDs), TextService, GuiService, StarterGui (`SetCore` notifications in
-  chat), CollectionService, ContextActionService, Lighting (the world's time) and the containers.
+  chat), CollectionService, ContextActionService, Lighting (the world's time) and the containers. Services with
+  nothing to do here that scripts still get at their top (TeleportService, VirtualUser, Stats and the like) are there
+  too, taking any property.
 - **Data types and `Enum`:** Vector2, Vector3, CFrame, Color3, UDim, UDim2, Rect, NumberRange, NumberSequence,
   ColorSequence, TweenInfo, BrickColor, Font, Random, Ray, RaycastParams, with their constructors, properties,
   methods and operators, and the Enum tree (`Enum.KeyCode.E`).
