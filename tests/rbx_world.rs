@@ -1329,3 +1329,43 @@ fn the_limbs_are_where_the_games_model_has_them() {
     );
     assert_eq!(report["ok"], true, "{report:#}");
 }
+
+#[test]
+fn a_headless_test_puts_mobs_and_players_near() {
+    let source = Source::Files {
+        id: "near".into(),
+        files: vec![("near.lua".into(), "local me = game.Players.LocalPlayer\n".into())],
+        libraries: None,
+    };
+    let mut run = Run::new(&source).unwrap();
+    let lua = "local z = workspace:FindFirstChild('Zombie') print(z and z.Humanoid.Health, #game.Players:GetPlayers(), workspace:FindFirstChild('Diamond') ~= nil)";
+    let report = run_steps(
+        &mut run,
+        &[
+            json!({ "lua": lua, "expect_output": "nil    1    false" }),
+            json!({ "entities": [
+                { "kind": "zombie", "pos": [3, 64, 0], "health": 10 },
+                { "kind": "player", "name": "Alex", "id": 12, "pos": [5, 64, 0] },
+                { "kind": "item", "item": "minecraft:diamond", "count": 3 },
+            ] }),
+            json!({ "players": [{ "name": "Alex", "entity": 12, "latency": 40 }] }),
+            json!({ "frames": 10 }),
+            json!({ "lua": lua, "expect_output": "50    2    true" }),
+            json!({
+                "lua": "local alex = game.Players.Alex print(alex.Character == workspace.Alex, alex:GetNetworkPing(), workspace.Diamond:GetAttribute('Count'), workspace.Zombie:GetAttribute('EntityId'))",
+                "expect_output": "true    0.04    3    100",
+            }),
+            json!({ "entities": [] }),
+            json!({ "frames": 2 }),
+            json!({ "lua": lua, "expect_output": "nil    2    false" }),
+            json!({ "entity": [] }),
+        ],
+    );
+    let steps = report["steps"].as_array().unwrap();
+    assert!(steps[..9].iter().all(|s| s["ok"] == true), "{report:#}");
+    // An unknown step says which there are.
+    assert!(
+        steps[9]["failures"][0].as_str().unwrap().contains("entities, players"),
+        "{report:#}"
+    );
+}
