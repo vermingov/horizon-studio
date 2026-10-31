@@ -1672,6 +1672,37 @@ impl Rbx {
         super::hstudio_rbx_world::forget(self, owner);
     }
 
+    /// Mod `i` left the studio's list (it stopped, and `forget` dropped what
+    /// it had): the mods after it move down one place, and so does every
+    /// owner the layer keeps of theirs, so that each thing stays its mod's.
+    pub fn owner_removed(&mut self, i: usize) {
+        let shift = |o: &mut Owner| {
+            if let Owner::Mod(j) = o
+                && *j > i
+            {
+                *j -= 1;
+            }
+        };
+        for inst in self.insts.values_mut() {
+            if let Some(o) = &mut inst.owner {
+                shift(o);
+            }
+            for c in &mut inst.conns {
+                shift(&mut c.owner);
+            }
+        }
+        self.deferred.iter_mut().for_each(|d| shift(&mut d.0));
+        self.ready.iter_mut().for_each(|r| shift(&mut r.0));
+        self.waiters.iter_mut().for_each(|w| shift(&mut w.owner));
+        self.tweens.iter_mut().for_each(|t| shift(&mut t.owner));
+        self.actions.iter_mut().for_each(|a| shift(&mut a.1));
+        self.render_steps.iter_mut().for_each(|r| shift(&mut r.2));
+        self.http.iter_mut().for_each(|h| shift(&mut h.owner));
+        self.sockets.iter_mut().for_each(|s| shift(&mut s.owner));
+        self.drawings.iter_mut().for_each(|d| shift(&mut d.owner));
+        self.world.lookers.iter_mut().for_each(shift);
+    }
+
     /// A child named `name` of `parent`, the first.
     pub fn child_named(&self, parent: Id, name: &str) -> Option<Id> {
         self.children(parent)

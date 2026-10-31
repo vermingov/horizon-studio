@@ -1494,3 +1494,30 @@ fn the_world_mends_what_something_else_destroyed() {
     assert_eq!(p[0], "joined Alex, added Zombie, added Diamond");
     assert_eq!(p[1], "50    5    true    2");
 }
+
+#[test]
+fn removing_a_mod_leaves_the_later_ones_looks_and_handlers_theirs() {
+    let mut game = FakeGame::new("rbxw-renumber");
+    let mut st = studio(&mut game);
+    load(&mut game, &mut st, "a", "print('a')", 0.6);
+    let src = r#"
+        workspace.ChildAdded:Connect(function(c) print("added", c.Name) end)
+        print(#workspace:GetChildren())
+    "#;
+    load(&mut game, &mut st, "b", src, 0.6);
+    assert!(mod_index(&st, "a") < mod_index(&st, "b"));
+    // a's file goes: b moves up the studio's list, and still looks and listens.
+    std::fs::remove_file(game.mods_dir().join("a.lua")).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    game.entities = vec![zombie(5, 12.5, -3.25)];
+    run_for(&mut st, &mut game, 0.1);
+    assert_eq!(printed(&st, "b"), ["3", "added    Zombie"]);
+    // b's goes too: no script looks, and the game is asked no more.
+    std::fs::remove_file(game.mods_dir().join("b.lua")).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    let asks = game.entity_asks;
+    run_for(&mut st, &mut game, 1.0);
+    assert_eq!(game.entity_asks, asks, "the world stays mirrored for no one");
+    let ws = st.s.rbx.workspace;
+    assert!(st.s.rbx.child_named(ws, "Zombie").is_none());
+}

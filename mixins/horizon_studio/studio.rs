@@ -1187,6 +1187,7 @@ impl Studio {
             if !found.iter().any(|f| f.0 == self.s.mods[i].id) {
                 self.unload(game, i);
                 let m = self.s.mods.remove(i);
+                self.s.rbx.owner_removed(i);
                 removed.push(m.id.clone());
                 let shift = |o: &mut Owner| {
                     if let Owner::Mod(j) = o
