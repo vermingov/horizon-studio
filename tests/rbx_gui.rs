@@ -880,6 +880,47 @@ fn text_boxes_edit_like_text_fields() {
 }
 
 #[test]
+fn escape_beside_a_modal_button_lets_go_of_the_box_first() {
+    // A TextBox being edited beside a Modal button: the first Escape lets
+    // go of the box and keeps the screen, which the button still wants;
+    // the second closes it, and it stays closed while the GUI asks.
+    let mut game = FakeGame::new("rbx-modal-escape");
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{BOX}\nlocal modal = Instance.new('TextButton', gui) modal.Position = UDim2.fromOffset(0, 50) modal.Size = UDim2.fromOffset(50, 20) modal.Modal = true\n"
+    );
+    load(&mut game, &mut st, "modal", &src, 0.6);
+    focus_box(&mut st, &mut game);
+    typed(&mut st, &mut game, "hi");
+    let escape = |st: &mut Studio, game: &mut FakeGame| {
+        handle_screen(
+            st,
+            game,
+            Input::Key {
+                key: Key::Escape,
+                down: true,
+                repeat: false,
+                mods: NONE,
+            },
+        )
+    };
+    assert_eq!(escape(&mut st, &mut game), UiResult::Used);
+    run_for(&mut st, &mut game, 0.05);
+    assert!(st.s.screen.is_some(), "the Modal button still wants the pointer");
+    assert_eq!(say(&mut st, &mut game, "state"), "hi|-1|-1");
+    assert_eq!(escape(&mut st, &mut game), UiResult::Close);
+    st.close_screen(&mut game);
+    hud(&mut st, &mut game);
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.s.screen.is_none() && st.s.screen_request.is_none());
+    let lost: Vec<String> = printed(&st, "modal")
+        .into_iter()
+        .filter(|l| l.starts_with("lost"))
+        .collect();
+    assert_eq!(lost, ["lost    false    hi"]);
+}
+
+#[test]
 fn up_and_down_move_a_drawn_line() {
     let mut game = FakeGame::new("rbx-lines");
     let mut st = studio(&mut game);
@@ -960,6 +1001,157 @@ fn clicks_and_drags_place_the_caret_and_select() {
         },
     );
     assert_eq!(state(&mut st, &mut game), "hello world|1|-1");
+}
+
+/// The GUI's screen drawn with the caret showing: what it draws.
+fn screen(st: &mut Studio, game: &mut FakeGame) -> Vec<String> {
+    st.s.now = 10.0;
+    game.drawn.clear();
+    draw_screen(st, game);
+    std::mem::take(&mut game.drawn)
+}
+
+/// The selection's bands and the caret drawn on the GUI's screen.
+fn marks(drawn: &[String]) -> Vec<String> {
+    drawn
+        .iter()
+        .filter(|d| d.ends_with(" r0 730078d7") || d.contains(", 1.5, 8.0] r0 "))
+        .map(|d| d.split(" r0 ").next().unwrap_or(d).to_owned())
+        .collect()
+}
+
+#[test]
+fn text_boxes_edit_text_of_many_bytes() {
+    // CursorPosition and SelectionStart are 1-based byte offsets: in text
+    // whose characters take 1 to 4 bytes, keys, a script's writes into a
+    // character's middle, clicks and drags keep them on characters, and the
+    // selection and the caret are drawn where those are.
+    let mut game = FakeGame::new("rbx-bytes");
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{BOX}\ncommand('caret', function() box.Text = 'aé日🙂b' box.CursorPosition = 3 box.SelectionStart = 6 end)\n"
+    );
+    load(&mut game, &mut st, "bytes", &src, 0.6);
+    let state = |st: &mut Studio, game: &mut FakeGame| say(st, game, "state");
+    focus_box(&mut st, &mut game);
+    // a, é, a space, 日, 🙂 and b: bytes 0, 1, 3, 4, 7 and 11, 6 dp each.
+    typed(&mut st, &mut game, "aé 日🙂b");
+    assert_eq!(state(&mut st, &mut game), "aé 日🙂b|13|-1");
+    assert_eq!(marks(&screen(&mut st, &mut game)), ["rect [37.0, 11.0, 1.5, 8.0]"]);
+    press(&mut st, &mut game, Key::Left, NONE);
+    assert_eq!(state(&mut st, &mut game), "aé 日🙂b|12|-1");
+    press(&mut st, &mut game, Key::Left, SHIFT);
+    assert_eq!(state(&mut st, &mut game), "aé 日🙂b|8|12");
+    assert_eq!(
+        marks(&screen(&mut st, &mut game)),
+        ["rect [24.0, 11.0, 6.0, 8.0]", "rect [25.0, 11.0, 1.5, 8.0]"]
+    );
+    typed(&mut st, &mut game, "X");
+    assert_eq!(state(&mut st, &mut game), "aé 日Xb|9|-1");
+    press(&mut st, &mut game, Key::Backspace, CTRL);
+    assert_eq!(state(&mut st, &mut game), "aé b|5|-1");
+    screen(&mut st, &mut game);
+    // A script's CursorPosition 3 is inside é, and SelectionStart 6 inside
+    // 日: each stands for the character it is in.
+    say(&mut st, &mut game, "caret");
+    assert_eq!(state(&mut st, &mut game), "aé日🙂b|3|6");
+    assert_eq!(
+        marks(&screen(&mut st, &mut game)),
+        ["rect [6.0, 11.0, 6.0, 8.0]", "rect [7.0, 11.0, 1.5, 8.0]"]
+    );
+    typed(&mut st, &mut game, "Z");
+    assert_eq!(state(&mut st, &mut game), "aZ日🙂b|3|-1");
+    // Now a, Z, 日, 🙂 and b are bytes 0, 1, 2, 5 and 9. A press nearer the
+    // end of 日 than its start, and a drag to the end.
+    handle_screen(&mut st, &mut game, Input::Mouse(16.0, 15.0));
+    handle_screen(&mut st, &mut game, Input::Button { left: true, down: true });
+    assert_eq!(state(&mut st, &mut game), "aZ日🙂b|6|-1");
+    handle_screen(&mut st, &mut game, Input::Mouse(29.0, 15.0));
+    handle_screen(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    assert_eq!(state(&mut st, &mut game), "aZ日🙂b|11|6");
+    assert_eq!(
+        marks(&screen(&mut st, &mut game)),
+        ["rect [18.0, 11.0, 12.0, 8.0]", "rect [31.0, 11.0, 1.5, 8.0]"]
+    );
+    press(&mut st, &mut game, Key::Char('c'), CTRL);
+    assert_eq!(game.clipboard, "🙂b");
+}
+
+#[test]
+fn wrapped_cut_text_of_many_bytes_edits() {
+    // A wrapped MultiLine box whose text is cut short ("..."), with spaces
+    // where a line breaks: the keys, clicks and drags keep the caret and
+    // the selection's end on characters, and the screen draws each step.
+    let mut game = FakeGame::new("rbx-bytes-lines");
+    let mut st = studio(&mut game);
+    // Ten characters of 6 dp a line, two lines shown.
+    let src = format!(
+        "{BOX}\nbox.MultiLine = true box.TextWrapped = true box.ClearTextOnFocus = false\nbox.TextTruncate = Enum.TextTruncate.AtEnd box.TextYAlignment = Enum.TextYAlignment.Top\nbox.Size = UDim2.fromOffset(60, 16) box.Text = '  日本 語é  🙂🙂 x  y\\nz'\n"
+    );
+    load(&mut game, &mut st, "lines", &src, 0.6);
+    // The text, CursorPosition and SelectionStart, each on a character, and
+    // the screen drawn with its caret.
+    let step = |st: &mut Studio, game: &mut FakeGame| {
+        let state = say(st, game, "state");
+        let mut parts = state.rsplitn(3, '|');
+        let (start, cursor, text) = (parts.next().unwrap(), parts.next().unwrap(), parts.next().unwrap());
+        for v in [cursor, start] {
+            let at: i64 = v.parse().unwrap();
+            assert!(at == -1 || text.is_char_boundary(at as usize - 1), "{state}");
+        }
+        let carets = marks(&screen(st, game))
+            .iter()
+            .filter(|m| m.ends_with(", 1.5, 8.0]"))
+            .count();
+        assert_eq!(carets, 1, "{state}");
+        format!("{cursor}|{start}")
+    };
+    focus_box(&mut st, &mut game);
+    let drawn = screen(&mut st, &mut game);
+    assert_eq!(texts(&drawn), ["日本 語é  🙂🙂", "x  y..."]);
+    // Bytes: the spaces 0 and 1, 日 2, 本 5, 語 9, é 12, the spaces 14 and
+    // 15, 🙂 16 and 20, x 25, y 28, the new line 29 and z 30; 31 in all.
+    assert_eq!(step(&mut st, &mut game), "32|-1");
+    press(&mut st, &mut game, Key::Char('a'), CTRL);
+    assert_eq!(step(&mut st, &mut game), "32|1");
+    // Up from the end, drawn after "x  y", is as far across the line above.
+    press(&mut st, &mut game, Key::Up, SHIFT);
+    assert_eq!(step(&mut st, &mut game), "16|1");
+    press(&mut st, &mut game, Key::Down, NONE);
+    assert_eq!(step(&mut st, &mut game), "32|-1");
+    press(&mut st, &mut game, Key::Up, SHIFT);
+    assert_eq!(step(&mut st, &mut game), "16|32");
+    // Home goes to the line's start, in the spaces no drawn line has; Down
+    // from there is a line of the text down.
+    press(&mut st, &mut game, Key::Home, NONE);
+    assert_eq!(step(&mut st, &mut game), "1|-1");
+    press(&mut st, &mut game, Key::Down, SHIFT);
+    assert_eq!(step(&mut st, &mut game), "31|1");
+    // A press after 日 and a drag past the end of the second line, then
+    // back to just before its y.
+    handle_screen(&mut st, &mut game, Input::Mouse(5.0, 3.0));
+    handle_screen(&mut st, &mut game, Input::Button { left: true, down: true });
+    handle_screen(&mut st, &mut game, Input::Mouse(57.0, 12.0));
+    assert_eq!(step(&mut st, &mut game), "32|6");
+    handle_screen(&mut st, &mut game, Input::Mouse(20.0, 11.0));
+    handle_screen(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    assert_eq!(step(&mut st, &mut game), "29|6");
+    press(&mut st, &mut game, Key::Char('c'), CTRL);
+    assert_eq!(game.clipboard, "本 語é  🙂🙂 x  ");
 }
 
 /// The rectangles drawn after the first that starts with `first`.
