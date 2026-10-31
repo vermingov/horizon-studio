@@ -2875,7 +2875,9 @@ fn note_bubble(st: &mut Studio, p: &mut P, panel: [f32; 4], [text_x, top_y, bott
     if y1 <= top_y || y0 >= bottom || w < 120.0 || area[3] < 2.0 * PAD + LINE + foot {
         return;
     }
-    let line = &ed.lines[m.first];
+    let Some(line) = ed.lines.get(m.first) else {
+        return;
+    };
     let indent = (line.len() - line.trim_start().len()).saturating_sub(ed.hscroll);
     let ix = p.measure(&" ".repeat(indent), code_size(), Font::Mono);
     let x = (text_x + ix - 14.0).min(area[0] + area[2] - w).max(area[0]);

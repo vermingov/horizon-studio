@@ -1055,6 +1055,8 @@ impl Editor {
         let scroll = self.scroll;
         self.begin(EditKind::Other);
         self.set_text(&text);
+        // It reads now: what it couldn't read before is past.
+        self.problem = None;
         self.dirty = false;
         self.conflict = false;
         self.anchor = None;
@@ -2091,6 +2093,11 @@ pub fn accept_suggestion(st: &mut Studio, i: usize) {
         }
     } else {
         let ed = &mut st.s.editor;
+        // Its word isn't where it was (the text changed under the list):
+        // the list just closes.
+        if sg.start > ed.col || !ed.lines[ed.row].is_char_boundary(sg.start) {
+            return;
+        }
         ed.anchor = Some((ed.row, sg.start.min(ed.col)));
         ed.insert(&item.insert);
         let next = ed.lines[ed.row][ed.col..].chars().next();

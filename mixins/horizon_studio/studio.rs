@@ -1238,6 +1238,8 @@ impl Studio {
             let title = self.file_title(to);
             self.s.editor.moved(to, &title);
             self.s.editor.disk = disk;
+            // Agents' marks go along before what is there now is read in.
+            super::hstudio_coach::follow_marks(self);
             if self.s.editor.sync_disk() {
                 self.s.editor.reloaded_at = Some(self.s.now);
             }
@@ -1713,6 +1715,8 @@ impl Studio {
                 .map_err(|e| format!("could not save {}: {e}; nothing was deleted", ed.title))?;
         }
         let moved = to_trash(&self.trash_dir(), &self.s.mods_dir(), &target)?;
+        // Agents' marks in what went go with it.
+        super::hstudio_coach::file_gone(self, &target);
         if let Some(f) = &folder {
             prune_empty(f, target.parent());
         }

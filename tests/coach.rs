@@ -469,6 +469,70 @@ fn opening_waits_for_the_player_and_never_puts_their_edits_aside() {
     assert_eq!((&s["file"], &s["dirty"]), (&json!("scratch.lua"), &json!(false)));
 }
 
+#[test]
+fn a_file_the_editor_couldnt_read_is_never_read_changed_or_saved_through_it() {
+    let mut game = FakeGame::new("coach-unreadable");
+    let mut st = studio(&mut game);
+    // A script in Windows-1252, not UTF-8: the editor opens it empty, and says why.
+    let bytes: &[u8] = b"-- caf\xe9\nprint('hello')\nlocal x = 1\n";
+    let path = game.mods_dir().join("latin.lua");
+    std::fs::create_dir_all(game.mods_dir()).unwrap();
+    std::fs::write(&path, bytes).unwrap();
+    st.scan(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    st.s.now = 10.0;
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "latin" })).unwrap();
+    assert!(r["did"].as_str().unwrap().contains("couldn't read latin.lua"), "{r}");
+    assert!(st.s.editor.problem.is_some());
+    // Reading it, changing it, marking it and teaching in it say why, and do nothing.
+    let e = ask(&mut st, &mut game, "editor", json!({})).unwrap_err();
+    assert!(e.contains("couldn't read latin.lua") && e.contains("UTF-8"), "{e}");
+    for (method, params) in [
+        (
+            "edit",
+            json!({ "text": "print('new')\n", "typing": false, "save": true }),
+        ),
+        ("mark", json!({ "start_line": 1, "note": "Here." })),
+        (
+            "lesson",
+            json!({ "title": "T", "steps": [{ "start_line": 1, "note": "One." }] }),
+        ),
+    ] {
+        let e = ask(&mut st, &mut game, method, params).unwrap_err();
+        assert!(e.contains("couldn't read latin.lua"), "{method}: {e}");
+    }
+    // So with the studio closed, where an edit is saved by default.
+    st.s.ui.open = false;
+    let e = ask(&mut st, &mut game, "edit", json!({ "start_line": 1, "new_text": "x" })).unwrap_err();
+    assert!(e.contains("couldn't read latin.lua"), "{e}");
+    st.s.ui.open = true;
+    // What the player types into the empty buffer isn't saved over the
+    // file by save_script, nor when the game's own agent's turn ends well.
+    handle(&mut st, &mut game, Input::Text("oops".into()));
+    st.s.now += 3.0;
+    let e = ask(&mut st, &mut game, "save", json!({})).unwrap_err();
+    assert!(e.contains("couldn't read latin.lua"), "{e}");
+    st.s.ui.coach.turn_ended(true);
+    run_for(&mut st, &mut game, 0.1);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "the file is as it was");
+    // Written again in UTF-8 (write_mod, another program): read in, it is the agent's to read.
+    st.open_file(&path);
+    assert!(st.s.editor.problem.is_some() && !st.s.editor.dirty);
+    std::fs::write(&path, "-- café\nprint('hello')\n").unwrap();
+    look_at_disk(&mut st, &mut game);
+    while st.s.ui.coach.typing.is_some() {
+        frame(&mut st, &mut game);
+    }
+    assert!(st.s.editor.problem.is_none());
+    let r = ask(&mut st, &mut game, "editor", json!({})).unwrap();
+    assert_eq!(
+        (&r["line_count"], &r["lines"][0]),
+        (&json!(2), &json!("-- café")),
+        "{r}"
+    );
+}
+
 // ----------------------------------------------------------------- live edits
 
 #[test]
@@ -584,6 +648,41 @@ fn the_players_cursor_keeps_its_place_and_the_view_follows_the_agent() {
 }
 
 #[test]
+fn a_cursor_at_the_end_of_what_an_edit_replaces_ends_after_the_new_text() {
+    // "55" becomes "1000": what goes is columns 10-12 of line 1, typed in
+    // as the player watches or put in at once, to the same end.
+    for typing in [true, false] {
+        let src = "local x = 55\nprint(x)\n";
+        let edit = json!({ "old_text": "local x = 55", "new_text": "local x = 1000", "typing": typing });
+        let run = |caret: (usize, usize), anchor: Option<(usize, usize)>| {
+            let (mut game, mut st) = editing(&format!("coach-park-{typing}"), "park", src);
+            st.s.editor.click(caret.0, caret.1, false);
+            st.s.editor.anchor = anchor;
+            let r = ask(&mut st, &mut game, "edit", edit.clone()).unwrap();
+            if let Some(id) = r["typing"].as_u64() {
+                typed_in(&mut st, &mut game, id);
+            }
+            assert_eq!(st.s.editor.lines[0], "local x = 1000");
+            (game, st)
+        };
+        // At the end of what went: after the new text, and the player's
+        // next key lands after the agent's code.
+        let (mut game, mut st) = run((0, 12), None);
+        assert_eq!((st.s.editor.row, st.s.editor.col), (0, 14), "typing {typing}");
+        handle(&mut st, &mut game, Input::Text(" -- big".into()));
+        assert_eq!(st.s.editor.lines[0], "local x = 1000 -- big", "typing {typing}");
+        // Inside it: at the new text's start.
+        let (_, st) = run((0, 11), None);
+        assert_eq!((st.s.editor.row, st.s.editor.col), (0, 10), "typing {typing}");
+        // The selection's other end the same way.
+        let (_, st) = run((0, 0), Some((0, 12)));
+        assert_eq!(st.s.editor.anchor, Some((0, 14)), "typing {typing}");
+        let (_, st) = run((0, 0), Some((0, 11)));
+        assert_eq!(st.s.editor.anchor, Some((0, 10)), "typing {typing}");
+    }
+}
+
+#[test]
 fn an_edit_lands_at_once_when_the_player_types() {
     let (mut game, mut st) = editing("coach-cut", "greet", GREET);
     let path = st.s.editor.path.clone().unwrap();
@@ -614,6 +713,96 @@ fn an_edit_lands_at_once_when_the_player_types() {
     assert_eq!(st.s.editor.text(), "local n = 0\nprint('hello there')\nreturn n\n");
     st.s.editor.undo();
     assert_eq!(st.s.editor.text(), GREET);
+}
+
+#[test]
+fn the_editors_suggestions_stay_with_the_players_word_through_an_edit() {
+    let start = |st: &Studio| st.s.ui.suggest.as_ref().map(|s| s.start);
+    // The player types after "local x = 1": the list opens at their word.
+    let (mut game, mut st) = editing("coach-suggest-word", "sg", "local x = 1\nreturn x\n");
+    st.s.editor.click(0, 11, false);
+    for t in [" + ", "p", "r", "i"] {
+        handle(&mut st, &mut game, Input::Text(t.into()));
+    }
+    assert_eq!(start(&st), Some(14));
+    // An agent's edit before it on their line lands at once (they are
+    // typing): the list goes with their word, and Tab puts the suggestion
+    // over that word alone.
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "local x = 1", "new_text": "local count = 1" }),
+    )
+    .unwrap();
+    assert_eq!(r["animated"], false);
+    assert_eq!(st.s.editor.lines[0], "local count = 1 + pri");
+    assert_eq!(start(&st), Some(18));
+    let item = st.s.ui.suggest.as_ref().unwrap().items[0].insert.clone();
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    let line = st.s.editor.lines[0].clone();
+    assert!(line.starts_with(&format!("local count = 1 + {item}")), "{line:?}");
+    // Letters of more than a byte before it, as Ctrl+Space shows the list.
+    let (mut game, mut st) = editing("coach-suggest-bytes", "sg", "x = \nreturn x\n");
+    st.s.editor.click(0, 4, false);
+    handle(&mut st, &mut game, Input::Text("pri".into()));
+    handle(&mut st, &mut game, key(Key::Char(' '), CTRL));
+    ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "x = pri", "new_text": "aéé = pri" }),
+    )
+    .unwrap();
+    assert_eq!(start(&st), Some(8));
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert!(
+        st.s.editor.lines[0].starts_with("aéé = pri"),
+        "{:?}",
+        st.s.editor.lines[0]
+    );
+    // An edit that changes the word itself closes the list.
+    let (mut game, mut st) = editing("coach-suggest-gone", "sg", "x = \nreturn x\n");
+    st.s.editor.click(0, 4, false);
+    handle(&mut st, &mut game, Input::Text("pri".into()));
+    assert!(start(&st).is_some());
+    ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "pri", "new_text": "pairs" }),
+    )
+    .unwrap();
+    assert_eq!(st.s.editor.lines[0], "x = pairs");
+    assert_eq!(start(&st), None);
+    // One typed in elsewhere as the player watches leaves it open, for Tab.
+    let (mut game, mut st) = editing("coach-suggest-far", "sg", "x = \nreturn x\n");
+    st.s.editor.click(0, 4, false);
+    handle(&mut st, &mut game, Input::Text("pri".into()));
+    run_for(&mut st, &mut game, 2.5);
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "return x", "new_text": "return x + 1" }),
+    )
+    .unwrap();
+    typed_in(&mut st, &mut game, r["typing"].as_u64().expect("typed in"));
+    assert_eq!(start(&st), Some(4));
+    let item = st.s.ui.suggest.as_ref().unwrap().items[0].insert.clone();
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert!(
+        st.s.editor.lines[0].starts_with(&format!("x = {item}")),
+        "{:?}",
+        st.s.editor.lines[0]
+    );
+    // A list whose word isn't where it says any more just closes.
+    let (mut game, mut st) = editing("coach-suggest-stale", "sg", "x = \nreturn x\n");
+    st.s.editor.click(0, 4, false);
+    handle(&mut st, &mut game, Input::Text("pri".into()));
+    st.s.ui.suggest.as_mut().unwrap().start = 40;
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert_eq!((st.s.editor.lines[0].as_str(), start(&st)), ("x = pri", None));
 }
 
 #[test]
@@ -1534,6 +1723,97 @@ fn a_file_opened_again_or_moved_keeps_its_marks() {
     let m = &st.s.ui.coach.marks[0];
     assert_eq!((&m.path, m.file.as_str()), (&to, "kit/lib/helpers.lua"));
     assert_eq!(marked(&st), [(0, 0)]);
+    // The script open made a module elsewhere (write_mod), its text changed
+    // too: the scan takes the editor and its marks along, and they follow
+    // the new text.
+    let (mut game, mut st) = editing("coach-moved-changed", "greet", GREET);
+    ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "start_line": 2, "note": "It says hi." }),
+    )
+    .unwrap();
+    let mods = game.mods_dir();
+    std::fs::create_dir_all(mods.join("greet")).unwrap();
+    std::fs::write(mods.join("greet/main.lua"), format!("-- a module now\n{GREET}")).unwrap();
+    std::fs::remove_file(mods.join("greet.lua")).unwrap();
+    st.scan(&mut game);
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.editor.title, "greet/main.lua");
+    let m = &st.s.ui.coach.marks[0];
+    assert_eq!(
+        (&m.path, m.file.as_str()),
+        (&mods.join("greet/main.lua"), "greet/main.lua")
+    );
+    assert_eq!(marked(&st), [(2, 2)], "on its line in the new text");
+}
+
+#[test]
+fn a_file_deleted_takes_its_marks_and_one_renamed_to_its_name_has_none() {
+    let (mut game, mut st) = with_module("coach-gone-marks");
+    let kit = game.mods_dir().join("kit");
+    let long: String = (1..=20).map(|i| format!("local v{i} = {i}\n")).collect::<String>() + "return {}\n";
+    let short = "return {\n  two = 2,\n}\n";
+    for (name, text) in [
+        ("a.lua", long.as_str()),
+        ("b.lua", short),
+        ("c.lua", long.as_str()),
+        ("d.lua", short),
+    ] {
+        std::fs::write(kit.join(name), text).unwrap();
+    }
+    st.scan(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    st.s.now = 10.0;
+    st.s.ui.look.motion = false;
+    // Lines 6-7 of a.lua marked, its note the open one; then b.lua opens.
+    let mark = json!({ "start_line": 6, "end_line": 7, "note": "These lines are fine." });
+    st.open_file(&kit.join("a.lua"));
+    redraw(&mut st, &mut game);
+    ask(&mut st, &mut game, "mark", mark.clone()).unwrap();
+    ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "local v1 = 1", "new_text": "local v1 = 10", "typing": false }),
+    )
+    .unwrap();
+    st.save_editor(&mut game);
+    ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "local v1 = 10", "new_text": "local v1 = 11", "typing": false }),
+    )
+    .unwrap();
+    assert!(st.s.ui.coach.unsaved.is_some());
+    // a.lua deleted from the script list: its mark, and the record of the
+    // agent's edits to it, go with it (the edits themselves were saved first).
+    st.delete_path(&mut game, &kit.join("a.lua")).unwrap();
+    assert!(st.s.ui.coach.marks.is_empty() && st.s.ui.coach.unsaved.is_none());
+    st.open_file(&kit.join("b.lua"));
+    redraw(&mut st, &mut game);
+    // b.lua renamed to a.lua: the editor follows it, with nothing of a.lua's.
+    st.rename_file(&mut game, &kit.join("b.lua"), "a").unwrap();
+    still(&mut st, &mut game);
+    assert_eq!(st.s.editor.title, "kit/a.lua");
+    assert!(st.s.ui.coach.bubble_at.is_none());
+    // c.lua removed another way (write_mod, a file manager): its mark
+    // waits. d.lua, open, renamed to its name doesn't take it on, and draws.
+    st.open_file(&kit.join("c.lua"));
+    redraw(&mut st, &mut game);
+    ask(&mut st, &mut game, "mark", mark).unwrap();
+    st.open_file(&kit.join("d.lua"));
+    redraw(&mut st, &mut game);
+    std::fs::remove_file(kit.join("c.lua")).unwrap();
+    st.scan(&mut game);
+    assert_eq!(st.s.ui.coach.marks.len(), 1, "waiting for c.lua");
+    st.rename_file(&mut game, &kit.join("d.lua"), "c").unwrap();
+    still(&mut st, &mut game);
+    assert_eq!(st.s.editor.title, "kit/c.lua");
+    assert!(st.s.ui.coach.marks.is_empty(), "the old c.lua's mark is gone");
 }
 
 #[test]

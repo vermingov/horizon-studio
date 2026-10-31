@@ -470,6 +470,20 @@ fn disk_lines(path: &Path, file: &str) -> Result<Vec<String>, String> {
     Ok(Editor::normal(&text).split('\n').map(str::to_owned).collect())
 }
 
+/// Why an agent can't have file `path` through the editor, when the editor
+/// has it open but couldn't read it (a file not in UTF-8, say): the buffer
+/// has none of the file's text, so reading it, changing it or saving it
+/// would lose the file.
+fn unreadable(st: &Studio, path: &Path) -> Option<String> {
+    let ed = &st.s.editor;
+    let problem = ed.problem.as_ref().filter(|_| ed.path.as_deref() == Some(path))?;
+    Some(format!(
+        "the editor couldn't read {} ({problem}): it has none of its text, so nothing is read, changed or saved \
+         through it",
+        ed.title
+    ))
+}
+
 /// How many lines a file has, as an agent counts them: the empty line after
 /// a last line break isn't one.
 pub fn line_count(lines: &[String]) -> usize {
@@ -510,6 +524,9 @@ pub(crate) fn lines_text(first: usize, last: usize) -> String {
 /// file is open and has unsaved edits, the player's cursor and selection.
 pub fn read(st: &mut Studio, params: &Json) -> Result<Json, String> {
     let t = target(st, params, false)?;
+    if let Some(why) = unreadable(st, &t.path) {
+        return Err(why);
+    }
     let ed = &st.s.editor;
     let open = ed.path.as_deref() == Some(t.path.as_path());
     let lines = if open {
@@ -714,6 +731,11 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
         let in_run = in_run(st, by);
         say(st, by, in_run, text, Some(jump));
     }
+    // A file the editor couldn't read shows none of its text: the agent hears why.
+    let did = match unreadable(st, &t.path) {
+        Some(why) => format!("{did}, but {why}"),
+        None => did,
+    };
     let ed = &st.s.editor;
     Ok(json!({
         "ok": true,
@@ -1059,6 +1081,9 @@ fn did_text(removed: Option<(usize, usize)>, lines: (usize, usize), animated: bo
 pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> Result<Json, String> {
     finish_typing(st, "another edit came");
     let t = target(st, params, false)?;
+    if let Some(why) = unreadable(st, &t.path) {
+        return Err(why);
+    }
     let open = st.s.editor.path.as_deref() == Some(t.path.as_path());
     let lines = if open {
         st.s.editor.lines.clone()
@@ -1138,14 +1163,15 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
         reload: false,
     };
     if seen && !hands_off {
-        // The edit's first line in view, a third of the way down.
+        // The edit's first line in view, a third of the way down. (The
+        // editor's suggestions stay open: each splice keeps them with the
+        // player's word.)
         let ed = &mut st.s.editor;
         if from.0 < ed.scroll || from.0 >= ed.scroll + page {
             ed.scroll = from.0.saturating_sub(page / 3);
             typing.show_old = SHOW_OLD_SCROLLED;
         }
         typing.scroll = ed.scroll;
-        st.s.ui.suggest = None;
     }
     if animated {
         st.s.ui.coach.typing = Some(typing);
@@ -1350,15 +1376,20 @@ fn cut_off(st: &mut Studio, t: Typing) {
 /// new comes in at its pace.
 fn advance(st: &mut Studio, t: &mut Typing) {
     let now = st.s.now;
+    let word = suggested_word(st);
     let ed = &mut st.s.editor;
     match t.phase {
         Phase::ShowOld => {
             if now - t.since < t.show_old {
                 return;
             }
+            // A cursor in what goes stays at the new text's start; one at
+            // its end goes on with the text after it, so it ends after the
+            // new text, where one splice puts it.
+            let (from, old_to) = (t.from, t.old_to);
+            let inside = |p: (usize, usize)| from <= p && p < old_to;
+            t.parked = (inside((ed.row, ed.col)), ed.anchor.is_some_and(inside));
             t.at = ed.splice(t.from, t.old_to, "");
-            // A cursor that was in what went stays at the new text's start.
-            t.parked = ((ed.row, ed.col) == t.from, ed.anchor == Some(t.from));
             t.phase = Phase::Typing;
             t.since = now;
         }
@@ -1381,6 +1412,36 @@ fn advance(st: &mut Studio, t: &mut Typing) {
     if t.reload {
         ed.dirty = false;
     }
+    keep_suggestions(st, word);
+}
+
+/// The word the editor's suggestions are for (from where it starts to the
+/// player's cursor), while they show.
+fn suggested_word(st: &Studio) -> Option<String> {
+    let sg = st.s.ui.suggest.as_ref().filter(|sg| !sg.console)?;
+    let ed = &st.s.editor;
+    ed.lines.get(ed.row)?.get(sg.start..ed.col).map(str::to_owned)
+}
+
+/// The editor's suggestions after an agent's change to the buffer (`word`:
+/// the word they were for): they stay with it wherever the change moved
+/// it, or close when the change took it away, so a Tab never puts a
+/// suggestion over other text.
+fn keep_suggestions(st: &mut Studio, word: Option<String>) {
+    if !st.s.ui.suggest.as_ref().is_some_and(|sg| !sg.console) {
+        return;
+    }
+    let ed = &st.s.editor;
+    let before = ed.lines.get(ed.row).and_then(|l| l.get(..ed.col)).unwrap_or("");
+    let start = word.filter(|w| before.ends_with(w.as_str())).map(|w| ed.col - w.len());
+    match start {
+        Some(start) => {
+            if let Some(sg) = st.s.ui.suggest.as_mut() {
+                sg.start = start;
+            }
+        }
+        None => st.s.ui.suggest = None,
+    }
 }
 
 /// The player's cursor (and the selection's other end) back at the new
@@ -1397,6 +1458,7 @@ fn unpark(ed: &mut Editor, t: &Typing) {
 
 /// The rest of an edit in at once.
 fn complete(st: &mut Studio, t: &mut Typing) {
+    let word = suggested_word(st);
     let ed = &mut st.s.editor;
     if t.phase == Phase::ShowOld {
         t.at = ed.splice(t.from, t.old_to, &t.text);
@@ -1410,6 +1472,7 @@ fn complete(st: &mut Studio, t: &mut Typing) {
     if t.reload {
         ed.dirty = false;
     }
+    keep_suggestions(st, word);
 }
 
 /// The agent's caret while the view follows it (an edit coming in, the
@@ -1507,6 +1570,9 @@ fn save_now(st: &mut Studio, game: &mut dyn GameApi, by: &By, in_run: bool) -> R
     let ed = &st.s.editor;
     let file = ed.title.clone();
     let path = ed.path.clone().ok_or("the editor has no file open")?;
+    if let Some(why) = unreadable(st, &path) {
+        return Err(why);
+    }
     if st.s.ui.coach.player_editing(st.s.now) {
         return Err(format!("the player is typing in {file}"));
     }
@@ -1677,6 +1743,9 @@ pub fn save(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
              there is nothing to save",
             t.file
         ));
+    }
+    if let Some(why) = unreadable(st, &t.path) {
+        return Err(why);
     }
     if !ed.dirty {
         return Ok(json!({
@@ -1951,6 +2020,9 @@ fn reveal_rows(st: &mut Studio, first: usize, last: usize) {
 /// agent's other marks first.
 pub fn mark(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let t = target(st, params, false)?;
+    if let Some(why) = unreadable(st, &t.path) {
+        return Err(why);
+    }
     // The marks there are, on their lines now (a new one is followed from here).
     follow_marks(st);
     let open = st.s.editor.path.as_deref() == Some(t.path.as_path());
@@ -2229,11 +2301,17 @@ pub fn follow_marks(st: &mut Studio) {
     match c.followed.as_mut() {
         Some(f) if f.path == path && same_rev => return,
         Some(f) if same_rev => {
-            // The same buffer at another path: the file moved.
+            // The same buffer at another path: the file moved. Marks already
+            // at that path are another file's, gone from there (a lesson's
+            // steps stay, kept inside this one); this file's go along.
             let from = std::mem::replace(&mut f.path, path.clone());
+            c.marks.retain(|m| m.path != path || m.step.is_some());
             for m in c.marks.iter_mut().filter(|m| m.path == from) {
                 m.path = path.clone();
                 m.file = ed.title.clone();
+            }
+            for m in c.marks.iter_mut().filter(|m| m.path == path) {
+                settle(m, &ed.lines);
             }
             if let Some(u) = c.unsaved.as_mut().filter(|u| u.path == from) {
                 u.path = path;
@@ -2269,6 +2347,18 @@ pub fn follow_marks(st: &mut Studio) {
         rev: ed.revision,
         hashes: now,
     });
+}
+
+/// A file the studio deleted (or a module's folder, with its files): the
+/// marks there go, but a lesson's steps (the lesson says the file isn't
+/// there when it gets to them), and so does the record of an agent's
+/// unsaved edits to it.
+pub fn file_gone(st: &mut Studio, path: &Path) {
+    let c = &mut st.s.ui.coach;
+    c.marks.retain(|m| m.step.is_some() || !m.path.starts_with(path));
+    if c.unsaved.as_ref().is_some_and(|u| u.path.starts_with(path)) {
+        c.unsaved = None;
+    }
 }
 
 /// The open mark, while the editor has its file open.
@@ -2542,6 +2632,9 @@ pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -
         } else {
             base.clone().map_err(|e| format!("step {n}: {e}"))?
         };
+        if let Some(why) = unreadable(st, &t.path) {
+            return Err(format!("step {n}: {why}"));
+        }
         let lines = match read.iter().find(|(p, _)| *p == t.path) {
             Some((_, lines)) => lines.clone(),
             None => {
@@ -3116,11 +3209,13 @@ pub fn sync_disk(st: &mut Studio) -> bool {
     let page = st.s.ui.page.max(1);
     let ed = &mut st.s.editor;
     let (from, old_to) = (ed.pos_at(a), ed.pos_at(b));
-    // One undo step for all of it, as when the editor reads a file again.
+    // One undo step for all of it, as when the editor reads a file again
+    // (it reads now: what it couldn't read before is past).
     ed.agent_begin();
     ed.dirty = false;
     ed.disk = stamp;
     ed.removed = false;
+    ed.problem = None;
     let c = &mut st.s.ui.coach;
     let id = c.next_edit;
     c.next_edit += 1;
