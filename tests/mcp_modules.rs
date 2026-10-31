@@ -383,6 +383,126 @@ fn files_given_are_checked_over_the_others_as_they_are() {
 }
 
 #[test]
+fn a_mod_on_disk_is_run_as_it_is_whatever_its_encoding_or_size() {
+    let mut s = server();
+    let studio = Folder::new("on-disk");
+    let mods = studio.mods();
+    let d = mods.to_str().unwrap();
+    // A module whose main.lua is saved in Latin-1 (not UTF-8): the game runs it.
+    let kit = mods.join("kit");
+    std::fs::create_dir_all(&kit).unwrap();
+    std::fs::write(
+        kit.join("main.lua"),
+        b"-- caf\xe9\nlocal lib = require('lib')\ncommand('kit', function() return lib.word end)\n",
+    )
+    .unwrap();
+    std::fs::write(kit.join("lib.lua"), "return { word = 'kit runs' }\n").unwrap();
+    std::fs::write(kit.join("shared.lua"), "return {}\n").unwrap();
+    let (r, error) = call(&mut s, "check_mod", json!({ "id": "kit", "mods_dir": d }));
+    assert!(!error, "{r:#}");
+    assert_eq!(r["mod"]["state"], "running", "{r:#}");
+    let steps = json!([{ "command": "/kit", "expect_chat": "kit runs" }]);
+    let (r, error) = call(
+        &mut s,
+        "test_mod",
+        json!({ "id": "kit", "mods_dir": d, "steps": steps }),
+    );
+    assert!(!error && r["ok"] == true, "{r:#}");
+    // With only another file of its: two files besides main.lua, then one.
+    std::fs::remove_file(kit.join("shared.lua")).unwrap();
+    let (r, error) = call(&mut s, "check_mod", json!({ "id": "kit", "mods_dir": d }));
+    assert!(!error, "{r:#}");
+    // A script in Latin-1: listed, checked and loaded with run_lua.
+    std::fs::write(
+        mods.join("lamp.lua"),
+        b"-- caf\xe9\ncommand('lamp', function() return 'on' end)\n",
+    )
+    .unwrap();
+    let (r, _) = call(&mut s, "list_mods", json!({ "mods_dir": d }));
+    assert!(r["mods"].as_array().unwrap().iter().any(|m| m["id"] == "lamp"), "{r:#}");
+    let (r, error) = call(&mut s, "check_mod", json!({ "id": "lamp", "mods_dir": d }));
+    assert!(!error, "{r:#}");
+    assert_eq!(r["mod"]["commands"], json!(["lamp"]), "{r:#}");
+    let (r, error) = call(
+        &mut s,
+        "run_lua",
+        json!({ "code": "print('with lamp')", "with_mod": "lamp", "live": false, "mods_dir": d }),
+    );
+    assert!(!error, "{r:#}");
+    // read_mod gives text: it says why it can't, not that there is no mod.
+    let (r, error) = call(&mut s, "read_mod", json!({ "id": "lamp", "mods_dir": d }));
+    assert!(
+        error && r.as_str().unwrap_or("").contains("lamp.lua is not UTF-8 text"),
+        "{r}"
+    );
+    // A main.lua over 1 MiB.
+    let big = mods.join("big");
+    std::fs::create_dir_all(&big).unwrap();
+    let main = format!("-- {}\nlocal lib = require('lib')\n", "x".repeat(1_200_000));
+    std::fs::write(big.join("main.lua"), main).unwrap();
+    std::fs::write(big.join("lib.lua"), "return {}\n").unwrap();
+    let (r, error) = call(&mut s, "check_mod", json!({ "id": "big", "mods_dir": d }));
+    assert!(!error, "{r:#}");
+    assert_eq!(r["mod"]["state"], "running", "{r:#}");
+}
+
+#[test]
+fn a_check_runs_the_mod_the_studio_lists() {
+    let mut s = server();
+    let studio = Folder::new("listed");
+    let mods = studio.mods();
+    let d = mods.to_str().unwrap();
+    // "Night Light.lua" holds night_light; a night_light/ module beside it
+    // is passed over, by the studio and so by the check.
+    std::fs::write(mods.join("Night Light.lua"), "print('the script the game runs')\n").unwrap();
+    std::fs::create_dir_all(mods.join("night_light")).unwrap();
+    std::fs::write(mods.join("night_light/main.lua"), "print('the module passed over')\n").unwrap();
+    std::fs::write(mods.join("night_light/old.lua"), "return 'passed over too'\n").unwrap();
+    let (r, error) = call(&mut s, "check_mod", json!({ "id": "night_light", "mods_dir": d }));
+    assert!(!error, "{r:#}");
+    assert_eq!(r["mod"]["kind"], "script", "{r:#}");
+    let log = r["log"].to_string();
+    assert!(
+        log.contains("the script the game runs") && !log.contains("passed over"),
+        "{r:#}"
+    );
+    // Its files given are checked alone, as a script's: not over that module's.
+    let (r, error) = call(
+        &mut s,
+        "check_mod",
+        json!({ "id": "night_light", "mods_dir": d, "files": { "main.lua": "print('a module now')\n" } }),
+    );
+    assert!(!error, "{r:#}");
+    assert_eq!(r["mod"]["files"], json!(["main.lua"]), "{r:#}");
+    // A library in a folder named otherwise ("UI Bits/" is ui_bits) comes
+    // with its assets, as the game has it.
+    let lib = mods.join("UI Bits");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(
+        lib.join("main.lua"),
+        "local box = mesh.load('box.obj')\nexport({ size = function() return 3 end })\n",
+    )
+    .unwrap();
+    let obj = format!("# {}\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", "x".repeat(1_100_000));
+    std::fs::write(lib.join("box.obj"), obj).unwrap();
+    std::fs::write(
+        mods.join("user.lua"),
+        "local ui = import('ui_bits')\ncommand('size', function() return 'size ' .. ui.size() end)\n",
+    )
+    .unwrap();
+    let (r, error) = call(&mut s, "check_mod", json!({ "id": "user", "mods_dir": d }));
+    assert!(!error, "{r:#}");
+    assert_eq!(r["libraries"], json!(["ui_bits"]), "{r:#}");
+    let steps = json!([{ "command": "/size", "expect_chat": "size 3" }]);
+    let (r, error) = call(
+        &mut s,
+        "test_mod",
+        json!({ "id": "user", "mods_dir": d, "steps": steps }),
+    );
+    assert!(!error && r["ok"] == true, "{r:#}");
+}
+
+#[test]
 fn only_main_lua_for_a_script_moves_a_file_to_the_trash() {
     let mut s = server();
     let studio = Folder::new("stray");
@@ -469,12 +589,33 @@ fn an_id_another_file_of_the_mods_folder_holds_is_refused() {
     // its assets (one over 1 MiB, which isn't read as text).
     let folder = mods.join("Desk Lamp");
     std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(folder.join("main.lua"), "local box = mesh.load('box.obj')\n").unwrap();
+    std::fs::write(
+        folder.join("main.lua"),
+        "local lib = require('lib')\nlocal box = mesh.load('box.obj')\ncommand('lamp', function() return lib.word end)\n",
+    )
+    .unwrap();
+    std::fs::write(folder.join("lib.lua"), "return { word = 'on' }\n").unwrap();
     let obj = format!("# {}\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", "x".repeat(1_100_000));
     std::fs::write(folder.join("box.obj"), obj).unwrap();
     let (r, error) = call(&mut s, "check_mod", json!({ "id": "desk_lamp", "mods_dir": d }));
     assert!(!error, "{r:#}");
     assert_eq!(r["mod"]["state"], "running", "{r:#}");
+    // Some of its files, checked and tested over its others in that folder.
+    let main = "local lib = require('lib')\nlocal box = mesh.load('box.obj')\ncommand('lamp', function() return 'lamp ' .. lib.word end)\n";
+    let (r, error) = call(
+        &mut s,
+        "check_mod",
+        json!({ "id": "desk_lamp", "mods_dir": d, "files": { "main.lua": main } }),
+    );
+    assert!(!error, "{r:#}");
+    assert_eq!(r["mod"]["files"], json!(["main.lua", "lib.lua"]), "{r:#}");
+    let (r, error) = call(
+        &mut s,
+        "test_mod",
+        json!({ "id": "desk_lamp", "mods_dir": d, "files": { "main.lua": main },
+                "steps": [{ "command": "/lamp", "expect_chat": "lamp on" }] }),
+    );
+    assert!(!error && r["ok"] == true, "{r:#}");
     // A mod's own file is written as before.
     for text in ["print('lamp')\n", "print('lamp, again')\n"] {
         let (r, error) = call(

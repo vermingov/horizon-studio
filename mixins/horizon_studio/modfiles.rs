@@ -143,6 +143,16 @@ pub fn find_mods(mods: &Path) -> Vec<(String, PathBuf, Option<PathBuf>)> {
     found
 }
 
+/// The mod the mods folder has under `id`, as the studio lists it
+/// (`find_mods`: "Night Light.lua" is night_light, and of two names with one
+/// id the first): its main file, and its folder for a module.
+pub fn find_mod(mods: &Path, id: &str) -> Option<(PathBuf, Option<PathBuf>)> {
+    find_mods(mods)
+        .into_iter()
+        .find(|f| f.0 == id)
+        .map(|(_, main, folder)| (main, folder))
+}
+
 /// Whether a new mod can't take `id`: the mods folder has `<id>.lua` or
 /// `<id>` already, or a mod whose own name gives that id ("My Mod.lua" is
 /// my_mod's). Of two mods with one id only one is listed, so the new one

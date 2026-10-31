@@ -352,13 +352,14 @@ impl Drop for Run {
 
 /// Where a mod's files are: a folder with main.lua, or one .lua file.
 pub enum Source {
-    /// A mod in a mods folder, by id (and its libraries from there).
+    /// A mod in a mods folder, by the id the studio lists it under (and its
+    /// libraries from there), run as it is on disk.
     Installed { mods_dir: PathBuf, id: String },
     /// Files given as text: `main.lua` (and others) for a folder mod, or one
     /// file named `<id>.lua`; the libraries it imports come from `libraries`
-    /// (a mods folder), else the bundled ones. For a module that folder has,
-    /// the files given go over its own and `remove` (paths in it) are taken
-    /// away, as writing them would leave it on disk.
+    /// (a mods folder), else the bundled ones. For a module that folder has
+    /// under that id, the files given go over its own and `remove` (paths in
+    /// it) are taken away, as writing them would leave it on disk.
     Files {
         id: String,
         files: Vec<(String, String)>,
@@ -367,24 +368,29 @@ pub enum Source {
     },
 }
 
-/// The mod a mods folder has under `id`, as the studio lists it
-/// (`find_mods`: "Night Light.lua" is night_light, and of two names with one
-/// id the first): its main file, and its folder for a module.
-pub fn find_mod(mods_dir: &Path, id: &str) -> Option<(PathBuf, Option<PathBuf>)> {
-    crate::game::hstudio_modfiles::find_mods(mods_dir)
-        .into_iter()
-        .find(|f| f.0 == id)
-        .map(|(_, main, folder)| (main, folder))
+pub use crate::game::hstudio_modfiles::find_mod;
+
+/// The mod a mods folder has under `id`: the one the studio lists
+/// (`find_mod`), else one named `<id>/` or `<id>.lua` itself (an id longer
+/// than the studio's, which it lists cut short): its main file, and its
+/// folder for a module.
+fn locate(mods_dir: &Path, id: &str) -> Option<(PathBuf, Option<PathBuf>)> {
+    find_mod(mods_dir, id).or_else(|| {
+        let folder = mods_dir.join(id);
+        let script = mods_dir.join(format!("{id}.lua"));
+        if folder.join("main.lua").is_file() {
+            Some((folder.join("main.lua"), Some(folder)))
+        } else {
+            script.is_file().then_some((script, None))
+        }
+    })
 }
 
 /// A mod's files as (path in the mod, text): the mod the studio has under
 /// that id, whatever its file is called (a script's file is `<id>.lua`).
 pub fn read_mod(mods_dir: &Path, id: &str) -> Result<Vec<(String, String)>, String> {
-    let (main, folder) = find_mod(mods_dir, id).unwrap_or_else(|| {
-        let folder = mods_dir.join(id);
-        let module = folder.join("main.lua").is_file();
-        (mods_dir.join(format!("{id}.lua")), module.then_some(folder))
-    });
+    let none = || format!("no mod '{id}' in {}", mods_dir.display());
+    let (main, folder) = locate(mods_dir, id).ok_or_else(none)?;
     if let Some(folder) = folder {
         let mut files = Vec::new();
         let mut stack = vec![(folder.clone(), 0)];
@@ -405,10 +411,14 @@ pub fn read_mod(mods_dir: &Path, id: &str) -> Result<Vec<(String, String)>, Stri
         files.sort();
         return Ok(files);
     }
-    match std::fs::read_to_string(&main) {
-        Ok(text) => Ok(vec![(format!("{id}.lua"), text)]),
-        Err(_) => Err(format!("no mod '{id}' in {}", mods_dir.display())),
-    }
+    let bytes = std::fs::read(&main).map_err(|_| none())?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        let name = main
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        format!("{name} is not UTF-8 text, which read_mod gives (check_mod and test_mod run it as the game does)")
+    })?;
+    Ok(vec![(format!("{id}.lua"), text)])
 }
 
 /// What `write_mod` wrote: the mod's file, or its module's folder, and for
@@ -645,6 +655,22 @@ fn code_of(mods: &Path, id: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Copies mod `id` of a mods folder (`from`, the mod the studio lists under
+/// that id, whatever its name there) into a run's mods folder (`to`) under
+/// its id, as the game reads it: a module's folder as it is (`copy_folder`:
+/// code and assets, every byte), a script's file. False when `from` has no
+/// such mod.
+fn copy_mod(from: &Path, id: &str, to: &Path) -> Result<bool, String> {
+    match locate(from, id) {
+        Some((_, Some(folder))) => copy_folder(&folder, &to.join(id)),
+        Some((main, None)) => {
+            std::fs::copy(&main, to.join(format!("{id}.lua"))).map_err(|e| format!("{}: {e}", main.display()))?;
+        }
+        None => return Ok(false),
+    }
+    Ok(true)
+}
+
 impl Run {
     /// A run of `source` and the libraries it imports (from the same mods
     /// folder, else the bundled ones), loaded by the first frame.
@@ -653,6 +679,12 @@ impl Run {
         let dir = std::env::temp_dir().join(format!("horizon-studio-headless-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mods = dir.join("mods");
+        // Made first, so a mod refused below takes its folder away with it.
+        let mut run = Run {
+            studio: Studio::new(),
+            game: HeadlessGame::new(dir.clone()),
+            keep: false,
+        };
         std::fs::create_dir_all(&mods).map_err(|e| e.to_string())?;
         // No welcome mod and no bundled libraries but those a mod imports.
         let seen: String = crate::game::hstudio::PREINSTALLED
@@ -660,13 +692,14 @@ impl Run {
             .map(|id| format!("seen:{id}\n"))
             .collect();
         std::fs::write(dir.join("studio.txt"), seen).map_err(|e| e.to_string())?;
+        // A mod is run as it is in its mods folder, found as the studio
+        // finds it ("Desk Lamp/" is desk_lamp), every byte of it.
         let (id, from) = match source {
             Source::Installed { mods_dir, id } => {
-                write_mod(&mods, id, &read_mod(mods_dir, id)?)?;
-                // What read_mod leaves out: assets, and files not text or
-                // too big, from the folder read_mod read.
-                let folder = find_mod(mods_dir, id).and_then(|(_, f)| f);
-                copy_folder(&folder.unwrap_or_else(|| mods_dir.join(id)), &mods.join(id));
+                check_id(id)?;
+                if !copy_mod(mods_dir, id, &mods)? {
+                    return Err(format!("no mod '{id}' in {}", mods_dir.display()));
+                }
                 (id.clone(), Some(mods_dir.clone()))
             }
             Source::Files {
@@ -675,11 +708,16 @@ impl Run {
                 libraries,
                 remove,
             } => {
-                // A module on disk: its files as they are there, every byte,
-                // with those given over them (a script's one file is all of it).
+                // A module on disk: its files as they are there, with those
+                // given over them (a script's one file is all of it).
                 let script = matches!(files.as_slice(), [(name, _)] if *name == format!("{id}.lua"));
-                if let Some(from) = libraries.as_ref().filter(|_| !script) {
-                    copy_folder(&from.join(id), &mods.join(id));
+                let module = libraries
+                    .as_ref()
+                    .filter(|_| !script)
+                    .and_then(|from| locate(from, id))
+                    .and_then(|(_, folder)| folder);
+                if let Some(folder) = module {
+                    copy_folder(&folder, &mods.join(id));
                 }
                 if !files.is_empty() {
                     write_mod(&mods, id, files)?;
@@ -698,25 +736,19 @@ impl Run {
             if !done.insert(lib.clone()) || check_id(&lib).is_err() {
                 continue;
             }
-            let lib_files = from.as_ref().and_then(|d| read_mod(d, &lib).ok()).or_else(|| {
-                EXAMPLES
-                    .iter()
-                    .find(|e| e.id == lib)
-                    .map(|e| vec![(format!("{lib}.lua"), e.source.to_owned())])
-            });
-            if let Some(lib_files) = lib_files {
-                queue.extend(imports_of(&lib_files));
-                write_mod(&mods, &lib, &lib_files)?;
-                if let Some(from) = &from {
-                    copy_folder(&from.join(&lib), &mods.join(&lib));
-                }
+            // From the same mods folder as it is there, else a bundled one.
+            let copied = match &from {
+                Some(from) => copy_mod(from, &lib, &mods)?,
+                None => false,
+            };
+            if !copied {
+                let Some(example) = EXAMPLES.iter().find(|e| e.id == lib) else {
+                    continue;
+                };
+                std::fs::write(mods.join(format!("{lib}.lua")), example.source).map_err(|e| e.to_string())?;
             }
+            queue.extend(imports_of(&code_of(&mods, &lib)));
         }
-        let mut run = Run {
-            studio: Studio::new(),
-            game: HeadlessGame::new(dir),
-            keep: false,
-        };
         run.frame();
         Ok(run)
     }
