@@ -477,20 +477,43 @@ fn only_commands_the_studio_takes_are_listed() {
     run_for(&mut st, &mut game, 0.6);
     assert_eq!(st.chat_commands(), before);
     assert_ne!(st.command_stamp(), stamp, "a reload registers it anew");
-    // Turned off, and deleted.
+    // Turned off and on, failing to load, and deleted. The game's tree reads
+    // the list again only when the stamp changes, so each of these changes it.
     let i = mod_index(&st, "wp");
+    let stamp = st.command_stamp();
     st.set_enabled(&mut game, i, false);
     assert!(!chat_names(&st).contains(&"wp".to_owned()));
+    assert_ne!(st.command_stamp(), stamp, "turned off");
+    let stamp = st.command_stamp();
     st.set_enabled(&mut game, i, true);
     assert!(chat_names(&st).contains(&"wp".to_owned()));
+    assert_ne!(st.command_stamp(), stamp, "turned on");
+    let stamp = st.command_stamp();
+    game.write_mod(
+        "wp.lua",
+        "command('wp', function() end, { args = { 'action' } })\nerror('it fails')\n",
+    );
+    run_for(&mut st, &mut game, 0.6);
+    assert!(!st.s.mods[mod_index(&st, "wp")].running());
+    assert!(!chat_names(&st).contains(&"wp".to_owned()));
+    assert_ne!(st.command_stamp(), stamp, "failed to load");
+    game.write_mod("wp.lua", "command('wp', function() end, { args = { 'action' } })\n");
+    run_for(&mut st, &mut game, 0.6);
+    assert!(chat_names(&st).contains(&"wp".to_owned()));
+    let stamp = st.command_stamp();
     std::fs::remove_file(game.mods_dir().join("wp.lua")).unwrap();
     run_for(&mut st, &mut game, 0.6);
     assert!(!chat_names(&st).contains(&"wp".to_owned()));
+    assert_ne!(st.command_stamp(), stamp, "deleted");
     // The console's command lasts until clear().
+    let stamp = st.command_stamp();
     console(&mut st, &mut game, "command('mine', function() end)");
     assert!(chat_names(&st).contains(&"mine".to_owned()));
+    assert_ne!(st.command_stamp(), stamp, "registered in the console");
+    let stamp = st.command_stamp();
     console(&mut st, &mut game, "clear()");
     assert!(!chat_names(&st).contains(&"mine".to_owned()));
+    assert_ne!(st.command_stamp(), stamp, "cleared");
 }
 
 #[test]
