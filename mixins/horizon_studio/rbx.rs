@@ -1337,7 +1337,7 @@ impl Rbx {
             }
         }
         // The character: an R6 rig that follows the player (hstudio_rbx_world).
-        let rig = super::hstudio_rbx_world::build_character(self, "Player1");
+        let rig = super::hstudio_rbx_world::build_character(self, super::hstudio_rbx_world::NO_NAME);
         self.character = rig.model;
         self.root_part = rig.root;
         self.head = rig.head;
@@ -1671,7 +1671,7 @@ impl Rbx {
             .find(|&c| self.inst(c).name == name)
     }
 
-    fn child_arrived(&mut self, parent: Id, child: Id) {
+    pub fn child_arrived(&mut self, parent: Id, child: Id) {
         let name = self.inst(child).name.clone();
         let cv = self.value(child);
         let mut i = 0;
@@ -2238,6 +2238,9 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
     if let Some(p) = find_prop(c, &k) {
         return one(inst.get(p.name));
     }
+    if let Some(v) = super::hstudio_rbx_world::alias(rbx, id, &k) {
+        return one(v);
+    }
     // Properties made of others.
     let derived = match k.as_str() {
         "Position" | "Orientation" | "Rotation" if is_a(c, "BasePart") => {
@@ -2374,6 +2377,9 @@ fn newindex(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Result<(), Thro
             return rbx.set_parent(id, parent).map_err(|e| lua.rt_error(e));
         }
         "ClassName" => return Err(lua.rt_error("Unable to assign property ClassName. Property is read only")),
+        _ if super::hstudio_rbx_world::alias(rbx, id, &key).is_some() => {
+            return Err(lua.rt_error(format!("Unable to assign property {key}. Property is read only")));
+        }
         _ => {}
     }
     if let Some(p) = find_prop(c, &key) {

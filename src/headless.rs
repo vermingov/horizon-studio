@@ -730,6 +730,15 @@ fn player_patch(p: &mut PlayerInfo, patch: &Json) {
     if let Some(v) = patch.get("dimension").and_then(Json::as_str) {
         p.dimension = v.to_owned();
     }
+    if let Some(v) = patch.get("name").and_then(Json::as_str) {
+        p.name = v.to_owned();
+    }
+    // A UUID as it is written, its dashes or not.
+    if let Some(v) = patch.get("uuid").and_then(Json::as_str)
+        && let Ok(uuid) = u128::from_str_radix(&v.replace('-', ""), 16)
+    {
+        p.uuid = uuid;
+    }
     match patch.get("held") {
         Some(Json::String(item)) => p.held = Some((item.clone(), 1)),
         Some(Json::Null) => p.held = None,
@@ -1062,7 +1071,9 @@ pub const STEPS_HELP: &str = "Each step is an object with one action and any exp
 presses and releases a key: on(\"key\") gets that name as for a real press (\"key.keyboard.space\", \"key.mouse.left\"; \
 headless, keys.down sees it held), or with \"down\": true/false; {\"lua\": \"code\"} runs Lua in the console \
 (globals; import(\"id\") gets a library; assert() fails the step); {\"player\": {\"x\":..,\"y\":..,\"z\":..,\"health\":..,\
-\"mode\":\"creative\",\"held\":\"minecraft:stick\"}} moves or changes the player; {\"block\": [x,y,z], \"id\": \
+\"mode\":\"creative\",\"held\":\"minecraft:stick\",\"name\":\"Steve\",\"uuid\":\"8667ba71-b85a-4004-af54-457a9734eed7\"}} \
+moves or changes the player (name and uuid are their profile's, which Roblox scripts see as the LocalPlayer's Name \
+and UserId); {\"block\": [x,y,z], \"id\": \
 \"minecraft:stone\"} sets a block (live: not available); {\"time\": 13000} sets the day time; {\"click\": \"label\"} \
 clicks text on the open script screen; {\"type\": \"text\"} types into it; {\"reload\": \"id\"} (or true) reloads; \
 {\"camera\": \"first\"|\"third_back\"|\"third_front\"} and {\"pose\": \"crouching\"} set the view and the player's pose \

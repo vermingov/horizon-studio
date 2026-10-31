@@ -19,18 +19,104 @@ const PX: f64 = 0.9375 / 16.0;
 pub const TORSO_Y: f64 = 18.0 * PX;
 /// The eyes above the feet of a player standing.
 pub const EYES_Y: f64 = 1.62;
-/// Health in the layer is the game's times this (20 hearts' worth is 100).
+/// Health in the layer is the game's times this (the game's 20 is 100).
 pub const HEALTH_SCALE: f64 = 5.0;
+/// The LocalPlayer's name until the game says the player's.
+pub const NO_NAME: &str = "Player1";
 
 /// The world as the layer last saw it, between frames.
 pub struct World {
     /// The root part's centre above the player's feet this frame.
     pub root_y: f64,
+    /// The profile name and UUID the LocalPlayer was last given.
+    pub name: String,
+    pub uuid: u128,
 }
 
 impl Default for World {
     fn default() -> Self {
-        World { root_y: TORSO_Y }
+        World {
+            root_y: TORSO_Y,
+            name: NO_NAME.into(),
+            uuid: 0,
+        }
+    }
+}
+
+/// Members Roblox and Horizon have under other names: game.LocalPlayer,
+/// Horizon's own shortcut for game.Players.LocalPlayer, and Roblox's older
+/// game.workspace and Players.localPlayer. They can't be set.
+pub fn alias(rbx: &Rbx, id: Id, key: &str) -> Option<Value> {
+    match key {
+        "LocalPlayer" if id == rbx.game => Some(rbx.value(rbx.local_player)),
+        "workspace" if id == rbx.game => Some(rbx.value(rbx.workspace)),
+        "localPlayer" if id == rbx.players => Some(rbx.value(rbx.local_player)),
+        _ => None,
+    }
+}
+
+/// A Roblox UserId for a profile's UUID: its low 49 bits, a whole number
+/// under 10^15, which tostring writes out in full (1 when there is none, as
+/// the layer's own).
+pub fn user_id(uuid: u128) -> f64 {
+    ((uuid & ((1 << 49) - 1)) as f64).max(1.0)
+}
+
+/// A UUID as it is written: 8-4-4-4-12 hex digits.
+pub fn uuid_text(uuid: u128) -> String {
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        uuid >> 96,
+        (uuid >> 80) & 0xffff,
+        (uuid >> 64) & 0xffff,
+        (uuid >> 48) & 0xffff,
+        uuid & 0xffff_ffff_ffff
+    )
+}
+
+/// Renames an instance as a script's `inst.Name = name` does: Changed fires,
+/// and a WaitForChild waiting for the new name gets it.
+pub fn rename(rbx: &mut Rbx, id: Id, name: &str) {
+    if rbx.inst(id).name == name {
+        return;
+    }
+    rbx.inst_mut(id).name = name.to_owned();
+    rbx.changed(id, "Name", &Value::Nil);
+    if let Some(p) = rbx.inst(id).parent {
+        rbx.child_arrived(p, id);
+    }
+}
+
+/// Sets an attribute as SetAttribute does, with its events when it changes.
+pub fn set_attribute(rbx: &mut Rbx, id: Id, name: &str, v: Value) {
+    let attrs = &mut rbx.inst_mut(id).attributes;
+    match attrs.iter().position(|(k, _)| k == name) {
+        Some(i) if super::hstudio_rbx::same_value(&attrs[i].1, &v) => return,
+        Some(i) => attrs[i].1 = v,
+        None => attrs.push((name.to_owned(), v)),
+    }
+    rbx.fire(id, "AttributeChanged", vec![Value::str(name)]);
+    rbx.fire(id, &format!("attr:{name}"), Vec::new());
+}
+
+/// The LocalPlayer takes the player's profile: their name for it, its
+/// DisplayName, the character and the Humanoid's DisplayName, and a UserId
+/// and a `UUID` attribute from their UUID. Until the game says, it is
+/// Player1 with UserId 1.
+fn identity(rbx: &mut Rbx, p: &PlayerInfo) {
+    if !p.name.is_empty() && p.name != rbx.world.name {
+        rbx.world.name = p.name.clone();
+        let (player, model, humanoid) = (rbx.local_player, rbx.character, rbx.humanoid);
+        rename(rbx, player, &p.name);
+        rbx.raw_set(player, "DisplayName", Value::str(&p.name));
+        rename(rbx, model, &p.name);
+        rbx.raw_set(humanoid, "DisplayName", Value::str(&p.name));
+    }
+    if p.uuid != 0 && p.uuid != rbx.world.uuid {
+        rbx.world.uuid = p.uuid;
+        let player = rbx.local_player;
+        rbx.raw_set(player, "UserId", Value::Num(user_id(p.uuid)));
+        set_attribute(rbx, player, "UUID", Value::str(&uuid_text(p.uuid)));
     }
 }
 
@@ -98,9 +184,11 @@ pub fn sync(rbx: &mut Rbx, game: &mut dyn GameApi) {
     }
 }
 
-/// The LocalPlayer's character follows the player: its root part on the
-/// torso, its head at the eyes facing where they look, its Humanoid's health.
+/// The LocalPlayer is the player, and its character follows them: its root
+/// part on the torso, its head at the eyes facing where they look, its
+/// Humanoid's health.
 fn sync_local(rbx: &mut Rbx, p: &PlayerInfo) {
+    identity(rbx, p);
     let yaw = f64::from(p.yaw).to_radians();
     let pitch = f64::from(p.pitch).to_radians();
     let feet = Vector3::new(p.x, p.y, p.z);
