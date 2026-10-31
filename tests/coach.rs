@@ -2501,3 +2501,77 @@ fn an_agents_unsaved_edits_follow_their_file_when_it_is_renamed() {
             .contains("return 3")
     );
 }
+
+#[test]
+fn marks_work_in_a_modules_files_and_the_scratch_file() {
+    let (mut game, mut st) = with_module("coach-marks-files");
+    let scratch = st.scratch_path();
+    std::fs::write(&scratch, "print('try')\nprint('more')\n").unwrap();
+    st.open_file(&scratch);
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    // The scratch file, open.
+    let r = ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "scratch": true, "start_line": 2, "note": "This one too." }),
+    )
+    .unwrap();
+    assert_eq!(
+        (&r["did"], &r["open"]),
+        (&json!("Highlighted line 2 in scratch.lua"), &json!(true))
+    );
+    assert_eq!(marked(&st), [(1, 1)]);
+    // A module's other file, not open: it waits for it.
+    let r = ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "id": "kit", "file": "lib/util.lua", "start_line": 1, "note": "The helper." }),
+    )
+    .unwrap();
+    assert_eq!(r["open"], false);
+    assert!(
+        r["did"]
+            .as_str()
+            .unwrap()
+            .starts_with("Highlighted line 1 in kit/lib/util.lua"),
+        "{r}"
+    );
+    assert_eq!(st.s.editor.title, "scratch.lua");
+    // The studio's own rules for a mod's files: nothing outside it.
+    for params in [
+        json!({ "id": "kit", "file": "../hello.lua", "start_line": 1 }),
+        json!({ "id": "kit", "file": "/etc/passwd", "start_line": 1 }),
+        json!({ "file": "lib/util.lua", "start_line": 1 }),
+    ] {
+        let e = ask(&mut st, &mut game, "mark", params.clone()).unwrap_err();
+        assert!(!e.is_empty(), "{params}");
+    }
+    // Opened, it shows its mark; a lesson's steps go across the module's files too.
+    let util = game.mods_dir().join("kit/lib/util.lua");
+    st.open_file(&util);
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(marked(&st), [(0, 0)]);
+    let r = ask(
+        &mut st,
+        &mut game,
+        "lesson",
+        json!({ "title": "Kit", "id": "kit", "steps": [
+            { "start_line": 1, "file": "lib/util.lua", "note": "The helper." },
+            { "start_line": 1, "note": "Its user, in the lesson's own file: main.lua." },
+            { "start_line": 1, "scratch": true, "note": "And a try." },
+        ] }),
+    )
+    .unwrap();
+    assert_eq!(r["did"], "Lesson \"Kit\": 3 steps in 3 files", "{r}");
+    assert_eq!(
+        st.s.editor.title, "kit/lib/util.lua",
+        "the first step's file, open already"
+    );
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    assert_eq!(st.s.editor.title, "scratch.lua");
+}
