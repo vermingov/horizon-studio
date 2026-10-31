@@ -148,7 +148,9 @@ Ctrl+1 to Ctrl+5 switch tabs. In chat: `/studio` opens it, `/studio reload` relo
   **Problems** (a click, or Enter, goes to one) and the **Agent**. Drag the bar above it to size it; Ctrl+\` hides
   and shows it; a click in it, or on a tab, sends typing there, and Esc back to the code.
 - **The file on disk** is watched: when something else changes it (another editor, or the agent), the editor reads it
-  again, keeping your place, and Ctrl+Z goes back. If you had unsaved edits, it asks first: Reload, or Keep mine.
+  again, keeping your place, and Ctrl+Z goes back. A change of up to 60 lines is typed in as you watch, as the
+  agent's own edits are (with Motion off, or a bigger change, it comes in at once). If you had unsaved edits, it asks
+  first: Reload, or Keep mine.
   When the script open is made a module elsewhere (the agent's `write_mod`), the editor follows it to its main.lua,
   unsaved edits and all; when the file open is removed, its module's main.lua opens, or, with unsaved edits, it
   stays and asks: Close lets it go, Keep mine keeps it for a save to write back.

@@ -208,6 +208,9 @@ pub struct Typing {
     lines: (usize, usize),
     removed: Option<(usize, usize)>,
     player_edits: bool,
+    /// The file read again (it changed on disk) rather than an agent's
+    /// edit: no name, no result, and the buffer clean once it is in.
+    pub reload: bool,
 }
 
 /// The lines an edit just put in, and when.
@@ -1130,6 +1133,7 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
         lines: span,
         removed: change.removed,
         player_edits,
+        reload: false,
     };
     if seen && !hands_off {
         // The edit's first line in view, a third of the way down.
@@ -1253,6 +1257,9 @@ fn type_on(st: &mut Studio, game: &mut dyn GameApi) {
     }
     advance(st, &mut t);
     if t.phase == Phase::Typing && t.shown == t.text.len() {
+        if t.reload {
+            return reloaded(st, &t);
+        }
         let mut result = land(st, &t, None);
         if t.save {
             save_into(st, game, &t, &mut result);
@@ -1277,6 +1284,9 @@ pub fn finish_typing(st: &mut Studio, why: &str) {
         return;
     }
     complete(st, &mut t);
+    if t.reload {
+        return reloaded(st, &t);
+    }
     let result = land(st, &t, Some(why));
     keep_result(st, t.id, &result);
 }
@@ -1303,6 +1313,16 @@ fn still_there(st: &Studio, t: &mut Typing) -> bool {
 /// read again, the text cleared): the rest isn't typed in, and its result
 /// and the Agent panel say so.
 fn cut_off(st: &mut Studio, t: Typing) {
+    if t.reload {
+        // Half read again and changed meanwhile: the editor asks the player
+        // what to keep (Reload, or Keep mine), as for any conflict.
+        let ed = &mut st.s.editor;
+        if ed.path.as_ref() == Some(&t.path) {
+            ed.dirty = true;
+            ed.disk = None;
+        }
+        return;
+    }
     let result = json!({
         "ok": false,
         "error": format!(
@@ -1355,6 +1375,10 @@ fn advance(st: &mut Studio, t: &mut Typing) {
     t.rev = ed.revision;
     // The live check waits for the typing to pause.
     ed.edited_at = now;
+    // A file read again has no edits of anyone's, however far it is in.
+    if t.reload {
+        ed.dirty = false;
+    }
 }
 
 /// The player's cursor (and the selection's other end) back at the new
@@ -1381,6 +1405,9 @@ fn complete(st: &mut Studio, t: &mut Typing) {
     }
     t.shown = t.text.len();
     t.rev = ed.revision;
+    if t.reload {
+        ed.dirty = false;
+    }
 }
 
 /// The agent's caret while the view follows it (an edit coming in, the
@@ -3021,4 +3048,134 @@ pub fn saved(st: &mut Studio) {
 /// (the turn has what the player asked).
 pub fn new_turn(st: &mut Studio) {
     st.s.ui.coach.events.clear();
+}
+
+// ----------------------------------------------------------------- reloads typed in
+
+/// The most lines a change made on disk may span and be typed in.
+const TYPED_RELOAD: usize = 60;
+
+/// A file's size and time, as the editor stamps a file it read or wrote.
+fn disk_stamp(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+    std::fs::metadata(path).ok().map(|m| (m.len(), m.modified().ok()))
+}
+
+/// The editor's file read again when it changed on disk (an agent's
+/// write_mod; polled from the draw, as `Editor::sync_disk`). With the editor
+/// in view, Motion on and no unsaved edits, a change of at most 60 lines is
+/// typed in as an agent's edit is, with no name on its caret (whoever wrote
+/// the file), so a file written to disk looks live too: one undo step takes
+/// it back, and any key or click puts the rest in at once. Otherwise it is
+/// read in at once, or with unsaved edits marked as a conflict, as before.
+/// True when it was read in at once.
+pub fn sync_disk(st: &mut Studio) -> bool {
+    // A change read in already coming in goes first: the file is looked at
+    // again after. (An agent's edit coming in has made the buffer one with
+    // unsaved edits: a change on disk is a conflict, as for the player's.)
+    if st.s.ui.coach.typing.as_ref().is_some_and(|t| t.reload) {
+        return false;
+    }
+    let ui = &st.s.ui;
+    let seen = ui.open && ui.tab == Tab::Editor && !ui.collapsed && ui.look.motion;
+    let ed = &st.s.editor;
+    if !seen || ed.dirty || ed.conflict || ed.removed {
+        return st.s.editor.sync_disk();
+    }
+    let Some(path) = ed.path.clone() else {
+        return false;
+    };
+    let stamp = disk_stamp(&path);
+    if stamp.is_none() || stamp == ed.disk {
+        return false;
+    }
+    let Ok(read) = std::fs::read_to_string(&path) else {
+        return st.s.editor.sync_disk();
+    };
+    let new: Vec<String> = Editor::normal(&read).split('\n').map(str::to_owned).collect();
+    let change = changed_rows(&hashes(&ed.lines), &hashes(&new));
+    let rows = (change.old_end - change.start).max(change.new_end - change.start);
+    if rows == 0 || rows > TYPED_RELOAD {
+        return st.s.editor.sync_disk();
+    }
+    // The rows that changed, cut down to what differs in them.
+    let (old, now_text) = (ed.text(), new.join("\n"));
+    let start_of = |lines: &[String], text: &str, row: usize| {
+        if row < lines.len() {
+            row_start(lines, row)
+        } else {
+            text.len()
+        }
+    };
+    let (a, b) = (
+        row_start(&ed.lines, change.start),
+        start_of(&ed.lines, &old, change.old_end),
+    );
+    let (na, nb) = (row_start(&new, change.start), start_of(&new, &now_text, change.new_end));
+    let (pre, suf) = shared_ends(&old[a..b], &now_text[na..nb]);
+    let (a, b) = (a + pre, b - suf);
+    let ins = now_text[na + pre..nb - suf].to_owned();
+    let now = st.s.now;
+    let page = st.s.ui.page.max(1);
+    let ed = &mut st.s.editor;
+    let (from, old_to) = (ed.pos_at(a), ed.pos_at(b));
+    // One undo step for all of it, as when the editor reads a file again.
+    ed.agent_begin();
+    ed.dirty = false;
+    ed.disk = stamp;
+    ed.removed = false;
+    let c = &mut st.s.ui.coach;
+    let id = c.next_edit;
+    c.next_edit += 1;
+    let chars = ins.chars().filter(|c| !c.is_whitespace()).count();
+    let mut typing = Typing {
+        id,
+        by: By::default(),
+        in_run: false,
+        path,
+        file: ed.title.clone(),
+        phase: if a < b { Phase::ShowOld } else { Phase::Typing },
+        since: now,
+        secs: (chars as f64 / CHARS_PER_SECOND).clamp(TYPE_MIN, TYPE_MAX),
+        show_old: SHOW_OLD,
+        from,
+        old_to,
+        text: ins,
+        shown: 0,
+        chars,
+        at: from,
+        rev: ed.revision,
+        free: false,
+        scroll: ed.scroll,
+        parked: (false, false),
+        animated: true,
+        save: false,
+        lines: (change.start + 1, change.new_end.max(change.start + 1)),
+        removed: None,
+        player_edits: false,
+        reload: true,
+    };
+    // Where it changed, in view.
+    if from.0 < ed.scroll || from.0 >= ed.scroll + page {
+        ed.scroll = from.0.saturating_sub(page / 3);
+        typing.show_old = SHOW_OLD_SCROLLED;
+    }
+    typing.scroll = ed.scroll;
+    c.typing = Some(typing);
+    false
+}
+
+/// A file read again, all typed in: the buffer is the file again, with no
+/// unsaved edits, and the editor says it was read again.
+fn reloaded(st: &mut Studio, t: &Typing) {
+    let now = st.s.now;
+    let ed = &mut st.s.editor;
+    ed.dirty = false;
+    ed.conflict = false;
+    ed.reloaded_at = Some(now);
+    st.s.ui.coach.flash = Some(Flash {
+        path: t.path.clone(),
+        first: t.from.0,
+        last: t.at.0,
+        at: now,
+    });
 }

@@ -471,10 +471,11 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
     };
     // The hits name mods by their place in this list.
     st.s.ui.drawn_mods = st.s.mods.iter().map(|m| m.id.clone()).collect();
-    // The open file changed on disk (an agent wrote it): read it again.
+    // The open file changed on disk (an agent wrote it): read it again,
+    // or type the change in (hstudio_coach).
     if now - st.s.ui.disk_at >= 0.5 {
         st.s.ui.disk_at = now;
-        if st.s.editor.sync_disk() {
+        if super::hstudio_coach::sync_disk(st) {
             st.s.editor.reloaded_at = Some(now);
         }
     }
@@ -2647,7 +2648,8 @@ fn coach_row(
 
 /// An agent's caret where its edit is coming in: solid, in the accent, with
 /// the agent's name on a flag above it (below when there is no room), both
-/// kept inside the text's width (at its edge when the caret is past it).
+/// kept inside the text's width (at its edge when the caret is past it). A
+/// change made on disk being typed in has the caret alone.
 fn agent_caret(
     p: &mut P,
     coach: &super::hstudio_coach::Coach,
@@ -2678,6 +2680,10 @@ fn agent_caret(
     };
     let x = x.clamp(text_x, text_x + text_w - 2.0).floor();
     p.rect([x, y + 2.0, 2.0, code_line() - 4.0], 1.0, pal().accent);
+    // A file read again is nobody's: no name.
+    if t.by.name.is_empty() {
+        return;
+    }
     let (size, h) = (10.5, 16.0);
     let w = p.measure(&t.by.name, size, Font::Medium) + 12.0;
     let fy = if y - h >= top_y - 10.0 {
@@ -3695,7 +3701,7 @@ fn docs() -> Vec<Doc> {
     out.push(Doc::Para("The executor styles are always a window. Their buttons do the studio's work: Execute runs the editor's code, Clear empties it, Execute File saves the file and reloads its mod, Open File shows the Library, Attach and Inject reload every mod, and Options shows Settings, where the console, the Library and the docs are a click away too.".into()));
     out.push(Doc::Heading("AI agents".into()));
     out.push(Doc::Para("horizon-studio-mcp lets AI agents (Claude Code, omp, Codex, Cursor...) make mods here: they write and test them, headless and in this game, run Lua in the console and read what happened. Copy AI setup prompt, at the top right, copies a prompt for your agent that sets it all up; once one is connected, its name shows there. Options > Mods > Horizon Studio turns the AI link off.".into()));
-    out.push(Doc::Para("An agent can work in this editor as you watch: it opens any script, reads it as you have it (unsaved edits too), and types its changes in at a caret of its own with its name on it. Your cursor stays where it is, the view follows the agent until you scroll, and any key or click puts the rest of its change in at once. Ctrl+Z takes a whole change back. Its changes stay unsaved until it saves them (or you do); nothing you are typing is saved for you. A file you don't have open is changed on disk instead, and a note over the code shows it. The Agent panel says what it did, and Show there goes to that code.".into()));
+    out.push(Doc::Para("An agent can work in this editor as you watch: it opens any script, reads it as you have it (unsaved edits too), and types its changes in at a caret of its own with its name on it. Your cursor stays where it is, the view follows the agent until you scroll, and any key or click puts the rest of its change in at once. Ctrl+Z takes a whole change back; a change it writes to the file on disk is typed in too. Its changes stay unsaved until it saves them (or you do); nothing you are typing is saved for you. A file you don't have open is changed on disk instead, and a note over the code shows it. The Agent panel says what it did, and Show there goes to that code.".into()));
     out.push(Doc::Para("It can point at code too: lines highlighted in a colour (red for an error, amber for a warning, green for something right) with a note. The newest note shows in a bubble under its lines, the others at the end of their line (a click opens them); the bubble's × removes a note and Esc closes it. The editor's header counts the notes: a click goes to the next, its × clears them. Notes stay on their lines as you edit.".into()));
     out.push(Doc::Para("And it can teach: a lesson is numbered steps over your code, each a note with something to try, and an explanation in the Agent panel (in the note, in the executor styles). Next and Back, or Alt+Right and Alt+Left, go through it; Check asks the agent to look at what you did; Done or the × ends it. While the agent waits for you the panel says so, and Enter sends it your answer.".into()));
     out.push(Doc::Heading("Commands in chat".into()));

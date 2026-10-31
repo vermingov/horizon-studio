@@ -2339,3 +2339,106 @@ fn every_style_draws_a_lesson_inside_its_code() {
     }
     assert!(drawn >= THEMES.len(), "{drawn}");
 }
+
+// ----------------------------------------------------------------- reloads typed in
+
+/// Draws a frame a moment later.
+fn frame(st: &mut Studio, game: &mut FakeGame) {
+    run_for(st, game, 0.05);
+    redraw(st, game);
+}
+
+/// Draws once the editor looks at its file on disk again (every half
+/// second, from the draw).
+fn look_at_disk(st: &mut Studio, game: &mut FakeGame) {
+    run_for(st, game, 0.55);
+    redraw(st, game);
+}
+
+#[test]
+fn a_change_on_disk_to_the_open_file_is_typed_in() {
+    let (mut game, mut st) = editing("coach-reload", "sum", TEN);
+    let path = game.mods_dir().join("sum.lua");
+    // An agent's write_mod changes the middle of the file open.
+    let changed = TEN.replace(
+        "local c = 3\nlocal d = 4\n",
+        "local c = 30\nlocal d = 40\nlocal extra = true\n",
+    );
+    std::fs::write(&path, &changed).unwrap();
+    look_at_disk(&mut st, &mut game);
+    let t = st.s.ui.coach.typing.as_ref().expect("it is typed in");
+    assert!(t.reload && t.by.name.is_empty(), "nobody's: no name");
+    assert_eq!(t.from, (4, "local c = 3".len()), "only what differs");
+    assert!(!st.s.editor.dirty, "no edits of anyone's");
+    // It comes in over the next frames, the caret alone (no name flag).
+    frame(&mut st, &mut game);
+    frame(&mut st, &mut game);
+    for _ in 0..10 {
+        frame(&mut st, &mut game);
+        assert!(!st.s.editor.dirty);
+    }
+    let mut n = 0;
+    while st.s.ui.coach.typing.is_some() {
+        n += 1;
+        assert!(n < 100, "it never was in");
+        frame(&mut st, &mut game);
+    }
+    assert_eq!(st.s.editor.text(), changed);
+    assert!(!st.s.editor.dirty && st.s.editor.reloaded_at.is_some());
+    assert!(coach::summary(&st)["typing"].is_null());
+    // One undo step goes back to before it.
+    handle(&mut st, &mut game, key(Key::Char('z'), CTRL));
+    assert_eq!(st.s.editor.text(), TEN);
+    st.save_editor(&mut game);
+    // A key mid-way puts the rest in at once; the key is the player's.
+    std::fs::write(&path, &changed).unwrap();
+    look_at_disk(&mut st, &mut game);
+    assert!(st.s.ui.coach.typing.is_some());
+    st.s.editor.click(0, 0, false);
+    handle(&mut st, &mut game, Input::Text("-".into()));
+    assert!(st.s.ui.coach.typing.is_none());
+    assert_eq!(st.s.editor.text(), format!("-{changed}"));
+    assert!(st.s.editor.dirty);
+    // With unsaved edits, the editor asks, as before.
+    std::fs::write(&path, TEN).unwrap();
+    look_at_disk(&mut st, &mut game);
+    assert!(st.s.ui.coach.typing.is_none());
+    assert!(st.s.editor.conflict);
+    handle(&mut st, &mut game, key(Key::Char('z'), CTRL));
+    st.s.editor.conflict = false;
+    st.save_editor(&mut game);
+    // More than 60 lines, or Motion off: read in at once, as before.
+    let long: String = (1..=80).map(|i| format!("print({i})\n")).collect();
+    std::fs::write(&path, &long).unwrap();
+    look_at_disk(&mut st, &mut game);
+    assert!(st.s.ui.coach.typing.is_none());
+    assert_eq!(st.s.editor.text(), long);
+    st.s.ui.look.motion = false;
+    std::fs::write(&path, TEN).unwrap();
+    look_at_disk(&mut st, &mut game);
+    assert!(st.s.ui.coach.typing.is_none());
+    assert_eq!(st.s.editor.text(), TEN);
+    // A change made while one is still typing in waits for it, then comes in.
+    st.s.ui.look.motion = true;
+    let more = TEN.replace(
+        "local c = 3\n",
+        "local c = 3\nlocal one = 'a long line of new code'\nlocal two = 'and another long line'\n",
+    );
+    std::fs::write(&path, &more).unwrap();
+    look_at_disk(&mut st, &mut game);
+    let id = st.s.ui.coach.typing.as_ref().map(|t| t.id).expect("typing in");
+    std::fs::write(&path, TEN).unwrap();
+    look_at_disk(&mut st, &mut game);
+    assert_eq!(st.s.ui.coach.typing.as_ref().map(|t| t.id), Some(id), "the same one");
+    assert!(!st.s.editor.conflict && !st.s.editor.dirty);
+    while st.s.ui.coach.typing.is_some() {
+        frame(&mut st, &mut game);
+    }
+    assert_eq!(st.s.editor.text(), more);
+    look_at_disk(&mut st, &mut game);
+    while st.s.ui.coach.typing.is_some() {
+        frame(&mut st, &mut game);
+    }
+    assert_eq!(st.s.editor.text(), TEN);
+    assert!(!st.s.editor.dirty);
+}
