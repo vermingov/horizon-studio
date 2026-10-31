@@ -637,16 +637,17 @@ end)
   Roblox's are by default.
 - **ScreenGuis** in the PlayerGui (or CoreGui) are laid out as Roblox lays them out (UDim2 sizes and positions,
   AnchorPoint, UIListLayout with its flex and UIFlexItem, UIGridLayout, UIPageLayout, UITableLayout, UIPadding,
-  UIScale, the constraints, ScrollingFrames, AutomaticSize, ZIndex) and drawn on the HUD with Horizon's shapes and Geist fonts, UICorner, UIStroke, borders and UIGradients
-  (every keypoint, turned and moved) included; `ClipsDescendants` cuts exactly, `Rotation` turns an object and what it
-  holds, a CanvasGroup tints and fades all it holds, `RichText`'s markup is drawn (colours, sizes, faces, bold,
-  underline, strokes, marks, capitals), and a `getcustomasset` image is drawn as it is, with its `ScaleType` (Fit,
-  Crop, Tile, Slice), `ImageRectOffset`/`ImageRectSize` and `ImageColor3`. BillboardGuis float over the Workspace's
-  parts and models (name tags, health bars) with their offsets, studs-sized `Size`, `MaxDistance` and `AlwaysOnTop`.
-  A GUI pixel is a dp. The GUI takes the mouse while a visible button has `Modal = true` or a TextBox has focus, or after
-  **Left Alt**; Escape gives it back (first letting go of a TextBox). Then hovers, clicks (`MouseButton1Click`,
-  `Activated`), TextBoxes (a caret, selecting with Shift or a drag, the clipboard, `MultiLine`), scrolling (the wheel
-  each way `ScrollingDirection` allows, and both bars, which drag) and dragging work.
+  UIScale, the constraints, ScrollingFrames, AutomaticSize, ZIndex) and drawn on the HUD with Horizon's shapes and
+  Geist fonts, UICorner, UIStroke, borders and UIGradients (every keypoint, turned and moved) included;
+  `ClipsDescendants` cuts exactly, `Rotation` turns an object and what it holds, a CanvasGroup tints and fades all it
+  holds, `RichText`'s markup is drawn (colours, sizes, faces, bold, underline, strokes, marks, capitals), and a
+  `getcustomasset` image is drawn as it is, with its `ScaleType` (Fit, Crop, Tile, Slice),
+  `ImageRectOffset`/`ImageRectSize` and `ImageColor3`. BillboardGuis float over the Workspace's parts and models (name
+  tags, health bars) with their offsets, studs-sized `Size`, `MaxDistance` and `AlwaysOnTop`. A GUI pixel is a dp. The
+  GUI takes the mouse while a visible button has `Modal = true` or a TextBox has focus, or after **Left Alt**; Escape
+  gives it back (first letting go of a TextBox). Then hovers, clicks (`MouseButton1Click`, `Activated`), TextBoxes (a
+  caret, selecting with Shift or a drag, the clipboard, `MultiLine`), scrolling (the wheel each way
+  `ScrollingDirection` allows, and both bars, which drag) and dragging work.
 - **Input.** Keys and mouse buttons fire UserInputService's `InputBegan` and `InputEnded` (`input.KeyCode`), and
   ContextActionService's actions; `UIS:IsKeyDown`, `Player:GetMouse()`.
 - **The world.** The LocalPlayer's Character follows the player (a stud is a block), `workspace.CurrentCamera`
@@ -654,15 +655,16 @@ end)
   `workspace:Raycast` goes through the world's blocks and the parts.
 - **Services:** Players, RunService (Heartbeat, RenderStepped, Stepped, BindToRenderStep), UserInputService,
   TweenService, Debris, HttpService (JSON and GUIDs), TextService (`GetTextSize`, `GetTextBoundsAsync`), GuiService,
-  StarterGui (`SetCore` notifications in chat; its ScreenGuis are copied into the PlayerGui), CollectionService, ContextActionService, Lighting (the world's time) and the containers. Services with
-  nothing to do here that scripts still get at their top (TeleportService, VirtualUser, Stats and the like) are there
-  too, taking any property.
+  StarterGui (`SetCore` notifications in chat; its ScreenGuis are copied into the PlayerGui), CollectionService,
+  ContextActionService, Lighting (the world's time) and the containers. Services with nothing to do here that scripts
+  still get at their top (TeleportService, VirtualUser, Stats and the like) are there too, taking any property.
 - **Data types and `Enum`:** Vector2, Vector3, CFrame, Color3, UDim, UDim2, Rect, NumberRange, NumberSequence,
   ColorSequence, TweenInfo, BrickColor, Font, Random, Ray, RaycastParams, with their constructors, properties,
   methods and operators, and the Enum tree (`Enum.KeyCode.E`).
 
-Not there: a server (RemoteEvents go nowhere), physics, animations, Roblox's assets (images, meshes and sounds by
-id), SurfaceGuis, and what ViewportFrames and VideoFrames show. The MCP's `roblox` topic (`docs`) lists every class, member and difference.
+Not there: a server (RemoteEvents go nowhere), physics, animations, Roblox's assets (images, meshes and sounds by id),
+SurfaceGuis, and what ViewportFrames and VideoFrames show. The MCP's `roblox` topic (`docs`) lists every class, member
+and difference.
 
 ### Executor functions (sUNC)
 
@@ -772,6 +774,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `skins.rs` (`hstudio_skins`) | The executor styles' layouts |
 | `examples.rs` (`hstudio_examples`) | The bundled examples, generated from `examples/` |
 | `bridge.rs` (`hstudio_bridge`) | The only module that knows Horizon's `Game`: the hooks and the game's side of the API |
+| `quads.rs` (`hstudio_quads`) | The HUD's quads cut, turned and coloured (a gradient in bands), for the bridge's drawing of Roblox GUIs |
 | `link.rs` (`hstudio_link`) | The AI link: the local socket the MCP server reaches the game through, polled in the frame |
 | `paint.rs` (`ui_theme::hstudio_paint`) | In the game's library: Horizon's design system's shapes and fonts, for the studio and `gfx.*` |
 | `via.rs` (`net::hstudio_via`) | In the game's library: ViaHorizon's settings, Java, the downloads, ViaProxy's process, which joins it routes |
