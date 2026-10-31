@@ -3907,7 +3907,7 @@ fn docs() -> Vec<Doc> {
     let mut out = vec![
         Doc::Heading("Script mods".into()),
         Doc::Para("Script mods live in horizon-mods/.horizon-mod-data/horizon_studio/mods/. A script is one file, name.lua. A module is a folder, name/, whose main.lua loads its other files with require(\"lib\") for lib.lua: each file runs once, however its name is written, and the files share the mod's globals. The New prompt (the Library's New mod, or + in the Editor's script list) makes either; a new module has main.lua, shared.lua and lib.lua. The main file runs when the mod loads; what it registers with on(), command() and every() then runs in the game. Save any of its files, in the Editor or any other editor, and the mod reloads at once. A mod that fails stops alone: the Library shows the error, and the Editor marks its line in the file it is in.".into()),
-        Doc::Para("In the Editor's script list a module is a folder that folds open to its files. A row's ... (or a right click) adds, renames and deletes a module's files, deletes a mod and makes a script a module; what is deleted goes to the trash folder beside mods. In the Library each mod's ... (or the . key) has the same, with a module's files to open. Right-click a script or a module, in the Editor's list or the Library, to rename, duplicate or delete it: a copy starts turned off, and a rename keeps its saved data and its on/off state. Ctrl+Enter on a module's file saves it and reloads the module.".into()),
+        Doc::Para("In the Editor's script list a module is a folder that folds open to its files. A row's ... (or a right click) adds, renames and deletes a module's files, deletes a mod and makes a script a module; what is deleted goes to the trash folder beside mods, where an older copy of the same name stays, numbered. In the Library each mod's ... (or the . key) has the same, with a module's files to open. Right-click a script or a module, in the Editor's list or the Library, to rename, duplicate or delete it: a copy starts turned off, and a rename keeps its saved data and its on/off state. Ctrl+Enter on a module's file saves it and reloads the module.".into()),
         Doc::Para("Drop a .lua file, a mod folder or a .zip on the game window to install it. Lines -- name:, -- version:, -- author: and -- description: at the top name it in the Library.".into()),
         Doc::Heading("Libraries".into()),
         Doc::Para("A mod can be a library for others: it calls export(table), or its main file returns a table, and other mods take it with local kit = import(\"uikit\"). Libraries load first; when one reloads, the mods that use it reload too. A library's functions run as the mod that calls them, so what they draw, register or store belongs to that mod. Mods talk to each other with emit(\"name:event\", ...) and on(\"name:event\", fn), and json.encode and json.decode turn tables into text and back.".into()),
@@ -4373,9 +4373,12 @@ fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32, dt: f32) 
         Ok(line) => (line, pal().muted),
         Err(why) => (why, pal().danger),
     };
-    if !plan.is_empty() {
-        let plan = p.fit(&plan, cw - 44.0, 12.5, Font::Regular);
-        p.text(&plan, r[0] + 22.0, r[1] + 128.0, 12.5, Font::Regular, c);
+    // A line, or two (only the Delete prompt, which has no field, has two).
+    let lines: Vec<&str> = plan.lines().collect();
+    for (k, line) in lines.iter().enumerate() {
+        let line = p.fit(line, cw - 44.0, 12.5, Font::Regular);
+        let y = r[1] + 128.0 - 17.0 * (lines.len() - 1 - k) as f32;
+        p.text(&line, r[0] + 22.0, y, 12.5, Font::Regular, c);
     }
     p.text(enter, r[0] + 22.0, r[1] + 160.0, 12.0, Font::Regular, pal().muted);
     p.alpha = a;

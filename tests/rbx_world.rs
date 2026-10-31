@@ -150,6 +150,7 @@ fn a_headless_test_names_the_player() {
         id: "hello".into(),
         files: vec![("hello.lua".into(), "local me = game.Players.LocalPlayer\n".into())],
         libraries: None,
+        remove: Vec::new(),
     };
     let mut run = Run::new(&source).unwrap();
     let lua = "print(game.Players.LocalPlayer.Name, game.LocalPlayer.UserId, game.LocalPlayer:GetAttribute('UUID'))";
@@ -1373,6 +1374,7 @@ fn the_limbs_are_where_the_games_model_has_them() {
         id: "limbs".into(),
         files: vec![("limbs.lua".into(), "local me = game.Players.LocalPlayer\n".into())],
         libraries: None,
+        remove: Vec::new(),
     };
     let mut run = Run::new(&source).unwrap();
     let lua = r#"
@@ -1405,6 +1407,7 @@ fn a_headless_test_puts_mobs_and_players_near() {
         id: "near".into(),
         files: vec![("near.lua".into(), "local me = game.Players.LocalPlayer\n".into())],
         libraries: None,
+        remove: Vec::new(),
     };
     let mut run = Run::new(&source).unwrap();
     let lua = "local z = workspace:FindFirstChild('Zombie') print(z and z.Humanoid.Health, #game.Players:GetPlayers(), workspace:FindFirstChild('Diamond') ~= nil)";

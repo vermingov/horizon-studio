@@ -590,16 +590,17 @@ fn require_stays_inside_the_module() {
         assert!(msg.contains("bad module name"), "{id}: {msg}");
     }
     assert!(!log(&st).iter().any(|l| l.contains("escaped")), "{:?}", log(&st));
-    // A missing file names the ones the module has.
+    // A missing file names the file, and the ones the module has: "module"
+    // once, the mod (a file required is no mod, which import loads).
     write_module(
         &game,
         "lost",
-        &[("main.lua", "require('nope')\n"), ("util.lua", "return 1\n")],
+        &[("main.lua", "require('lib.nope')\n"), ("util.lua", "return 1\n")],
     );
     run_for(&mut st, &mut game, 0.6);
     let (msg, _) = failure(&st, "lost");
     assert!(
-        msg.contains("module 'nope' not found (nope.lua; the module has main.lua, util.lua)"),
+        msg.ends_with("require('lib.nope'): lib/nope.lua not found in this module (its files: main.lua, util.lua)"),
         "{msg}"
     );
 }
@@ -822,12 +823,15 @@ fn files_are_added_renamed_and_deleted_to_the_trash() {
     assert_eq!(st.s.mods[i].reloads, reloads + 1);
     assert_eq!(st.s.editor.title, "kit/main.lua");
     assert!(!st.s.editor.dirty);
-    // A newer copy replaces the older one in the trash.
+    // A newer copy takes its name in the trash; the older one stays beside it, numbered.
     std::fs::create_dir_all(dir.join("lib")).unwrap();
     std::fs::write(dir.join("lib").join("helpers.lua"), "return 2\n").unwrap();
     run_for(&mut st, &mut game, 0.6);
-    st.delete_path(&mut game, &dir.join("lib").join("helpers.lua")).unwrap();
+    let again = st.delete_path(&mut game, &dir.join("lib").join("helpers.lua")).unwrap();
+    assert_eq!(again, moved);
     assert_eq!(std::fs::read_to_string(&moved).unwrap(), "return 2\n");
+    let kept = moved.with_file_name("helpers (2).lua");
+    assert!(std::fs::read_to_string(&kept).unwrap().starts_with("-- mine"));
     // main.lua alone can't go; the whole module can.
     let e = st.delete_path(&mut game, &dir.join("main.lua")).unwrap_err();
     assert!(e.contains("delete the module instead"), "{e}");
@@ -839,11 +843,22 @@ fn files_are_added_renamed_and_deleted_to_the_trash() {
     let moved = st.delete_path(&mut game, &dir).unwrap();
     assert_eq!(moved, game.dir.join("trash").join("kit"));
     assert!(!dir.exists() && moved.join("main.lua").is_file());
-    // It joins what was deleted from it before: the newest copy of each file.
+    // It joins what was deleted from it before: the newest copy of each file
+    // at its name, and every older one still there.
     assert!(moved.join("old.lua").is_file(), "deleted before, it stays");
+    let lib = moved.join("lib");
     assert_eq!(
-        std::fs::read_to_string(moved.join("lib").join("helpers.lua")).unwrap(),
+        std::fs::read_to_string(lib.join("helpers.lua")).unwrap(),
         "return 3, newer\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(lib.join("helpers (3).lua")).unwrap(),
+        "return 2\n"
+    );
+    assert!(
+        std::fs::read_to_string(lib.join("helpers (2).lua"))
+            .unwrap()
+            .starts_with("-- mine")
     );
     assert!(log(&st).contains(&"Removed kit".to_owned()), "{:?}", log(&st));
     assert_eq!(st.s.editor.title, "scratch.lua");
@@ -852,6 +867,92 @@ fn files_are_added_renamed_and_deleted_to_the_trash() {
     st.delete_path(&mut game, &hello).unwrap();
     assert!(!hello.exists() && game.dir.join("trash").join("hello.lua").is_file());
     assert!(!st.s.mods.iter().any(|m| m.id == "hello"));
+}
+
+#[test]
+fn a_mod_deleted_while_off_is_on_when_made_again() {
+    let mut game = FakeGame::new("off-deleted");
+    let mut st = studio(&mut game);
+    let (settings, mods) = (game.dir.join("studio.txt"), game.mods_dir());
+    let off = |id: &str| {
+        std::fs::read_to_string(&settings)
+            .unwrap()
+            .contains(&format!("off:{id}\n"))
+    };
+    game.write_mod("lamp.lua", "print('lamp')\n");
+    run_for(&mut st, &mut game, 0.6);
+    st.set_enabled(&mut game, mod_index(&st, "lamp"), false);
+    assert!(off("lamp"));
+    // Deleted in the studio: its off: line goes with it, and a new Lamp runs.
+    st.delete_path(&mut game, &mods.join("lamp.lua")).unwrap();
+    assert!(!off("lamp"));
+    st.create_mod(&mut game, "Lamp", None).unwrap();
+    let m = &st.s.mods[mod_index(&st, "lamp")];
+    assert!(m.enabled && m.running(), "{:?}", m.state);
+    // A module the same.
+    st.create_module(&mut game, "Kit").unwrap();
+    st.set_enabled(&mut game, mod_index(&st, "kit"), false);
+    st.delete_path(&mut game, &mods.join("kit")).unwrap();
+    assert!(!off("kit"));
+    st.create_module(&mut game, "Kit").unwrap();
+    let m = &st.s.mods[mod_index(&st, "kit")];
+    assert!(m.enabled && m.running(), "{:?}", m.state);
+    // Deleted elsewhere, its line stays (the file may come back), but a mod
+    // made new in the studio under that id starts on all the same.
+    game.write_mod("fan.lua", "print('fan')\n");
+    run_for(&mut st, &mut game, 0.6);
+    st.set_enabled(&mut game, mod_index(&st, "fan"), false);
+    std::fs::remove_file(mods.join("fan.lua")).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    assert!(off("fan"));
+    st.create_mod(&mut game, "Fan", None).unwrap();
+    let m = &st.s.mods[mod_index(&st, "fan")];
+    assert!(m.enabled && m.running(), "{:?}", m.state);
+    assert!(!off("fan"));
+}
+
+#[test]
+fn a_mod_made_again_and_deleted_again_keeps_both_copies_in_the_trash() {
+    let mut game = FakeGame::new("trash-twice");
+    let mut st = studio(&mut game);
+    let trash = game.dir.join("trash");
+    // A script deleted, then a new one of its name from the New prompt, deleted too.
+    game.write_mod("test.lua", "-- the first test, a day of work\n");
+    run_for(&mut st, &mut game, 0.6);
+    let first = game.mods_dir().join("test.lua");
+    assert_eq!(st.delete_path(&mut game, &first).unwrap(), trash.join("test.lua"));
+    let made = st.create_mod(&mut game, "test", None).unwrap();
+    assert_eq!(st.delete_path(&mut game, &made).unwrap(), trash.join("test.lua"));
+    assert!(
+        std::fs::read_to_string(trash.join("test.lua"))
+            .unwrap()
+            .contains("Hello from test"),
+        "the newest at its name"
+    );
+    assert_eq!(
+        std::fs::read_to_string(trash.join("test (2).lua")).unwrap(),
+        "-- the first test, a day of work\n"
+    );
+    // A module, the same: every module has a main.lua.
+    let main = st.create_module(&mut game, "Kit").unwrap();
+    std::fs::write(&main, "-- kit v1, the real code\n").unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    let kit = game.mods_dir().join("kit");
+    assert_eq!(st.delete_path(&mut game, &kit).unwrap(), trash.join("kit"));
+    st.create_module(&mut game, "Kit").unwrap();
+    st.delete_path(&mut game, &kit).unwrap();
+    assert!(
+        std::fs::read_to_string(trash.join("kit").join("main.lua"))
+            .unwrap()
+            .contains("main.lua starts the module")
+    );
+    assert_eq!(
+        std::fs::read_to_string(trash.join("kit").join("main (2).lua")).unwrap(),
+        "-- kit v1, the real code\n"
+    );
+    for f in ["lib (2).lua", "shared (2).lua"] {
+        assert!(trash.join("kit").join(f).is_file(), "{f}");
+    }
 }
 
 #[test]
@@ -1437,6 +1538,65 @@ fn dropped_files_install_and_run() {
             .unwrap_err()
             .contains("folder mod named tools")
     );
+}
+
+#[test]
+fn a_dropped_update_replaces_its_mod_whatever_the_mods_name() {
+    let mut game = FakeGame::new("drop-held");
+    game.write_mod("Night Light.lua", "print('night v1')\n");
+    let mut st = studio(&mut game);
+    run_for(&mut st, &mut game, 0.2);
+    let mods = game.mods_dir();
+    let downloads = game.dir.join("downloads");
+    std::fs::create_dir_all(&downloads).unwrap();
+    // "Night Light.lua" is night_light: a dropped night_light updates it,
+    // not a night_light.lua beside it that the studio would pass over.
+    let file = downloads.join("night_light.lua");
+    std::fs::write(&file, "print('night v2')\n").unwrap();
+    assert_eq!(
+        st.install_path(&mut game, &file).unwrap(),
+        "Updated night_light: running"
+    );
+    assert!(
+        log(&st).contains(&"[night_light] night v2".to_owned()),
+        "{:?}",
+        log(&st)
+    );
+    assert!(!mods.join("night_light.lua").exists());
+    assert_eq!(
+        std::fs::read_to_string(mods.join("Night Light.lua")).unwrap(),
+        "print('night v2')\n"
+    );
+    // A module the same way: its folder keeps its name, its files are the new ones.
+    let held = mods.join("Desk Lamp");
+    std::fs::create_dir_all(&held).unwrap();
+    std::fs::write(held.join("main.lua"), "print('lamp v1')\n").unwrap();
+    std::fs::write(held.join("old.lua"), "return 1\n").unwrap();
+    st.scan(&mut game);
+    let folder = downloads.join("desk_lamp");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("main.lua"), "print('lamp v2')\n").unwrap();
+    assert_eq!(
+        st.install_path(&mut game, &folder).unwrap(),
+        "Updated desk_lamp: running"
+    );
+    assert!(log(&st).contains(&"[desk_lamp] lamp v2".to_owned()), "{:?}", log(&st));
+    assert!(!mods.join("desk_lamp").exists());
+    assert!(held.join("main.lua").is_file() && !held.join("old.lua").exists());
+    // A mod of the other kind is not replaced, and the message names it.
+    let script = downloads.join("Desk Lamp.lua");
+    std::fs::write(&script, "print('a script')\n").unwrap();
+    let e = st.install_path(&mut game, &script).unwrap_err();
+    assert!(
+        e.contains("a folder mod named desk_lamp is installed (\"Desk Lamp\")"),
+        "{e}"
+    );
+    // An example whose id a mod of another name has is installed already.
+    std::fs::write(mods.join("Clock.lua"), "print('my clock')\n").unwrap();
+    let i = EXAMPLES.iter().position(|e| e.id == "clock").unwrap();
+    let e = st.install_example(&mut game, i).unwrap_err();
+    assert_eq!(e, "clock is already installed (\"Clock.lua\")");
+    assert!(!mods.join("clock.lua").exists());
 }
 
 #[test]

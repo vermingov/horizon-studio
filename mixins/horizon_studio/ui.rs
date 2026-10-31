@@ -2433,10 +2433,43 @@ pub(crate) struct SiblingCache {
     data: std::rc::Rc<super::hstudio_assist::Siblings>,
 }
 
+/// How much of a module's other files the live check reads, on the frame
+/// after any of them changes: a file up to 256 KiB, up to 256 files and
+/// 4 MiB in all (as an install takes 256 files). The others are listed,
+/// unread: the check is a help, not a build.
+const SIBLING_FILE_BYTES: u64 = 256 << 10;
+const SIBLING_FILES: usize = 256;
+const SIBLING_BYTES: u64 = 4 << 20;
+
+/// A module's files but `rel`, as the live check reads them: their lines as
+/// the editor shows a file (its indent for a tab), so a place found in one
+/// is that place once it opens; within the limits above, main.lua and the
+/// first files by name first (the others as empty).
+pub(crate) fn read_siblings(folder: &std::path::Path, files: Vec<String>, rel: &str) -> Vec<(String, Vec<String>)> {
+    let (mut read, mut bytes) = (0, 0);
+    files
+        .into_iter()
+        .filter(|f| f != rel)
+        .map(|f| {
+            let p = super::hstudio_modfiles::path_in(folder, &f);
+            let len = std::fs::metadata(&p).map_or(u64::MAX, |meta| meta.len());
+            let text = if read < SIBLING_FILES && len <= SIBLING_FILE_BYTES && bytes + len <= SIBLING_BYTES {
+                read += 1;
+                bytes += len;
+                std::fs::read_to_string(&p).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            (f, text.replace('\t', INDENT).lines().map(str::to_owned).collect())
+        })
+        .collect()
+}
+
 /// The other files of the module the editor's file is in, for its checks
 /// and suggestions (None outside a module), their lines as the editor shows
 /// a file (its indent for a tab), so a place found in one is that place
-/// once it opens. They are read again only when the scan saw the module's
+/// once it opens; within the limits above, main.lua and the first files
+/// by name first. They are read again only when the scan saw the module's
 /// files change (its stamp), and then the live check looks again, though
 /// the buffer didn't change.
 pub(crate) fn editor_siblings(st: &mut Studio) -> Option<std::rc::Rc<super::hstudio_assist::Siblings>> {
@@ -2456,21 +2489,8 @@ pub(crate) fn editor_siblings(st: &mut Studio) -> Option<std::rc::Rc<super::hstu
     {
         return Some(c.data.clone());
     }
-    // Large files are left out: the check is a help, not a build.
-    let others = m
-        .files()
-        .into_iter()
-        .filter(|f| *f != rel)
-        .map(|f| {
-            let p = super::hstudio_modfiles::path_in(&folder, &f);
-            let text = match std::fs::metadata(&p) {
-                Ok(meta) if meta.len() <= 512 << 10 => std::fs::read_to_string(&p).unwrap_or_default(),
-                _ => String::new(),
-            };
-            (f, text.replace('\t', INDENT).lines().map(str::to_owned).collect())
-        })
-        .collect();
-    let data = std::rc::Rc::new(super::hstudio_assist::Siblings { file: rel, others });
+    let others = read_siblings(&folder, m.files(), &rel);
+    let data = std::rc::Rc::new(super::hstudio_assist::Siblings::new(rel, others));
     st.s.ui.siblings = Some(SiblingCache {
         path,
         stamp: m.stamp.clone(),
@@ -3209,8 +3229,23 @@ pub(crate) fn naming_plan(st: &Studio) -> Result<String, String> {
                 let parts: Option<Vec<&str>> = r.components().map(|c| c.as_os_str().to_str()).collect();
                 parts.map(|p| p.join("/"))
             });
+            // What the trash has at that name already stays, beside it.
+            let there = path.strip_prefix(&mods).ok().map(|r| st.trash_dir().join(r));
+            let kept = match there.filter(|t| std::fs::symlink_metadata(t).is_ok()) {
+                Some(t) if t.is_dir() && path.is_dir() => {
+                    "\nIt joins the folder there; a file both have keeps the older copy, numbered.".to_owned()
+                }
+                Some(t) => {
+                    let name = super::hstudio_modfiles::numbered(&t);
+                    let name = name
+                        .file_name()
+                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                    format!("\nThe older copy there stays, as {name}.")
+                }
+                None => String::new(),
+            };
             Ok(format!(
-                "It moves to trash/{} beside the mods folder.",
+                "It moves to trash/{} beside the mods folder.{kept}",
                 rel.unwrap_or_else(|| prompt_name(st, path))
             ))
         }

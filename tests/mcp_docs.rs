@@ -35,6 +35,7 @@ fn printed(src: &str) -> Vec<String> {
         id: "m".into(),
         files: vec![("m.lua".into(), src.into())],
         libraries: None,
+        remove: Vec::new(),
     };
     let mut run = Run::new(&source).unwrap();
     run.frames(1);

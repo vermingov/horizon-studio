@@ -562,6 +562,54 @@ fn a_modules_files_are_module_scripts_under_script() {
 }
 
 #[test]
+fn the_script_functions_know_a_modules_files() {
+    let mut game = FakeGame::new("rbx-module-senv");
+    let mut st = studio(&mut game);
+    load_module(
+        &mut game,
+        &mut st,
+        "kit",
+        &[
+            (
+                "main.lua",
+                "local lib = require(script.lib)\n\
+                 print('main', getsenv(script.lib) == lib.env, getsenv(script.lib).script == script.lib)\n\
+                 local ok, why = pcall(getsenv, script.later)\n\
+                 print('later', ok, why, getscripthash(script.later))\n\
+                 print('failed', pcall(require, script.bad), (pcall(getsenv, script.bad)))\n\
+                 local running = {}\n\
+                 for _, s in getrunningscripts() do running[s] = true end\n\
+                 print('running', running[script] == true, running[script.lib] == true, running[script.later] == true)\n",
+            ),
+            (
+                "lib.lua",
+                "print('lib', getsenv(script) == getfenv(), type(getscriptclosure(script)), getscriptclosure(script) ~= getscriptclosure(script))\n\
+                 print('code', #getscriptbytecode(script) > 0, #getscripthash(script), getscripthash(script) ~= getscripthash(script.Parent))\n\
+                 return { env = getfenv() }\n",
+            ),
+            ("later.lua", "return 1\n"),
+            ("bad.lua", "error('bad file')\n"),
+        ],
+        0.6,
+    );
+    let lines = printed(&st, "kit");
+    let has = |l: &str| lines.iter().any(|x| x == l);
+    // Required, a file's ModuleScript runs: its environment (its own
+    // `script`, the mod's globals), its code and its hash.
+    assert!(has("lib    true    function    true"), "{lines:?}");
+    assert!(has("code    true    96    true"), "{lines:?}");
+    assert!(has("main    true    true"), "{lines:?}");
+    // Not required yet, it doesn't: getsenv errors, the others give nil.
+    assert!(
+        has("later    false    kit/main.lua:3: getsenv: the script is not running    nil"),
+        "{lines:?}"
+    );
+    assert!(has("running    true    true    false"), "{lines:?}");
+    // Nor does one whose top level failed.
+    assert!(has("failed    false    false"), "{lines:?}");
+}
+
+#[test]
 fn another_mods_module_script_is_not_required() {
     let mut game = FakeGame::new("rbx-module-other");
     let mut st = studio(&mut game);

@@ -56,13 +56,13 @@ fn problems_in(src: &str, module: Option<&Siblings>) -> Vec<Found> {
 
 /// A module whose open file is `file`, with these other files.
 fn module(file: &str, others: &[(&str, &str)]) -> Siblings {
-    Siblings {
-        file: file.to_owned(),
-        others: others
+    Siblings::new(
+        file.to_owned(),
+        others
             .iter()
             .map(|(f, src)| ((*f).to_owned(), src.lines().map(str::to_owned).collect()))
             .collect(),
-    }
+    )
 }
 
 #[test]
@@ -205,6 +205,17 @@ fn names_from_sibling_files_are_not_unknown() {
     let p = problems_in(main, Some(&m));
     assert!(!warned(&p), "{p:?}");
     assert!(!p.iter().any(|f| f.2.contains("chat has no")), "{p:?}");
+    // Set through _G or the executor's getgenv(), in a function a table
+    // holds, or after a long comment with a brace in it: the module's too.
+    for lib in [
+        "_G.players = {}\n",
+        "getgenv().players = {}\n",
+        "local M = {\n  start = function()\n    players = {}\n  end,\n}\nreturn M\n",
+        "--[[ call lib.setup({\n  before anything ]]\nplayers = {}\n",
+    ] {
+        let p = problems_in(main, Some(&module("main.lua", &[("lib.lua", lib)])));
+        assert!(!warned(&p), "{lib}: {p:?}");
+    }
     // A sibling's locals are its own.
     let m = module("main.lua", &[("players.lua", "local players = {}\nreturn players\n")]);
     assert!(warned(&problems_in(main, Some(&m))));
@@ -214,6 +225,54 @@ fn names_from_sibling_files_are_not_unknown() {
     let (_, s) = suggest("sett", &lines, false, Some(&m)).unwrap();
     let hit = s.iter().find(|x| x.label == "settings").expect("settings suggested");
     assert_eq!(hit.doc, "in shared.lua");
+}
+
+#[test]
+fn a_siblings_members_and_parameters_hide_no_typos() {
+    let main = "chat.sya('hi')\nplayer.poss()\nchat.shout('hi')\n";
+    let warned = |p: &[Found], m: &str| p.iter().any(|f| f.2 == m);
+    // A sibling's `function chat.shout`: chat.shout is known, chat.sya still a typo.
+    let m = module(
+        "main.lua",
+        &[("lib.lua", "function chat.shout(s) chat.say(s) end\nreturn true\n")],
+    );
+    let p = problems_in(main, Some(&m));
+    assert!(warned(&p, "chat has no 'sya'"), "{p:?}");
+    assert!(!p.iter().any(|f| f.2.contains("'shout'")), "{p:?}");
+    assert!(warned(&problems_in(main, None), "chat has no 'shout'"));
+    // Its parameters and loop names are its own, though named like a
+    // library, and a table's fields and a call's arguments are no globals,
+    // one a line too; nor is what a long string or comment holds.
+    for lib in [
+        "local M = {}\nfunction M.describe(player) return player.name end\nreturn M\n",
+        "M = {}\nM.find = function(chat, player) return chat end\n",
+        "for chat, player in pairs({}) do end\nreturn true\n",
+        "local cfg = {\n  player = nil,\n  chat = true,\n}\nreturn cfg\n",
+        "return {\n  chat = 1,\n  player = nil,\n}\n",
+        "local function f()\n  ui.button({\n    chat = 1,\n    player = 2,\n  })\nend\n",
+        "local t = {\n  f = function() local x = if a then 1 else 2 end,\n  chat = 1, player = 2,\n}\n",
+        "local doc = [[\nplayer = nil\nchat = nil\n]]\n",
+        "--[==[\nplayer = 1\nchat = 2\n]==]\n",
+    ] {
+        let p = problems_in(main, Some(&module("main.lua", &[("lib.lua", lib)])));
+        assert!(warned(&p, "player has no 'poss'"), "{lib}: {p:?}");
+        assert!(warned(&p, "chat has no 'sya'"), "{lib}: {p:?}");
+    }
+    // `chat.x = ...` and `obj:m` defined there are known as those members.
+    let m = module(
+        "main.lua",
+        &[(
+            "lib.lua",
+            "chat.loud = function(s) end\nfunction tbl:go() end\nif x then chat.n = 1 end\n",
+        )],
+    );
+    let p = problems_in("chat.loud('x')\nprint(chat.n, tbl.go)\nchat.lod('x')\n", Some(&m));
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert_eq!(p[0].2, "chat has no 'lod'");
+    // A sibling that sets the library's name to a table of its own: the
+    // file's uses of it are that table's, as when the file sets it.
+    let m = module("main.lua", &[("lib.lua", "chat = { sya = print }\n")]);
+    assert!(problems_in(main, Some(&m)).iter().all(|f| !f.2.starts_with("chat")));
 }
 
 #[test]
@@ -276,7 +335,7 @@ fn require_suggests_the_modules_files() {
 }
 
 #[test]
-fn a_required_files_members_are_suggested_and_checked() {
+fn a_required_files_members_are_suggested() {
     let lib = "local lib = {}\nfunction lib.greet(name) return name end\nfunction lib.stop() end\nlib.version = 2\nreturn lib\n";
     let m = module("main.lua", &[("lib.lua", lib)]);
     let file = ["local lib = require('lib')".to_owned(), "lib.".to_owned()];
@@ -287,30 +346,36 @@ fn a_required_files_members_are_suggested_and_checked() {
     }
     let greet = s.iter().find(|x| x.label == "greet").unwrap();
     assert_eq!((greet.kind, greet.doc.as_str()), (Kind::Function, "in lib.lua"));
-    let src = "local lib = require('lib')\nprint(lib.gret('x'), lib.stop(), lib.whatever)\n";
-    assert_eq!(
-        problems_in(src, Some(&m)),
-        vec![(
-            2,
-            Some((10, 14)),
-            "lib.lua has no 'gret' (did you mean greet?)".to_owned(),
-            false
-        )]
-    );
-    // What the file itself adds to the table is known.
-    let adds = "local lib = require('lib')\nfunction lib.gree() end\nlib.gree()\n";
-    assert!(problems_in(adds, Some(&m)).is_empty());
     // A table returned as a constructor.
     let m = module(
         "main.lua",
         &[("cfg.lua", "return {\n  speed = 1,\n  go = function() end,\n}\n")],
     );
-    let p = problems_in("local cfg = require('cfg')\nprint(cfg.sped)\n", Some(&m));
-    assert!(p[0].2.contains("cfg.lua has no 'sped' (did you mean speed?)"), "{p:?}");
-    // One made with setmetatable or filled by key can't be read: nothing is said.
-    let dynamic = "local lib = setmetatable({}, {})\nfunction lib.greet() end\nreturn lib\n";
-    let m = module("main.lua", &[("lib.lua", dynamic)]);
-    assert!(problems_in("local lib = require('lib')\nlib.gret()\n", Some(&m)).is_empty());
+    let file = ["local cfg = require('cfg')".to_owned(), "cfg.".to_owned()];
+    let (_, s) = suggest("cfg.sp", &file, false, Some(&m)).unwrap();
+    assert_eq!(s[0].label, "speed");
+}
+
+#[test]
+fn members_another_file_adds_to_a_shared_table_are_no_problem() {
+    // The template's way: shared.lua holds a table, main.lua adds to it at
+    // start, lib.lua reads what it added. That runs: nothing is marked, a
+    // name one letter from a member's (players, player) included.
+    let shared = "local shared = {\n  greeting = 'Hello',\n  ticks = 0,\n  player = nil,\n}\nreturn shared\n";
+    let main = "local shared = require('shared')\nshared.players = {}\nlocal lib = require('lib')\n";
+    let m = module("lib.lua", &[("main.lua", main), ("shared.lua", shared)]);
+    let lib = "local shared = require('shared')\nlocal lib = {}\nfunction lib.count()\n  return #shared.players\nend\nreturn lib\n";
+    assert_eq!(problems_in(lib, Some(&m)), vec![]);
+    // Nor is a member of a required file's table one letter from another:
+    // members come from anywhere (a set by key, another file, a function).
+    let m = module(
+        "main.lua",
+        &[("lib.lua", "local lib = {}\nfunction lib.greet() end\nreturn lib\n")],
+    );
+    assert_eq!(
+        problems_in("local lib = require('lib')\nlib.gret()\n", Some(&m)),
+        vec![]
+    );
 }
 
 #[test]

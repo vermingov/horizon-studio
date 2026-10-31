@@ -1077,16 +1077,8 @@ fn siblings_of(st: &Studio, path: &Path) -> Option<super::hstudio_assist::Siblin
     let m = &st.s.mods[st.mod_of_path(path)?];
     let folder = m.folder.as_ref()?;
     let rel = super::hstudio_modfiles::rel_in(folder, path)?;
-    let others = m
-        .files()
-        .into_iter()
-        .filter(|f| *f != rel)
-        .map(|f| {
-            let text = std::fs::read_to_string(path_in(folder, &f)).unwrap_or_default();
-            (f, text.lines().map(str::to_owned).collect())
-        })
-        .collect();
-    Some(super::hstudio_assist::Siblings { file: rel, others })
+    let others = super::hstudio_ui::read_siblings(folder, m.files(), &rel);
+    Some(super::hstudio_assist::Siblings::new(rel, others))
 }
 
 /// The state of the mod a file is of (null for the scratch file), with the

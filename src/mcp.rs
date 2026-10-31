@@ -9,7 +9,10 @@
 
 use crate::game::hstudio::VERSION;
 use crate::game::hstudio_examples::EXAMPLES;
-use crate::headless::{Run, STEPS_HELP, Source, check_id, merged_files, read_mod, remove_files, run_steps, write_mod};
+use crate::headless::{
+    OldScript, Run, STEPS_HELP, Source, check_holder, check_id, delete_mod, find_mod, read_mod, removable,
+    remove_files, run_steps, write_mod,
+};
 use crate::mcp_docs::{self, Reference};
 use serde_json::{Value as Json, json};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -324,7 +327,7 @@ fn script_props(more: Json) -> Json {
 }
 
 pub fn tools() -> Json {
-    let id = json!({ "type": "string", "description": "The mod's id: its file or folder name (lowercase, digits, _ and -)." });
+    let id = json!({ "type": "string", "description": "The mod's id, as list_mods gives it: its file or folder name in lowercase letters, digits, _ and - (\"Night Light.lua\" is night_light)." });
     let mods_dir = json!({ "type": "string", "description": "The mods folder, if not the game's (found by itself)." });
     json!([
         tool(
@@ -373,15 +376,17 @@ pub fn tools() -> Json {
             "write_mod",
             "Creates or changes a script mod: a script's one file, or a module's files (for a module that \
               exists, only the files given are written, the others kept, and `remove` deletes files). main.lua \
-              for an existing script makes it a module (the old file goes to the trash). It is checked headless \
-              first, as it will be on disk (loads, registers, errors with their file and line); while the game is \
-              linked it then reloads there and its live state is returned.",
+              for an existing script makes it a module (the old file goes to the studio's trash, or is deleted \
+              when the mods folder is not the studio's: `trashed` or `deleted` in the reply says which). It is \
+              checked headless first, as it will be on disk (loads, registers, errors with their file and line); \
+              while the game is linked it then reloads there and its live state is returned.",
             json!({ "id": id, "files": files_schema(), "remove": remove_schema(), "mods_dir": mods_dir }),
             &["id"]
         ),
         tool(
             "delete_mod",
-            "Deletes a script mod (its file or folder) from the mods folder.",
+            "Deletes a script mod from the mods folder for good: the file or folder list_mods lists under its id, \
+              whatever it is called (\"Night Light.lua\" for night_light).",
             json!({ "id": id, "mods_dir": mods_dir }),
             &["id"]
         ),
@@ -397,8 +402,9 @@ pub fn tools() -> Json {
             "test_mod",
             "Tests a mod end to end with steps. Headless (default): on a simulated game, no Horizon \
               needed. live: true runs the same steps in the running game through the AI link (the mod as written \
-              in the mods folder). Each step reports what it caused: chat, sent lines, console lines, text drawn, \
-              sounds, particles, failures.",
+              in the mods folder). Give files to test text not yet written (for a module that exists, only the \
+              files that change, over its other files; live writes them first). Each step reports what it caused: \
+              chat, sent lines, console lines, text drawn, sounds, particles, failures.",
             json!({ "id": id, "files": files_schema(), "steps": steps_schema(),
                      "live": { "type": "boolean", "description": "Run in the game (default false: headless)." },
                      "mods_dir": mods_dir }),
@@ -960,37 +966,17 @@ impl Server {
             },
             "list_mods" => {
                 let dir = dir()?;
-                let mut out = Vec::new();
-                if let Ok(entries) = std::fs::read_dir(&dir) {
-                    let mut names: Vec<String> = entries
-                        .flatten()
-                        .filter_map(|e| {
-                            let n = e.file_name().to_string_lossy().into_owned();
-                            if n.starts_with('.') {
-                                return None;
-                            }
-                            if e.path().join("main.lua").is_file() {
-                                Some(n)
-                            } else {
-                                n.strip_suffix(".lua").map(str::to_owned)
-                            }
-                        })
-                        .collect();
-                    names.sort();
-                    names.dedup();
-                    out = names
-                        .into_iter()
-                        .map(|id| {
-                            let folder = dir.join(&id);
-                            if folder.join("main.lua").is_file() {
-                                let files = crate::game::hstudio_modfiles::lua_files(&folder);
-                                json!({ "id": id, "kind": "module", "files": files })
-                            } else {
-                                json!({ "id": id, "kind": "script", "files": [] })
-                            }
-                        })
-                        .collect();
-                }
+                // As the studio lists them: "Night Light.lua" is night_light.
+                let mut out: Vec<Json> = crate::game::hstudio_modfiles::find_mods(&dir)
+                    .into_iter()
+                    .map(|(id, main, folder)| match folder {
+                        Some(folder) => {
+                            let files = crate::game::hstudio_modfiles::lua_files(&folder);
+                            json!({ "id": id, "kind": "module", "files": files, "main": main })
+                        }
+                        None => json!({ "id": id, "kind": "script", "files": [], "main": main }),
+                    })
+                    .collect();
                 if let Ok(live) = self.live("mods", json!({})) {
                     for m in &mut out {
                         if let Some(l) = live.as_array().and_then(|a| a.iter().find(|l| l["id"] == m["id"])) {
@@ -1018,25 +1004,29 @@ impl Server {
                     return Err("give 'files' to write, or 'remove': files of a module to delete".into());
                 }
                 let dir = dir()?;
-                // Checked as it will be on disk: a module's other files too.
-                let merged = merged_files(&dir, id, &files, &remove)?;
+                // Not under an id another file holds: the studio would pass it over.
+                check_holder(&dir, id)?;
+                removable(&dir, id, &remove)?;
+                // Checked as it will be on disk: over a module's other files.
                 let check = check(&Source::Files {
                     id: id.to_owned(),
-                    files: merged,
+                    files: files.clone(),
                     libraries: Some(dir.clone()),
+                    remove: remove.clone(),
                 })
                 .map(|(r, _)| r)
                 .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
-                let path = if files.is_empty() {
-                    dir.join(id)
+                let (path, old_script) = if files.is_empty() {
+                    (dir.join(id), None)
                 } else {
-                    write_mod(&dir, id, &files)?
+                    let w = write_mod(&dir, id, &files)?;
+                    (w.path, w.old_script)
                 };
                 let removed = remove_files(&dir, id, &remove)?;
                 let live = self
                     .live("reload", json!({ "id": id }))
                     .map(|mods| mods.as_array().and_then(|a| a.iter().find(|m| m["id"] == id)).cloned());
-                Ok(json!({
+                let mut reply = json!({
                     "ok": check["ok"] == true,
                     "written": path,
                     "removed": removed,
@@ -1045,22 +1035,27 @@ impl Server {
                         Ok(state) => state.unwrap_or(json!("not found in the game")),
                         Err(e) => json!(format!("not linked: {e}")),
                     },
-                }))
+                });
+                // A script made a module: where its file went.
+                match old_script {
+                    Some(OldScript::Trashed(to)) => reply["trashed"] = json!(to),
+                    Some(OldScript::Deleted(_)) => reply["deleted"] = json!(format!("{id}.lua")),
+                    None => {}
+                }
+                Ok(reply)
             }
             "delete_mod" => {
                 let id = str_arg(args, "id")?;
-                check_id(id)?;
                 let dir = dir()?;
-                let (file, folder) = (dir.join(format!("{id}.lua")), dir.join(id));
-                if folder.join("main.lua").is_file() {
-                    std::fs::remove_dir_all(&folder).map_err(|e| e.to_string())?;
-                } else if file.is_file() {
-                    std::fs::remove_file(&file).map_err(|e| e.to_string())?;
-                } else {
-                    return Err(format!("no mod '{id}' in {}", dir.display()));
-                }
+                // What list_mods lists under the id, whatever its name.
+                let path = delete_mod(&dir, id)?;
                 let _ = self.live("scan", json!({}));
-                Ok(json!({ "ok": true, "deleted": id }))
+                let mut reply = json!({ "ok": true, "deleted": id, "path": path });
+                // Another file had that id too, passed over until now.
+                if let Some((main, folder)) = find_mod(&dir, id) {
+                    reply["now_listed"] = json!(folder.unwrap_or(main));
+                }
+                Ok(reply)
             }
             "check_mod" => {
                 let id = str_arg(args, "id")?;
@@ -1128,6 +1123,7 @@ impl Server {
                         id: "scratch".into(),
                         files: vec![("scratch.lua".into(), "-- headless console\n".into())],
                         libraries: dir().ok(),
+                        remove: Vec::new(),
                     })?,
                 };
                 let lines = run.studio.run_chunk(&mut run.game, code, false);
@@ -1479,14 +1475,11 @@ fn numbered_lines(lines: Option<&Json>, from: u64) -> String {
 /// folder, the files given over its other files, as writing them would
 /// leave it.
 fn given_files(id: &str, files: Vec<(String, String)>, mods_dir: Option<PathBuf>) -> Source {
-    let files = mods_dir
-        .as_deref()
-        .and_then(|d| merged_files(d, id, &files, &[]).ok())
-        .unwrap_or(files);
     Source::Files {
         id: id.to_owned(),
         files,
         libraries: mods_dir,
+        remove: Vec::new(),
     }
 }
 

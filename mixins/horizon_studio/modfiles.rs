@@ -143,6 +143,16 @@ pub fn find_mods(mods: &Path) -> Vec<(String, PathBuf, Option<PathBuf>)> {
     found
 }
 
+/// The mod the mods folder has under `id`, as the studio lists it
+/// (`find_mods`: "Night Light.lua" is night_light, and of two names with one
+/// id the first): its main file, and its folder for a module.
+pub fn find_mod(mods: &Path, id: &str) -> Option<(PathBuf, Option<PathBuf>)> {
+    find_mods(mods)
+        .into_iter()
+        .find(|f| f.0 == id)
+        .map(|(_, main, folder)| (main, folder))
+}
+
 /// Whether a new mod can't take `id`: the mods folder has `<id>.lua` or
 /// `<id>` already, or a mod whose own name gives that id ("My Mod.lua" is
 /// my_mod's). Of two mods with one id only one is listed, so the new one
@@ -340,11 +350,12 @@ pub fn make_module(mods: &Path, script: &Path, id: &str) -> Result<PathBuf, Stri
 }
 
 /// Moves a file or folder of the mods folder to the trash, at
-/// `trash/<its path in the mods folder>`, which keeps the newest copy of
-/// each file: a file goes over an older copy of the same name, and a
-/// folder joins the one of its name there (a module deleted after some of
-/// its files keeps them beside its own), replacing only the files both
-/// have. Returns where it went.
+/// `trash/<its path in the mods folder>`, which keeps every copy and never
+/// deletes one: the newest takes the name, and an older copy there is moved
+/// beside it under a number ("test (2).lua", then "test (3).lua"). A folder
+/// joins the one of its name there (a module deleted after some of its
+/// files keeps them beside its own), a file both have numbered the same
+/// way. Returns where it went.
 pub fn to_trash(trash: &Path, mods: &Path, path: &Path) -> Result<PathBuf, String> {
     let rel = path
         .strip_prefix(mods)
@@ -360,8 +371,9 @@ pub fn to_trash(trash: &Path, mods: &Path, path: &Path) -> Result<PathBuf, Strin
 }
 
 /// Moves `from` to `to`: a folder into a folder already there entry by
-/// entry, so what only `to` has stays, and anything else over what is there
-/// (links are moved as links, never followed).
+/// entry, so what only `to` has stays, and anything else to `to` once what
+/// is there has moved aside to a free numbered name (links are moved as
+/// links, never followed). Nothing at `to` is deleted.
 fn move_over(from: &Path, to: &Path) -> std::io::Result<()> {
     let folder = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
     if folder(from) && folder(to) {
@@ -371,10 +383,22 @@ fn move_over(from: &Path, to: &Path) -> std::io::Result<()> {
         }
         return std::fs::remove_dir(from);
     }
-    if folder(to) {
-        std::fs::remove_dir_all(to)?;
-    } else if std::fs::symlink_metadata(to).is_ok() {
-        std::fs::remove_file(to)?;
+    if std::fs::symlink_metadata(to).is_ok() {
+        std::fs::rename(to, numbered(to))?;
     }
     std::fs::rename(from, to)
+}
+
+/// The first free name beside `path` with a number from 2 in it, for an
+/// older copy: "test.lua" is "test (2).lua", a folder "kit" is "kit (2)".
+pub fn numbered(path: &Path) -> PathBuf {
+    let name = |p: Option<&std::ffi::OsStr>| p.map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+    let (stem, ext) = (
+        name(path.file_stem()),
+        path.extension().map(|e| format!(".{}", e.to_string_lossy())),
+    );
+    (2u32..)
+        .map(|n| path.with_file_name(format!("{stem} ({n}){}", ext.as_deref().unwrap_or(""))))
+        .find(|p| std::fs::symlink_metadata(p).is_err())
+        .unwrap_or_else(|| path.to_path_buf())
 }

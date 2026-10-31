@@ -1318,6 +1318,43 @@ fn edits_work_in_a_modules_files_and_the_scratch_file() {
     assert_eq!((&r["file"], &r["dirty"]), (&json!("scratch.lua"), &json!(true)), "{r}");
 }
 
+#[test]
+fn an_edit_in_a_modules_file_is_checked_with_what_its_other_files_define() {
+    let (mut game, mut st) = with_module("coach-module-siblings");
+    std::fs::write(
+        game.mods_dir().join("kit/shared.lua"),
+        "function chat.shout(s) chat.say(s) end\n",
+    )
+    .unwrap();
+    st.scan(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    st.s.now = 10.0;
+    // main.lua open; lib/util.lua edited on disk, checked with main.lua and shared.lua.
+    ask(&mut st, &mut game, "open", json!({ "id": "kit" })).unwrap();
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({
+            "file": "lib/util.lua",
+            "old_text": "return {",
+            "new_text": "chat.shout('hi')\nchat.shuot('hi')\nreturn {",
+        }),
+    )
+    .unwrap();
+    assert_eq!(r["file"], "kit/lib/util.lua", "{r}");
+    // shared.lua's chat.shout is known there; the typo beside it is not.
+    let said: Vec<&str> = r["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["message"].as_str())
+        .collect();
+    assert!(said.iter().any(|m| m.contains("'shuot'")), "{r}");
+    assert!(!said.iter().any(|m| m.contains("'shout'")), "{r}");
+}
+
 // ----------------------------------------------------------------- what else changes the buffer mid edit
 
 /// An edit of greet.lua's print line being typed in, part of it in.

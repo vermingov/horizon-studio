@@ -1014,9 +1014,22 @@ impl Ctx<'_> {
         self.s.dir.join("workspace")
     }
 
-    /// A mod's script Instance and its index, when it runs.
-    fn script_mod(&self, id: Id) -> Option<usize> {
-        self.s.mods.iter().position(|m| m.script == Some(id) && m.running())
+    /// A script that runs, as the mod it is in and the function it runs:
+    /// a running mod's `script` (its main file), or the ModuleScript of a
+    /// file of a running module that `require` has run (the file).
+    fn running_script(&self, id: Id) -> Option<(usize, Value)> {
+        self.s
+            .mods
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.running())
+            .find_map(|(i, m)| {
+                if m.script == Some(id) {
+                    m.main_fn.clone().map(|f| (i, f))
+                } else {
+                    m.file_fns.iter().find(|(ms, _)| *ms == id).map(|(_, f)| (i, f.clone()))
+                }
+            })
     }
 
     /// The host functions of the executor library.
@@ -1157,8 +1170,10 @@ impl Ctx<'_> {
             2021 => one(self.s.renv.clone().map_or(Value::Nil, Value::Table)),
             2022 => {
                 let sid = inst(self, lua, &args, 0, fname)?;
-                match self.script_mod(sid) {
-                    Some(i) => one(self.s.mods[i].env.clone().map_or(Value::Nil, Value::Table)),
+                match self.running_script(sid) {
+                    // A module's file: its own environment (`script` is its ModuleScript).
+                    Some((i, Value::Func(f))) if self.s.mods[i].script != Some(sid) => one(Value::Table(f.env())),
+                    Some((i, _)) => one(self.s.mods[i].env.clone().map_or(Value::Nil, Value::Table)),
                     None => Err(lua.rt_error("getsenv: the script is not running")),
                 }
             }
@@ -1378,7 +1393,7 @@ impl Ctx<'_> {
                     .values()
                     .filter(|i| !i.destroyed && is_a(i.class, "LuaSourceContainer"))
                     .map(|i| i.id)
-                    .filter(|&i| id == 2060 || self.script_mod(i).is_some())
+                    .filter(|&i| id == 2060 || self.running_script(i).is_some())
                     .collect();
                 ids.sort_unstable();
                 one(rbx.list(&ids))
@@ -1392,7 +1407,7 @@ impl Ctx<'_> {
             2063 | 2067 => one(Value::Nil),
             2064..=2066 => {
                 let sid = inst(self, lua, &args, 0, fname)?;
-                let main = self.script_mod(sid).and_then(|i| self.s.mods[i].main_fn.clone());
+                let main = self.running_script(sid).map(|(_, f)| f);
                 match (id, main) {
                     (2064, Some(Value::Func(c))) => {
                         one(Value::Func(Rc::new(super::hstudio_lua::Closure::from_body(c.body()))))

@@ -710,6 +710,7 @@ fn render_the_statue_meshes() {
         id: "statue".into(),
         files: vec![("statue.lua".into(), src)],
         libraries: None,
+        remove: Vec::new(),
     })
     .unwrap();
     r.frames(2);
