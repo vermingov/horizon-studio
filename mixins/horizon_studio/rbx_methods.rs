@@ -356,51 +356,20 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
         }
         ("DataModel", "IsLoaded") => one(Value::Bool(true)),
         ("DataModel", "BindToClose") => none(),
-        ("Players", "GetPlayers") => {
-            let rbx = env.rbx();
-            let p = rbx.local_player;
-            one(rbx.list(&[p]))
+        (
+            "Players",
+            "GetPlayers"
+            | "GetPlayerFromCharacter"
+            | "GetPlayerByUserId"
+            | "GetNameFromUserIdAsync"
+            | "GetUserIdFromNameAsync",
+        )
+        | ("Player", "GetMouse" | "Kick" | "LoadCharacter" | "DistanceFromCharacter" | "GetNetworkPing") => {
+            super::hstudio_rbx_world::player_method(env, lua, id, name, args)
         }
-        ("Players", "GetPlayerFromCharacter") => {
-            let rbx = env.rbx();
-            let hit = args.get(1).and_then(|v| rbx.id_of(v)) == Some(rbx.character);
-            one(if hit { rbx.value(rbx.local_player) } else { Value::Nil })
-        }
-        ("Players", "GetPlayerByUserId") => {
-            let n = check_num(lua, args, 1, name)?;
-            let rbx = env.rbx();
-            one(if n == 1.0 {
-                rbx.value(rbx.local_player)
-            } else {
-                Value::Nil
-            })
-        }
-        ("Players", "GetNameFromUserIdAsync") => one(Value::str("Player1")),
-        ("Players", "GetUserIdFromNameAsync") => one(Value::Num(1.0)),
         ("Players", "GetUserThumbnailAsync") => Ok(vec![Value::str(""), Value::Bool(true)]),
-        ("Player", "GetMouse") => {
-            let rbx = env.rbx();
-            one(rbx.value(rbx.mouse))
-        }
-        ("Player", "Kick") => {
-            let why = args.get(1).and_then(Value::as_text).unwrap_or_default();
-            env.rbx()
-                .warnings
-                .push(format!("Player:Kick() asked to leave the game: {why}"));
-            none()
-        }
         ("Player", "IsFriendsWith" | "IsInGroup") => one(Value::Bool(false)),
         ("Player", "GetRankInGroup") => one(Value::Num(0.0)),
-        ("Player", "LoadCharacter") => none(),
-        ("Player", "DistanceFromCharacter") => {
-            let p = args
-                .get(1)
-                .and_then(as_v3)
-                .ok_or_else(|| bad_arg(lua, 1, name, "Vector3 expected"))?;
-            let rbx = env.rbx();
-            let at = as_cf(&rbx.raw_get(rbx.head, "CFrame")).unwrap_or_default().position();
-            one(Value::Num((p - at).magnitude()))
-        }
         ("RunService", "IsClient" | "IsRunning" | "IsRunMode") => one(Value::Bool(true)),
         ("RunService", "IsServer" | "IsStudio") => one(Value::Bool(false)),
         ("RunService", "BindToRenderStep") => {

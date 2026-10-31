@@ -6,7 +6,7 @@
 mod common;
 
 use common::{FakeGame, log, mod_index, run_for, studio};
-use horizon_studio::game::hstudio::{EntityInfo, ModState, PlayerPose, Studio};
+use horizon_studio::game::hstudio::{EntityInfo, ModState, PlayerEntry, PlayerPose, Studio};
 use horizon_studio::headless::{Run, Source, run_steps};
 use serde_json::json;
 
@@ -893,4 +893,183 @@ fn another_dimension_or_leaving_the_world_clears_the_mirrors() {
         printed(&st, "dim"),
         ["removed Zombie, added Zombie, removed Zombie, added Zombie    nil    true"]
     );
+}
+
+/// Another player's entity at (x, 64, z), standing.
+fn player_entity(id: u32, name: &str, x: f64, z: f64) -> EntityInfo {
+    EntityInfo {
+        id,
+        kind: "minecraft:player".into(),
+        name: name.into(),
+        pos: [x, 64.0, z],
+        width: 0.6,
+        height: 1.8,
+        eye: 1.62,
+        health: 20.0,
+        max_health: 20.0,
+        speed: 0.1,
+        on_ground: true,
+        ..EntityInfo::default()
+    }
+}
+
+/// A player in the server's list.
+fn listed(name: &str, uuid: u128, entity: Option<u32>, latency: i32, local: bool) -> PlayerEntry {
+    PlayerEntry {
+        uuid,
+        name: name.into(),
+        display_name: name.into(),
+        entity,
+        local,
+        latency,
+    }
+}
+
+#[test]
+fn players_join_leave_and_show_their_characters() {
+    let mut game = FakeGame::new("rbxw-players");
+    let steve = 0x8667ba71_b85a_4004_af54_457a9734eed7;
+    let p = game.player.as_mut().unwrap();
+    p.name = "Steve".into();
+    p.uuid = steve;
+    game.players = Some(vec![
+        listed("Steve", steve, None, 30, true),
+        listed("Alex", 0x42, Some(12), 120, false),
+    ]);
+    game.entities = vec![player_entity(12, "Alex", 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local Players = game:GetService("Players")
+        local log = {}
+        local function names(list)
+            local out = {}
+            for _, p in list do table.insert(out, p.Name) end
+            return table.concat(out, " ")
+        end
+        Players.PlayerAdded:Connect(function(p)
+            table.insert(log, "joined " .. p.Name)
+            p.CharacterAdded:Connect(function(c)
+                table.insert(log, p.Name .. " near " .. tostring(c == p.Character and c.Parent == workspace))
+            end)
+            p.CharacterRemoving:Connect(function(c) table.insert(log, p.Name .. " away " .. c.Name .. " " .. tostring(p.Character)) end)
+        end)
+        Players.PlayerRemoving:Connect(function(p) table.insert(log, "left " .. p.Name) end)
+        local alex = Players:FindFirstChild("Alex")
+        print(names(Players:GetPlayers()), alex.Character == workspace.Alex, Players:GetPlayerFromCharacter(workspace.Alex) == alex)
+        print(Players:GetPlayerByUserId(alex.UserId) == alex, Players:GetNameFromUserIdAsync(alex.UserId), Players:GetUserIdFromNameAsync("alex") == alex.UserId, alex:GetAttribute("UUID"))
+        print(pcall(function() return Players:GetNameFromUserIdAsync(5) end))
+        print(pcall(function() return Players:GetUserIdFromNameAsync("Notch") end))
+        print(alex:GetNetworkPing(), Players.LocalPlayer:GetNetworkPing(), Players.MaxPlayers, alex.Character.Humanoid.Health)
+        command("log", function() print(table.concat(log, ", "), "|", names(Players:GetPlayers()), Players.MaxPlayers) end)
+    "#;
+    load(&mut game, &mut st, "players", src, 0.6);
+    // Kim joins far away, comes near, goes out of range again, and leaves.
+    fn list(game: &mut FakeGame) -> &mut Vec<PlayerEntry> {
+        game.players.as_mut().unwrap()
+    }
+    list(&mut game).push(listed("Kim", 0x77, None, 50, false));
+    run_for(&mut st, &mut game, 0.6);
+    list(&mut game)[2].entity = Some(13);
+    game.entities.push(player_entity(13, "Kim", 8.5, -6.0));
+    run_for(&mut st, &mut game, 0.6);
+    game.entities.pop();
+    list(&mut game)[2].entity = None;
+    run_for(&mut st, &mut game, 0.6);
+    list(&mut game).pop();
+    run_for(&mut st, &mut game, 0.6);
+    // Bo joins near: his Character comes a frame after PlayerAdded.
+    list(&mut game).push(listed("Bo", 0x99, Some(14), 0, false));
+    game.entities.push(player_entity(14, "Bo", 9.5, -6.0));
+    run_for(&mut st, &mut game, 0.6);
+    assert!(st.command("log"));
+    run_for(&mut st, &mut game, 0.05);
+    // Out of the world (a disconnect), the others go.
+    let saved = game.player.take();
+    run_for(&mut st, &mut game, 0.1);
+    game.player = saved;
+    assert!(st.command("log"));
+    run_for(&mut st, &mut game, 0.05);
+    let p = printed(&st, "players");
+    // Alex was there before the script looked: no PlayerAdded for him.
+    assert_eq!(p[0], "Steve Alex    true    true");
+    assert_eq!(p[1], "true    Alex    true    00000000-0000-0000-0000-000000000042");
+    assert!(p[2].starts_with("false") && p[2].contains("UserId 5"), "{}", p[2]);
+    assert!(p[3].starts_with("false") && p[3].contains("Notch"), "{}", p[3]);
+    assert_eq!(p[4], "0.12    0.03    2    100");
+    assert_eq!(
+        p[5],
+        "joined Kim, Kim near true, Kim away Kim nil, left Kim, joined Bo, Bo near true    |    Steve Alex Bo    3"
+    );
+    assert!(
+        p[6].starts_with("joined Kim, Kim near true, Kim away Kim nil, left Kim, joined Bo, Bo near true, Bo away Bo nil, left Alex, left Bo"),
+        "{}",
+        p[6]
+    );
+    assert!(p[6].ends_with("|    Steve    1"), "{}", p[6]);
+}
+
+#[test]
+fn an_unlisted_player_entity_is_an_npc() {
+    let mut game = FakeGame::new("rbxw-npc");
+    game.players = Some(Vec::new());
+    game.entities = vec![player_entity(20, "Guide", 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local npc = workspace:WaitForChild("Guide")
+        print(npc.ClassName, npc.Humanoid.Health, game.Players:GetPlayerFromCharacter(npc), #game.Players:GetPlayers())
+    "#;
+    load(&mut game, &mut st, "npc", src, 0.6);
+    assert_eq!(printed(&st, "npc"), ["Model    100    nil    1"]);
+}
+
+#[test]
+fn another_player_is_not_yours_to_kick() {
+    let mut game = FakeGame::new("rbxw-other");
+    game.players = Some(vec![listed("Alex", 0x42, Some(12), 0, false)]);
+    game.entities = vec![player_entity(12, "Alex", 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local alex = game.Players:WaitForChild("Alex")
+        print(pcall(function() alex:Kick("bye") end))
+        print(alex:GetMouse(), pcall(function() alex:LoadCharacter() end))
+        print(string.format("%.3f", alex:DistanceFromCharacter(Vector3.new(12.5, 65.62, 0))), game.Players.LocalPlayer:GetMouse() ~= nil)
+        print(pcall(function() alex:Destroy() end))
+    "#;
+    load(&mut game, &mut st, "other", src, 0.6);
+    let p = printed(&st, "other");
+    assert!(
+        p[0].starts_with("false") && p[0].contains("Cannot kick a non-local Player"),
+        "{}",
+        p[0]
+    );
+    assert!(
+        p[1].starts_with("nil    false") && p[1].contains("backend server"),
+        "{}",
+        p[1]
+    );
+    // From the head, at the eyes.
+    assert_eq!(p[2], "3.250    true");
+    assert!(p[3].starts_with("false") && p[3].contains("locked"), "{}", p[3]);
+}
+
+#[test]
+fn another_players_character_finds_room_at_the_cap() {
+    let mut game = FakeGame::new("rbxw-room");
+    game.entities = (0..256)
+        .map(|i| zombie(100 + i, 10.5 + f64::from(i) * 0.1, 0.0))
+        .collect();
+    let mut st = studio(&mut game);
+    let src = r#"
+        local log = {}
+        workspace.ChildAdded:Connect(function(c) table.insert(log, "added " .. c.Name) end)
+        workspace.ChildRemoved:Connect(function(c) table.insert(log, "removed " .. c:GetAttribute("EntityId")) end)
+        command("log", function() print(table.concat(log, ", "), #workspace:GetChildren()) end)
+    "#;
+    load(&mut game, &mut st, "room", src, 0.6);
+    // The game lists the other players first: the farthest zombie makes way.
+    game.entities.insert(0, player_entity(12, "Alex", 12.5, -3.25));
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.command("log"));
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(printed(&st, "room"), ["removed 355, added Alex    259"]);
 }

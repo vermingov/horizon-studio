@@ -1856,6 +1856,7 @@ const METHODS: &[(&str, &str)] = &[
     ("GetRankInGroup", "Player"),
     ("LoadCharacter", "Player"),
     ("DistanceFromCharacter", "Player"),
+    ("GetNetworkPing", "Player"),
     ("IsClient", "RunService"),
     ("IsServer", "RunService"),
     ("IsStudio", "RunService"),

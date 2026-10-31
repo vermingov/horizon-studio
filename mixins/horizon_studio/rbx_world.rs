@@ -14,8 +14,8 @@
 // game, and they come and go with Roblox's events. A UI script that never
 // looks costs the game nothing.
 
-use super::hstudio::{EntityInfo, GameApi, Owner, PlayerInfo, PlayerPose, Reply};
-use super::hstudio_lua::Value;
+use super::hstudio::{EntityInfo, GameApi, Owner, PlayerEntry, PlayerInfo, PlayerPose, Reply};
+use super::hstudio_lua::{Lua, Res, Value, bad_arg, check_num, check_text};
 use super::hstudio_rbx::{Env, Id, Rbx};
 use super::hstudio_rbx_types::{CFrame, Vector3};
 use super::hstudio_rbx_values::{as_cf, cf, enum_item, enum_value, v3};
@@ -55,6 +55,8 @@ pub const KEEP_RANK: usize = MAX_MIRRORED + 32;
 /// How long the console's look at the world lasts without another, in
 /// seconds, once nothing of the console's listens on the layer.
 pub const CONSOLE_LOOK: f64 = 60.0;
+/// How often the server's player list is read, in seconds.
+pub const PLAYERS_EVERY: f64 = 0.5;
 /// The entity types the layer tells apart.
 const PLAYER: &str = "minecraft:player";
 const ORB: &str = "minecraft:experience_orb";
@@ -91,6 +93,12 @@ pub struct World {
     pub mirrors: BTreeMap<u32, Mirror>,
     /// The dimension the mirrored entities are in.
     pub dimension: String,
+    /// The other players on the server, in the order they joined.
+    pub others: Vec<Other>,
+    /// When the player list is read next, and the local player's ping in
+    /// milliseconds as it said (negative while unknown).
+    pub next_list: f64,
+    pub ping: i32,
 }
 
 impl Default for World {
@@ -110,8 +118,23 @@ impl Default for World {
             console_looked: 0.0,
             mirrors: BTreeMap::new(),
             dimension: String::new(),
+            others: Vec::new(),
+            next_list: 0.0,
+            ping: -1,
         }
     }
+}
+
+/// Another player on the server: their Player in Players, their entity
+/// while the server sends it, their ping, the mirror that is their Character
+/// while they are near, and whether that waits a frame (they just joined).
+pub struct Other {
+    pub uuid: u128,
+    pub player: Id,
+    pub entity: Option<u32>,
+    pub latency: i32,
+    pub character: Option<Id>,
+    pub later: bool,
 }
 
 /// An entity's mirror: its Model (a mob's) or its Part (an item's, an
@@ -221,7 +244,7 @@ pub fn sync(rbx: &mut Rbx, game: &mut dyn GameApi) {
         let pose = game.pose();
         sync_local(rbx, p, pose.as_ref());
     }
-    sync_world(rbx, game, player.as_ref());
+    sync_world(rbx, game, player.as_ref(), false);
 }
 
 /// The LocalPlayer is the player, and its character follows them: its root
@@ -448,17 +471,18 @@ pub fn look(env: &mut dyn Env) {
     if rbx.world.lookers.contains(&owner) {
         return;
     }
-    let first = rbx.world.lookers.is_empty();
-    rbx.world.lookers.push(owner);
     if !rbx.active {
         // The layer's first use (an executor function's can be): it wakes up
-        // with the game as it is, the world with it.
+        // with the game as it is.
         rbx.active = true;
         rbx.now = now;
         super::hstudio_rbx_draw::sync(rbx, game);
-    } else if first {
+    }
+    let first = rbx.world.lookers.is_empty();
+    rbx.world.lookers.push(owner);
+    if first {
         let player = game.player();
-        sync_world(rbx, game, player.as_ref());
+        sync_world(rbx, game, player.as_ref(), true);
     }
 }
 
@@ -485,27 +509,38 @@ fn lapse(rbx: &mut Rbx) {
     }
 }
 
-/// The mirrors brought up to the game while a script looks. Out of a world
+/// The mirrors and the other players brought up to the game while a script
+/// looks (`looking`: as it first looks). Out of a world (a disconnect too)
 /// there are none, in another dimension the entities are others (the game
-/// gives their ids out again), and once no script looks they go.
-fn sync_world(rbx: &mut Rbx, game: &mut dyn GameApi, p: Option<&PlayerInfo>) {
+/// gives their ids out again), and once no script looks they all go.
+fn sync_world(rbx: &mut Rbx, game: &mut dyn GameApi, p: Option<&PlayerInfo>, looking: bool) {
     lapse(rbx);
     let Some(p) = p.filter(|_| !rbx.world.lookers.is_empty()) else {
-        clear(rbx);
+        clear(rbx, true);
         return;
     };
     if p.dimension != rbx.world.dimension {
-        clear(rbx);
+        clear(rbx, false);
         rbx.world.dimension = p.dimension.clone();
     }
+    sync_players(rbx, game, looking);
     sync_entities(rbx, game);
+    link_characters(rbx);
 }
 
-/// Every mirror goes, in the order of their entities' ids.
-fn clear(rbx: &mut Rbx) {
+/// Every mirror goes, in the order of their entities' ids; and with
+/// `players`, every other player, in the order they joined.
+fn clear(rbx: &mut Rbx, players: bool) {
     let ids: Vec<u32> = rbx.world.mirrors.keys().copied().collect();
     for id in ids {
         remove_mirror(rbx, id);
+    }
+    if players {
+        let gone: Vec<u128> = rbx.world.others.iter().map(|o| o.uuid).collect();
+        for uuid in gone {
+            remove_player(rbx, uuid);
+        }
+        rbx.world.next_list = 0.0;
     }
 }
 
@@ -572,7 +607,7 @@ fn choose<'a>(mirrors: &BTreeMap<u32, Mirror>, list: &'a [EntityInfo]) -> Vec<&'
 /// attributes. Like the character, a mirror is the studio's own and locked:
 /// scripts can put things in it, but not take it out of the Workspace.
 fn build_mirror(rbx: &mut Rbx, e: &EntityInfo) {
-    let name = mirror_name(e);
+    let name = mirror_name(rbx, e);
     let (model, root, head, humanoid) = match &e.item {
         Some((item, n)) => {
             let part = invisible_part(rbx, &name, Vector3::ONE);
@@ -661,7 +696,7 @@ fn update_mirror(rbx: &mut Rbx, e: &EntityInfo, fresh: bool) {
     let v = v3(Vector3::new(e.velocity[0], e.velocity[1], e.velocity[2]));
     rbx.quiet_set(root, "AssemblyLinearVelocity", v.clone());
     rbx.quiet_set(root, "Velocity", v);
-    let now_name = mirror_name(e);
+    let now_name = mirror_name(rbx, e);
     if !fresh && now_name != name {
         rename(rbx, model, &now_name);
         if let Some(h) = humanoid {
@@ -756,6 +791,14 @@ fn remove_mirror(rbx: &mut Rbx, id: u32) {
     let Some(m) = rbx.world.mirrors.remove(&id) else {
         return;
     };
+    // A player's Character: CharacterRemoving first, and it is theirs no more.
+    if let Some(o) = rbx.world.others.iter_mut().find(|o| o.character == Some(m.model)) {
+        o.character = None;
+        let player = o.player;
+        let mv = rbx.value(m.model);
+        rbx.fire(player, "CharacterRemoving", vec![mv]);
+        rbx.raw_set(player, "Character", Value::Nil);
+    }
     let mut tree = vec![m.model];
     tree.extend(rbx.descendants(m.model));
     rbx.destroy(m.model);
@@ -778,15 +821,22 @@ fn remove_mirror(rbx: &mut Rbx, id: u32) {
     }
 }
 
-/// What a mirror is called: a player's name or a mob's custom name, else its
-/// type's ("minecraft:cave_spider" is "Cave Spider"); a dropped item after
-/// the item, an orb "Experience Orb".
-fn mirror_name(e: &EntityInfo) -> String {
+/// What a mirror is called: a player's name (the game's, else the player
+/// list's for that entity) or a mob's custom name, else its type's
+/// ("minecraft:cave_spider" is "Cave Spider"); a dropped item after the
+/// item, an orb "Experience Orb".
+fn mirror_name(rbx: &Rbx, e: &EntityInfo) -> String {
+    let listed = rbx
+        .world
+        .others
+        .iter()
+        .find(|o| e.kind == PLAYER && o.entity == Some(e.id))
+        .map(|o| rbx.inst(o.player).name.clone());
     match &e.item {
         _ if !e.name.is_empty() => e.name.clone(),
+        None => listed.unwrap_or_else(|| title(&e.kind)),
         Some(_) if e.kind == ORB => "Experience Orb".into(),
         Some((item, _)) => title(item),
-        None => title(&e.kind),
     }
 }
 
@@ -809,6 +859,264 @@ pub fn mob_boxes(width: f64, height: f64, eye: f64) -> (f64, f64) {
     let side = width.min(0.5).min(height / 2.0).max(0.05);
     let root = (eye - side / 2.0).max(height / 2.0);
     (root, side)
+}
+
+// ---------------------------------------------------------------- the other players
+
+/// The server's player list, read every half second while a script looks
+/// (the first look reads it at once): a Player in Players for each other
+/// player, in the order they joined, with PlayerAdded; PlayerRemoving as one
+/// leaves the list. The local player's own entry gives the LocalPlayer the
+/// list's display name and its ping. Where the list can't be read now, it is
+/// read the next frame. Those there as a script first looks (`looking`) are
+/// there before it, with their Characters; one who joins after gets theirs a
+/// frame after PlayerAdded, so its handlers can connect CharacterAdded.
+fn sync_players(rbx: &mut Rbx, game: &mut dyn GameApi, looking: bool) {
+    if rbx.now < rbx.world.next_list {
+        return;
+    }
+    let Some(list) = game.players() else {
+        return;
+    };
+    rbx.world.next_list = rbx.now + PLAYERS_EVERY;
+    if let Some(me) = list.iter().find(|e| e.local) {
+        rbx.world.ping = me.latency;
+        if !me.display_name.is_empty() {
+            let lp = rbx.local_player;
+            rbx.raw_set(lp, "DisplayName", Value::str(&me.display_name));
+        }
+    }
+    let listed: Vec<&PlayerEntry> = list.iter().filter(|e| !e.local).collect();
+    let gone: Vec<u128> = rbx
+        .world
+        .others
+        .iter()
+        .map(|o| o.uuid)
+        .filter(|u| !listed.iter().any(|e| e.uuid == *u))
+        .collect();
+    for uuid in gone {
+        remove_player(rbx, uuid);
+    }
+    for e in listed {
+        let name = if e.name.is_empty() { "Player" } else { e.name.as_str() };
+        let shown = if e.display_name.is_empty() {
+            name
+        } else {
+            e.display_name.as_str()
+        };
+        let Some(o) = rbx.world.others.iter_mut().find(|o| o.uuid == e.uuid) else {
+            add_player(rbx, e, name, shown, !looking);
+            continue;
+        };
+        o.entity = e.entity;
+        o.latency = e.latency;
+        let player = o.player;
+        rename(rbx, player, name);
+        rbx.raw_set(player, "DisplayName", Value::str(shown));
+    }
+    count_players(rbx);
+}
+
+/// A player who joined: a locked Player of the studio's (scripts can't
+/// destroy it), with their name, display name, a UserId from their UUID and
+/// the UUID attribute, as the LocalPlayer has them. PlayerAdded fires; with
+/// `later`, their Character comes a frame after.
+fn add_player(rbx: &mut Rbx, e: &PlayerEntry, name: &str, shown: &str, later: bool) {
+    let player = rbx.make("Player", None);
+    rbx.inst_mut(player).name = name.to_owned();
+    rbx.raw_set(player, "DisplayName", Value::str(shown));
+    rbx.raw_set(player, "UserId", Value::Num(user_id(e.uuid)));
+    set_attribute(rbx, player, "UUID", Value::str(&uuid_text(e.uuid)));
+    rbx.inst_mut(player).locked = true;
+    rbx.world.others.push(Other {
+        uuid: e.uuid,
+        player,
+        entity: e.entity,
+        latency: e.latency,
+        character: None,
+        later,
+    });
+    let players = rbx.players;
+    let _ = rbx.set_parent(player, Some(players));
+    let pv = rbx.value(player);
+    rbx.fire(players, "PlayerAdded", vec![pv]);
+}
+
+/// A player who left: CharacterRemoving if they had a Character, then
+/// PlayerRemoving, and their Player is destroyed.
+fn remove_player(rbx: &mut Rbx, uuid: u128) {
+    let Some(i) = rbx.world.others.iter().position(|o| o.uuid == uuid) else {
+        return;
+    };
+    let o = rbx.world.others.remove(i);
+    if let Some(c) = o.character {
+        let cv = rbx.value(c);
+        rbx.fire(o.player, "CharacterRemoving", vec![cv]);
+        rbx.raw_set(o.player, "Character", Value::Nil);
+    }
+    let (players, pv) = (rbx.players, rbx.value(o.player));
+    rbx.fire(players, "PlayerRemoving", vec![pv]);
+    rbx.destroy(o.player);
+    count_players(rbx);
+}
+
+/// Players.MaxPlayers: at least as many as are on the server.
+fn count_players(rbx: &mut Rbx) {
+    let n = 1 + rbx.world.others.len();
+    let players = rbx.players;
+    rbx.raw_set(players, "MaxPlayers", Value::Num(n as f64));
+}
+
+/// Each other player's Character is the mirror of their entity while the
+/// server sends it (they are near): CharacterAdded and
+/// CharacterAppearanceLoaded fire as it comes, and CharacterRemoving as it
+/// goes (`remove_mirror`). A player entity no Player is listed for (a
+/// server's NPC) stays a character of no one's.
+fn link_characters(rbx: &mut Rbx) {
+    for i in 0..rbx.world.others.len() {
+        if std::mem::take(&mut rbx.world.others[i].later) {
+            continue;
+        }
+        let o = &rbx.world.others[i];
+        let model = o
+            .entity
+            .and_then(|e| rbx.world.mirrors.get(&e))
+            .filter(|m| m.kind == PLAYER)
+            .map(|m| m.model);
+        if model == o.character {
+            continue;
+        }
+        let (player, old) = (o.player, o.character);
+        rbx.world.others[i].character = model;
+        if let Some(old) = old {
+            let ov = rbx.value(old);
+            rbx.fire(player, "CharacterRemoving", vec![ov]);
+            rbx.raw_set(player, "Character", Value::Nil);
+        }
+        if let Some(new) = model {
+            let cv = rbx.value(new);
+            rbx.raw_set(player, "Character", cv.clone());
+            rbx.fire(player, "CharacterAdded", vec![cv.clone()]);
+            rbx.fire(player, "CharacterAppearanceLoaded", vec![cv]);
+        }
+    }
+}
+
+/// Everyone in Players: the LocalPlayer, then the others in the order they
+/// joined.
+pub fn players_of(rbx: &Rbx) -> Vec<Id> {
+    std::iter::once(rbx.local_player)
+        .chain(rbx.world.others.iter().map(|o| o.player))
+        .collect()
+}
+
+/// Whose Character `model` is, if anyone's.
+fn player_of_character(rbx: &Rbx, model: Id) -> Option<Id> {
+    if model == rbx.character {
+        return Some(rbx.local_player);
+    }
+    rbx.world
+        .others
+        .iter()
+        .find(|o| o.character == Some(model))
+        .map(|o| o.player)
+}
+
+/// The Players' and a Player's methods that know who is on the server.
+/// Players: GetPlayers (the LocalPlayer first), GetPlayerFromCharacter,
+/// GetPlayerByUserId, and GetNameFromUserIdAsync and GetUserIdFromNameAsync
+/// among the players here (Roblox's website isn't asked: anyone else is an
+/// error). A Player: GetMouse (the LocalPlayer's alone), Kick and
+/// LoadCharacter (a LocalScript can't, for another player),
+/// DistanceFromCharacter (from their Head) and GetNetworkPing (seconds).
+pub fn player_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, args: &[Value]) -> Res {
+    let rbx = env.rbx();
+    let local = id == rbx.local_player;
+    let by_id = |rbx: &Rbx, n: f64| {
+        players_of(rbx)
+            .into_iter()
+            .find(|&p| rbx.raw_get(p, "UserId").to_num() == Some(n))
+    };
+    let one = |v: Value| Ok(vec![v]);
+    match name {
+        "GetPlayers" => one(rbx.list(&players_of(rbx))),
+        "GetPlayerFromCharacter" => {
+            let found = args
+                .get(1)
+                .and_then(|v| rbx.id_of(v))
+                .and_then(|m| player_of_character(rbx, m));
+            one(found.map_or(Value::Nil, |p| rbx.value(p)))
+        }
+        "GetPlayerByUserId" => {
+            let n = check_num(lua, args, 1, name)?;
+            one(by_id(rbx, n).map_or(Value::Nil, |p| rbx.value(p)))
+        }
+        "GetNameFromUserIdAsync" => {
+            let n = check_num(lua, args, 1, name)?;
+            match by_id(rbx, n) {
+                Some(p) => one(Value::str(&rbx.inst(p).name)),
+                None => Err(lua.rt_error(format!(
+                    "Players:GetNameFromUserIdAsync() failed: no player here has the UserId {}, and only the players on this server are known",
+                    super::hstudio_lua::fmt_num(n)
+                ))),
+            }
+        }
+        "GetUserIdFromNameAsync" => {
+            let n = check_text(lua, args, 1, name)?;
+            let found = players_of(rbx)
+                .into_iter()
+                .find(|&p| rbx.inst(p).name.eq_ignore_ascii_case(&n));
+            match found {
+                Some(p) => one(rbx.raw_get(p, "UserId")),
+                None => Err(lua.rt_error(format!(
+                    "Players:GetUserIdFromNameAsync() failed: no player here is named {n}, and only the players on this server are known"
+                ))),
+            }
+        }
+        "GetMouse" => one(if local { rbx.value(rbx.mouse) } else { Value::Nil }),
+        "Kick" if local => {
+            let why = args.get(1).and_then(Value::as_text).unwrap_or_default();
+            rbx.warnings
+                .push(format!("Player:Kick() asked to leave the game: {why}"));
+            Ok(Vec::new())
+        }
+        "Kick" => Err(lua.rt_error("Cannot kick a non-local Player from a LocalScript")),
+        "LoadCharacter" if local => Ok(Vec::new()),
+        "LoadCharacter" => Err(lua.rt_error("LoadCharacter can only be called by the backend server")),
+        "DistanceFromCharacter" => {
+            let at = args
+                .get(1)
+                .and_then(super::hstudio_rbx_values::as_v3)
+                .ok_or_else(|| bad_arg(lua, 1, name, "Vector3 expected"))?;
+            let head = if local {
+                Some(rbx.head)
+            } else {
+                rbx.world
+                    .others
+                    .iter()
+                    .find(|o| o.player == id)
+                    .and_then(|o| o.character)
+                    .and_then(|c| rbx.child_named(c, "Head"))
+            };
+            let d = head
+                .and_then(|h| as_cf(&rbx.raw_get(h, "CFrame")))
+                .map_or(0.0, |c| (at - c.position()).magnitude());
+            one(Value::Num(d))
+        }
+        "GetNetworkPing" => {
+            let ms = if local {
+                rbx.world.ping
+            } else {
+                rbx.world
+                    .others
+                    .iter()
+                    .find(|o| o.player == id)
+                    .map_or(0, |o| o.latency)
+            };
+            one(Value::Num(f64::from(ms.max(0)) / 1000.0))
+        }
+        _ => Err(lua.rt_error(format!("{name} is not available here"))),
+    }
 }
 
 // ---------------------------------------------------------------- what scripts read and do
@@ -849,12 +1157,15 @@ pub fn before_read(env: &mut dyn Env, id: Id, key: &str) {
     }
 }
 
-/// Whether reading `key` of `id` reaches the world's entities: the
-/// Workspace's ChildAdded, ChildRemoved and descendant events and a child by
-/// its name, and game's descendant events. Its CurrentCamera, Terrain,
-/// Gravity and the like don't, so a UI script never has the world mirrored.
+/// Whether reading `key` of `id` reaches the world's entities: anything of
+/// Players but the LocalPlayer, the Workspace's ChildAdded, ChildRemoved and
+/// descendant events and a child by its name, and game's descendant events.
+/// The Workspace's CurrentCamera, Terrain, Gravity and the like don't, so a
+/// UI script never has the world mirrored.
 fn reaches_world(rbx: &Rbx, id: Id, key: &str) -> bool {
-    if id == rbx.game {
+    if id == rbx.players {
+        !matches!(key, "LocalPlayer" | "localPlayer")
+    } else if id == rbx.game {
         matches!(key, "DescendantAdded" | "DescendantRemoving")
     } else if id == rbx.workspace {
         matches!(
