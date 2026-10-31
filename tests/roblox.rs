@@ -585,3 +585,29 @@ fn another_mods_module_script_is_not_required() {
         "{lines:?}"
     );
 }
+
+#[test]
+fn the_middle_button_is_mouse_button_3_on_a_gui() {
+    use horizon_studio::game::hstudio_ui::{Input, handle_screen};
+    let mut game = FakeGame::new("rbx-middle");
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{UI}\nlocal UIS = game:GetService(\"UserInputService\")\nUIS.InputBegan:Connect(function(input) print(\"began \" .. input.UserInputType.Name) end)\nUIS.InputEnded:Connect(function(input) print(\"ended \" .. input.UserInputType.Name) end)\n"
+    );
+    load(&mut game, &mut st, "shop", &src, 0.6);
+    hud(&mut st, &mut game);
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.accept_screen(), "the GUI's screen");
+    handle_screen(&mut st, &mut game, Input::Middle { down: true });
+    assert!(st.s.rbx.pointer.buttons[2]);
+    handle_screen(&mut st, &mut game, Input::Middle { down: false });
+    assert!(!st.s.rbx.pointer.buttons[2]);
+    run_for(&mut st, &mut game, 0.1);
+    let lines = printed(&st, "shop");
+    assert!(lines.contains(&"began MouseButton3".to_owned()), "{lines:?}");
+    assert!(lines.contains(&"ended MouseButton3".to_owned()), "{lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.contains("MouseButton2")),
+        "not the right button: {lines:?}"
+    );
+}

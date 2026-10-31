@@ -499,6 +499,7 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         ui.text_rows.clear();
         ui.text_areas.clear();
         ui.view = None;
+        ui.caret_at = None;
         ui.scripts_at = None;
         ui.library_dots = None;
         ui.drawn_files.clear();
@@ -2612,7 +2613,10 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     let line = &ed.lines[ed.row];
     let from = line.char_indices().nth(ed.hscroll).map_or(line.len(), |(i, _)| i);
     let cx = text_x + caret[1] - p.measure(&line[..from], code_size(), Font::Mono);
-    if caret_y >= top_y - 0.5 && caret_y + code_line() <= bottom + 0.5 && cx >= text_x - 1.0 && cx <= text_x + text_w {
+    let shown =
+        caret_y >= top_y - 0.5 && caret_y + code_line() <= bottom + 0.5 && cx >= text_x - 1.0 && cx <= text_x + text_w;
+    st.s.ui.caret_at = shown.then_some([cx, caret_y + code_line()]);
+    if shown {
         let still = (now - st.s.ui.caret_moved - 0.5).max(0.0);
         let blink = 0.55 + 0.45 * (still as f32 * std::f32::consts::PI * 1.6).cos();
         p.rect(

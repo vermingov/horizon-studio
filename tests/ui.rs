@@ -3425,3 +3425,60 @@ fn explain_this_line_asks_the_agent_with_the_line() {
         "the selection went too: {said:?}"
     );
 }
+
+#[test]
+fn the_menu_key_opens_the_menu_of_what_has_the_keys() {
+    let (mut game, mut st) = editing("ui-menu-key", "local a = 1\nprint(a)");
+    // In the code: at the cursor, which stays where it is, its first item lit.
+    st.s.editor.click(1, 3, false);
+    redraw(&mut st, &mut game);
+    let caret = st.s.ui.caret_at;
+    handle(&mut st, &mut game, key(Key::Menu, NONE));
+    let menu = st.s.ui.menu.clone().expect("the code's menu");
+    assert_eq!(menu.at, caret.expect("the cursor was drawn"));
+    assert_eq!(lit(&st), "Cut");
+    assert_eq!((st.s.editor.row, st.s.editor.col), (1, 3));
+    // The Menu key closes it again.
+    handle(&mut st, &mut game, key(Key::Menu, NONE));
+    assert!(st.s.ui.menu.is_none());
+    // The console's input, in the panel.
+    handle(&mut st, &mut game, key(Key::Char('j'), CTRL));
+    redraw(&mut st, &mut game);
+    handle(&mut st, &mut game, key(Key::Menu, NONE));
+    assert_eq!(lit(&st), "Paste");
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    // The Library: the chosen mod's menu, at its row.
+    handle(&mut st, &mut game, key(Key::Char('3'), CTRL));
+    st.s.ui.library_sel = mod_index(&st, "hello");
+    redraw(&mut st, &mut game);
+    handle(&mut st, &mut game, key(Key::Menu, NONE));
+    assert_eq!(lit(&st), "Edit");
+    assert!(st.s.ui.menu.as_ref().unwrap().target.is_some(), "its row outlined");
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert_eq!(st.s.ui.tab, Tab::Editor);
+    assert_eq!(st.s.editor.title, "hello.lua");
+}
+
+#[test]
+fn the_middle_button_reaches_script_screens_only() {
+    let (mut game, mut st) = editing("ui-middle", "abc");
+    let before = (st.s.editor.row, st.s.editor.col);
+    handle(&mut st, &mut game, Input::Middle { down: true });
+    handle(&mut st, &mut game, Input::Middle { down: false });
+    assert!(st.s.ui.menu.is_none(), "it opens no menu");
+    assert_eq!((st.s.editor.row, st.s.editor.col), before);
+    // A script's screen gets it as "middle", in its click and release.
+    st.run_console(
+        &mut game,
+        "pressed, released = nil, nil\nui.open({ click = function(x, y, b) pressed = b end, release = function(x, y, b) released = b end })",
+    );
+    assert!(st.accept_screen());
+    horizon_studio::game::hstudio_ui::handle_screen(&mut st, &mut game, Input::Middle { down: true });
+    horizon_studio::game::hstudio_ui::handle_screen(&mut st, &mut game, Input::Middle { down: false });
+    let said: Vec<String> = st
+        .run_console(&mut game, "pressed .. ' ' .. released")
+        .into_iter()
+        .map(|(_, t)| t)
+        .collect();
+    assert_eq!(said, ["\"middle middle\""]);
+}

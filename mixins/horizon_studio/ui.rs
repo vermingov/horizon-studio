@@ -75,10 +75,11 @@ pub enum Input {
     Text(String),
     /// The pointer, in GUI pixels.
     Mouse(f32, f32),
-    Button {
-        left: bool,
-        down: bool,
-    },
+    /// The left button, or the right one.
+    Button { left: bool, down: bool },
+    /// The middle button (the wheel pressed): a script's screen takes it,
+    /// the studio leaves it be.
+    Middle { down: bool },
     /// Wheel steps; positive scrolls up.
     Wheel(f32),
 }
@@ -833,6 +834,9 @@ pub struct Ui {
     pub(crate) caret: Option<[f32; 2]>,
     pub(crate) caret_to: [f32; 2],
     pub(crate) caret_moved: f64,
+    /// The bottom of the caret as last drawn (None: it was off the code's
+    /// view), where the Menu key opens the code's menu.
+    pub caret_at: Option<[f32; 2]>,
     /// When the editor's file was last looked at on disk.
     pub(crate) disk_at: f64,
     /// Where the bottom panel was drawn (None: it wasn't), for the wheel.
@@ -2681,6 +2685,7 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
             }
             key_down(st, game, key, mods)
         }
+        Input::Middle { .. } => UiResult::Used,
     }
 }
 
@@ -3399,6 +3404,9 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
     }
     if st.s.ui.menu.is_some() {
         return menu_key(st, game, key);
+    }
+    if key == Key::Menu {
+        return super::hstudio_menus::key_menu(st, game);
     }
     if mods.ctrl
         && key == Key::Char('c')
@@ -4244,6 +4252,19 @@ pub fn handle_screen(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> U
                         false,
                     );
                 }
+            }
+        }
+        Input::Middle { down } => {
+            // Its click and release, wherever it is (no widget takes it).
+            let f = field(&table, if down { "click" } else { "release" });
+            if f.is_callable() {
+                let (x, y) = st.s.ui.mouse;
+                let at = vec![
+                    Value::Num(f64::from(x / unit)),
+                    Value::Num(f64::from(y / unit)),
+                    Value::str("middle"),
+                ];
+                st.screen_call(game, &f, at, false);
             }
         }
         Input::Wheel(steps) => {

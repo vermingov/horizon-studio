@@ -14,11 +14,12 @@ use super::hstudio_look::docs_markdown;
 use super::hstudio_modfiles::{path_in, rel_in, require_path};
 use super::hstudio_theme::{Layout, THEMES};
 use super::hstudio_ui::{
-    AREA_AGENT, AREA_LOG, Action, EditCmd, FIELD_AGENT, FieldCmd, Menu, MenuCmd, MenuItem, ModCmd, NamingKind, Panel,
-    ScriptRow, Spot, Tab, UiResult, act, agent_ask, agent_busy, agent_choose, agent_id, agent_list, agent_model,
-    agent_name, agent_new_conversation, agent_rescan, agent_send, copy_text, editor_pos, editor_siblings,
-    file_in_module, in_text_selection, inside, make_module, menu_pick, model_choices, model_items, model_label, notice,
-    open_module, open_naming, open_path, run_console_line, selected_text, set_agent_model, spot_at,
+    AREA_AGENT, AREA_LOG, Action, EditCmd, FIELD_AGENT, FIELD_CONSOLE, FieldCmd, Menu, MenuCmd, MenuItem, ModCmd,
+    NamingKind, Panel, ScriptRow, Spot, Tab, Target, UiResult, act, agent_ask, agent_busy, agent_choose, agent_id,
+    agent_list, agent_model, agent_name, agent_new_conversation, agent_rescan, agent_send, code_line, copy_text,
+    editor_pos, editor_siblings, file_in_module, in_text_selection, inside, make_module, menu_pick, model_choices,
+    model_items, model_label, notice, open_module, open_naming, open_path, run_console_line, selected_text,
+    set_agent_model, spot_at, target,
 };
 use std::path::Path;
 
@@ -38,6 +39,82 @@ pub fn right_press(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
     st.s.ui.menu = None;
     if let Some((spot, rect)) = spot_at(&st.s.ui, at) {
         open_spot(st, game, spot, rect, [at.0, at.1]);
+    }
+    UiResult::Used
+}
+
+/// The Menu key (or Shift+F10): the menu of what has the keys, where it
+/// is: the code's at the cursor (its line's own menu, the cursor left
+/// where it is), an input line's under the line, the Library's chosen mod
+/// at its row, the Problems' chosen problem at its row; else the menu of
+/// what is under the pointer. Its first item is lit, for the keys.
+pub fn key_menu(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
+    st.s.ui.menu = None;
+    let ui = &st.s.ui;
+    let below = |r: [f32; 4]| ([r[0] + 12.0, r[1] + r[3]], r[3]);
+    let opened = match target(ui) {
+        Target::Editor => {
+            // At the cursor, or the code's top left while it is off the view.
+            let at = ui
+                .caret_at
+                .or_else(|| ui.view.map(|v| [v.x, v.y]))
+                .unwrap_or([ui.mouse.0, ui.mouse.1]);
+            let ed = &st.s.editor;
+            let items = code_items(st, (ed.row, ed.col));
+            open(st, at, code_line(), items, None)
+        }
+        Target::Console | Target::Agent => {
+            let field = if target(ui) == Target::Agent {
+                FIELD_AGENT
+            } else {
+                FIELD_CONSOLE
+            };
+            match spot_rect(st, Spot::Field(field)) {
+                Some(r) => {
+                    let (at, h) = below(r);
+                    let items = field_items(st, field);
+                    open(st, at, h, items, None)
+                }
+                None => false,
+            }
+        }
+        Target::Elsewhere if ui.tab == Tab::Library => {
+            let i = ui.library_sel;
+            let row =
+                st.s.mods
+                    .get(i)
+                    .and_then(|m| ui.drawn_mods.iter().position(|id| *id == m.id))
+                    .and_then(|k| spot_rect(st, Spot::Mod(k)));
+            match row {
+                Some(r) => {
+                    let (at, h) = below(r);
+                    let items = library_items(st, i);
+                    open(st, at, h, items, Some(r))
+                }
+                None => false,
+            }
+        }
+        Target::Elsewhere if ui.tab == Tab::Editor && ui.panel == Panel::Problems => {
+            let k = ui.problem_sel;
+            match spot_rect(st, Spot::Problem(k)) {
+                Some(r) => {
+                    let (at, h) = below(r);
+                    let items = problem_items(st, k);
+                    open(st, at, h, items, Some(r))
+                }
+                None => false,
+            }
+        }
+        Target::Elsewhere => {
+            let at = ui.mouse;
+            match spot_at(ui, at) {
+                Some((spot, rect)) => open_spot(st, game, spot, rect, [at.0, at.1]),
+                None => false,
+            }
+        }
+    };
+    if opened && let Some(menu) = st.s.ui.menu.as_mut() {
+        menu.sel = menu.items.iter().position(|i| i.enabled);
     }
     UiResult::Used
 }
