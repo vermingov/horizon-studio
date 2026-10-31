@@ -95,7 +95,13 @@ pub(crate) enum Action {
     Toggle(usize),
     Edit(usize),
     Reload(usize),
+    /// The New prompt, on a script.
     NewMod,
+    /// The script list's +: a menu of a new script, a new module, and a new
+    /// file of the module open.
+    NewMenu,
+    /// The New prompt's switch: a module (true) or a script.
+    NewKind(bool),
     ReloadAll,
     Install(usize),
     Close,
@@ -160,6 +166,11 @@ pub enum MenuCmd {
     Model(Option<String>),
     /// A model typed by name.
     CustomModel,
+    /// The New prompt, on a script or on a module.
+    NewScript,
+    NewModule,
+    /// The New file prompt, for the module in this folder.
+    NewFile(PathBuf),
 }
 
 /// A row of a menu: its label, a hint at the right (a shortcut), whether it
@@ -203,7 +214,9 @@ impl MenuItem {
 
 /// A menu open over everything: where it opens (its top left, kept on the
 /// screen when drawn), its items, the one the keys are on, when it opened,
-/// and where it was drawn (clicks outside it close it).
+/// and where it was drawn (clicks outside it close it). `anchor_h` is the
+/// height of what opened it (a chip, a button; 0 at the pointer), which a
+/// menu with no room below opens above.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Menu {
     pub at: [f32; 2],
@@ -211,16 +224,24 @@ pub struct Menu {
     pub sel: Option<usize>,
     pub opened_at: f64,
     pub rect: Option<[f32; 4]>,
+    pub anchor_h: f32,
 }
 
-/// What the naming prompt names: a new mod, the editor's code saved as a
-/// new mod (Save File), or the agent's model.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// What the naming prompt names: a new script or module (Tab or its switch
+/// goes from one to the other), the editor's code saved as a new script
+/// (Save File), the agent's model, a new file of the module in that
+/// folder, a module's file renamed, or (asking, nothing typed) a mod's
+/// file or the whole mod going to the trash.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum NamingKind {
     #[default]
-    NewMod,
+    NewScript,
+    NewModule,
     SaveAs,
     Model,
+    NewFile(PathBuf),
+    Rename(PathBuf),
+    Delete(PathBuf),
 }
 
 /// The editor's scroll bar as drawn: where it is across, its track's top and height, the thumb's
@@ -408,7 +429,7 @@ pub struct Ui {
     pub hist: Option<usize>,
     pub log_scroll: usize,
     pub docs_scroll: usize,
-    /// The New mod prompt, while it is open.
+    /// The naming prompt (New, Save as, New file, Rename, Delete), while it is open.
     pub naming: Option<LineEdit>,
     /// What the prompt names.
     pub naming_kind: NamingKind,
@@ -416,6 +437,8 @@ pub struct Ui {
     pub menu: Option<Menu>,
     /// Where the agent's model chip was drawn (its menu opens under it).
     pub(crate) model_chip: Option<[f32; 4]>,
+    /// Where the script list's + was drawn (its menu opens under it).
+    pub(crate) new_button: Option<[f32; 4]>,
     /// When the AI setup prompt was copied (its button says so a moment).
     pub copied_at: Option<f64>,
     /// The looks chosen in Settings (`look.txt`).
@@ -1866,7 +1889,17 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 }
                 return UiResult::Used;
             }
-            if !left || st.s.ui.naming.is_some() {
+            if st.s.ui.naming.is_some() {
+                // While the prompt is up only its own switch takes clicks:
+                // what is under it, as drawn last frame, takes none.
+                let at = st.s.ui.mouse;
+                let hit = st.s.ui.hits.iter().rev().find(|(r, _)| inside(*r, at)).map(|(_, a)| *a);
+                if let (true, Some(action @ Action::NewKind(_))) = (left, hit) {
+                    return act(st, game, action);
+                }
+                return UiResult::Used;
+            }
+            if !left {
                 // Any press outside an open menu closes it, and goes no further.
                 if !inside(
                     st.s.ui.menu.as_ref().and_then(|m| m.rect).unwrap_or_default(),
@@ -2016,7 +2049,10 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
         }
         Input::Text(t) => {
             if let Some(name) = &mut st.s.ui.naming {
-                name.insert(&t);
+                // A delete asks; nothing is typed.
+                if !matches!(st.s.ui.naming_kind, NamingKind::Delete(_)) {
+                    name.insert(&t);
+                }
                 return UiResult::Used;
             }
             // What opens or keeps suggestions: a name's letters, a dot, a
@@ -2168,13 +2204,155 @@ fn menu_pick(st: &mut Studio, _game: &mut dyn GameApi, i: usize) {
     match item.cmd.clone() {
         Some(MenuCmd::Model(model)) => set_agent_model(st, model),
         Some(MenuCmd::CustomModel) => {
-            let mut edit = LineEdit::default();
-            edit.set(&agent_model(st).unwrap_or_default());
-            st.s.ui.naming = Some(edit);
-            st.s.ui.naming_kind = NamingKind::Model;
-            st.s.ui.naming_at = st.s.now;
+            let current = agent_model(st).unwrap_or_default();
+            open_naming(st, NamingKind::Model, &current);
         }
+        Some(MenuCmd::NewScript) => open_naming(st, NamingKind::NewScript, ""),
+        Some(MenuCmd::NewModule) => open_naming(st, NamingKind::NewModule, ""),
+        Some(MenuCmd::NewFile(folder)) => open_naming(st, NamingKind::NewFile(folder), ""),
         None => {}
+    }
+}
+
+/// Opens the naming prompt for `kind`, its field holding `text`.
+fn open_naming(st: &mut Studio, kind: NamingKind, text: &str) {
+    let mut edit = LineEdit::default();
+    edit.set(text);
+    let ui = &mut st.s.ui;
+    ui.naming = Some(edit);
+    ui.naming_kind = kind;
+    ui.naming_at = st.s.now;
+    ui.menu = None;
+    ui.suggest = None;
+}
+
+/// The module whose file the editor has open: its index and folder.
+fn open_module(st: &Studio) -> Option<(usize, PathBuf)> {
+    let i = st.s.editor.path.as_deref().and_then(|p| st.mod_of_path(p))?;
+    Some((i, st.s.mods[i].folder.clone()?))
+}
+
+/// The script list's + menu, under the + (`at`, where it was drawn): a new
+/// script, a new module, and a new file of the module the editor has open.
+fn open_new_menu(st: &mut Studio, at: [f32; 4]) {
+    let mut items = vec![
+        MenuItem::new("New script...", MenuCmd::NewScript),
+        MenuItem::new("New module...", MenuCmd::NewModule),
+    ];
+    if let Some((i, folder)) = open_module(st) {
+        items.push(MenuItem::separator());
+        let label = format!("New file in {}...", st.s.mods[i].id);
+        items.push(MenuItem::new(label, MenuCmd::NewFile(folder)));
+    }
+    st.s.ui.menu = Some(Menu {
+        at: [at[0], at[1] + at[3] + 4.0],
+        items,
+        sel: None,
+        opened_at: st.s.now,
+        rect: None,
+        anchor_h: at[3],
+    });
+}
+
+/// A file of a module (`path`): the module's folder and the file's path in it.
+fn file_in_module(st: &Studio, path: &Path) -> Option<(PathBuf, String)> {
+    let folder = st.s.mods[st.mod_of_path(path)?].folder.clone()?;
+    let rel = super::hstudio_modfiles::rel_in(&folder, path)?;
+    Some((folder, rel))
+}
+
+/// What a path of the mods folder is called in the prompts: a module's
+/// file by its path in the module, a module by its id, a script by its file.
+pub(crate) fn prompt_name(st: &Studio, path: &Path) -> String {
+    match st.mod_of_path(path).map(|i| &st.s.mods[i]) {
+        Some(m) if m.main == path && m.folder.is_none() => format!("{}.lua", m.id),
+        Some(m) if m.folder.as_deref() == Some(path) => m.id.clone(),
+        _ => file_in_module(st, path).map_or_else(
+            || {
+                path.file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+            },
+            |(_, rel)| rel,
+        ),
+    }
+}
+
+/// The line under the naming prompt's field: what Enter will make, or
+/// (an Err) why it can't, and then Enter does nothing. Empty: nothing to
+/// say yet.
+pub(crate) fn naming_plan(st: &Studio) -> Result<String, String> {
+    use super::hstudio_modfiles::{plan_file, plan_mod};
+    let typed = st.s.ui.naming.as_ref().map_or("", |n| n.text.as_str());
+    let mods = st.s.mods_dir();
+    match &st.s.ui.naming_kind {
+        NamingKind::NewScript | NamingKind::SaveAs => plan_mod(&mods, typed, false),
+        NamingKind::NewModule => plan_mod(&mods, typed, true),
+        NamingKind::Model => Ok(String::new()),
+        NamingKind::NewFile(folder) => plan_file(folder, typed, None),
+        NamingKind::Rename(path) => match file_in_module(st, path) {
+            Some((folder, rel)) => plan_file(&folder, typed, Some(&rel)),
+            None => Err("that file is gone".into()),
+        },
+        NamingKind::Delete(path) => {
+            let rel = path.strip_prefix(&mods).ok().and_then(|r| {
+                let parts: Option<Vec<&str>> = r.components().map(|c| c.as_os_str().to_str()).collect();
+                parts.map(|p| p.join("/"))
+            });
+            Ok(format!(
+                "It moves to trash/{} beside the mods folder.",
+                rel.unwrap_or_else(|| prompt_name(st, path))
+            ))
+        }
+    }
+}
+
+/// Enter in the naming prompt: nothing while its line says why it can't;
+/// else the prompt closes and it makes, renames or deletes what it names.
+/// A new mod or file opens in the editor, unsaved edits in the file open
+/// before saved first.
+fn finish_naming(st: &mut Studio, game: &mut dyn GameApi) {
+    if naming_plan(st).is_err_and(|e| !e.is_empty()) {
+        return;
+    }
+    let wanted =
+        st.s.ui
+            .naming
+            .take()
+            .map(|n| n.text.trim().to_owned())
+            .unwrap_or_default();
+    let kind = std::mem::take(&mut st.s.ui.naming_kind);
+    let made = match kind {
+        NamingKind::Model => {
+            set_agent_model(st, Some(wanted).filter(|m| !m.is_empty()));
+            return;
+        }
+        NamingKind::Delete(path) => st.delete_path(game, &path).map(|_| None),
+        _ if wanted.is_empty() => return,
+        NamingKind::SaveAs => {
+            let code = st.s.editor.text();
+            st.create_mod(game, &wanted, Some(&code)).map(Some)
+        }
+        NamingKind::NewScript => {
+            st.save_before_switch(game, None);
+            st.create_mod(game, &wanted, None).map(Some)
+        }
+        NamingKind::NewModule => {
+            st.save_before_switch(game, None);
+            st.create_module(game, &wanted).map(Some)
+        }
+        NamingKind::NewFile(folder) => {
+            st.save_before_switch(game, None);
+            st.add_file(game, &folder, &wanted).map(Some)
+        }
+        NamingKind::Rename(path) => st.rename_file(game, &path, &wanted).map(|_| None),
+    };
+    match made {
+        Ok(Some(path)) => {
+            st.open_file(&path);
+            st.s.ui.tab = Tab::Editor;
+        }
+        Ok(None) => {}
+        Err(e) => st.s.log(LogKind::Error, e),
     }
 }
 
@@ -2278,6 +2456,7 @@ fn open_model_menu(st: &mut Studio) {
         sel,
         opened_at: st.s.now,
         rect: None,
+        anchor_h: chip[3],
     });
 }
 
@@ -2312,23 +2491,32 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
             st.s.ui.tab = Tab::Editor;
         }
         Action::SaveFile => {
-            let path = st.s.editor.path.clone();
-            if path.is_some() && st.s.mods.iter().any(|m| Some(&m.main) == path.as_ref()) {
+            // Any file of a mod saves in place; scratch code asks for a name.
+            if st.s.editor.path.as_deref().and_then(|p| st.mod_of_path(p)).is_some() {
                 st.save_editor(game);
             } else {
-                st.s.ui.naming = Some(LineEdit::default());
-                st.s.ui.naming_kind = NamingKind::SaveAs;
-                st.s.ui.naming_at = st.s.now;
+                open_naming(st, NamingKind::SaveAs, "");
             }
         }
         Action::Reload(i) => {
             st.s.mods[i].enabled = true;
             st.set_enabled(game, i, true);
         }
-        Action::NewMod => {
-            st.s.ui.naming = Some(LineEdit::default());
-            st.s.ui.naming_kind = NamingKind::NewMod;
-            st.s.ui.naming_at = st.s.now;
+        Action::NewMod => open_naming(st, NamingKind::NewScript, ""),
+        Action::NewMenu => {
+            let (x, y) = st.s.ui.mouse;
+            let at = st.s.ui.new_button.unwrap_or([x, y, 0.0, 0.0]);
+            open_new_menu(st, at);
+        }
+        Action::NewKind(module) => {
+            let ui = &mut st.s.ui;
+            if matches!(ui.naming_kind, NamingKind::NewScript | NamingKind::NewModule) {
+                ui.naming_kind = if module {
+                    NamingKind::NewModule
+                } else {
+                    NamingKind::NewScript
+                };
+            }
         }
         Action::ReloadAll => st.reload_all(game),
         Action::Install(i) => {
@@ -2474,34 +2662,26 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
 
 fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> UiResult {
     if let Some(name) = &mut st.s.ui.naming {
+        let delete = matches!(st.s.ui.naming_kind, NamingKind::Delete(_));
         match key {
             Key::Escape => {
                 st.s.ui.naming = None;
-                st.s.ui.naming_kind = NamingKind::NewMod;
+                st.s.ui.naming_kind = NamingKind::default();
             }
-            Key::Enter => {
-                let wanted = name.text.trim().to_owned();
-                st.s.ui.naming = None;
-                let kind = std::mem::take(&mut st.s.ui.naming_kind);
-                if kind == NamingKind::Model {
-                    set_agent_model(st, Some(wanted).filter(|m| !m.is_empty()));
-                } else if !wanted.is_empty() {
-                    let code = (kind == NamingKind::SaveAs).then(|| st.s.editor.text());
-                    match st.create_mod(game, &wanted, code.as_deref()) {
-                        Ok(path) => {
-                            let title = path
-                                .file_name()
-                                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-                            st.s.editor.open(&path, &title);
-                            st.s.ui.tab = Tab::Editor;
-                        }
-                        Err(e) => st.s.log(LogKind::Error, e),
-                    }
-                }
+            Key::Enter => finish_naming(st, game),
+            // Tab goes between a script and a module.
+            Key::Tab => {
+                let ui = &mut st.s.ui;
+                ui.naming_kind = match ui.naming_kind {
+                    NamingKind::NewScript => NamingKind::NewModule,
+                    NamingKind::NewModule => NamingKind::NewScript,
+                    ref other => other.clone(),
+                };
             }
-            k => {
+            k if !delete => {
                 name.key(k, mods);
             }
+            _ => {}
         }
         return UiResult::Used;
     }

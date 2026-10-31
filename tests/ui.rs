@@ -1199,3 +1199,123 @@ fn the_agents_model_is_chosen_from_its_chip() {
     redraw(&mut st, &mut game);
     text_at(&game, "Model: claude-opus-5-5");
 }
+
+/// Whether some text drawn contains `part`.
+fn drawn_contains(game: &FakeGame, part: &str) -> bool {
+    game.drawn.iter().any(|d| d.starts_with("text ") && d.contains(part))
+}
+
+#[test]
+fn the_new_prompt_makes_a_script_or_a_module() {
+    use horizon_studio::game::hstudio_ui::NamingKind;
+    let mut game = FakeGame::new("ui-new-prompt");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    // An edit not saved yet, in the scratch file.
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    type_text(&mut st, &mut game, "-- before the prompt\n");
+    assert!(st.s.editor.dirty);
+    handle(&mut st, &mut game, key(Key::Char('3'), CTRL));
+    handle(&mut st, &mut game, Input::Text("n".into()));
+    assert_eq!(st.s.ui.naming_kind, NamingKind::NewScript, "it opens on a script");
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert_eq!(st.s.ui.naming_kind, NamingKind::NewModule);
+    // Its switch takes clicks; nothing under the prompt does.
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, "Script");
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.ui.naming_kind, NamingKind::NewScript);
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, "Module");
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.ui.naming_kind, NamingKind::NewModule);
+    click(&mut st, &mut game, (5.0, 5.0));
+    assert!(st.s.ui.naming.is_some(), "a click elsewhere goes nowhere");
+    type_text(&mut st, &mut game, "Night Light");
+    redraw(&mut st, &mut game);
+    assert!(drawn_contains(&game, "New module"));
+    assert!(drawn_contains(&game, "night_light/: main.lua, shared.lua and lib.lua"));
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    redraw(&mut st, &mut game);
+    assert!(drawn_contains(&game, "night_light.lua: one file"));
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert!(st.s.ui.naming.is_none());
+    let main = game.mods_dir().join("night_light").join("main.lua");
+    assert!(main.is_file() && game.mods_dir().join("night_light").join("lib.lua").is_file());
+    assert_eq!(st.s.editor.path.as_ref(), Some(&main));
+    assert_eq!(st.s.editor.title, "night_light/main.lua");
+    assert_eq!(st.s.ui.tab, Tab::Editor);
+    let scratch = std::fs::read_to_string(st.s.dir.join("scratch.lua")).unwrap();
+    assert!(scratch.contains("-- before the prompt"), "saved first: {scratch}");
+    // The same name again: the line says it is taken, and Enter keeps the prompt open.
+    handle(&mut st, &mut game, key(Key::Char('3'), CTRL));
+    handle(&mut st, &mut game, Input::Text("n".into()));
+    type_text(&mut st, &mut game, "Night Light");
+    redraw(&mut st, &mut game);
+    assert!(drawn_contains(&game, "night_light already exists"));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert!(st.s.ui.naming.is_some());
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    assert!(st.s.ui.naming.is_none());
+    assert_eq!(st.s.ui.naming_kind, NamingKind::NewScript);
+}
+
+#[test]
+fn the_plus_menu_offers_scripts_modules_and_files() {
+    use horizon_studio::game::hstudio_ui::NamingKind;
+    let mut game = FakeGame::new("ui-plus-menu");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    redraw(&mut st, &mut game);
+    let plus = text_at(&game, "+");
+    click(&mut st, &mut game, (plus.0 + 1.0, plus.1 + 2.0));
+    let labels = |st: &horizon_studio::game::hstudio::Studio| -> Vec<String> {
+        let menu = st.s.ui.menu.clone().expect("the + menu");
+        menu.items.iter().map(|i| i.label.clone()).collect()
+    };
+    assert_eq!(labels(&st), ["New script...", "New module..."]);
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, "New module...");
+    click(&mut st, &mut game, at);
+    assert!(st.s.ui.menu.is_none());
+    assert_eq!(st.s.ui.naming_kind, NamingKind::NewModule);
+    type_text(&mut st, &mut game, "Box");
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert_eq!(st.s.editor.title, "box/main.lua");
+    // With a module's file open, a new file of it too.
+    redraw(&mut st, &mut game);
+    let plus = text_at(&game, "+");
+    click(&mut st, &mut game, (plus.0 + 1.0, plus.1 + 2.0));
+    assert_eq!(
+        labels(&st),
+        ["New script...", "New module...", "", "New file in box..."]
+    );
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, "New file in box...");
+    click(&mut st, &mut game, at);
+    let folder = game.mods_dir().join("box");
+    assert_eq!(st.s.ui.naming_kind, NamingKind::NewFile(folder.clone()));
+    type_text(&mut st, &mut game, "util");
+    redraw(&mut st, &mut game);
+    assert!(drawn_contains(&game, "New file in box"));
+    assert!(drawn_contains(&game, "box/util.lua: require(\"util\") loads it"));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert!(folder.join("util.lua").is_file());
+    assert_eq!(st.s.editor.title, "box/util.lua");
+    // A name it can't take is explained, and Enter waits for a better one.
+    redraw(&mut st, &mut game);
+    let plus = text_at(&game, "+");
+    click(&mut st, &mut game, (plus.0 + 1.0, plus.1 + 2.0));
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, "New file in box...");
+    click(&mut st, &mut game, at);
+    type_text(&mut st, &mut game, "lib.util");
+    redraw(&mut st, &mut game);
+    assert!(drawn_contains(&game, "dots are for require"));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert!(st.s.ui.naming.is_some());
+}

@@ -518,7 +518,7 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
     if let Some(name) = st.s.ui.naming.clone() {
         use_look(&look, true);
         p.dy = 0.0;
-        naming(st, &mut p, &name, w, h);
+        naming(st, &mut p, &name, w, h, dt);
     }
 }
 
@@ -552,8 +552,8 @@ fn draw_menu(st: &mut Studio, p: &mut P, w: f32, h: f32, dt: f32) {
     let mut x = menu.at[0].min(w - mw - 8.0).max(8.0);
     let mut y = menu.at[1];
     if y + mh > h - 8.0 {
-        // Above where it was asked for: over the chip that opened it, or the pointer.
-        y = (menu.at[1] - mh - 8.0 - st.s.ui.model_chip.map_or(0.0, |c| c[3])).max(8.0);
+        // Above where it was asked for: over what opened it, or the pointer.
+        y = (menu.at[1] - mh - 8.0 - menu.anchor_h).max(8.0);
     }
     x = x.floor();
     y = y.floor();
@@ -1314,7 +1314,8 @@ fn draw_scripts(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             Font::Medium,
             mix(pal().muted, pal().ink, hv),
         );
-        ui.hits.push((plus, Action::NewMod));
+        ui.hits.push((plus, Action::NewMenu));
+        ui.new_button = Some(plus);
     }
     let row_h = 26.0;
     let list_y = y + 36.0;
@@ -3198,7 +3199,12 @@ fn stepper(ui: &mut Ui, p: &mut P, x: f32, cy: f32, value: &str, which: u8, dt: 
     );
 }
 
-fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32) {
+/// The naming prompt over everything: its heading (with the Script and
+/// Module switch for a new mod), what to type, the field (none when it only
+/// asks, for a delete), the line saying what Enter will do or why it can't,
+/// and its keys.
+fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32, dt: f32) {
+    use super::hstudio_ui::NamingKind;
     let now = st.s.now;
     let arrive = progress(now, st.s.ui.naming_at, MOVE);
     let (a, dy) = (p.alpha, p.dy);
@@ -3206,42 +3212,96 @@ fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32) {
     p.dy = 0.0;
     p.rect([0.0, 0.0, w, h], 0.0, fade(pal().page, 0.55));
     p.dy = (1.0 - arrive) * RISE;
-    let cw = 380f32.min(w - 32.0);
-    let r = [((w - cw) / 2.0).floor(), (h / 2.0 - 84.0).floor(), cw, 168.0];
+    let cw = 420f32.min(w - 32.0);
+    let r = [((w - cw) / 2.0).floor(), (h / 2.0 - 98.0).floor(), cw, 196.0];
     p.rect(r, 16.0, pal().surface);
     p.border(r, 16.0, pal().rule);
-    use super::hstudio_ui::NamingKind;
-    let kind = st.s.ui.naming_kind;
-    let (heading, ask, enter) = match kind {
-        NamingKind::NewMod => ("New mod", "What is it called?", "Enter to create  ·  Esc to cancel"),
+    let kind = st.s.ui.naming_kind.clone();
+    let shown = |path: &std::path::Path| super::hstudio_ui::prompt_name(st, path);
+    let (heading, ask, enter) = match &kind {
+        NamingKind::NewScript | NamingKind::NewModule => (
+            if kind == NamingKind::NewModule {
+                "New module".to_owned()
+            } else {
+                "New script".to_owned()
+            },
+            "What is it called?",
+            "Enter to create  ·  Tab: Script or Module  ·  Esc to cancel",
+        ),
         NamingKind::SaveAs => (
-            "Save as a script mod",
+            "Save as a script".to_owned(),
             "What is it called?",
             "Enter to save  ·  Esc to cancel",
         ),
         NamingKind::Model => (
-            "The agent's model",
+            "The agent's model".to_owned(),
             "Its name, as the agent takes it (empty: its default)",
             "Enter to use it  ·  Esc to cancel",
         ),
+        NamingKind::NewFile(folder) => (
+            format!("New file in {}", shown(folder)),
+            "Its path in the module (lib/util makes a folder)",
+            "Enter to create  ·  Esc to cancel",
+        ),
+        NamingKind::Rename(path) => (
+            format!("Rename {}", shown(path)),
+            "Its new path in the module",
+            "Enter to rename  ·  Esc to cancel",
+        ),
+        NamingKind::Delete(path) => (
+            format!("Delete {}?", shown(path)),
+            if st.mod_of_path(path).is_some_and(|i| {
+                let m = &st.s.mods[i];
+                m.folder.as_deref() == Some(path) || (m.folder.is_none() && m.main == *path)
+            }) {
+                "The mod stops and leaves the Library, files and all."
+            } else {
+                "The module reloads without it."
+            },
+            "Enter to delete  ·  Esc to cancel",
+        ),
     };
-    p.text(heading, r[0] + 22.0, r[1] + 18.0, 16.0, Font::Medium, pal().ink);
-    p.text(ask, r[0] + 22.0, r[1] + 44.0, 13.0, Font::Regular, pal().muted);
-    let f = [r[0] + 20.0, r[1] + 74.0, cw - 40.0, 40.0];
-    p.rect(f, 10.0, pal().page);
-    p.border(f, 10.0, fade(pal().accent, 0.6));
-    line_edit(
-        p,
-        now,
-        name,
-        f[0] + 14.0,
-        top(f[1] + 20.0, 14.0),
-        f[2] - 28.0,
-        14.0,
-        Font::Regular,
-        pal().ink,
-    );
-    p.text(enter, r[0] + 22.0, r[1] + 130.0, 12.0, Font::Regular, pal().muted);
+    let heading = p.fit(&heading, cw - 44.0 - 150.0, 16.0, Font::Medium);
+    p.text(&heading, r[0] + 22.0, r[1] + 18.0, 16.0, Font::Medium, pal().ink);
+    if matches!(kind, NamingKind::NewScript | NamingKind::NewModule) {
+        let module = kind == NamingKind::NewModule;
+        let items = [
+            ("Script", !module, Action::NewKind(false)),
+            ("Module", module, Action::NewKind(true)),
+        ];
+        let sw: f32 = items
+            .iter()
+            .map(|(l, _, _)| p.measure(l, 13.0, Font::Medium) + 28.0)
+            .sum::<f32>()
+            + 4.0;
+        segmented(&mut st.s.ui, p, r[0] + cw - 20.0 - sw, r[1] + 30.0, &items, dt);
+    }
+    p.text(ask, r[0] + 22.0, r[1] + 52.0, 13.0, Font::Regular, pal().muted);
+    if !matches!(kind, NamingKind::Delete(_)) {
+        let f = [r[0] + 20.0, r[1] + 78.0, cw - 40.0, 40.0];
+        p.rect(f, 10.0, pal().page);
+        p.border(f, 10.0, fade(pal().accent, 0.6));
+        line_edit(
+            p,
+            now,
+            name,
+            f[0] + 14.0,
+            top(f[1] + 20.0, 14.0),
+            f[2] - 28.0,
+            14.0,
+            Font::Regular,
+            pal().ink,
+        );
+    }
+    let (plan, c) = match super::hstudio_ui::naming_plan(st) {
+        Ok(line) => (line, pal().muted),
+        Err(why) => (why, pal().danger),
+    };
+    if !plan.is_empty() {
+        let plan = p.fit(&plan, cw - 44.0, 12.5, Font::Regular);
+        p.text(&plan, r[0] + 22.0, r[1] + 128.0, 12.5, Font::Regular, c);
+    }
+    p.text(enter, r[0] + 22.0, r[1] + 160.0, 12.0, Font::Regular, pal().muted);
     p.alpha = a;
     p.dy = dy;
 }
