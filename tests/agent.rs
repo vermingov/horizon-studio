@@ -750,3 +750,32 @@ fn an_agent_whose_output_something_else_keeps_open_is_still_done() {
         })
     );
 }
+
+#[test]
+fn a_model_is_passed_where_each_agent_takes_it() {
+    // Claude Code: right after -p, so --allowedTools (which takes several values) stays last.
+    let claude = AgentSpec::claude(PathBuf::from("claude")).with_model("sonnet");
+    let args = expand_args(&claude.args, "Build a statue", None);
+    let at = args.iter().position(|a| a == "--model").expect("--model");
+    assert_eq!(args[at + 1], "sonnet");
+    assert_eq!(args[0], "-p");
+    assert_eq!(at, 1);
+    let tools = args.iter().position(|a| a == "--allowedTools").unwrap();
+    assert_eq!(tools, args.len() - 2, "{args:?}");
+    assert!(args.contains(&"Build a statue".to_owned()));
+    // omp too, with a provider's name.
+    let omp = AgentSpec::omp(PathBuf::from("omp")).with_model(" anthropic/claude-sonnet ");
+    let args = expand_args(&omp.args, "hi", None);
+    assert_eq!(&args[..3], ["-p", "--model", "anthropic/claude-sonnet"]);
+    // No model, or an agent of one's own: as they were.
+    let plain = AgentSpec::claude(PathBuf::from("claude"));
+    assert_eq!(plain.with_model("  "), plain);
+    let custom = AgentSpec {
+        id: "custom".into(),
+        name: "Mine".into(),
+        program: PathBuf::from("aider"),
+        args: vec!["--message".into(), "{prompt}".into()],
+        json: false,
+    };
+    assert_eq!(custom.with_model("opus"), custom);
+}

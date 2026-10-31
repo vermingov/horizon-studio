@@ -1134,3 +1134,68 @@ fn the_editor_scroll_bar_drags_and_jumps() {
     click(&mut st, &mut game, (px(bar_x), px(sb.top + 2.0)));
     assert_eq!(st.s.editor.scroll, 0);
 }
+
+#[test]
+fn the_agents_model_is_chosen_from_its_chip() {
+    use horizon_studio::game::hstudio_agent::AgentSpec;
+    use horizon_studio::game::hstudio_ui::Panel;
+    let mut game = FakeGame::new("ui-model");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.s.now = 10.0;
+    st.s.ui.agent.agents = Some(vec![AgentSpec::claude(std::path::PathBuf::from("claude"))]);
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    st.s.ui.panel = Panel::Agent;
+    redraw(&mut st, &mut game);
+    // The chip opens the menu of models, the current one (the default) marked.
+    let chip = text_at(&game, "Model: Default");
+    click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 2.0));
+    let menu = st.s.ui.menu.clone().expect("the model menu");
+    let labels: Vec<&str> = menu.items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["Default", "Opus", "Sonnet", "Haiku", "Fable", "", "Other model..."]
+    );
+    assert!(menu.items[0].checked);
+    redraw(&mut st, &mut game);
+    let sonnet = last_text_at(&game, "Sonnet");
+    click(&mut st, &mut game, (sonnet.0 + 2.0, sonnet.1 + 2.0));
+    assert!(st.s.ui.menu.is_none(), "choosing closes it");
+    let kept = std::fs::read_to_string(st.s.dir.join("agent-models.txt")).unwrap();
+    assert_eq!(kept, "claude=sonnet\n");
+    redraw(&mut st, &mut game);
+    let chip = text_at(&game, "Model: Sonnet");
+    // The keys work it too: Down to Haiku, Enter.
+    click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 2.0));
+    handle(&mut st, &mut game, key(Key::Down, NONE));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert!(
+        std::fs::read_to_string(st.s.dir.join("agent-models.txt"))
+            .unwrap()
+            .contains("claude=haiku")
+    );
+    // Another model by name, through the prompt; a click outside closes the menu first.
+    redraw(&mut st, &mut game);
+    let chip = text_at(&game, "Model: Haiku");
+    click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 2.0));
+    click(&mut st, &mut game, (3.0, 3.0));
+    assert!(st.s.ui.menu.is_none(), "a click outside closes it");
+    click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 2.0));
+    redraw(&mut st, &mut game);
+    let other = last_text_at(&game, "Other model...");
+    click(&mut st, &mut game, (other.0 + 2.0, other.1 + 2.0));
+    assert!(st.s.ui.naming.is_some());
+    for _ in 0..5 {
+        handle(&mut st, &mut game, key(Key::Backspace, NONE));
+    }
+    type_text(&mut st, &mut game, "claude-opus-5-5");
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert!(
+        std::fs::read_to_string(st.s.dir.join("agent-models.txt"))
+            .unwrap()
+            .contains("claude=claude-opus-5-5")
+    );
+    redraw(&mut st, &mut game);
+    text_at(&game, "Model: claude-opus-5-5");
+}

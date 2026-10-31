@@ -511,10 +511,101 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         let x0 = ((w - cw) / 2.0).floor();
         studio_page(st, &mut p, [x0, 24.0, cw, h - 48.0], dt, false);
     }
+    if st.s.ui.menu.is_some() {
+        p.dy = 0.0;
+        draw_menu(st, &mut p, w, h, dt);
+    }
     if let Some(name) = st.s.ui.naming.clone() {
         use_look(&look, true);
         p.dy = 0.0;
         naming(st, &mut p, &name, w, h);
+    }
+}
+
+/// The open menu: its items in a plate at its place, kept on the screen
+/// (opening upward where there is no room below). The row under the
+/// pointer or the keys is lit; the current choice has a dot; a hint (a
+/// shortcut) sits at the right. Clicks between its rows go nowhere.
+fn draw_menu(st: &mut Studio, p: &mut P, w: f32, h: f32, dt: f32) {
+    const ROW: f32 = 26.0;
+    const SEP: f32 = 9.0;
+    const PAD: f32 = 5.0;
+    let now = st.s.now;
+    let Some(menu) = st.s.ui.menu.clone() else { return };
+    let size = 12.5;
+    let mut mw: f32 = 168.0;
+    let mut mh = 2.0 * PAD;
+    for it in &menu.items {
+        if it.separator {
+            mh += SEP;
+            continue;
+        }
+        let hint = if it.hint.is_empty() {
+            0.0
+        } else {
+            p.measure(&it.hint, 11.5, Font::Mono) + 18.0
+        };
+        mw = mw.max(p.measure(&it.label, size, Font::Regular) + hint + 46.0);
+        mh += ROW;
+    }
+    let mw = mw.min(w - 16.0);
+    let mut x = menu.at[0].min(w - mw - 8.0).max(8.0);
+    let mut y = menu.at[1];
+    if y + mh > h - 8.0 {
+        // Above where it was asked for: over the chip that opened it, or the pointer.
+        y = (menu.at[1] - mh - 8.0 - st.s.ui.model_chip.map_or(0.0, |c| c[3])).max(8.0);
+    }
+    x = x.floor();
+    y = y.floor();
+    let rect = [x, y, mw, mh];
+    let arrive = progress(now, menu.opened_at, QUICK);
+    let (a, dy) = (p.alpha, p.dy);
+    p.alpha = a * arrive;
+    p.dy = dy + (1.0 - arrive) * -4.0;
+    p.rect([x + 1.0, y + 3.0, mw, mh], 10.0, fade(0xFF00_0000, 0.25));
+    p.rect(rect, 10.0, pal().surface);
+    p.border(rect, 10.0, pal().rule);
+    st.s.ui.hits.push((rect, Action::Block));
+    let mut ry = y + PAD;
+    for (i, it) in menu.items.iter().enumerate() {
+        if it.separator {
+            p.rect([x + 10.0, ry + SEP / 2.0, mw - 20.0, 1.0], 0.0, pal().rule);
+            ry += SEP;
+            continue;
+        }
+        let r = [x + PAD, ry, mw - 2.0 * PAD, ROW];
+        let ui = &mut st.s.ui;
+        let over = it.enabled && inside(r, ui.mouse);
+        let hv = hover(ui, id("menu-row", i), over || menu.sel == Some(i), dt);
+        if it.enabled && hv > 0.01 {
+            p.rect(r, 7.0, fade(pal().accent, 0.18 * hv));
+        }
+        if it.checked {
+            p.rect([r[0] + 10.0, ry + ROW / 2.0 - 3.0, 6.0, 6.0], 3.0, pal().accent);
+        }
+        let c = if it.enabled { pal().ink } else { pal().muted };
+        let label = p.fit(&it.label, r[2] - 40.0, size, Font::Regular);
+        p.text(&label, r[0] + 26.0, top(ry + ROW / 2.0, size), size, Font::Regular, c);
+        if !it.hint.is_empty() {
+            let hw = p.measure(&it.hint, 11.5, Font::Mono);
+            p.text(
+                &it.hint,
+                r[0] + r[2] - 10.0 - hw,
+                top(ry + ROW / 2.0, 11.5),
+                11.5,
+                Font::Mono,
+                pal().muted,
+            );
+        }
+        if it.enabled {
+            ui.hits.push((r, Action::MenuPick(i.min(255) as u8)));
+        }
+        ry += ROW;
+    }
+    p.alpha = a;
+    p.dy = dy;
+    if let Some(m) = st.s.ui.menu.as_mut() {
+        m.rect = Some(rect);
     }
 }
 
@@ -1386,10 +1477,10 @@ fn draw_panel(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let panel = ui.panel;
     let name = super::hstudio_ui::agent_name(st);
     let ui = &mut st.s.ui;
-    let button = |ui: &mut Ui, p: &mut P, key: &str, label: &str, action: Action, rx: &mut f32| {
+    let button = |ui: &mut Ui, p: &mut P, key: &str, label: &str, action: Action, rx: &mut f32| -> Option<[f32; 4]> {
         let bw = p.measure(label, 12.0, Font::Medium) + 20.0;
         if *rx - bw < tx + 12.0 {
-            return;
+            return None;
         }
         *rx -= bw;
         let r = [*rx, y + 5.0, bw, STRIP - 8.0];
@@ -1407,15 +1498,29 @@ fn draw_panel(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         );
         ui.hits.push((r, action));
         *rx -= 6.0;
+        Some(r)
     };
     match panel {
-        Panel::Console => button(ui, p, "panel-clear", "Clear", Action::ClearLog, &mut rx),
+        Panel::Console => {
+            button(ui, p, "panel-clear", "Clear", Action::ClearLog, &mut rx);
+        }
         Panel::Agent => {
             if busy {
                 button(ui, p, "agent-stop", "Stop", Action::AgentStop, &mut rx);
             }
             let label = name.clone().unwrap_or_else(|| "Look for an agent".into());
             button(ui, p, "agent-next", &label, Action::AgentNext, &mut rx);
+            // Its model, for an agent that takes one.
+            let id = super::hstudio_ui::agent_id(st);
+            let chip = match id.filter(|i| !super::hstudio_ui::model_choices(i).is_empty()) {
+                Some(id) => {
+                    let model = super::hstudio_ui::agent_model(st);
+                    let label = format!("Model: {}", super::hstudio_ui::model_label(&id, model.as_deref()));
+                    button(&mut st.s.ui, p, "agent-model", &label, Action::ModelMenu, &mut rx)
+                }
+                None => None,
+            };
+            st.s.ui.model_chip = chip;
         }
         Panel::Problems => {}
     }
@@ -3105,17 +3210,23 @@ fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32) {
     let r = [((w - cw) / 2.0).floor(), (h / 2.0 - 84.0).floor(), cw, 168.0];
     p.rect(r, 16.0, pal().surface);
     p.border(r, 16.0, pal().rule);
-    let save = st.s.ui.naming_save;
-    let heading = if save { "Save as a script mod" } else { "New mod" };
+    use super::hstudio_ui::NamingKind;
+    let kind = st.s.ui.naming_kind;
+    let (heading, ask, enter) = match kind {
+        NamingKind::NewMod => ("New mod", "What is it called?", "Enter to create  ·  Esc to cancel"),
+        NamingKind::SaveAs => (
+            "Save as a script mod",
+            "What is it called?",
+            "Enter to save  ·  Esc to cancel",
+        ),
+        NamingKind::Model => (
+            "The agent's model",
+            "Its name, as the agent takes it (empty: its default)",
+            "Enter to use it  ·  Esc to cancel",
+        ),
+    };
     p.text(heading, r[0] + 22.0, r[1] + 18.0, 16.0, Font::Medium, pal().ink);
-    p.text(
-        "What is it called?",
-        r[0] + 22.0,
-        r[1] + 44.0,
-        13.0,
-        Font::Regular,
-        pal().muted,
-    );
+    p.text(ask, r[0] + 22.0, r[1] + 44.0, 13.0, Font::Regular, pal().muted);
     let f = [r[0] + 20.0, r[1] + 74.0, cw - 40.0, 40.0];
     p.rect(f, 10.0, pal().page);
     p.border(f, 10.0, fade(pal().accent, 0.6));
@@ -3130,18 +3241,7 @@ fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32) {
         Font::Regular,
         pal().ink,
     );
-    p.text(
-        if save {
-            "Enter to save  ·  Esc to cancel"
-        } else {
-            "Enter to create  ·  Esc to cancel"
-        },
-        r[0] + 22.0,
-        r[1] + 130.0,
-        12.0,
-        Font::Regular,
-        pal().muted,
-    );
+    p.text(enter, r[0] + 22.0, r[1] + 130.0, 12.0, Font::Regular, pal().muted);
     p.alpha = a;
     p.dy = dy;
 }

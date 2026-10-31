@@ -122,6 +122,22 @@ pub struct AgentSpec {
 }
 
 impl AgentSpec {
+    /// The same agent asked to use `model` (`--model`, which Claude Code and
+    /// omp both take: an alias such as `sonnet` or a full name); others, and
+    /// an empty model, as they are.
+    pub fn with_model(&self, model: &str) -> AgentSpec {
+        let model = model.trim();
+        if model.is_empty() || !matches!(self.id.as_str(), "claude" | "omp") {
+            return self.clone();
+        }
+        let mut spec = self.clone();
+        // Right after -p: Claude Code's --allowedTools must stay last.
+        let at = spec.args.iter().position(|a| a == "-p").map_or(0, |i| i + 1);
+        spec.args.insert(at, "--model".into());
+        spec.args.insert(at + 1, model.into());
+        spec
+    }
+
     /// Claude Code at `program`.
     pub fn claude(program: PathBuf) -> AgentSpec {
         let mut args = vec!["-p".to_owned()];

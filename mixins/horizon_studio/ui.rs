@@ -147,6 +147,80 @@ pub(crate) enum Action {
     Block,
     /// The editor's scroll bar: its thumb dragged, or its track clicked.
     ScrollBar,
+    /// An item of the open menu, by its place.
+    MenuPick(u8),
+    /// The agent's model chip: its menu of models.
+    ModelMenu,
+}
+
+/// What a menu item does when chosen.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MenuCmd {
+    /// The agent's model (None: the agent's own default).
+    Model(Option<String>),
+    /// A model typed by name.
+    CustomModel,
+}
+
+/// A row of a menu: its label, a hint at the right (a shortcut), whether it
+/// can be chosen and is the current choice, or a separator line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MenuItem {
+    pub label: String,
+    pub hint: String,
+    pub enabled: bool,
+    pub checked: bool,
+    pub separator: bool,
+    pub cmd: Option<MenuCmd>,
+}
+
+impl MenuItem {
+    pub fn new(label: impl Into<String>, cmd: MenuCmd) -> MenuItem {
+        MenuItem {
+            label: label.into(),
+            hint: String::new(),
+            enabled: true,
+            checked: false,
+            separator: false,
+            cmd: Some(cmd),
+        }
+    }
+    pub fn separator() -> MenuItem {
+        MenuItem {
+            label: String::new(),
+            hint: String::new(),
+            enabled: false,
+            checked: false,
+            separator: true,
+            cmd: None,
+        }
+    }
+    pub fn checked(mut self, on: bool) -> MenuItem {
+        self.checked = on;
+        self
+    }
+}
+
+/// A menu open over everything: where it opens (its top left, kept on the
+/// screen when drawn), its items, the one the keys are on, when it opened,
+/// and where it was drawn (clicks outside it close it).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Menu {
+    pub at: [f32; 2],
+    pub items: Vec<MenuItem>,
+    pub sel: Option<usize>,
+    pub opened_at: f64,
+    pub rect: Option<[f32; 4]>,
+}
+
+/// What the naming prompt names: a new mod, the editor's code saved as a
+/// new mod (Save File), or the agent's model.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NamingKind {
+    #[default]
+    NewMod,
+    SaveAs,
+    Model,
 }
 
 /// The editor's scroll bar as drawn: where it is across, its track's top and height, the thumb's
@@ -336,8 +410,12 @@ pub struct Ui {
     pub docs_scroll: usize,
     /// The New mod prompt, while it is open.
     pub naming: Option<LineEdit>,
-    /// The prompt saves the editor's code as the new mod (Save File), not a template.
-    pub naming_save: bool,
+    /// What the prompt names.
+    pub naming_kind: NamingKind,
+    /// The menu open over everything, if one is.
+    pub menu: Option<Menu>,
+    /// Where the agent's model chip was drawn (its menu opens under it).
+    pub(crate) model_chip: Option<[f32; 4]>,
     /// When the AI setup prompt was copied (its button says so a moment).
     pub copied_at: Option<f64>,
     /// The looks chosen in Settings (`look.txt`).
@@ -1778,9 +1856,22 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 return UiResult::Used;
             }
             if !left || st.s.ui.naming.is_some() {
+                // Any press outside an open menu closes it, and goes no further.
+                if !inside(
+                    st.s.ui.menu.as_ref().and_then(|m| m.rect).unwrap_or_default(),
+                    st.s.ui.mouse,
+                ) {
+                    st.s.ui.menu = None;
+                }
                 return UiResult::Used;
             }
             let at = st.s.ui.mouse;
+            if let Some(menu) = &st.s.ui.menu
+                && !menu.rect.is_some_and(|r| inside(r, at))
+            {
+                st.s.ui.menu = None;
+                return UiResult::Used;
+            }
             let hit = st.s.ui.hits.iter().rev().find(|(r, _)| inside(*r, at)).map(|(_, a)| *a);
             // A press on the console's or the agent's text starts selecting it;
             // anywhere else, what was selected there is let go.
@@ -2033,6 +2124,152 @@ fn scroll_to_thumb(st: &mut Studio, y: f32) {
     st.s.ui.smooth[1] = ed.scroll as f32;
 }
 
+/// The open menu's keys: Up and Down move over the items that can be
+/// chosen, Enter (or Space) chooses, Escape closes; others are kept from
+/// what is under it.
+fn menu_key(st: &mut Studio, game: &mut dyn GameApi, key: Key) {
+    let Some(menu) = st.s.ui.menu.as_mut() else { return };
+    let choosable: Vec<usize> = (0..menu.items.len()).filter(|&i| menu.items[i].enabled).collect();
+    let at = menu.sel.and_then(|s| choosable.iter().position(|&i| i == s));
+    match key {
+        Key::Escape => st.s.ui.menu = None,
+        Key::Down if !choosable.is_empty() => {
+            menu.sel = Some(choosable[at.map_or(0, |a| (a + 1) % choosable.len())]);
+        }
+        Key::Up if !choosable.is_empty() => {
+            menu.sel = Some(choosable[at.map_or(choosable.len() - 1, |a| (a + choosable.len() - 1) % choosable.len())]);
+        }
+        Key::Enter | Key::Char(' ') => {
+            if let Some(i) = menu.sel {
+                menu_pick(st, game, i);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Item `i` of the open menu chosen: the menu closes and its command runs.
+fn menu_pick(st: &mut Studio, _game: &mut dyn GameApi, i: usize) {
+    let Some(menu) = st.s.ui.menu.take() else { return };
+    let Some(item) = menu.items.get(i).filter(|it| it.enabled) else {
+        return;
+    };
+    match item.cmd.clone() {
+        Some(MenuCmd::Model(model)) => set_agent_model(st, model),
+        Some(MenuCmd::CustomModel) => {
+            let mut edit = LineEdit::default();
+            edit.set(&agent_model(st).unwrap_or_default());
+            st.s.ui.naming = Some(edit);
+            st.s.ui.naming_kind = NamingKind::Model;
+            st.s.ui.naming_at = st.s.now;
+        }
+        None => {}
+    }
+}
+
+/// The models offered for an agent ("claude", "omp" or "custom"): a label
+/// and the name passed with --model (None: the agent's own default). Claude
+/// Code takes these aliases for its newest models; omp's names depend on
+/// its providers, so it offers its default and a name typed in.
+pub fn model_choices(agent_id: &str) -> &'static [(&'static str, Option<&'static str>)] {
+    match agent_id {
+        "claude" => &[
+            ("Default", None),
+            ("Opus", Some("opus")),
+            ("Sonnet", Some("sonnet")),
+            ("Haiku", Some("haiku")),
+            ("Fable", Some("fable")),
+        ],
+        "omp" => &[("Default", None)],
+        _ => &[],
+    }
+}
+
+/// How a model shows on its chip: its label among the choices, else its name.
+pub fn model_label(agent_id: &str, model: Option<&str>) -> String {
+    model_choices(agent_id)
+        .iter()
+        .find(|(_, m)| *m == model)
+        .map_or_else(|| model.unwrap_or("Default").to_owned(), |(l, _)| (*l).to_owned())
+}
+
+/// The file the chosen models are kept in: `<agent id>=<model>` lines.
+fn models_file(st: &Studio) -> PathBuf {
+    st.s.dir.join("agent-models.txt")
+}
+
+/// The chosen models by agent id, read the first time they are wanted.
+fn models(st: &mut Studio) -> &mut std::collections::HashMap<String, String> {
+    if st.s.ui.agent.models.is_none() {
+        let text = std::fs::read_to_string(models_file(st)).unwrap_or_default();
+        let read = text
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
+            .filter(|(k, v)| !k.is_empty() && !v.is_empty())
+            .collect();
+        st.s.ui.agent.models = Some(read);
+    }
+    st.s.ui.agent.models.get_or_insert_with(Default::default)
+}
+
+/// The id of the agent in use ("claude", "omp", "custom"), if one was found.
+pub fn agent_id(st: &mut Studio) -> Option<String> {
+    let dir = st.s.dir.clone();
+    st.s.ui.agent.spec(&dir).map(|s| s.id)
+}
+
+/// The model chosen for the agent in use (None: its default).
+pub fn agent_model(st: &mut Studio) -> Option<String> {
+    let id = agent_id(st)?;
+    models(st).get(&id).cloned()
+}
+
+/// Chooses the agent's model (None: its default), kept for next time; the
+/// conversation says so.
+pub fn set_agent_model(st: &mut Studio, model: Option<String>) {
+    let Some(id) = agent_id(st) else { return };
+    let map = models(st);
+    match &model {
+        Some(m) => map.insert(id.clone(), m.clone()),
+        None => map.remove(&id),
+    };
+    let mut keys: Vec<_> = map.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    keys.sort();
+    let _ = std::fs::write(models_file(st), keys.join("\n") + "\n");
+    let now = st.s.now;
+    let label = model_label(&id, model.as_deref());
+    st.s.ui.agent.say(AgentLineKind::Done, format!("Model: {label}."), now);
+}
+
+/// The agent's models in a menu under its chip, the current one marked.
+fn open_model_menu(st: &mut Studio) {
+    let Some(id) = agent_id(st) else { return };
+    let current = agent_model(st);
+    let mut items: Vec<MenuItem> = model_choices(&id)
+        .iter()
+        .map(|(label, m)| MenuItem::new(*label, MenuCmd::Model(m.map(str::to_owned))).checked(current.as_deref() == *m))
+        .collect();
+    let known = model_choices(&id).iter().any(|(_, m)| *m == current.as_deref());
+    if let (Some(m), false) = (&current, known) {
+        items.push(MenuItem::new(m.clone(), MenuCmd::Model(Some(m.clone()))).checked(true));
+    }
+    items.push(MenuItem::separator());
+    items.push(MenuItem::new("Other model...", MenuCmd::CustomModel));
+    let chip =
+        st.s.ui
+            .model_chip
+            .unwrap_or([st.s.ui.mouse.0, st.s.ui.mouse.1, 0.0, 0.0]);
+    let sel = items.iter().position(|i| i.checked);
+    st.s.ui.menu = Some(Menu {
+        at: [chip[0], chip[1] + chip[3] + 4.0],
+        items,
+        sel,
+        opened_at: st.s.now,
+        rect: None,
+    });
+}
+
 /// Before another file opens in the editor (`to`), the one open is saved
 /// if it has unsaved edits, so switching scripts never loses them.
 fn save_before_switch(st: &mut Studio, game: &mut dyn GameApi, to: Option<&PathBuf>) {
@@ -2077,7 +2314,7 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
                 st.save_editor(game);
             } else {
                 st.s.ui.naming = Some(LineEdit::default());
-                st.s.ui.naming_save = true;
+                st.s.ui.naming_kind = NamingKind::SaveAs;
                 st.s.ui.naming_at = st.s.now;
             }
         }
@@ -2087,7 +2324,7 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
         }
         Action::NewMod => {
             st.s.ui.naming = Some(LineEdit::default());
-            st.s.ui.naming_save = false;
+            st.s.ui.naming_kind = NamingKind::NewMod;
             st.s.ui.naming_at = st.s.now;
         }
         Action::ReloadAll => st.reload_all(game),
@@ -2214,6 +2451,8 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
         Action::AgentNext => agent_next(st),
         Action::AgentStop => agent_stop(st),
         Action::Block | Action::ScrollBar => {}
+        Action::MenuPick(i) => menu_pick(st, game, i as usize),
+        Action::ModelMenu => open_model_menu(st),
         Action::ClearLog => {
             st.s.log.clear();
             st.s.ui.log_scroll = 0;
@@ -2235,13 +2474,16 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
         match key {
             Key::Escape => {
                 st.s.ui.naming = None;
-                st.s.ui.naming_save = false;
+                st.s.ui.naming_kind = NamingKind::NewMod;
             }
             Key::Enter => {
                 let wanted = name.text.trim().to_owned();
                 st.s.ui.naming = None;
-                if !wanted.is_empty() {
-                    let code = std::mem::take(&mut st.s.ui.naming_save).then(|| st.s.editor.text());
+                let kind = std::mem::take(&mut st.s.ui.naming_kind);
+                if kind == NamingKind::Model {
+                    set_agent_model(st, Some(wanted).filter(|m| !m.is_empty()));
+                } else if !wanted.is_empty() {
+                    let code = (kind == NamingKind::SaveAs).then(|| st.s.editor.text());
                     match st.create_mod(game, &wanted, code.as_deref()) {
                         Ok(path) => {
                             let title = path
@@ -2258,6 +2500,10 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
                 name.key(k, mods);
             }
         }
+        return UiResult::Used;
+    }
+    if st.s.ui.menu.is_some() {
+        menu_key(st, game, key);
         return UiResult::Used;
     }
     if mods.ctrl
@@ -2440,6 +2686,8 @@ pub struct AgentPane {
     pub(crate) scroll: f32,
     /// Lines said so far (the newest's number), for selecting.
     pub(crate) seq: u64,
+    /// The model chosen for each agent, by its id (`agent-models.txt`).
+    pub(crate) models: Option<std::collections::HashMap<String, String>>,
 }
 
 /// Lines kept of the conversation.
@@ -2482,8 +2730,13 @@ pub fn agent_ask(st: &mut Studio, text: &str) {
     let pane = &mut st.s.ui.agent;
     pane.scroll = 0.0;
     pane.say(AgentLineKind::You, text, now);
-    let Some(spec) = pane.spec(&dir) else {
-        pane.say(
+    let found = pane.spec(&dir);
+    // With the model chosen for it, if one was.
+    let Some(spec) = found.map(|spec| {
+        let model = models(st).get(&spec.id).cloned().unwrap_or_default();
+        spec.with_model(&model)
+    }) else {
+        st.s.ui.agent.say(
             AgentLineKind::Error,
             "No agent found: install Claude Code (claude) or omp and set it up with the AI setup prompt, or name one in agent.txt in the studio's folder.",
             now,

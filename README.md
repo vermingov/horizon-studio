@@ -144,7 +144,11 @@ PATH or where their installers put them. Set up the MCP server first (see [AI ag
 has Horizon Studio's tools. Type what you want (*make the waypoints glow at night*, *why does this error?*) and Enter
 sends it, with the file open in the editor, what you selected and its problems. The answer, and each tool it uses,
 come in as it works, and its edits show in the editor as they land; the next question continues the conversation.
-**Stop** ends its work, and the button with its name switches agent when you have several.
+**Stop** ends its work, and the button with its name switches agent when you have several. **Model** chooses the
+model it uses: for Claude Code its default, Opus, Sonnet, Haiku or Fable, and for either agent any model by name
+(*Other model...*); the choice is kept for each agent in `agent-models.txt` in the studio's folder. Drag over its
+answers or the console's lines to select them, and Ctrl+C copies them. It can also look at the game: its
+`screenshot` tool sees the window as you do, without the studio over it.
 
 It works in your mods folder and runs with its own permissions: Claude Code may use Horizon Studio's MCP tools and
 read files, and asks for nothing else (in a run from the game, anything that needs your approval is refused); omp
