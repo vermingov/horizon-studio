@@ -4171,7 +4171,21 @@ impl<'a> Compiler<'a> {
 fn builtin_value(name: &'static str) -> Value {
     match name {
         "interpolate" => Native::builtin("interpolate", interpolate),
+        "next" => Native::builtin("next", raw_next),
         _ => Value::Nil,
+    }
+}
+
+/// `next` without `__pairs`, for generalized iteration.
+fn raw_next(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let Some(Value::Table(t)) = args.first() else {
+        return Err(lua.rt_error("bad argument #1 to 'next' (table expected)"));
+    };
+    let k = args.get(1).cloned().unwrap_or_default();
+    match t.borrow().next(&k) {
+        Ok(Some((k, v))) => Ok(vec![k, v]),
+        Ok(None) => Ok(vec![Value::Nil]),
+        Err(()) => Err(lua.rt_error("invalid key to 'next'")),
     }
 }
 
@@ -5244,10 +5258,34 @@ impl Lua {
                         }
                     }
                     Op::TForPrep(a) => {
-                        let it = &self.cur.stack[base + a as usize];
+                        let i = base + a as usize;
+                        let it = self.cur.stack[i].clone();
                         if !it.is_callable() && !matches!(it, Value::Table(_) | Value::Userdata(_)) {
                             let t = it.type_name();
                             break 'inner self.rt_error(format!("attempt to call a {t} value (for iterator)"));
+                        }
+                        // Luau's generalized iteration: `for k, v in t` runs
+                        // the table's __iter, or goes through it with next.
+                        if matches!(it, Value::Table(_) | Value::Userdata(_)) && self.meta(&it, Ev::Call).is_none() {
+                            match self.metamethod(&it, "__iter") {
+                                Some(f) => {
+                                    self.cur.frames[fi].pc = pc;
+                                    match self.call(h, &f, vec![it]) {
+                                        Ok(r) => {
+                                            for j in 0..3 {
+                                                self.cur.stack[i + j] = r.get(j).cloned().unwrap_or_default();
+                                            }
+                                        }
+                                        Err(e) => break 'inner e,
+                                    }
+                                }
+                                None if matches!(it, Value::Table(_)) => {
+                                    self.cur.stack[i] = builtin_value("next");
+                                    self.cur.stack[i + 1] = it;
+                                    self.cur.stack[i + 2] = Value::Nil;
+                                }
+                                None => {}
+                            }
                         }
                     }
                     Op::TForCall(a, n) => {

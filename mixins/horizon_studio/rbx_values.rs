@@ -7,8 +7,7 @@
 // Roblox's they can't be changed: a new value comes back instead.
 
 use super::hstudio_lua::{
-    Host, Lua, Native, Res, Table, TableRef, Throw, Userdata, Value, bad_arg, check_int, check_num, check_text,
-    opt_num,
+    Host, Lua, Native, Res, Table, TableRef, Throw, Userdata, Value, bad_arg, check_int, check_num, check_text, opt_num,
 };
 use super::hstudio_rbx_types::{
     Axis, BrickColor, CFrame, Color3, ColorSequence, ColorSequenceKeypoint, EasingDirection, EasingStyle, Font,
@@ -223,7 +222,6 @@ pub fn as_tween(v: &Value) -> Option<TweenInfo> {
     }
 }
 
-
 /// "Vector3 expected, got string" for argument `i`.
 fn want(lua: &Lua, args: &[Value], i: usize, fname: &str, what: &str) -> Throw {
     let got = args.get(i).map_or("no value".to_owned(), |v| lua.type_of(v));
@@ -231,16 +229,24 @@ fn want(lua: &Lua, args: &[Value], i: usize, fname: &str, what: &str) -> Throw {
 }
 
 fn arg_v3(lua: &Lua, args: &[Value], i: usize, fname: &str) -> Result<Vector3, Throw> {
-    args.get(i).and_then(as_v3).ok_or_else(|| want(lua, args, i, fname, "Vector3"))
+    args.get(i)
+        .and_then(as_v3)
+        .ok_or_else(|| want(lua, args, i, fname, "Vector3"))
 }
 fn arg_v2(lua: &Lua, args: &[Value], i: usize, fname: &str) -> Result<Vector2, Throw> {
-    args.get(i).and_then(as_v2).ok_or_else(|| want(lua, args, i, fname, "Vector2"))
+    args.get(i)
+        .and_then(as_v2)
+        .ok_or_else(|| want(lua, args, i, fname, "Vector2"))
 }
 fn arg_cf(lua: &Lua, args: &[Value], i: usize, fname: &str) -> Result<CFrame, Throw> {
-    args.get(i).and_then(as_cf).ok_or_else(|| want(lua, args, i, fname, "CFrame"))
+    args.get(i)
+        .and_then(as_cf)
+        .ok_or_else(|| want(lua, args, i, fname, "CFrame"))
 }
 fn arg_c3(lua: &Lua, args: &[Value], i: usize, fname: &str) -> Result<Color3, Throw> {
-    args.get(i).and_then(as_c3).ok_or_else(|| want(lua, args, i, fname, "Color3"))
+    args.get(i)
+        .and_then(as_c3)
+        .ok_or_else(|| want(lua, args, i, fname, "Color3"))
 }
 fn num_or(lua: &Lua, args: &[Value], i: usize, fname: &str) -> Result<f64, Throw> {
     opt_num(lua, args, i, fname, 0.0)
@@ -414,6 +420,8 @@ pub fn globals() -> Vec<(&'static str, Value)> {
         ),
         ("Random", lib(&[("new", random_new)], vec![])),
         ("Ray", lib(&[("new", ray_new)], vec![])),
+        ("RaycastParams", lib(&[("new", raycast_params_new)], vec![])),
+        ("OverlapParams", lib(&[("new", raycast_params_new)], vec![])),
         ("Enum", wrap(Data::Enums)),
     ]
 }
@@ -440,7 +448,10 @@ fn vector3_from_axis(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Valu
 }
 
 fn vector2_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
-    one(v2(Vector2::new(num_or(lua, &args, 0, "new")?, num_or(lua, &args, 1, "new")?)))
+    one(v2(Vector2::new(
+        num_or(lua, &args, 0, "new")?,
+        num_or(lua, &args, 1, "new")?,
+    )))
 }
 
 fn cframe_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
@@ -454,7 +465,10 @@ fn cframe_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> 
     for i in 0..args.len() {
         nums.push(check_num(lua, &args, i, "new")?);
     }
-    CFrame::from_numbers(&nums).map(cf).map(|v| vec![v]).map_err(|e| lua.rt_error(e))
+    CFrame::from_numbers(&nums)
+        .map(cf)
+        .map(|v| vec![v])
+        .map_err(|e| lua.rt_error(e))
 }
 
 fn cframe_look_at(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
@@ -552,7 +566,10 @@ fn color3_to_hsv(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) 
 }
 
 fn udim_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
-    one(udim(UDim::new(num_or(lua, &args, 0, "new")?, num_or(lua, &args, 1, "new")?)))
+    one(udim(UDim::new(
+        num_or(lua, &args, 0, "new")?,
+        num_or(lua, &args, 1, "new")?,
+    )))
 }
 
 fn udim2_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
@@ -670,7 +687,8 @@ fn tween_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> R
         None | Some(Value::Nil) => d.easing_style,
         Some(_) => {
             let it = arg_enum(lua, &args, 1, "new", "EasingStyle")?;
-            EasingStyle::from_name(it.name).ok_or_else(|| lua.rt_error(format!("EasingStyle {} is not supported", it.name)))?
+            EasingStyle::from_name(it.name)
+                .ok_or_else(|| lua.rt_error(format!("EasingStyle {} is not supported", it.name)))?
         }
     };
     let dir = match args.get(2) {
@@ -683,7 +701,9 @@ fn tween_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> R
     let repeat = opt_num(lua, &args, 3, "new", 0.0)? as i32;
     let reverses = args.get(4).is_some_and(Value::truthy);
     let delay = opt_num(lua, &args, 5, "new", 0.0)?;
-    one(wrap(Data::Tween(TweenInfo::new(time, style, dir, repeat, reverses, delay))))
+    one(wrap(Data::Tween(TweenInfo::new(
+        time, style, dir, repeat, reverses, delay,
+    ))))
 }
 
 fn brick_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
@@ -732,11 +752,15 @@ fn brick_named(_: &mut Lua, _: &mut dyn Host, me: &Native, _: Vec<Value>) -> Res
 fn weight_style(lua: &Lua, args: &[Value], i: usize, fname: &str) -> Result<(FontWeight, FontStyle), Throw> {
     let weight = match args.get(i) {
         None | Some(Value::Nil) => FontWeight::Regular,
-        Some(_) => FontWeight::from_name(arg_enum(lua, args, i, fname, "FontWeight")?.name).unwrap_or(FontWeight::Regular),
+        Some(_) => {
+            FontWeight::from_name(arg_enum(lua, args, i, fname, "FontWeight")?.name).unwrap_or(FontWeight::Regular)
+        }
     };
     let style = match args.get(i + 1) {
         None | Some(Value::Nil) => FontStyle::Normal,
-        Some(_) => FontStyle::from_name(arg_enum(lua, args, i + 1, fname, "FontStyle")?.name).unwrap_or(FontStyle::Normal),
+        Some(_) => {
+            FontStyle::from_name(arg_enum(lua, args, i + 1, fname, "FontStyle")?.name).unwrap_or(FontStyle::Normal)
+        }
     };
     Ok((weight, style))
 }
@@ -762,7 +786,9 @@ fn font_from_id(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -
 fn font_from_enum(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
     let it = arg_enum(lua, &args, 0, "fromEnum", "Font")?;
     let e = FontEnum::from_name(it.name).unwrap_or(FontEnum::Unknown);
-    Font::from_enum(e).map(|f| vec![wrap(Data::Font(f))]).map_err(|e| lua.rt_error(e))
+    Font::from_enum(e)
+        .map(|f| vec![wrap(Data::Font(f))])
+        .map_err(|e| lua.rt_error(e))
 }
 
 fn random_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
@@ -778,6 +804,17 @@ fn ray_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res
     let d = args.get(1).and_then(as_v3).unwrap_or(Vector3::ZERO);
     let _ = lua;
     one(wrap(Data::Ray(o, d)))
+}
+
+/// RaycastParams.new(): a table of its fields, which scripts set.
+fn raycast_params_new(_: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {
+    let mut t = Table::new();
+    t.set_str("FilterType", enum_value(enum_item("RaycastFilterType", "Exclude")));
+    t.set_str("FilterDescendantsInstances", Value::table(Table::new()));
+    t.set_str("IgnoreWater", Value::Bool(false));
+    t.set_str("CollisionGroup", Value::str("Default"));
+    t.set_str("RespectCanCollide", Value::Bool(false));
+    one(Value::table(t))
 }
 
 // ---------------------------------------------------------------- properties and methods
@@ -797,8 +834,16 @@ fn method(type_name: &'static str, name: &str) -> Option<Value> {
         "EnumItem" => item_method,
         "Enum" => enum_method,
         "Enums" => enums_method,
-        "Font" | "TweenInfo" | "BrickColor" | "UDim" | "Rect" | "NumberRange" | "NumberSequence"
-        | "NumberSequenceKeypoint" | "ColorSequence" | "ColorSequenceKeypoint" => return None,
+        "Font"
+        | "TweenInfo"
+        | "BrickColor"
+        | "UDim"
+        | "Rect"
+        | "NumberRange"
+        | "NumberSequence"
+        | "NumberSequenceKeypoint"
+        | "ColorSequence"
+        | "ColorSequenceKeypoint" => return None,
         _ => return None,
     };
     let known: &[&str] = match type_name {
@@ -932,12 +977,9 @@ fn index(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
         (Data::Item(i), "Name") => Some(Value::str(i.name)),
         (Data::Item(i), "Value") => return num(f64::from(i.value)),
         (Data::Item(i), "EnumType") => Some(wrap(Data::EnumType(i.enum_name))),
-        (Data::EnumType(e), name) => enum_def(e).and_then(|def| {
-            def.items
-                .iter()
-                .find(|i| i.0 == name)
-                .map(|i| enum_value(item(def, i)))
-        }),
+        (Data::EnumType(e), name) => {
+            enum_def(e).and_then(|def| def.items.iter().find(|i| i.0 == name).map(|i| enum_value(item(def, i))))
+        }
         (Data::Enums, name) => enum_def(name).map(|def| wrap(Data::EnumType(def.name))),
         _ => None,
     };
@@ -1108,13 +1150,19 @@ fn unm(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
 
 /// Enum items order by their values; nothing else orders.
 fn lt(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
-    match (args.first().and_then(as_item_value), args.get(1).and_then(as_item_value)) {
+    match (
+        args.first().and_then(as_item_value),
+        args.get(1).and_then(as_item_value),
+    ) {
         (Some(a), Some(b)) => one(Value::Bool(a < b)),
         _ => Err(lua.rt_error("attempt to compare two values that can't be ordered")),
     }
 }
 fn le(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
-    match (args.first().and_then(as_item_value), args.get(1).and_then(as_item_value)) {
+    match (
+        args.first().and_then(as_item_value),
+        args.get(1).and_then(as_item_value),
+    ) {
         (Some(a), Some(b)) => one(Value::Bool(a <= b)),
         _ => Err(lua.rt_error("attempt to compare two values that can't be ordered")),
     }
@@ -1333,16 +1381,20 @@ fn enum_method(lua: &mut Lua, _: &mut dyn Host, me: &Native, args: Vec<Value>) -
         "GetEnumItems" => one(Value::table(Table::from_list(
             def.items.iter().map(|i| enum_value(item(def, i))).collect(),
         ))),
-        "FromName" => one(args.get(1).and_then(|v| match v {
-            Value::Str(_) => coerce_enum(e, v),
-            _ => None,
-        })
-        .map_or(Value::Nil, enum_value)),
-        _ => one(args.get(1).and_then(|v| match v {
-            Value::Num(_) => coerce_enum(e, v),
-            _ => None,
-        })
-        .map_or(Value::Nil, enum_value)),
+        "FromName" => one(args
+            .get(1)
+            .and_then(|v| match v {
+                Value::Str(_) => coerce_enum(e, v),
+                _ => None,
+            })
+            .map_or(Value::Nil, enum_value)),
+        _ => one(args
+            .get(1)
+            .and_then(|v| match v {
+                Value::Num(_) => coerce_enum(e, v),
+                _ => None,
+            })
+            .map_or(Value::Nil, enum_value)),
     }
 }
 
@@ -1385,18 +1437,9 @@ const ENUMS: &[(&str, &[(&str, i32)])] = &[
         "UserInputState",
         &[("Begin", 0), ("Change", 1), ("End", 2), ("Cancel", 3), ("None", 4)],
     ),
-    (
-        "FillDirection",
-        &[("Horizontal", 0), ("Vertical", 1)],
-    ),
-    (
-        "HorizontalAlignment",
-        &[("Center", 0), ("Left", 1), ("Right", 2)],
-    ),
-    (
-        "VerticalAlignment",
-        &[("Center", 0), ("Top", 1), ("Bottom", 2)],
-    ),
+    ("FillDirection", &[("Horizontal", 0), ("Vertical", 1)]),
+    ("HorizontalAlignment", &[("Center", 0), ("Left", 1), ("Right", 2)]),
+    ("VerticalAlignment", &[("Center", 0), ("Top", 1), ("Bottom", 2)]),
     ("SortOrder", &[("Name", 0), ("Custom", 1), ("LayoutOrder", 2)]),
     ("TextXAlignment", &[("Left", 0), ("Right", 1), ("Center", 2)]),
     ("TextYAlignment", &[("Top", 0), ("Center", 1), ("Bottom", 2)]),
@@ -1406,10 +1449,7 @@ const ENUMS: &[(&str, &[(&str, i32)])] = &[
         &[("RelativeXY", 0), ("RelativeXX", 1), ("RelativeYY", 2)],
     ),
     ("ZIndexBehavior", &[("Global", 0), ("Sibling", 1)]),
-    (
-        "AspectType",
-        &[("FitWithinMaxSize", 0), ("ScaleWithParentSize", 1)],
-    ),
+    ("AspectType", &[("FitWithinMaxSize", 0), ("ScaleWithParentSize", 1)]),
     ("DominantAxis", &[("Width", 0), ("Height", 1)]),
     (
         "StartCorner",
@@ -1454,7 +1494,13 @@ const ENUMS: &[(&str, &[(&str, i32)])] = &[
     ),
     (
         "PartType",
-        &[("Ball", 0), ("Block", 1), ("Cylinder", 2), ("Wedge", 3), ("CornerWedge", 4)],
+        &[
+            ("Ball", 0),
+            ("Block", 1),
+            ("Cylinder", 2),
+            ("Wedge", 3),
+            ("CornerWedge", 4),
+        ],
     ),
     (
         "Material",
@@ -1553,8 +1599,23 @@ const ENUMS: &[(&str, &[(&str, i32)])] = &[
     ),
     ("ContextActionResult", &[("Sink", 0), ("Pass", 1)]),
     (
+        "RenderPriority",
+        &[
+            ("First", 0),
+            ("Input", 100),
+            ("Camera", 200),
+            ("Character", 300),
+            ("Last", 2000),
+        ],
+    ),
+    (
         "MessageType",
-        &[("MessageOutput", 0), ("MessageInfo", 1), ("MessageWarning", 2), ("MessageError", 3)],
+        &[
+            ("MessageOutput", 0),
+            ("MessageInfo", 1),
+            ("MessageWarning", 2),
+            ("MessageError", 3),
+        ],
     ),
     (
         "KeyCode",

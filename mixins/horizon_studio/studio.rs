@@ -796,6 +796,14 @@ pub struct State {
     pub overlay: Vec<Overlay>,
     /// Frames so far, for the task scheduler.
     pub frame_no: u64,
+    /// The Roblox layer: one DataModel for every mod.
+    pub rbx: super::hstudio_rbx::Rbx,
+    /// The `game` table every mod shares (the DataModel's value).
+    rbx_game: Option<TableRef>,
+    /// The table of the screen the Roblox GUI takes the pointer with.
+    rbx_screen: Option<TableRef>,
+    /// Roblox's `shared`, one table for every mod.
+    rbx_shared: Option<TableRef>,
     /// Errors of threads that a call resumed (`task.spawn`), for their
     /// owners to fail with once the call is over.
     thread_errors: Vec<(Owner, String, String)>,
@@ -908,6 +916,10 @@ impl Studio {
                 screen_request: None,
                 overlay: Vec::new(),
                 frame_no: 0,
+                rbx: super::hstudio_rbx::Rbx::new(),
+                rbx_game: None,
+                rbx_screen: None,
+                rbx_shared: None,
                 thread_errors: Vec::new(),
                 world_quads: 0,
                 particles: 0,
@@ -1189,6 +1201,7 @@ impl Studio {
             }
         }
         self.s.mods[i].clear();
+        self.s.rbx.forget(Owner::Mod(i));
         // A failed mod keeps its imports, to retry when they change.
         self.s.mods[i].imports.clear();
         self.s.mods[i].state = ModState::Off;
@@ -1222,6 +1235,15 @@ impl Studio {
         let env = self.make_env(false);
         let chunk = self.s.mods[i].chunk();
         self.s.mods[i].env = Some(env.clone());
+        // `script`: a LocalScript named after the mod, in PlayerScripts.
+        {
+            let rbx = &mut self.s.rbx;
+            let sc = rbx.make("LocalScript", Some(Owner::Mod(i)));
+            rbx.inst_mut(sc).name = self.s.mods[i].id.clone();
+            let ps = rbx.child_named(rbx.local_player, "PlayerScripts");
+            let _ = rbx.set_parent(sc, ps);
+            env.borrow_mut().set_str("script", rbx.value(sc));
+        }
         let f = match self.lua.load_bytes(&src, &chunk, &env) {
             Ok(f) => f,
             Err(e) => {
@@ -1337,6 +1359,7 @@ impl Studio {
             Owner::Mod(i) => {
                 let id = self.s.mods[i].id.clone();
                 self.s.mods[i].clear();
+                self.s.rbx.forget(owner);
                 self.s.log(LogKind::Error, format!("{id} stopped: {msg}"));
                 if !trace.is_empty() {
                     self.s.log(LogKind::Trace, trace.clone());
@@ -1578,7 +1601,43 @@ impl Studio {
         for (name, t) in tables {
             env.borrow_mut().set_str(name, Value::table(t));
         }
+        self.roblox_globals(&env);
         env
+    }
+
+    /// The Roblox layer's globals: its data types and Enum, `Instance`,
+    /// and the shared `game` (still with the studio's `game.*`),
+    /// `workspace` and `shared`.
+    fn roblox_globals(&mut self, env: &TableRef) {
+        let mut g = env.borrow_mut();
+        for (name, v) in super::hstudio_rbx_values::globals() {
+            g.set_str(name, v);
+        }
+        let rbx = &mut self.s.rbx;
+        g.set_str("Instance", super::hstudio_rbx::instance_table(rbx));
+        let game = match &self.s.rbx_game {
+            Some(t) => t.clone(),
+            None => {
+                let t = match g.get_str("game") {
+                    Value::Table(t) => t,
+                    _ => Rc::new(std::cell::RefCell::new(Table::new())),
+                };
+                rbx.adopt_game_table(&t);
+                self.s.rbx_game = Some(t.clone());
+                t
+            }
+        };
+        g.set_str("game", Value::Table(game.clone()));
+        g.set_str("Game", Value::Table(game));
+        let ws = rbx.value(rbx.workspace);
+        g.set_str("workspace", ws.clone());
+        g.set_str("Workspace", ws);
+        let shared = self
+            .s
+            .rbx_shared
+            .get_or_insert_with(|| Rc::new(std::cell::RefCell::new(Table::new())))
+            .clone();
+        g.set_str("shared", Value::Table(shared));
     }
 
     fn console_env(&mut self) -> TableRef {
@@ -1702,6 +1761,17 @@ impl Studio {
                     due.push((owner, t.thread, args));
                 }
             }
+            // The Roblox layer's: threads its signals and children woke, and
+            // its signal handlers, each in a new thread.
+            for (owner, co, args) in std::mem::take(&mut self.s.rbx.ready) {
+                due.push((owner, co, args));
+            }
+            for (owner, f, args) in std::mem::take(&mut self.s.rbx.deferred) {
+                if self.s.owner_mod(owner).running() {
+                    let co = self.lua.new_thread(f);
+                    due.push((owner, co, args));
+                }
+            }
             if due.is_empty() {
                 break;
             }
@@ -1777,6 +1847,8 @@ impl Studio {
                 self.s.held.remove(&key);
             }
             self.dispatch(game, "key", &[Value::str(&key), Value::Bool(down)], Phase::Normal);
+            let processed = self.s.ui.open || game.screen() != "playing";
+            super::hstudio_rbx_draw::game_input(&mut self.s.rbx, &key, down, processed);
         }
         for (name, args) in std::mem::take(&mut self.s.queued_events) {
             self.dispatch(game, &name, &args, Phase::Normal);
@@ -1799,6 +1871,7 @@ impl Studio {
         }
         self.s.last_tick = Some(ticks);
         self.run_timers(game);
+        self.roblox_frame(game, dt);
         self.run_tasks(game, true);
         self.run_replies(game);
         self.dispatch(game, "frame", &[Value::Num(dt)], Phase::Normal);
@@ -1806,6 +1879,85 @@ impl Studio {
         self.s.frame_no += 1;
         if self.s.toast.as_ref().is_some_and(|t| t.1 < self.s.now) {
             self.s.toast = None;
+        }
+    }
+
+    /// The Roblox layer's frame: the DataModel follows the game, then what
+    /// it asked of the game (sounds, chat, agent moves, warnings), and
+    /// whether its GUI takes the pointer.
+    fn roblox_frame(&mut self, game: &mut dyn GameApi, dt: f64) {
+        let (now, frame) = (self.s.now, self.s.frame_no);
+        super::hstudio_rbx_draw::step(&mut self.s.rbx, game, now, dt, frame);
+        self.roblox_effects(game);
+        let ours = self.rbx_screen_open();
+        let pending = match (&self.s.screen_request, &self.s.rbx_screen) {
+            (Some((_, r)), Some(t)) => Rc::ptr_eq(r, t),
+            _ => false,
+        };
+        if !ours && !pending && self.s.rbx.pointer.free {
+            // Its screen went (closed by the studio): the pointer is the game's.
+            self.s.rbx.pointer.free = false;
+        }
+        let wants = super::hstudio_rbx_draw::wants_pointer(&self.s.rbx);
+        if !wants {
+            self.s.rbx.pointer.dismissed = false;
+            if ours || pending {
+                self.s.screen = None;
+                self.s.screen_request = None;
+                self.s.rbx.pointer.free = false;
+            }
+        } else if !ours
+            && !pending
+            && !self.s.rbx.pointer.dismissed
+            && self.s.screen.is_none()
+            && self.s.screen_request.is_none()
+            && !self.s.ui.open
+            && game.player().is_some()
+        {
+            let t = match &self.s.rbx_screen {
+                Some(t) => t.clone(),
+                None => {
+                    let t = super::hstudio_rbx::screen_table(&mut self.s.rbx);
+                    self.s.rbx_screen = Some(t.clone());
+                    t
+                }
+            };
+            self.s.screen_request = Some((Owner::Console, t));
+            self.s.rbx.pointer.free = true;
+        }
+    }
+
+    /// Whether the script screen up is the Roblox GUI's.
+    fn rbx_screen_open(&self) -> bool {
+        match (&self.s.screen, &self.s.rbx_screen) {
+            (Some(sc), Some(t)) => Rc::ptr_eq(&sc.table, t),
+            _ => false,
+        }
+    }
+
+    /// Sounds, chat, agent moves and warnings the Roblox layer asked for.
+    fn roblox_effects(&mut self, game: &mut dyn GameApi) {
+        let rbx = &mut self.s.rbx;
+        for (id, at, volume, pitch) in std::mem::take(&mut rbx.sounds) {
+            if self.s.sounds < MAX_SOUNDS {
+                self.s.sounds += 1;
+                let _ = game.sound(&id, at, volume, pitch);
+            }
+        }
+        for line in std::mem::take(&mut rbx.sends) {
+            if self.s.send_tokens >= 1.0 {
+                self.s.send_tokens -= 1.0;
+                game.send(&line);
+            }
+        }
+        for cmd in std::mem::take(&mut rbx.agent) {
+            let _ = game.agent(&cmd);
+        }
+        for w in std::mem::take(&mut rbx.warnings) {
+            match w.strip_prefix('\u{1}') {
+                Some(note) => game.chat(note),
+                None => self.s.log(LogKind::Error, format!("warning: {w}")),
+            }
         }
     }
 
@@ -1892,6 +2044,9 @@ impl Studio {
         self.s.world_quads = 0;
         self.dispatch(game, "world", &[], Phase::World);
         self.draw_models(game);
+        let mut budget = MAX_WORLD_QUADS.saturating_sub(self.s.world_quads);
+        super::hstudio_rbx_draw::draw_parts(&self.s.rbx, game, &mut budget);
+        self.s.world_quads = MAX_WORLD_QUADS - budget;
     }
 
     /// Every running mod's attachments, at their parts this frame.
@@ -1993,6 +2148,12 @@ impl Studio {
             &[Value::Num(f64::from(w)), Value::Num(f64::from(h))],
             Phase::Hud,
         );
+        // Roblox ScreenGuis, unless their own screen draws them.
+        if !self.rbx_screen_open() && self.s.rbx.active {
+            let now = self.s.now;
+            super::hstudio_rbx_draw::lay_out(&mut self.s.rbx, game);
+            super::hstudio_rbx_draw::draw(&self.s.rbx, game, now);
+        }
         let panels: Vec<(Corner, Vec<String>)> = self
             .s
             .mods
@@ -4263,6 +4424,27 @@ fn pos(x: f64, y: f64, z: f64) -> Vec<Value> {
     vec![Value::Num(x), Value::Num(y), Value::Num(z)]
 }
 
+impl super::hstudio_rbx::Env for Ctx<'_> {
+    fn rbx(&mut self) -> &mut super::hstudio_rbx::Rbx {
+        &mut self.s.rbx
+    }
+    fn owner(&self) -> Owner {
+        self.owner
+    }
+    fn now(&self) -> f64 {
+        self.s.now
+    }
+    fn game(&mut self) -> &mut dyn GameApi {
+        self.game
+    }
+    fn rbx_and_game(&mut self) -> (&mut super::hstudio_rbx::Rbx, &mut dyn GameApi) {
+        (&mut self.s.rbx, self.game)
+    }
+    fn held(&self, key: &str) -> bool {
+        self.s.held.contains(key)
+    }
+}
+
 impl Host for Ctx<'_> {
     fn print(&mut self, text: &str) {
         let line = match self.owner {
@@ -4938,6 +5120,7 @@ impl Host for Ctx<'_> {
             201 => {
                 self.s.log.clear();
                 self.s.console_mod.clear();
+                self.s.rbx.forget(Owner::Console);
                 self.s.console_mod.state = ModState::Running;
                 none()
             }
@@ -4974,6 +5157,7 @@ impl Host for Ctx<'_> {
                 none()
             }
             300..=312 => self.task(lua, id, args),
+            super::hstudio_rbx::FIRST_ID..=super::hstudio_rbx::LAST_ID => super::hstudio_rbx::call(self, lua, id, args),
             _ => Err(lua.rt_error(format!("unknown studio function {id}"))),
         }
     }
