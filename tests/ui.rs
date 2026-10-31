@@ -2411,12 +2411,14 @@ fn choose(st: &mut horizon_studio::game::hstudio::Studio, game: &mut FakeGame, l
     click(st, game, at);
 }
 
-/// A studio on the Editor tab with `text` in the editor, drawn.
+/// A studio on the Editor tab with `text` in the editor, drawn, and no
+/// agent found (whatever this computer has).
 fn editing(name: &str, text: &str) -> (FakeGame, horizon_studio::game::hstudio::Studio) {
     let mut game = FakeGame::new(name);
     let mut st = studio(&mut game);
     st.s.ui.open = true;
     st.s.ui.look.motion = false;
+    st.s.ui.agent.agents = Some(Vec::new());
     handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
     st.s.editor.set_text(text);
     redraw(&mut st, &mut game);
@@ -3235,4 +3237,191 @@ fn the_agent_tab_menu_chooses_an_agent_and_starts_over() {
         ["Default", "Opus", "Sonnet", "Haiku", "Fable", "", "Other model..."]
     );
     assert_eq!(lit(&st), "Default");
+}
+
+#[test]
+fn go_to_definition_and_show_in_docs() {
+    let src = "local function greet(n)\n  return n\nend\nprint(greet(1), player.pos())";
+    let (mut game, mut st) = editing("ui-definition", src);
+    redraw(&mut st, &mut game);
+    // greet on line 4: its definition, on line 1, selected.
+    let at = last_text_at(&game, "greet");
+    right_click(&mut st, &mut game, (at.0 + 2.0, at.1));
+    let items = menu_items(&st);
+    assert_eq!(items[0], "Go to definition", "{items:?}");
+    choose(&mut st, &mut game, "Go to definition");
+    assert_eq!(st.s.editor.row, 0);
+    assert_eq!(st.s.editor.selected_text().as_deref(), Some("greet"));
+    // On the definition itself it isn't offered.
+    redraw(&mut st, &mut game);
+    let def = text_at(&game, "greet");
+    right_click(&mut st, &mut game, (def.0 + 6.0, def.1 + 4.0));
+    assert!(!menu_items(&st).contains(&"Go to definition".to_owned()));
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    // player.pos: its entry in the Docs, scrolled to and drawn.
+    let pos = last_text_at(&game, "pos");
+    right_click(&mut st, &mut game, (pos.0 + 2.0, pos.1));
+    choose(&mut st, &mut game, "Show player.pos in Docs");
+    assert_eq!(st.s.ui.tab, Tab::Docs);
+    redraw(&mut st, &mut game);
+    assert!(st.s.ui.docs_scroll > 0);
+    assert!(
+        game.drawn.iter().any(|d| d.starts_with("text player.pos(")),
+        "the entry is on the page"
+    );
+}
+
+#[test]
+fn the_code_opens_the_library_or_the_file_it_names() {
+    let mut game = FakeGame::new("ui-open-required");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.create_module(&mut game, "Kit").unwrap();
+    let dir = game.mods_dir().join("kit");
+    std::fs::write(
+        dir.join("main.lua"),
+        "local lib = require(\"lib\")\nlocal ui = import(\"uikit\")\nlib.greet(\"x\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("lib.lua"),
+        "local lib = {}\nfunction lib.greet(s) return s end\nreturn lib\n",
+    )
+    .unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    st.open_file(&dir.join("main.lua"));
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    redraw(&mut st, &mut game);
+    // require("lib"): Open lib.lua.
+    let req = last_text_at(&game, "\"lib\"");
+    right_click(&mut st, &mut game, (req.0 + 4.0, req.1));
+    assert_eq!(menu_items(&st)[0], "Open lib.lua");
+    // import("uikit"): Open uikit.
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    let imp = last_text_at(&game, "\"uikit\"");
+    right_click(&mut st, &mut game, (imp.0 + 4.0, imp.1));
+    assert_eq!(menu_items(&st)[0], "Open uikit");
+    // lib.greet, defined in lib.lua for the whole module: it opens there.
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    let call = last_text_at(&game, "lib");
+    right_click(&mut st, &mut game, (call.0 + 26.0, call.1));
+    choose(&mut st, &mut game, "Go to definition");
+    assert_eq!(st.s.editor.title, "kit/lib.lua");
+    assert_eq!(st.s.editor.row, 1);
+    assert_eq!(st.s.editor.selected_text().as_deref(), Some("lib.greet"));
+}
+
+#[test]
+fn run_the_selection_runs_it_and_marks_its_line() {
+    let src = "print('first')\nprint('second')\nerror('third')";
+    let (mut game, mut st) = editing("ui-run-selection", src);
+    st.s.editor.anchor = Some((1, 0));
+    st.s.editor.row = 2;
+    st.s.editor.col = st.s.editor.lines[2].len();
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, "'second'");
+    right_click(&mut st, &mut game, at);
+    choose(&mut st, &mut game, "Run the selection");
+    let lines = log(&st);
+    assert!(
+        lines.contains(&"second".to_owned()) && !lines.contains(&"first".to_owned()),
+        "{lines:?}"
+    );
+    assert_eq!(st.s.editor.error_line, Some(3), "the line it failed at, in the file");
+}
+
+#[test]
+fn the_code_menu_fits_a_small_screen_with_an_agent() {
+    use horizon_studio::game::hstudio_agent::AgentSpec;
+    use horizon_studio::game::hstudio_theme::Look;
+    let src = "local function greet(n)\n  return n\nend\nprint(greet(1), player.poss())";
+    let (mut game, mut st) = editing("ui-code-menu-small", src);
+    st.s.ui.look = Look {
+        scale: 1.5,
+        motion: false,
+        ..Look::default()
+    };
+    st.s.ui.agent.agents = Some(vec![AgentSpec::claude(std::path::PathBuf::from("claude"))]);
+    st.s.now = 10.0;
+    redraw(&mut st, &mut game);
+    // The last line selected, and a right click in it.
+    st.s.editor.anchor = Some((3, 0));
+    st.s.editor.row = 3;
+    st.s.editor.col = st.s.editor.lines[3].len();
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, "greet");
+    right_click(&mut st, &mut game, (at.0 + 2.0, at.1));
+    let items = usable(&st);
+    for label in [
+        "Go to definition",
+        "Ask Claude Code...",
+        "Explain the selection with Claude Code",
+        "Fix with Claude Code",
+        "Run the selection",
+    ] {
+        assert!(items.contains(&label.to_owned()), "{label}: {items:?}");
+    }
+    redraw(&mut st, &mut game);
+    let rect = st.s.ui.menu.as_ref().and_then(|m| m.rect).unwrap();
+    assert!(within(rect, [0.0, 0.0, 640.0, 360.0]), "{rect:?}");
+    // The last item is reached with the keys.
+    handle(&mut st, &mut game, key(Key::End, NONE));
+    redraw(&mut st, &mut game);
+    assert_eq!(lit(&st), "Save");
+    assert!(drawn_text(&game, "Save"));
+}
+
+#[cfg(unix)]
+#[test]
+fn explain_this_line_asks_the_agent_with_the_line() {
+    use horizon_studio::game::hstudio_agent::AgentSpec;
+    use horizon_studio::game::hstudio_ui::{AgentLineKind, Panel, agent_busy};
+    let (mut game, mut st) = editing("ui-explain", "local a = 1\nprint(a)");
+    st.s.ui.agent.agents = Some(vec![AgentSpec {
+        id: "custom".into(),
+        name: "Echo".into(),
+        program: "/bin/echo".into(),
+        args: vec!["{prompt}".into()],
+        json: false,
+    }]);
+    st.s.ui.panel_hidden = true;
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, "print");
+    right_click(&mut st, &mut game, at);
+    choose(&mut st, &mut game, "Explain this line with Echo");
+    assert_eq!(
+        st.s.editor.selected_text().as_deref(),
+        Some("print(a)"),
+        "the line selected"
+    );
+    assert!(agent_busy(&st));
+    assert!(
+        !st.s.ui.panel_hidden && st.s.ui.panel == Panel::Agent,
+        "its panel shows"
+    );
+    assert!(!st.s.ui.panel_focus, "the keys stay on the code");
+    for _ in 0..200 {
+        run_for(&mut st, &mut game, 0.05);
+        if !agent_busy(&st) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let said: Vec<&str> =
+        st.s.ui
+            .agent
+            .lines
+            .iter()
+            .filter(|l| l.kind == AgentLineKind::Said)
+            .map(|l| l.text.as_str())
+            .collect();
+    assert!(
+        said.iter().any(|l| l.contains("Explain what this code does.")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter().any(|l| l.contains("print(a)")),
+        "the selection went too: {said:?}"
+    );
 }

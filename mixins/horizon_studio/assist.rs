@@ -1593,3 +1593,178 @@ fn strip_strings(line: &str) -> String {
     }
     out
 }
+
+// ----------------------------------------------------------------- names under the cursor, and where they are defined
+
+/// The name at byte `col` of `line` (on it, or just after it), as far as
+/// the part clicked: in `kit.greet` that is `kit` on "kit" and `kit.greet`
+/// on "greet", a `:` read as a `.`. Its bytes from and to, and the name.
+/// None in a string or a comment, or on a number.
+pub fn name_at(line: &str, col: usize) -> Option<(usize, usize, String)> {
+    let code = strip_strings(line);
+    let b = code.as_bytes();
+    let word = |i: usize| b.get(i).is_some_and(|c| is_word(*c as char));
+    let at = if word(col) {
+        col
+    } else if col > 0 && word(col - 1) {
+        col - 1
+    } else {
+        return None;
+    };
+    let mut end = at;
+    while word(end) {
+        end += 1;
+    }
+    let mut start = at;
+    while start > 0 && (word(start - 1) || (matches!(b[start - 1], b'.' | b':') && start > 1 && word(start - 2))) {
+        start -= 1;
+    }
+    let name = code[start..end].replace(':', ".");
+    if name.starts_with(|c: char| c.is_ascii_digit()) || KEYWORDS.contains(&name.as_str()) {
+        return None;
+    }
+    Some((start, end, name))
+}
+
+/// The library or file named by the string at byte `col` of `line`, when
+/// it is `import("...")`'s (true) or `require("...")`'s (false).
+pub fn module_at(line: &str, col: usize) -> Option<(bool, String)> {
+    let code = strip_strings(line);
+    for (word, import) in [("import", true), ("require", false)] {
+        for (at, _) in code.match_indices(word) {
+            if !whole_at(&code, at, word) {
+                continue;
+            }
+            let b = line.as_bytes();
+            let mut j = at + word.len();
+            while b.get(j) == Some(&b' ') {
+                j += 1;
+            }
+            if b.get(j) == Some(&b'(') {
+                j += 1;
+                while b.get(j) == Some(&b' ') {
+                    j += 1;
+                }
+            }
+            let Some(&q) = b.get(j).filter(|q| **q == b'"' || **q == b'\'') else {
+                continue;
+            };
+            let Some(len) = line[j + 1..].find(q as char) else {
+                continue;
+            };
+            if (j..=j + len + 1).contains(&col) {
+                return Some((import, line[j + 1..j + 1 + len].to_owned()));
+            }
+        }
+    }
+    None
+}
+
+/// The names a line of code defines, with their bytes from and to: after
+/// `local function` and `function` (a dotted name too, `t:m` as `t.m`),
+/// the names a `local` or a `for` declares, a function's parameters, and
+/// what is assigned at the line's start (`n = 1`, `t.n = f`).
+fn definitions_on(code: &str) -> Vec<(usize, usize, String)> {
+    // The line as names (dotted, `:` read as `.`) and other characters.
+    let b = code.as_bytes();
+    let mut toks: Vec<(usize, usize, String)> = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i] as char;
+        if is_word(c) && !c.is_ascii_digit() {
+            let start = i;
+            while i < b.len() {
+                let d = b[i] as char;
+                let joins = matches!(d, '.' | ':') && b.get(i + 1).is_some_and(|n| is_word(*n as char));
+                if !(is_word(d) || joins) {
+                    break;
+                }
+                i += 1;
+            }
+            toks.push((start, i, code[start..i].replace(':', ".")));
+        } else {
+            if !c.is_whitespace() {
+                toks.push((i, i + 1, c.to_string()));
+            }
+            i += 1;
+        }
+    }
+    let is_name = |t: &str| t.starts_with(|c: char| is_word(c)) && !KEYWORDS.contains(&t);
+    let mut out = Vec::new();
+    // A list of names, `a, b, c`, from token `k`: the names and where it ends.
+    let names_from = |k: usize| -> (Vec<(usize, usize, String)>, usize) {
+        let mut names = Vec::new();
+        let mut k = k;
+        while let Some(t) = toks.get(k).filter(|t| is_name(&t.2)) {
+            names.push(t.clone());
+            k += 1;
+            if toks.get(k).is_some_and(|t| t.2 == ",") {
+                k += 1;
+            } else {
+                break;
+            }
+        }
+        (names, k)
+    };
+    for (k, t) in toks.iter().enumerate() {
+        match t.2.as_str() {
+            "function" => {
+                let mut p = k + 1;
+                if let Some(n) = toks.get(p).filter(|n| is_name(&n.2)) {
+                    out.push(n.clone());
+                    p += 1;
+                }
+                if toks.get(p).is_some_and(|t| t.2 == "(") {
+                    out.extend(names_from(p + 1).0);
+                }
+            }
+            "local" if toks.get(k + 1).is_some_and(|t| t.2 != "function") => out.extend(names_from(k + 1).0),
+            "for" => out.extend(names_from(k + 1).0),
+            _ => {}
+        }
+    }
+    // An assignment at the line's start.
+    let (names, k) = names_from(0);
+    if toks.first().is_some_and(|t| t.2 != "local")
+        && toks.get(k).is_some_and(|t| t.2 == "=")
+        && toks.get(k + 1).is_none_or(|t| t.2 != "=")
+    {
+        out.extend(names);
+    }
+    out
+}
+
+/// Where `name` is defined in `lines`: the nearest definition at or above
+/// `row`, else the first below it (row, bytes from and to). With
+/// `globals_only`, lines that start with `local` are left out (what
+/// another file of a module defines for all of it). It reads the file as
+/// written, without its scopes.
+pub fn definition(lines: &[String], name: &str, row: usize, globals_only: bool) -> Option<(usize, usize, usize)> {
+    let row = row.min(lines.len().saturating_sub(1));
+    let on = |r: usize| -> Option<(usize, usize, usize)> {
+        let line = lines.get(r)?;
+        if globals_only && line.trim_start().starts_with("local") {
+            return None;
+        }
+        definitions_on(&strip_strings(line))
+            .into_iter()
+            .find(|(_, _, n)| n == name)
+            .map(|(a, b, _)| (r, a, b))
+    };
+    (0..=row)
+        .rev()
+        .find_map(on)
+        .or_else(|| (row + 1..lines.len()).find_map(on))
+}
+
+/// Whether the Docs tab has an entry for `name` (the API's and the
+/// console's functions).
+pub fn documented(name: &str) -> bool {
+    API.iter().any(|(t, n, ..)| {
+        if t.is_empty() {
+            *n == name
+        } else {
+            name.strip_prefix(t).and_then(|r| r.strip_prefix('.')) == Some(n)
+        }
+    }) || CONSOLE_API.iter().any(|(n, ..)| *n == name)
+}

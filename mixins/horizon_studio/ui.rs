@@ -264,6 +264,12 @@ pub enum MenuCmd {
     /// definition): its row and the bytes from and to, in the file open, or
     /// in this file of the module, opened first.
     GoTo(Option<PathBuf>, usize, usize, usize),
+    /// The Docs tab at this function's entry.
+    Docs(String),
+    /// The agent asked this (None: its input takes the keys, for a
+    /// question typed there), with the selection; the code explained.
+    Ask(Option<String>),
+    Explain,
 }
 
 /// What a mod's menu does to it.
@@ -279,6 +285,8 @@ pub enum ModCmd {
     Duplicate,
     /// Its error, and the traceback, to the clipboard.
     CopyError,
+    /// The agent asked to fix it, its file open where it failed.
+    Fix,
 }
 
 /// The editor's commands in its menu.
@@ -292,6 +300,8 @@ pub enum EditCmd {
     Indent,
     Outdent,
     DuplicateLine,
+    /// The selection run in the console.
+    RunSelection,
 }
 
 /// An input line's commands in its menu: Submit runs the console's line or
@@ -722,6 +732,10 @@ pub struct Ui {
     pub hist: Option<usize>,
     pub log_scroll: usize,
     pub docs_scroll: usize,
+    /// The function the Docs tab goes to when it is drawn next (Show in
+    /// Docs), and the entry it went to with when (a tint a moment).
+    pub(crate) docs_find: Option<String>,
+    pub(crate) docs_lit: Option<(String, f64)>,
     /// The naming prompt (New, Save as, New file, Rename, Delete), while it is open.
     pub naming: Option<LineEdit>,
     /// What the prompt names.

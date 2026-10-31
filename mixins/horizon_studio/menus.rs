@@ -8,16 +8,17 @@
 // between the menu opening and an item chosen can move them.
 
 use super::hstudio::{GameApi, ModState, Studio};
+use super::hstudio_assist::{definition, documented, module_at, name_at};
 use super::hstudio_examples::EXAMPLES;
 use super::hstudio_look::docs_markdown;
-use super::hstudio_modfiles::{path_in, rel_in};
+use super::hstudio_modfiles::{path_in, rel_in, require_path};
 use super::hstudio_theme::{Layout, THEMES};
 use super::hstudio_ui::{
     AREA_AGENT, AREA_LOG, Action, EditCmd, FIELD_AGENT, FieldCmd, Menu, MenuCmd, MenuItem, ModCmd, NamingKind, Panel,
-    ScriptRow, Spot, Tab, UiResult, act, agent_busy, agent_choose, agent_id, agent_list, agent_model,
-    agent_new_conversation, agent_rescan, agent_send, copy_text, editor_pos, file_in_module, in_text_selection, inside,
-    make_module, menu_pick, model_choices, model_items, model_label, notice, open_module, open_naming, open_path,
-    run_console_line, selected_text, set_agent_model, spot_at,
+    ScriptRow, Spot, Tab, UiResult, act, agent_ask, agent_busy, agent_choose, agent_id, agent_list, agent_model,
+    agent_name, agent_new_conversation, agent_rescan, agent_send, copy_text, editor_pos, editor_siblings,
+    file_in_module, in_text_selection, inside, make_module, menu_pick, model_choices, model_items, model_label, notice,
+    open_module, open_naming, open_path, run_console_line, selected_text, set_agent_model, spot_at,
 };
 use std::path::Path;
 
@@ -56,10 +57,13 @@ fn open_spot(st: &mut Studio, game: &mut dyn GameApi, spot: Spot, rect: [f32; 4]
     let (items, target) = match spot {
         Spot::Code => {
             let drawn = st.s.ui.smooth[1];
+            let ed = &st.s.editor;
+            let mut place = (ed.row, ed.col);
             if let Some((row, col)) = editor_pos(st, game, at[0], at[1], drawn) {
                 let ed = &mut st.s.editor;
                 let line = &ed.lines[row];
                 let byte = line.char_indices().nth(col).map_or(line.len(), |(i, _)| i);
+                place = (row, byte);
                 if !ed.in_selection(row, byte) {
                     ed.click(row, col, false);
                     // Put under the pointer, the cursor is on screen: the view stays.
@@ -67,7 +71,7 @@ fn open_spot(st: &mut Studio, game: &mut dyn GameApi, spot: Spot, rect: [f32; 4]
                 }
             }
             st.s.ui.panel_focus = false;
-            (code_items(st), None)
+            (code_items(st, place), None)
         }
         Spot::Text(area) => (text_items(st, area), None),
         Spot::Field(field) => {
@@ -167,20 +171,28 @@ fn all_problems(st: &Studio) -> String {
     lines.join("\n")
 }
 
-/// A problem's row: Go to it (its place, taken now), Copy, and Copy all problems.
-fn problem_items(st: &Studio, k: usize) -> Vec<MenuItem> {
+/// A problem's row: Go to it (its place, taken now), Copy, Fix with the
+/// agent (in the studio's own layout, with one found), and Copy all problems.
+fn problem_items(st: &mut Studio, k: usize) -> Vec<MenuItem> {
+    let agent = studio_agent(st);
+    let idle = !agent_busy(st);
     let ed = &st.s.editor;
     let Some(p) = ed.problems.get(k) else {
         return Vec::new();
     };
     let row = (p.line.max(1) - 1).min(ed.lines.len() - 1);
     let (start, end) = p.span.unwrap_or((0, 0));
-    vec![
+    let mut items = vec![
         MenuItem::new("Go to it", MenuCmd::GoTo(None, row, start, end)).keys("⏎"),
         MenuItem::new("Copy", MenuCmd::Copy(format!("{}:{}: {}", ed.title, p.line, p.message))),
-        MenuItem::separator(),
-        MenuItem::new("Copy all problems", MenuCmd::Copy(all_problems(st))),
-    ]
+    ];
+    if let Some(agent) = agent {
+        let ask = format!("Fix the problem on line {}: {}", p.line, p.message);
+        items.push(MenuItem::new(format!("Fix with {agent}"), MenuCmd::Ask(Some(ask))).enabled(idle));
+    }
+    items.push(MenuItem::separator());
+    items.push(MenuItem::new("Copy all problems", MenuCmd::Copy(all_problems(st))));
+    items
 }
 
 /// The window's menu (its title bar, the studio's header): rolling it up,
@@ -249,12 +261,17 @@ fn go_to(st: &mut Studio, game: &mut dyn GameApi, path: Option<&Path>, row: usiz
 
 // ----------------------------------------------------------------- the code, the text, the input lines
 
-/// The code's menu: the clipboard and the selection, the line commands,
-/// then running and saving.
-fn code_items(st: &Studio) -> Vec<MenuItem> {
-    let _ = st;
+/// The code's menu, for the place clicked (a row and a byte of it): where
+/// the name there is defined, the library or file the string there names
+/// and the name's entry in the Docs; the clipboard and the selection; the
+/// line commands; in the studio's own layout, with an agent found, asking
+/// it, explaining the code and fixing the line's problem; then running
+/// (the selection too) and saving.
+fn code_items(st: &mut Studio, (row, byte): (usize, usize)) -> Vec<MenuItem> {
     let edit = |label: &str, keys: &str, cmd: EditCmd| MenuItem::new(label, MenuCmd::Edit(cmd)).keys(keys);
-    vec![
+    let mut items = name_items(st, row, byte);
+    items.push(MenuItem::separator());
+    items.extend([
         edit("Cut", "Ctrl X", EditCmd::Cut),
         edit("Copy", "Ctrl C", EditCmd::Copy),
         // Always there: the clipboard is read only when it is chosen.
@@ -266,9 +283,117 @@ fn code_items(st: &Studio) -> Vec<MenuItem> {
         edit("Outdent", "Shift Tab", EditCmd::Outdent),
         edit("Duplicate line", "Ctrl D", EditCmd::DuplicateLine),
         MenuItem::separator(),
-        MenuItem::new("Run", MenuCmd::Act(Action::Run)).keys("Ctrl ⏎"),
-        MenuItem::new("Save", MenuCmd::Act(Action::Save)).keys("Ctrl S"),
-    ]
+    ]);
+    if let Some(agent) = studio_agent(st) {
+        let idle = !agent_busy(st);
+        let ed = &st.s.editor;
+        let what = if ed.selection().is_some() {
+            "the selection"
+        } else {
+            "this line"
+        };
+        items.push(MenuItem::new(format!("Ask {agent}..."), MenuCmd::Ask(None)).enabled(idle));
+        items.push(MenuItem::new(format!("Explain {what} with {agent}"), MenuCmd::Explain).enabled(idle));
+        if let Some(p) = ed.problems.iter().find(|p| p.line == ed.row + 1) {
+            let ask = format!("Fix the problem on line {}: {}", p.line, p.message);
+            items.push(MenuItem::new(format!("Fix with {agent}"), MenuCmd::Ask(Some(ask))).enabled(idle));
+        }
+        items.push(MenuItem::separator());
+    }
+    if st.s.editor.selection().is_some() {
+        items.push(edit("Run the selection", "", EditCmd::RunSelection));
+    }
+    items.push(MenuItem::new("Run", MenuCmd::Act(Action::Run)).keys("Ctrl ⏎"));
+    items.push(MenuItem::new("Save", MenuCmd::Act(Action::Save)).keys("Ctrl S"));
+    items
+}
+
+/// The agent's name, when one is found and the studio's own layout shows
+/// its panel (the executor styles have none).
+fn studio_agent(st: &mut Studio) -> Option<String> {
+    if st.s.ui.look.theme().layout != Layout::Studio {
+        return None;
+    }
+    agent_name(st)
+}
+
+/// What the code's menu offers for the name or string at `byte` of `row`:
+/// Go to definition (in the file, or for a module's file in its other
+/// files), Open the library an `import` names or the file of the module a
+/// `require` names, and Show the function in the Docs.
+fn name_items(st: &mut Studio, row: usize, byte: usize) -> Vec<MenuItem> {
+    let mut items = Vec::new();
+    let Some(line) = st.s.editor.lines.get(row).cloned() else {
+        return items;
+    };
+    match module_at(&line, byte) {
+        Some((true, id)) if st.s.mods.iter().any(|m| m.id == id) => {
+            items.push(MenuItem::new(format!("Open {id}"), MenuCmd::Mod(id, ModCmd::Edit)));
+        }
+        Some((false, name)) => {
+            if let (Some(rel), Some((_, folder))) = (require_path(&name), open_module(st)) {
+                let path = path_in(&folder, &rel);
+                if path.is_file() {
+                    items.push(MenuItem::new(format!("Open {rel}"), MenuCmd::Open(path)));
+                }
+            }
+        }
+        _ => {}
+    }
+    let Some((start, _, name)) = name_at(&line, byte) else {
+        return items;
+    };
+    // The name, else the table it is in (`kit` for `kit.greet`); each in
+    // this file, then in the module's other files.
+    let mut names = vec![name.clone()];
+    if let Some((head, _)) = name.split_once('.') {
+        names.push(head.to_owned());
+    }
+    let lines = st.s.editor.lines.clone();
+    let folder = open_module(st).map(|(_, f)| f);
+    let siblings = editor_siblings(st);
+    let mut goto = None;
+    for n in &names {
+        if let Some((r, a, b)) = definition(&lines, n, row, false) {
+            // Not when it is the definition clicked.
+            if (r, a) != (row, start) {
+                goto = Some(MenuCmd::GoTo(None, r, a, b));
+            }
+            break;
+        }
+        if let (Some(folder), Some(sib)) = (&folder, &siblings)
+            && let Some((rel, (r, a, b))) = sib
+                .others
+                .iter()
+                .find_map(|(rel, other)| Some((rel, definition(other, n, 0, true)?)))
+        {
+            goto = Some(MenuCmd::GoTo(Some(path_in(folder, rel)), r, a, b));
+            break;
+        }
+    }
+    if let Some(cmd) = goto {
+        items.push(MenuItem::new("Go to definition", cmd));
+    }
+    if documented(&name) {
+        items.push(MenuItem::new(format!("Show {name} in Docs"), MenuCmd::Docs(name)));
+    }
+    items
+}
+
+/// The agent's panel shown and the agent asked `text`, with what the editor
+/// has selected (None: its input takes the keys, for a question typed there).
+fn ask_agent(st: &mut Studio, text: Option<&str>) {
+    let ui = &mut st.s.ui;
+    ui.tab = Tab::Editor;
+    if ui.panel != Panel::Agent {
+        ui.panel_tab_at = st.s.now;
+    }
+    ui.panel = Panel::Agent;
+    ui.panel_hidden = false;
+    ui.panel_focus = text.is_none();
+    if let Some(text) = text {
+        agent_ask(st, text);
+    }
 }
 
 /// The menu of the console's lines or the agent's conversation: copying
@@ -361,6 +486,7 @@ fn edit(st: &mut Studio, game: &mut dyn GameApi, cmd: EditCmd) {
         EditCmd::Indent => ed.indent_lines(false),
         EditCmd::Outdent => ed.indent_lines(true),
         EditCmd::DuplicateLine => ed.duplicate_line(),
+        EditCmd::RunSelection => st.run_selection(game),
     }
     let ui = &mut st.s.ui;
     ui.suggest = None;
@@ -563,6 +689,17 @@ pub fn run(st: &mut Studio, game: &mut dyn GameApi, cmd: MenuCmd, place: [f32; 4
         }
         MenuCmd::CopyDocs => copy_text(st, game, &docs_markdown()),
         MenuCmd::GoTo(path, row, start, end) => go_to(st, game, path.as_deref(), row, start, end),
+        MenuCmd::Docs(name) => {
+            st.s.ui.tab = Tab::Docs;
+            st.s.ui.docs_find = Some(name);
+        }
+        MenuCmd::Ask(text) => ask_agent(st, text.as_deref()),
+        MenuCmd::Explain => {
+            if st.s.editor.selection().is_none() {
+                st.s.editor.select_line();
+            }
+            ask_agent(st, Some("Explain what this code does."));
+        }
     }
     UiResult::Used
 }
@@ -582,10 +719,12 @@ pub(crate) fn open_row_menu(st: &mut Studio, k: usize, at: [f32; 4]) {
 /// mod's. A module's file: Open, Rename and Delete (not main.lua, which
 /// starts the module), its folder and its path. The scratch file's: Open,
 /// or Run and Save as a script while it is open, its folder and its path.
-fn row_items(st: &Studio, k: usize) -> Vec<MenuItem> {
+fn row_items(st: &mut Studio, k: usize) -> Vec<MenuItem> {
     let Some(row) = st.s.ui.script_rows.get(k).cloned() else {
         return Vec::new();
     };
+    let agent = fixer(st);
+    let st = &*st;
     let open = st.s.editor.path.clone();
     let open_item =
         |path: &Path| (open.as_deref() != Some(path)).then(|| MenuItem::new("Open", MenuCmd::Open(path.to_path_buf())));
@@ -616,7 +755,7 @@ fn row_items(st: &Studio, k: usize) -> Vec<MenuItem> {
                 MenuItem::new("Open main.lua", MenuCmd::Open(folder.join("main.lua"))),
                 MenuItem::separator(),
             ];
-            items.extend(mod_items(st, i, false));
+            items.extend(mod_items(st, i, false, agent.as_ref()));
             items
         }
         ScriptRow::File { path, rel, .. } => {
@@ -641,7 +780,7 @@ fn row_items(st: &Studio, k: usize) -> Vec<MenuItem> {
             };
             let mut items: Vec<MenuItem> = open_item(&path).into_iter().collect();
             items.push(MenuItem::separator());
-            items.extend(mod_items(st, i, false));
+            items.extend(mod_items(st, i, false, agent.as_ref()));
             items
         }
     }
@@ -652,11 +791,19 @@ fn copy_path(path: &Path) -> MenuItem {
     MenuItem::new("Copy path", MenuCmd::Copy(path.display().to_string()))
 }
 
+/// The agent that can fix a mod from its menu, and whether it is free to:
+/// in the studio's own layout, with one found.
+fn fixer(st: &mut Studio) -> Option<(String, bool)> {
+    let agent = studio_agent(st)?;
+    Some((agent, !agent_busy(st)))
+}
+
 /// What every mod's menu has, after what its list puts first: Reload, Turn
 /// off or on, Rename, Duplicate, Make it a module (a script), Delete, its
-/// folder and its path, and for a mod that failed Copy the error. With
-/// `keys`, the Library's keys for them.
-fn mod_items(st: &Studio, i: usize, keys: bool) -> Vec<MenuItem> {
+/// folder and its path, and for a mod that failed Copy the error and Fix
+/// with the agent (`agent`: its name and whether it is free). With `keys`,
+/// the Library's keys for them.
+fn mod_items(st: &Studio, i: usize, keys: bool, agent: Option<&(String, bool)>) -> Vec<MenuItem> {
     let Some(m) = st.s.mods.get(i) else {
         return Vec::new();
     };
@@ -690,6 +837,9 @@ fn mod_items(st: &Studio, i: usize, keys: bool) -> Vec<MenuItem> {
     if matches!(m.state, ModState::Failed(..)) {
         items.push(MenuItem::separator());
         items.push(MenuItem::new("Copy the error", cmd(ModCmd::CopyError)));
+        if let Some((name, idle)) = agent {
+            items.push(MenuItem::new(format!("Fix with {name}"), cmd(ModCmd::Fix)).enabled(*idle));
+        }
     }
     items
 }
@@ -779,6 +929,19 @@ fn mod_cmd(st: &mut Studio, game: &mut dyn GameApi, id: &str, cmd: ModCmd) -> Ui
                 copy_text(st, game, &text);
             }
         }
+        ModCmd::Fix => {
+            let ModState::Failed(msg, _) = st.s.mods[i].state.clone() else {
+                return UiResult::Used;
+            };
+            // Its file open where it failed, so the agent sees that file.
+            let m = &st.s.mods[i];
+            let path = match (st.failure_place(i), &m.folder) {
+                (Some((rel, _)), Some(folder)) => path_in(folder, &rel),
+                _ => m.main.clone(),
+            };
+            open_path(st, game, &path);
+            ask_agent(st, Some(&format!("{id} fails: {msg}. Find out why and fix it.")));
+        }
     }
     UiResult::Used
 }
@@ -800,8 +963,10 @@ pub(crate) fn open_library_menu(st: &mut Studio, i: usize, at: [f32; 4]) {
 /// script's Edit; then what every mod's menu has, with the Library's keys.
 /// In the executor styles, which have no script list, a module's files are
 /// reached so.
-fn library_items(st: &Studio, i: usize) -> Vec<MenuItem> {
+fn library_items(st: &mut Studio, i: usize) -> Vec<MenuItem> {
     const SHOWN: usize = 12;
+    let agent = fixer(st);
+    let st = &*st;
     let Some(m) = st.s.mods.get(i) else {
         return Vec::new();
     };
@@ -838,7 +1003,7 @@ fn library_items(st: &Studio, i: usize) -> Vec<MenuItem> {
         None => vec![MenuItem::new("Edit", MenuCmd::Mod(m.id.clone(), ModCmd::Edit)).keys("⏎")],
     };
     items.push(MenuItem::separator());
-    items.extend(mod_items(st, i, true));
+    items.extend(mod_items(st, i, true, agent.as_ref()));
     items
 }
 

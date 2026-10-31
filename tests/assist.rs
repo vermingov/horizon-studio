@@ -267,3 +267,82 @@ fn a_required_files_members_are_suggested_and_checked() {
     let m = module("main.lua", &[("lib.lua", dynamic)]);
     assert!(problems_in("local lib = require('lib')\nlib.gret()\n", Some(&m)).is_empty());
 }
+
+#[test]
+fn names_and_modules_under_the_cursor() {
+    use horizon_studio::game::hstudio_assist::{module_at, name_at};
+    let line = "local x = player.pos() + obj:m(1.5)";
+    let name = |col: usize| name_at(line, col).map(|(_, _, n)| n);
+    // As far as the part clicked: the table, or its member.
+    assert_eq!(name(line.find("player").unwrap() + 2).as_deref(), Some("player"));
+    assert_eq!(name(line.find("pos").unwrap() + 1).as_deref(), Some("player.pos"));
+    assert_eq!(
+        name(line.find("pos").unwrap() + 3).as_deref(),
+        Some("player.pos"),
+        "just after it"
+    );
+    assert_eq!(
+        name(line.find(":m").unwrap() + 1).as_deref(),
+        Some("obj.m"),
+        "':' read as '.'"
+    );
+    assert_eq!(name(line.find('x').unwrap()).as_deref(), Some("x"));
+    let (start, end, _) = name_at(line, line.find("pos").unwrap()).unwrap();
+    assert_eq!(&line[start..end], "player.pos");
+    // Not in strings or comments, nor on numbers or keywords.
+    assert_eq!(name(line.find("1.5").unwrap()), None);
+    assert_eq!(name(1), None, "local is a keyword");
+    let quoted = "print('player.pos') -- player.pos";
+    assert_eq!(name_at(quoted, 9), None);
+    assert_eq!(name_at(quoted, quoted.len() - 3), None);
+    // The string of an import or a require.
+    let imports = "local kit = import(\"uikit\")  local u = require('lib.util')";
+    assert_eq!(
+        module_at(imports, imports.find("uikit").unwrap()),
+        Some((true, "uikit".into()))
+    );
+    assert_eq!(
+        module_at(imports, imports.find("lib.util").unwrap() + 4),
+        Some((false, "lib.util".into()))
+    );
+    assert_eq!(module_at(imports, 2), None);
+    assert_eq!(module_at("print(\"uikit\")", 8), None);
+}
+
+#[test]
+fn definitions_are_found_in_the_file() {
+    use horizon_studio::game::hstudio_assist::{definition, documented};
+    let src = [
+        "local function greet(name, times)",
+        "  return name",
+        "end",
+        "function kit.shout(s) end",
+        "function obj:m() end",
+        "local a, b = 1, 2",
+        "for i, v in ipairs({}) do end",
+        "count = 0",
+        "kit.size = 3",
+        "if count == 1 then count = 2 end",
+        "local greet = 5",
+    ];
+    let lines: Vec<String> = src.iter().map(|s| (*s).to_owned()).collect();
+    let at = |name: &str, row: usize| definition(&lines, name, row, false).map(|(r, a, b)| (r, &lines[r][a..b]));
+    assert_eq!(at("greet", 3), Some((0, "greet")), "local function");
+    assert_eq!(at("times", 1), Some((0, "times")), "a parameter");
+    assert_eq!(at("kit.shout", 9), Some((3, "kit.shout")), "function t.f");
+    assert_eq!(at("obj.m", 9), Some((4, "obj:m")), "function t:m");
+    assert_eq!(at("b", 9), Some((5, "b")), "local a, b");
+    assert_eq!(at("v", 9), Some((6, "v")), "a for name");
+    assert_eq!(at("count", 9), Some((7, "count")), "a global assignment");
+    assert_eq!(at("kit.size", 9), Some((8, "kit.size")));
+    // The nearest above wins; with none above, the first below.
+    assert_eq!(at("greet", 10), Some((10, "greet")));
+    assert_eq!(at("count", 0), Some((7, "count")));
+    assert_eq!(at("nothing", 5), None);
+    // Another file of a module: only what it defines for all of it.
+    assert_eq!(definition(&lines, "a", 0, true), None, "a local");
+    assert_eq!(definition(&lines, "count", 0, true).map(|d| d.0), Some(7));
+    // The Docs have the API's functions and the console's.
+    assert!(documented("player.pos") && documented("help") && documented("on"));
+    assert!(!documented("player") && !documented("string.format") && !documented("greet"));
+}

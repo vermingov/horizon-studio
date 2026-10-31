@@ -3063,10 +3063,29 @@ impl Studio {
             return;
         }
         let src = self.s.editor.text();
-        let env = self.console_env();
         let name = self.s.editor.title.clone();
         self.s.log(LogKind::Input, format!("> run {name}"));
-        match self.lua.load(&src, &name, &env) {
+        self.run_in_console(game, &src, &name);
+    }
+
+    /// Runs the editor's selection as a console chunk. Its lines keep their
+    /// numbers in the file, so an error marks the line it is on.
+    pub fn run_selection(&mut self, game: &mut dyn GameApi) {
+        let ed = &self.s.editor;
+        let (Some(((first, _), _)), Some(text)) = (ed.selection(), ed.selected_text()) else {
+            return;
+        };
+        let src = format!("{}{text}", "\n".repeat(first));
+        let name = ed.title.clone();
+        self.s.log(LogKind::Input, format!("> run the selection of {name}"));
+        self.run_in_console(game, &src, &name);
+    }
+
+    /// Runs `src`, named `name`, as a console chunk: an error marks its line
+    /// in the editor.
+    fn run_in_console(&mut self, game: &mut dyn GameApi, src: &str, name: &str) {
+        let env = self.console_env();
+        match self.lua.load(src, name, &env) {
             Err(e) => {
                 self.s.editor.error_line = error_line(&e);
                 self.s.log(LogKind::Error, e);

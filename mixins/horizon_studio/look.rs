@@ -3350,10 +3350,14 @@ pub fn docs_markdown() -> String {
 }
 
 fn draw_docs(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
+    const LIT_SECS: f64 = 1.5;
+    let now = st.s.now;
     st.s.ui.hits.push(([x, y, w, h], Action::Spot(Spot::Docs)));
     let width = w.min(820.0);
-    // Laid out as lines of (text, size, font, colour, height).
+    // Laid out as lines of (text, size, font, colour, height), with each
+    // function's entry by its name and its lines (Show in Docs goes there).
     let mut lines: Vec<(String, f32, Font, u32, f32)> = Vec::new();
+    let mut entries: Vec<(String, usize, usize)> = Vec::new();
     for d in docs() {
         match d {
             Doc::Heading(t) => {
@@ -3367,12 +3371,15 @@ fn draw_docs(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
                 lines.push((String::new(), 0.0, Font::Regular, 0, 8.0));
             }
             Doc::Api(sig, desc) => {
+                let first = lines.len();
                 for l in p.wrap(&sig, width, 13.0, Font::Mono) {
                     lines.push((l, 13.0, Font::Mono, pal().ink, 20.0));
                 }
                 for l in p.wrap(&desc, width, 13.0, Font::Regular) {
                     lines.push((l, 13.0, Font::Regular, pal().muted, 20.0));
                 }
+                let name = sig.split('(').next().unwrap_or("").to_owned();
+                entries.push((name, first, lines.len()));
                 lines.push((String::new(), 0.0, Font::Regular, 0, 10.0));
             }
         }
@@ -3381,11 +3388,36 @@ fn draw_docs(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let step = 22.0;
     let max = ((total - h) / step).max(0.0).ceil() as usize;
     st.s.ui.page = (h / step) as usize;
+    // Show in Docs: the entry asked for at the top, at once, and tinted a moment.
+    if let Some(name) = st.s.ui.docs_find.take()
+        && let Some((_, first, _)) = entries.iter().find(|(n, ..)| *n == name)
+    {
+        let above: f32 = lines[..*first].iter().map(|l| l.4).sum();
+        st.s.ui.docs_scroll = (above / step).floor() as usize;
+        st.s.ui.smooth[2] = st.s.ui.docs_scroll.min(max) as f32;
+        st.s.ui.docs_lit = Some((name, now));
+    }
     st.s.ui.docs_scroll = st.s.ui.docs_scroll.min(max);
     smooth(&mut st.s.ui.smooth[2], st.s.ui.docs_scroll as f32, dt);
+    let lit =
+        st.s.ui
+            .docs_lit
+            .as_ref()
+            .filter(|(_, at)| now - at < LIT_SECS)
+            .and_then(|(name, at)| {
+                let (_, a, b) = entries.iter().find(|(n, ..)| n == name)?;
+                Some((*a, *b, (1.0 - (now - at) / LIT_SECS) as f32))
+            });
     let mut ly = y - st.s.ui.smooth[2] * step;
-    for (t, size, font, c, lh) in lines {
-        if ly >= y - 1.0 && ly + lh <= y + h + 1.0 && !t.is_empty() {
+    for (k, (t, size, font, c, lh)) in lines.into_iter().enumerate() {
+        let shown = ly >= y - 1.0 && ly + lh <= y + h + 1.0;
+        if let Some((a, b, k_lit)) = lit
+            && (a..b).contains(&k)
+            && shown
+        {
+            p.rect([x - 8.0, ly, width + 16.0, lh], 0.0, fade(pal().accent, 0.16 * k_lit));
+        }
+        if shown && !t.is_empty() {
             p.text(&t, x, ly + (lh - (size * 1.45).round()) / 2.0, size, font, c);
         }
         ly += lh;
