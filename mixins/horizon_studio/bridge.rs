@@ -5,8 +5,8 @@
 // command can reach the game's own command path) do nothing.
 
 use super::hstudio::{
-    Camera, Corner, EntityInfo, Font, GameApi, ID, NAME, OPEN_KEY, PartFrame, PlayerEntry, PlayerInfo, PlayerPose, Reply,
-    Studio, TexRef, VERSION, ViaInfo, WorldTri,
+    Camera, Corner, EntityInfo, Font, GameApi, ID, NAME, OPEN_KEY, PartFrame, PlayerEntry, PlayerInfo, PlayerPose,
+    Reply, Studio, TexRef, VERSION, ViaInfo, WorldTri,
 };
 use horizon_client::net::hstudio_via as via;
 use super::hstudio_ui::{Input, Key, Mods, UiResult, draw, draw_screen, handle, handle_screen};
