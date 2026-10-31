@@ -2940,19 +2940,6 @@ pub fn raycast(
 
 // ---------------------------------------------------------------- each frame
 
-/// What the player and the world are this frame, put into the DataModel,
-/// and the frame's events: RunService's, tweens, Debris, timeouts.
-pub fn step(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64, dt: f64, frame_no: u64) {
-    rbx.now = now;
-    if !rbx.active {
-        return;
-    }
-    sync(rbx, game);
-    copy_starter_gui(rbx);
-    step_events(rbx, now, dt, frame_no);
-    super::hstudio_sunc::poll_network(rbx);
-}
-
 /// A GUI put in StarterGui (a ScreenGui, a BillboardGui) is copied into
 /// the PlayerGui at the next frame, as a player's spawn copies them in
 /// Roblox: once each, what it holds then with it, for the mod that made it.
@@ -2976,6 +2963,19 @@ fn copy_starter_gui(rbx: &mut Rbx) {
         let gui = rbx.player_gui;
         let _ = rbx.set_parent(copy, Some(gui));
     }
+}
+
+/// What the player and the world are this frame, put into the DataModel,
+/// and the frame's events: RunService's, tweens, Debris, timeouts.
+pub fn step(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64, dt: f64, frame_no: u64) {
+    rbx.now = now;
+    if !rbx.active {
+        return;
+    }
+    sync(rbx, game);
+    copy_starter_gui(rbx);
+    step_events(rbx, now, dt, frame_no);
+    super::hstudio_sunc::poll_network(rbx);
 }
 
 /// The DataModel brought up to the game: the character, the Camera and the
