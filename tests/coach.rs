@@ -1944,6 +1944,15 @@ fn a_lesson_steps_through_its_notes_once_each_in_the_panel() {
             "Step 3 of 3: line 1 in kit/lib/util.lua"
         ]
     );
+    // Show on step 1's line in the Agent panel goes back to that step.
+    // (Lines are numbered as said, from 1: step 1's is the second.)
+    assert_eq!(st.s.ui.agent.lines[1].text, "Step 1 of 3: line 1 in kit/main.lua");
+    coach::go(&mut st, &mut game, 2);
+    assert_eq!(st.s.ui.coach.lesson.as_ref().unwrap().at, 0);
+    assert_eq!(st.s.ui.coach.open_mark, Some(marks[0]));
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    assert_eq!(st.s.ui.coach.lesson.as_ref().unwrap().at, 2);
     // Next on the last step: the lesson is done and its marks go.
     handle(&mut st, &mut game, key(Key::Right, ALT));
     assert!(st.s.ui.coach.lesson.is_none());

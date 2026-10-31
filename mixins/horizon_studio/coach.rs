@@ -86,9 +86,11 @@ pub struct Coach {
     next_mark: u32,
     /// The editor's file as the marks last followed it.
     followed: Option<Followed>,
-    /// Where the code and the open mark's bubble were drawn last frame.
-    pub code_at: Option<[f32; 4]>,
+    /// Where the open mark's bubble was drawn last frame (Esc closes it
+    /// then), and the code's panel (read by the tests, not the game).
     pub bubble_at: Option<[f32; 4]>,
+    #[allow(dead_code)]
+    pub code_at: Option<[f32; 4]>,
     /// The lesson an agent gives in the editor, if one is on.
     pub lesson: Option<Lesson>,
     /// What the player did, for an agent that waits for them, oldest
@@ -133,8 +135,8 @@ impl Default for Coach {
             more: false,
             next_mark: 1,
             followed: None,
-            code_at: None,
             bubble_at: None,
+            code_at: None,
             lesson: None,
             events: VecDeque::new(),
             last_event: 0,
@@ -1594,7 +1596,8 @@ fn end_turn(st: &mut Studio, game: &mut dyn GameApi, ok: bool) {
 /// The code Agent panel line number `seq` is about, shown: its file opens
 /// (the one open saved first, as the script list does: it is the player's
 /// own click), its first line a third of the way down with the cursor on
-/// it, its lines lit a moment, and the keys go back to the code.
+/// it, its lines lit a moment, and the keys go back to the code. A mark's
+/// note opens, and for a lesson's step the lesson goes to it.
 pub fn go(st: &mut Studio, game: &mut dyn GameApi, seq: u64) {
     let pane = &st.s.ui.agent;
     let jump = pane
@@ -1607,6 +1610,7 @@ pub fn go(st: &mut Studio, game: &mut dyn GameApi, seq: u64) {
     };
     // A mark's lines are where it is now (it follows the code).
     let mark = jump.mark.and_then(|id| st.s.ui.coach.marks.iter().find(|m| m.id == id));
+    let step = mark.and_then(|m| m.step);
     if let Some(m) = mark {
         jump.path = m.path.clone();
     }
@@ -1618,6 +1622,10 @@ pub fn go(st: &mut Studio, game: &mut dyn GameApi, seq: u64) {
     if !open {
         st.save_before_switch(game, Some(&jump.path));
         st.open_file(&jump.path);
+    }
+    // A lesson's step: the lesson goes to it.
+    if let Some(i) = step {
+        lesson_go(st, game, i);
     }
     follow_marks(st);
     let c = &mut st.s.ui.coach;
