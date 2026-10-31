@@ -635,6 +635,9 @@ pub struct ScriptMod {
     /// A module's other files as ModuleScripts under `script`: each one's
     /// Instance and the file's path in the module.
     pub module_scripts: Vec<(u32, String)>,
+    /// Those `require` has run, each with the function it ran (in the
+    /// file's own environment), for the executor's script functions.
+    pub file_fns: Vec<(u32, Value)>,
     /// Agent replies to come, and the callbacks for them.
     pub pending: Vec<(Receiver<String>, Value)>,
     /// Callbacks with their results, for the next frame.
@@ -677,6 +680,7 @@ impl ScriptMod {
             loading: Vec::new(),
             main_thread: None,
             module_scripts: Vec::new(),
+            file_fns: Vec::new(),
             pending: Vec::new(),
             ready: Vec::new(),
             stamp: Vec::new(),
@@ -702,6 +706,7 @@ impl ScriptMod {
         self.loading.clear();
         self.main_thread = None;
         self.module_scripts.clear();
+        self.file_fns.clear();
         self.pending.clear();
         self.ready.clear();
         self.models.clear();
@@ -4348,9 +4353,19 @@ impl Ctx<'_> {
         };
         let chunk = format!("{}/{rel}", self.s.owner_name(self.owner));
         let f = lua.load_bytes(&src, &chunk, &env).map_err(|e| lua.rt_error(e))?;
+        // Running from here on (getsenv(script) works in its top level),
+        // unless its top level fails.
+        if let Some(ms) = ms {
+            self.me().file_fns.push((ms, f.clone()));
+        }
         self.me().loading.push(rel.to_owned());
         let r = lua.call(self, &f, vec![Value::str(name)]);
         self.me().loading.pop();
+        if r.is_err()
+            && let Some(ms) = ms
+        {
+            self.me().file_fns.retain(|(m, _)| *m != ms);
+        }
         let v = match r?.into_iter().next() {
             Some(v) if !v.is_nil() => v,
             _ => Value::Bool(true),

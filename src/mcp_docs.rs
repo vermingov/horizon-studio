@@ -1967,7 +1967,7 @@ box.Visible = true
 - Every Lua function and thread is the executor's: there are no game scripts. `checkcaller()` is always true, `getcallingscript()` and `getscriptfromthread()` are nil, and `filtergc`'s `IgnoreExecutor` (true by default) skips every Lua function: pass `IgnoreExecutor = false`.
 - `getgc`, `filtergc`, `getreg` and live protos see what was made after the studio began tracking objects: from the load of the first mod whose source names one of them (or their first call), as tracking costs a little on every function and table made.
 - Hooks are global: `hookfunction(print, ...)` changes `print` for every mod. They stay until `restorefunction` (or the game restarts), even after the mod that made them stops.
-- `getscriptbytecode` is the studio's own dump of a mod's compiled main file, not Luau bytecode; `getscripthash` hashes that. A ModuleScript runs under `require` from its hidden `Source` (set with `sethiddenproperty`). A module's files are ModuleScripts too (see `roblox`), but their `Source` is nil: `require` runs the file itself, and `getloadedmodules` lists them once required.
+- `getscriptbytecode` is the studio's own dump of a mod's compiled main file, not Luau bytecode; `getscripthash` hashes that. A ModuleScript runs under `require` from its hidden `Source` (set with `sethiddenproperty`). A module's files are ModuleScripts too (see `roblox`), but their `Source` is nil: `require` runs the file itself, and `getloadedmodules` lists them once required. Once `require` has run one (from its top level on), it is a running script: `getrunningscripts` lists it, `getsenv` gives the file's own environment (`getfenv()` in the file: its `script` is that ModuleScript, everything else the mod's globals), and `getscriptclosure`, `getscriptbytecode` and `getscripthash` give the file's code. Before that, or when its top level failed, `getsenv` errors and the others give nil.
 - `replicatesignal` errors: there is no server. `fireclickdetector`, `fireproximityprompt` and `firetouchinterest` fire the events here, deferred like every signal.
 - Files live in the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), which scripts can't leave. `request`, `game:HttpGet` and WebSockets reach the internet only, never this computer or its network.
 - Drawings are in dp, Horizon's logical pixels (the Camera's ViewportSize), over the HUD and the mods' GUIs. Images (Drawing's `Data` and ImageLabels with a `getcustomasset` id) are PNGs drawn as blocks of colour, up to 48 x 48 of them.
@@ -8535,7 +8535,7 @@ print(#getscripts())
         r##"
 `getrunningscripts()`
 
-The `script` of every running mod.
+The `script` of every running mod, and the ModuleScripts of a running module's files that `require` has run.
 
 ```lua
 print(#getrunningscripts())
@@ -8587,7 +8587,7 @@ print(getscriptfromthread(coroutine.running()))
         r##"
 `getsenv(script)`
 
-A running mod's own globals, by its `script`; errors for a script that isn't running.
+A running mod's own globals, by its `script`; for the ModuleScript of a module's file that `require` has run, the file's own environment (as `getfenv()` there). Errors for a script that isn't running (a file not required yet, or whose top level failed).
 
 ```lua
 print(getsenv(script) == getfenv())
@@ -8600,7 +8600,7 @@ print(getsenv(script) == getfenv())
         r##"
 `getscriptclosure(script)`
 
-A new function of a running mod's main file (not the one running), or nil.
+A new function of a running mod's main file (not the one running), or of a module's file that `require` has run (by its ModuleScript); else nil.
 
 ```lua
 local main = getscriptclosure(script)
@@ -8626,7 +8626,7 @@ print(getscriptfunction == getscriptclosure)
         r##"
 `getscriptbytecode(script)`
 
-A running mod's compiled main file, as the studio's own text dump of its bytecode (it is not Luau bytecode), or nil.
+A running mod's compiled main file, or a module's file that `require` has run (by its ModuleScript), as the studio's own text dump of its bytecode (it is not Luau bytecode), or nil.
 
 ```lua
 print(#getscriptbytecode(script))
