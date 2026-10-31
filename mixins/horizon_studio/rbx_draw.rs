@@ -1,6 +1,7 @@
-// The Roblox layer on the game (hstudio_rbx_draw): ScreenGuis laid out by
-// hstudio_rbx_layout and drawn with the design system's shapes and fonts,
-// the mouse and keys as Roblox input (hover, clicks, TextBoxes, scrolling,
+// The Roblox layer on the game (hstudio_rbx_draw): ScreenGuis and
+// BillboardGuis laid out by hstudio_rbx_layout and drawn with the design
+// system's shapes and fonts (then cut, turned and coloured), UIPageLayout's
+// turns, the mouse and keys as Roblox input (hover, clicks, TextBoxes, scrolling,
 // UserInputService, ContextActionService, the Mouse), Parts in the
 // Workspace drawn in the world, rays through the world's blocks, the
 // Camera's projection, and each frame's step (the character and the Camera
@@ -1200,7 +1201,8 @@ pub fn draw(
         if bg_alpha > 0.0 {
             game.dp_rect(r, radius, argb(bg, bg_alpha));
         }
-        // Images aren't loaded here: an ImageLabel shows its tint faintly.
+        // The image: a getcustomasset PNG is drawn as it is; Roblox's asset
+        // ids don't load here, and show only their tint, faintly.
         if find(inst.class, "Image") {
             let img = shown_image(inst, hover && p.interactable, pressed && p.interactable);
             let ia = (1.0 - inst.get("ImageTransparency").to_num().unwrap_or(0.0)) * ga;
@@ -1279,7 +1281,9 @@ pub fn draw(
                 gc,
             );
             let ta = (1.0 - inst.get("TextTransparency").to_num().unwrap_or(0.0)) * ga;
-            let font = studio_font(&as_font(&inst.get("FontFace")).unwrap_or_default());
+            let face = as_font(&inst.get("FontFace")).unwrap_or_default();
+            let italic = face.style == super::hstudio_rbx_types::FontStyle::Italic;
+            let font = studio_font(&face);
             let size = t.size as f32;
             let lh = inst.get("LineHeight").to_num().unwrap_or(1.0) as f32;
             // Geist's line box is 1.45 times its size; Roblox's is the size.
@@ -1345,27 +1349,34 @@ pub fn draw(
                     }
                 } else if let Some((c, thick)) = outline {
                     o = thick;
-                    let om = outline_shade.as_ref().and_then(|_| game.dp_mark());
+                    let om = (outline_shade.is_some() || italic).then(|| game.dp_mark()).flatten();
                     for (dx, dy) in [(-thick, 0.0), (thick, 0.0), (0.0, -thick), (0.0, thick)] {
                         game.dp_text(&line.text, [at[0] + dx, at[1] + dy], size, font, c);
+                    }
+                    if let Some(m) = om {
+                        lean(game, m, italic, at[1], size);
                     }
                     if let (Some(m), Some(s)) = (om, outline_shade) {
                         game.dp_shade(m, s);
                     }
                 }
                 if ta > 0.0 && line.runs.is_empty() {
-                    let tm = own.as_ref().and_then(|_| game.dp_mark());
+                    let tm = (own.is_some() || italic).then(|| game.dp_mark()).flatten();
                     game.dp_text(&line.text, at, size, font, argb(tc, ta));
+                    if let Some(m) = tm {
+                        lean(game, m, italic, at[1], size);
+                    }
                     if let (Some(m), Some(s)) = (tm, &own) {
                         game.dp_shade(m, s);
                     }
                 }
-                // Geist's line box is 1.45 times the size, about the line.
+                // Geist's line box is 1.45 times the size, about the line (a
+                // rich line's is its largest run's).
                 let o = f64::from(o) + 1.0;
                 let (x, y) = (line.position.x, f64::from(at[1]));
                 let line_box = Rect::new(
                     Vector2::new(x - o, y - o),
-                    Vector2::new(x + line.width + o, y + t.size * 1.45 + o),
+                    Vector2::new(x + line.width + o, y + line.height.max(t.size) * 1.45 + o),
                 );
                 extent = Rect::new(extent.min.min(line_box.min), extent.max.max(line_box.max));
             }
@@ -1400,6 +1411,18 @@ pub fn draw(
     }
     while let Some(bars) = bars_over.pop() {
         draw_bars(rbx, game, frame, Some(bars));
+    }
+}
+
+/// How far italic letters lean: across, for each unit up.
+const ITALIC_SLOPE: f32 = 0.2;
+
+/// Leans what was drawn since `mark` as italic letters do (there is no
+/// italic Geist), about the baseline of text of `size` whose line box (1.45
+/// times the size) has its top at `top`; nothing when not `italic`.
+fn lean(game: &mut dyn GameApi, mark: usize, italic: bool, top: f32, size: f32) {
+    if italic {
+        game.dp_slant(mark, top + size * 1.45 / 2.0 + size * 0.33, ITALIC_SLOPE);
     }
 }
 
@@ -1439,6 +1462,8 @@ fn draw_runs(game: &mut dyn GameApi, line: &layout::TextLine, paint: &RunPaint) 
             .stroke
             .map(|(sc, thick, t)| (argb(times(sc, gc), (1.0 - t) * alpha), thick as f32))
             .or(paint.outline);
+        let italic = run.font.style == super::hstudio_rbx_types::FontStyle::Italic;
+        let letters = italic.then(|| game.dp_mark()).flatten();
         if let Some((c, thick)) = stroke
             && thick > 0.0
         {
@@ -1447,9 +1472,15 @@ fn draw_runs(game: &mut dyn GameApi, line: &layout::TextLine, paint: &RunPaint) 
                 game.dp_text(&run.text, [at[0] + dx, at[1] + dy], size, font, c);
             }
         }
+        let c = argb(color, alpha);
         if alpha > 0.0 {
-            let c = argb(color, alpha);
             game.dp_text(&run.text, at, size, font, c);
+        }
+        // The letters lean; their lines don't.
+        if let Some(m) = letters {
+            lean(game, m, true, at[1], size);
+        }
+        if alpha > 0.0 {
             // The baseline: about a third of the size below the box's middle.
             let base = top + tall / 2.0 + size * 0.33;
             let thick = (size / 14.0).max(1.0);

@@ -1916,3 +1916,38 @@ fn starter_gui_screens_are_copied_into_the_player_gui() {
     run_for(&mut st, &mut game, 0.1);
     assert!(st.s.rbx.children(st.s.rbx.player_gui).is_empty());
 }
+
+#[test]
+fn italic_text_leans() {
+    // There is no italic Geist: italic letters are drawn leaning.
+    let mut game = FakeGame::new("rbx-italic");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local label = Instance.new("TextLabel", gui)
+        label.Size = UDim2.fromOffset(200, 20)
+        label.BackgroundTransparency = 1
+        label.Text = "slanted"
+        label.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Regular, Enum.FontStyle.Italic)
+        local rich = Instance.new("TextLabel", gui)
+        rich.Position = UDim2.fromOffset(0, 50)
+        rich.Size = UDim2.fromOffset(200, 20)
+        rich.BackgroundTransparency = 1
+        rich.RichText = true
+        rich.Text = "up <i>leaning</i>"
+    "#;
+    load(&mut game, &mut st, "italic", src, 0.6);
+    let drawn = hud(&mut st, &mut game);
+    let slanted = index_of(&drawn, "text slanted @");
+    assert!(
+        drawn[slanted + 1].starts_with(&format!("slant {slanted} ")),
+        "{drawn:#?}"
+    );
+    let leaning = index_of(&drawn, "text leaning @");
+    assert!(
+        drawn[leaning + 1].starts_with(&format!("slant {leaning} ")),
+        "{drawn:#?}"
+    );
+    let up = index_of(&drawn, "text up  @");
+    assert!(!drawn[up + 1].starts_with("slant"), "upright text stays upright");
+}

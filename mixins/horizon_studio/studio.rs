@@ -310,6 +310,11 @@ pub trait GameApi {
     fn dp_shade(&mut self, mark: usize, shade: &Shade) {
         let _ = (mark, shade);
     }
+    /// Slants what was drawn since `mark` as italic letters lean: each point
+    /// moves right by `slope` times how far it is above `y` (dp).
+    fn dp_slant(&mut self, mark: usize, y: f32, slope: f32) {
+        let _ = (mark, y, slope);
+    }
     /// Draws the part `src` (in the image's pixels, x y w h) of `image` into
     /// `r` (dp), its pixels multiplied by `argb`. False where images can't
     /// be drawn as such (the caller draws them in blocks of colour).

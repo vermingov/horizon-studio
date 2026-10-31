@@ -512,6 +512,23 @@ impl GameApi for Host<'_, '_> {
         b.vertices.truncate(mark);
         push_quads(b, &shaded);
     }
+    fn dp_slant(&mut self, mark: usize, y: f32, slope: f32) {
+        let game = match &self.game {
+            GameRef::Mut(g) => &**g,
+            GameRef::Shared(g) => *g,
+        };
+        let Some(b) = self.batch.as_deref_mut() else {
+            return;
+        };
+        if !ours_since(b, mark) {
+            return;
+        }
+        let (_, _, k) = paint::size(&game.gui.atlas, b);
+        let y = y / k;
+        for v in &mut b.vertices[mark..] {
+            v.pos[0] += slope * (y - v.pos[1]);
+        }
+    }
     fn dp_image(&mut self, image: TexRef<'_>, r: [f32; 4], src: [f32; 4], argb: u32) -> bool {
         let game = match &self.game {
             GameRef::Mut(g) => &**g,

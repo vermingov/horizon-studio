@@ -247,6 +247,9 @@ impl GameApi for FakeGame {
         self.drawn.push(format!("shade {mark}"));
         self.shades.push((mark, shade.clone()));
     }
+    fn dp_slant(&mut self, mark: usize, y: f32, slope: f32) {
+        self.drawn.push(format!("slant {mark} {y} {slope}"));
+    }
     // An image by its size and its first pixel's RGBA.
     fn dp_image(
         &mut self,

@@ -10,15 +10,18 @@
 // It follows the spec's algorithm: the parent's content rect, Size by
 // SizeConstraint, UISizeConstraint, UIAspectRatioConstraint, AutomaticSize
 // (the Size is a minimum), AnchorPoint, UIPadding, UIScale about the anchor,
-// UIListLayout and UIGridLayout with their alignment, padding and SortOrder,
+// UIListLayout (with its flex and UIFlexItem), UIGridLayout, UIPageLayout
+// and UITableLayout with their alignment, padding and SortOrder,
 // ScrollingFrame canvases (CanvasSize, AutomaticCanvasSize, scroll bar
 // insets, CanvasPosition clamped), ClipsDescendants, ZIndexBehavior Global
-// and Sibling, and ScreenGui's DisplayOrder and IgnoreGuiInset. Rotation
-// leaves the layout upright, as Roblox's is (and switches clipping off
-// under it); each object gets the turns it is drawn with, and is hit where
-// it is drawn. Coordinates are Roblox's
-// GUI coordinates: the origin is under the top bar, so an IgnoreGuiInset
-// ScreenGui starts at -inset.
+// and Sibling, ScreenGui's DisplayOrder and IgnoreGuiInset, and BillboardGui
+// roots in the box the camera gives them. Rotation leaves the layout
+// upright, as Roblox's is (and switches clipping off under it); each object
+// gets the turns it is drawn with, and is hit where it is drawn. RichText
+// is read here into runs, which the text is wrapped and measured by, and
+// images are cut into the pieces their ScaleType draws them in.
+// Coordinates are Roblox's GUI coordinates: the origin is under the top
+// bar, so an IgnoreGuiInset ScreenGui starts at -inset.
 
 use super::hstudio_rbx_types::{Color3, Font, FontEnum, FontStyle, FontWeight, Rect, UDim, UDim2, Vector2};
 use std::ops::{Index, IndexMut};
@@ -871,8 +874,8 @@ pub struct Turn {
 }
 
 /// Where a node ended up. Sizes and positions are on screen, with UIScale
-/// applied. Layout nodes (UIListLayout, UIGridLayout) fill in only
-/// `content_size` and the cell fields.
+/// applied. Layout nodes (UIListLayout, UIGridLayout, UIPageLayout,
+/// UITableLayout) fill in only `content_size`, the cell fields and `page`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Placed {
     pub class: Option<Class>,
