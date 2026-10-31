@@ -17,6 +17,8 @@ jobs:
       - run: cargo test --locked
       - name: examples.rs is up to date
         run: python3 tools/gen_examples.py && git diff --exit-code mixins/horizon_studio/examples.rs
+      - name: install.sh puts the prebuilt game where old and new launchers find it
+        run: python3 tools/install_e2e.py
 
   # Applies the bundle to the pinned Horizon and type-checks the modded game.
   game:

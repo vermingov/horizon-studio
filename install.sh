@@ -7,9 +7,12 @@
 # Each release also carries that game already built, for Linux (x86_64) and macOS (Apple
 # silicon), built the way the launcher builds it. This script puts it in the launcher's
 # versions folder under the name the launcher gives that build, then runs the launcher's own
-# `native-build`, which finds it there and only selects it for the Native mods instance.
-# Where there is no prebuilt game (another platform, or a launcher whose Rust differs), the
-# launcher compiles as before, with settings that compile faster.
+# `native-build`, which finds it there and only selects it for an instance. The bundle goes to
+# the launcher as its registry ships mods (horizon-native.json beside mixins/<id>/), pinning the
+# horizon-mixins commit the game was built with: launchers name a build after the pinned commit,
+# where a bare bundle would get the launcher's own, which changes with its updates.
+# Where there is no prebuilt game (another platform), the launcher compiles as before, with
+# settings that compile faster.
 #
 # Close the launcher first. Environment:
 #   HORIZON_LAUNCHER       the launcher program (default: horizon-launcher, or the macOS app's)
@@ -137,15 +140,26 @@ prebuilt() {
     got=$(sha256 < "$dir/$asset")
     [ -n "$want" ] && [ "$want" = "$got" ] || die "$asset does not match the release's checksum."
     tar -xzf "$dir/$asset" -C "$dir" && rm -f "$dir/$asset" || { say "Could not unpack $asset."; return 1; }
-    bundle="$dir/bundle/$ID"
-    for need in horizon-client key-inputs native-mods.json LICENSE-Horizon "bundle/$ID/horizon-mixin.toml"; do
+    for need in horizon-client key-inputs LICENSE-Horizon "bundle/$ID/horizon-mixin.toml"; do
         [ -f "$dir/$need" ] || { say "The prebuilt game has no $need."; return 1; }
     done
     # key-inputs: the horizon-mixins commit, profile, features, Rust, Horizon commit and game it was built with.
     { read -r mixins; read -r profile; read -r features; read -r rust; read -r revision; read -r game; } < "$dir/key-inputs"
+    # The bundle as the launcher's registry ships a mod, with the commits the game was built with.
+    native="$dir/native"
+    bundle="$native/mixins/$ID"
+    mkdir -p "$native/mixins" && mv "$dir/bundle/$ID" "$bundle" || return 1
+    modversion=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' "$bundle/horizon-mixin.toml" | head -1)
+    printf '{"schema": 1, "id": "%s", "version": "%s", "game": "%s", "horizon": "%s", "mixins": "%s"}\n' \
+        "$ID" "$modversion" "$game" "$revision" "$mixins" > "$native/horizon-native.json" || return 1
     # The key names the launcher's Rust: this launcher's, which may be newer than the one it was built with.
     theirs=$("$launcher" --json rust status 2>/dev/null | sed -n 's/.*"pinned": *"\([^"]*\)".*/\1/p' | head -1)
     version=$(key_of "$bundle" "$mixins" "$profile" "$features" "${theirs:-$rust}" "$revision") || return 1
+    # Launchers that build with a quicker profile by default say which one goes in the name.
+    choose=
+    if "$launcher" native-build --help 2>/dev/null | grep -q -- '--profile'; then
+        choose="--profile $profile"
+    fi
     base=$(base_version "$game")
     [ -n "$base" ] || die "no prepared Horizon in the launcher yet: open it, install Horizon and play it once (or \`$launcher prepare\`), then run this again."
     seeded="$data/versions/$version"
@@ -156,20 +170,23 @@ prebuilt() {
         { copy_tree "$data/versions/$base" "$partial" \
             && cp "$dir/horizon-client" "$partial/horizon-client" \
             && chmod 755 "$partial/horizon-client" \
-            && cp "$dir/native-mods.json" "$dir/LICENSE-Horizon" "$partial/"; } \
+            && cp "$dir/LICENSE-Horizon" "$partial/" \
+            && printf '{"base": "%s", "horizon": "%s", "horizon_mixins": "%s", "rust": "%s", "profile": "%s", "mods": [{"id": "%s", "version": "%s"}], "prebuilt": "%s"}\n' \
+                "$base" "$revision" "$mixins" "$rust" "$profile" "$ID" "$modversion" "$target" > "$partial/native-mods.json"; } \
             || { rm -rf "$partial"; die "could not install the game in $data/versions."; }
         # Marked installed last, once whole: the launcher only lists folders with .installed.
         rm -rf "$seeded" && mv "$partial" "$seeded" && : > "$seeded/.installed" \
             || die "could not install the game as $seeded."
     fi
-    # The launcher's own step: it finds the build in place and selects it for the Native mods
-    # instance (made if missing, with your mod settings); a launcher that names it otherwise
-    # compiles instead.
-    out=$("$launcher" native-build "$bundle" --version "$base" --trust-native-code) || exit 1
+    # The launcher's own step: it finds the build in place and selects it for an instance (the
+    # selected one; older launchers make a Native mods instance, with your mod settings). A
+    # launcher that names the build otherwise compiles instead.
+    # shellcheck disable=SC2086 # $choose is two words or none
+    out=$("$launcher" native-build "$native" --version "$base" $choose --trust-native-code) || exit 1
     say "$out"
     case "$out" in
-        "$version "*) say "Done: play the Native mods instance." ;;
-        *) say "Your launcher compiled it instead (it names this build differently); play the Native mods instance." ;;
+        "$version "*) say "Done: open the launcher and press Play (older launchers: on the Native mods instance)." ;;
+        *) say "Your launcher compiled it instead (it names this build differently); open the launcher and press Play." ;;
     esac
     return 0
 }
@@ -188,7 +205,7 @@ compile() {
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16} \
     CARGO_PROFILE_RELEASE_INCREMENTAL=${CARGO_PROFILE_RELEASE_INCREMENTAL:-true} \
         "$launcher" native-build "$src/mixins/$ID" --trust-native-code || exit 1
-    say "Done: play the Native mods instance."
+    say "Done: open the launcher and press Play (older launchers: on the Native mods instance)."
 }
 
 prebuilt || compile

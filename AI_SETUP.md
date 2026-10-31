@@ -39,15 +39,16 @@ claude mcp add --scope user horizon-studio -- ~/.local/bin/horizon-studio-mcp
 The MCP server works without the game (headless checks and tests), but live testing needs Horizon Studio installed in
 Horizon. Ask the user whether it is: in Horizon, Options → Mods lists **Horizon Studio**, and F8 opens it in a world.
 
-If it isn't, it is installed with Horizon's launcher, which compiles it into the game once (10 to 30 minutes; the
-launcher brings its own Rust). Ask the user before starting it, and ask them to close the launcher first. On Linux:
+If it isn't, it is installed into Horizon's launcher with one line, on Linux or macOS. On Linux (x86_64) and macOS
+(Apple silicon) it takes seconds, from the game the release carries already built; elsewhere the launcher compiles
+it into the game once (10 to 30 minutes; the launcher brings its own Rust). Ask the user before starting it, and ask
+them to close the launcher first:
 
 ```sh
-rm -rf ~/.cache/horizon-studio/horizon-studio-main && mkdir -p ~/.cache/horizon-studio && curl -fsSL https://github.com/vermingov/horizon-studio/archive/refs/heads/main.tar.gz | tar -xz -C ~/.cache/horizon-studio && horizon-launcher native-build ~/.cache/horizon-studio/horizon-studio-main/mixins/horizon_studio --trust-native-code
+curl -fsSL https://raw.githubusercontent.com/vermingov/horizon-studio/main/install.sh | sh
 ```
 
-On macOS use `"/Applications/Horizon.app/Contents/MacOS/horizon-launcher"` for `horizon-launcher`. Then the user plays
-the **Native mods** instance.
+Then the user presses **Play** in the launcher (older launchers: on the **Native mods** instance).
 
 ## 3. Load the MCP server
 
@@ -59,7 +60,7 @@ session; omp: `/mcp reload`), and to tell you when they have. Stop here until th
 Once the `horizon-studio` tools are available:
 
 1. Call `game_status`. `linked: true` means the game is running with Horizon Studio: you can test live. If it isn't
-   linked, ask the user to start Horizon (the Native mods instance) and open a world; Horizon Studio's AI link is on by
+   linked, ask the user to start Horizon (with the instance the installer selected) and open a world; Horizon Studio's AI link is on by
    default (Options → Mods → Horizon Studio → AI link (MCP)). Everything but live testing works without it.
 2. Call `docs` with no arguments: it lists the reference's topics. Read `start`, then the topics your mod needs
    (`events`, `screens`, `world`, `models`, `recipes`...); `docs` with `name` gives one function, event or widget in

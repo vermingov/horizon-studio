@@ -84,12 +84,16 @@ curl -fsSL https://raw.githubusercontent.com/vermingov/horizon-studio/main/insta
 
 On Linux (x86_64) and macOS (Apple silicon) this takes seconds: each release carries the game with Horizon
 Studio already built in, made the way the launcher makes it, and [install.sh](install.sh) puts it where the
-launcher keeps its builds (checked against the release's SHA256SUMS) and has the launcher select it. Elsewhere,
-or with `HORIZON_STUDIO_BUILD=1`, the launcher compiles it as before, with settings that compile several times
-faster (no whole-program optimisation). It finds `horizon-launcher` on your PATH or in `/Applications/Horizon.app`;
-set `HORIZON_LAUNCHER` to point at it otherwise. Horizon must be installed and prepared in the launcher first.
+launcher keeps its builds (checked against the release's SHA256SUMS) and has the launcher select it. It hands the
+launcher the mod as Horizon's registry ships one (`horizon-native.json` beside the bundle), pinning the
+horizon-mixins commit the game was built with, so a launcher that updated since names the build as the release
+did instead of compiling it again. Elsewhere, or with `HORIZON_STUDIO_BUILD=1`, the launcher compiles it as
+before, with settings that compile several times faster (no whole-program optimisation). It finds
+`horizon-launcher` on your PATH or in `/Applications/Horizon.app`; set `HORIZON_LAUNCHER` to point at it
+otherwise. Horizon must be installed and prepared in the launcher first.
 
-Then play the **Native mods** instance. Or, by hand:
+Then press **Play** in the launcher: it plays the instance the build was selected for (older launchers make a
+**Native mods** instance for it). Or, by hand:
 
 1. `python3 tools/studio.py package` writes `target/horizon_studio-0.5.2.hnmod`.
 2. Install it as a native mod in an instance, then **Build** ("I trust these mods: build"). The first build takes 10
