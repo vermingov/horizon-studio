@@ -704,7 +704,6 @@ pub fn menu_text(st: &mut Studio, game: &mut dyn GameApi, t: &str) -> UiResult {
 
 /// What a menu item does, chosen from a menu drawn at `place`.
 pub fn run(st: &mut Studio, game: &mut dyn GameApi, cmd: MenuCmd, place: [f32; 4]) -> UiResult {
-    let _ = place;
     match cmd {
         MenuCmd::Model(model) => set_agent_model(st, model),
         MenuCmd::CustomModel => {

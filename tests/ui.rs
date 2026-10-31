@@ -2235,6 +2235,24 @@ fn a_menu_taller_than_the_screen_scrolls() {
     handle(&mut st, &mut game, Input::Mouse(600.0, 330.0));
     handle(&mut st, &mut game, Input::Wheel(-1.0));
     assert!(st.s.ui.menu.is_none(), "the wheel elsewhere closes it");
+    // A tall menu opened in another's place, before it is drawn: the
+    // pointer over where the other's items were lights none of its own.
+    let items = |n: usize| -> Vec<MenuItem> {
+        (0..n)
+            .map(|k| MenuItem::new(format!("Row {k}"), MenuCmd::NewScript))
+            .collect()
+    };
+    st.s.ui.menu = Some(Menu::new([20.0, 20.0], 0.0, items(40), st.s.now));
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, "Row 12");
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    st.s.ui.menu = Some(Menu::new([300.0, 20.0], 0.0, items(30), st.s.now));
+    handle(&mut st, &mut game, Input::Mouse(at.0, at.1));
+    assert_eq!(st.s.ui.menu.as_ref().unwrap().sel, None);
+    // Nor does a lit item past its end stop it being drawn.
+    st.s.ui.menu.as_mut().unwrap().sel = Some(35);
+    redraw(&mut st, &mut game);
+    assert!(drawn_text(&game, "Row 0"));
 }
 
 fn right_press(st: &mut horizon_studio::game::hstudio::Studio, game: &mut FakeGame) {

@@ -2334,10 +2334,12 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
             let k = st.s.ui.dp_factor() / st.s.ui.look.scale;
             let (x, y) = (x * k, y * k);
             st.s.ui.mouse = (x, y);
-            // Over an open menu, the item under the pointer is lit.
-            if st.s.ui.menu.is_some()
+            // Over an open menu, the item under the pointer is lit (once the
+            // menu is drawn: until then the hits are another's).
+            if st.s.ui.menu.as_ref().is_some_and(|m| m.rect.is_some())
                 && let Some(Action::MenuPick(i)) = hit_at(&st.s.ui, (x, y))
                 && let Some(menu) = st.s.ui.menu.as_mut()
+                && menu.items.get(usize::from(i)).is_some_and(|it| it.enabled)
             {
                 menu.sel = Some(usize::from(i));
             }

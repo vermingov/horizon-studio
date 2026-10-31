@@ -620,12 +620,13 @@ fn draw_menu(st: &mut Studio, p: &mut P, w: f32, h: f32, dt: f32) {
     const PAD: f32 = 5.0;
     const MARK: f32 = 14.0;
     let now = st.s.now;
-    let Some(menu) = st.s.ui.menu.clone() else { return };
+    let Some(mut menu) = st.s.ui.menu.clone() else { return };
     let n = menu.items.len();
     if n == 0 {
         st.s.ui.menu = None;
         return;
     }
+    menu.sel = menu.sel.filter(|&s| s < n);
     let size = 12.5;
     let room = (h - 16.0).max(60.0);
     let seps = menu.items.iter().filter(|i| i.separator).count();
@@ -770,6 +771,7 @@ fn draw_menu(st: &mut Studio, p: &mut P, w: f32, h: f32, dt: f32) {
     p.dy = dy;
     if let Some(m) = st.s.ui.menu.as_mut() {
         m.rect = Some(rect);
+        m.sel = menu.sel;
         m.scroll = first;
         m.shown = (first, end);
     }
