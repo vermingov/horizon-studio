@@ -98,6 +98,12 @@ name = "hstudio_chatcmd"
 source = "chatcmd.rs"
 
 [[module]]
+id = "cmdtree"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_cmdtree"
+source = "cmdtree.rs"
+
+[[module]]
 id = "studio"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio"
