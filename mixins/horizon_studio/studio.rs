@@ -9,6 +9,9 @@
 // through `GameApi`, which hstudio_bridge implements over Horizon's `Game`,
 // and the tests over a fake.
 
+use super::hstudio_chatcmd::{
+    ChatCommand, CommandArg, MAX_COMMANDS, Suggest, command_options, good_name, next_serial, shape, usage,
+};
 use super::hstudio_examples::{EXAMPLES, WELCOME};
 use super::hstudio_lua::{
     Host, Lua, Native, NoHost, Res, Resume, Table, TableRef, Thread, Throw, Value, arg, bad_arg, check_func, check_num,
@@ -590,7 +593,28 @@ pub const MAX_TASKS: usize = 4096;
 pub struct Command {
     pub name: String,
     pub f: Value,
+    /// Its description: the help text, or an options table's `description`.
     pub help: String,
+    /// The arguments it declares; None takes any text after its name.
+    pub args: Option<Vec<CommandArg>>,
+    /// Completes a command that declares no arguments.
+    pub suggest: Option<Suggest>,
+    /// This registration's number (`hstudio_chatcmd::next_serial`): the
+    /// chat's command tree follows the commands by these.
+    pub serial: u64,
+}
+
+impl Command {
+    /// What follows `/name` in the Library and `/studio help`: its
+    /// arguments as Brigadier writes them (`<a> [<b>]`), or nothing for a
+    /// command that declares none.
+    pub fn usage_line(&self) -> String {
+        self.args.as_deref().map(usage).unwrap_or_default()
+    }
+    /// The command as the chat's command tree has it.
+    pub fn chat(&self) -> ChatCommand {
+        shape(&self.name, self.args.as_deref(), self.suggest.is_some())
+    }
 }
 
 pub struct ScriptMod {
@@ -2552,11 +2576,17 @@ impl Studio {
     /// runs on the next frame.
     pub fn command(&mut self, line: &str) -> bool {
         let name = line.split_whitespace().next().unwrap_or("");
-        let ours = matches!(name, "studio" | "lua") || self.s.command_owner(name).is_some();
+        let ours = self.takes(name);
         if ours && self.s.queued_commands.len() < 64 {
             self.s.queued_commands.push(line.to_owned());
         }
         ours
+    }
+
+    /// Whether the studio takes `/name`: its own two, or a command the
+    /// console or a running mod has.
+    pub fn takes(&self, name: &str) -> bool {
+        matches!(name, "studio" | "lua") || self.s.command_owner(name).is_some()
     }
 
     fn run_command(&mut self, game: &mut dyn GameApi, line: &str) {
@@ -5172,13 +5202,7 @@ impl Host for Ctx<'_> {
             2 => {
                 let name = check_text(lua, &args, 0, "command")?.trim_start_matches('/').to_owned();
                 let f = check_func(lua, &args, 1, "command")?;
-                let help = opt_str(lua, &args, 2, "command")?
-                    .map(|s| text_of(&s))
-                    .unwrap_or_default();
-                if name.is_empty()
-                    || name.len() > 32
-                    || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-                {
+                if !good_name(&name) {
                     return Err(bad_arg(
                         lua,
                         0,
@@ -5195,9 +5219,20 @@ impl Host for Ctx<'_> {
                     let who = self.s.owner_name(other).to_owned();
                     return Err(lua.rt_error(format!("/{name} is already used by {who}")));
                 }
+                let options = command_options(lua, &arg(&args, 2))?;
                 let me = self.me();
+                if me.commands.len() >= MAX_COMMANDS && !me.commands.iter().any(|c| c.name == name) {
+                    return Err(lua.rt_error(format!("too many commands ({MAX_COMMANDS})")));
+                }
                 me.commands.retain(|c| c.name != name);
-                me.commands.push(Command { name, f, help });
+                me.commands.push(Command {
+                    name,
+                    f,
+                    help: options.help,
+                    args: options.args,
+                    suggest: options.suggest,
+                    serial: next_serial(),
+                });
                 none()
             }
             3 => self.timer(lua, &args, false),

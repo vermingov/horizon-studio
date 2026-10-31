@@ -92,6 +92,12 @@ name = "hstudio_modfiles"
 source = "modfiles.rs"
 
 [[module]]
+id = "chatcmd"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_chatcmd"
+source = "chatcmd.rs"
+
+[[module]]
 id = "studio"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio"
