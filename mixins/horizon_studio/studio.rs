@@ -607,6 +607,9 @@ pub struct ScriptMod {
     pub timers: Vec<Timer>,
     /// Its waiting threads, for the task scheduler.
     pub tasks: Vec<Task>,
+    /// Its `script` Instance, and its main file's function.
+    pub script: Option<u32>,
+    pub main_fn: Option<Value>,
     pub panel: Option<(Corner, Vec<String>)>,
     pub zoom: Option<f32>,
     pub modules: HashMap<String, Value>,
@@ -644,6 +647,8 @@ impl ScriptMod {
             commands: Vec::new(),
             timers: Vec::new(),
             tasks: Vec::new(),
+            script: None,
+            main_fn: None,
             panel: None,
             zoom: None,
             modules: HashMap::new(),
@@ -664,6 +669,8 @@ impl ScriptMod {
         self.commands.clear();
         self.timers.clear();
         self.tasks.clear();
+        self.script = None;
+        self.main_fn = None;
         self.panel = None;
         self.zoom = None;
         self.modules.clear();
@@ -798,12 +805,14 @@ pub struct State {
     pub frame_no: u64,
     /// The Roblox layer: one DataModel for every mod.
     pub rbx: super::hstudio_rbx::Rbx,
-    /// The `game` table every mod shares (the DataModel's value).
-    rbx_game: Option<TableRef>,
+    /// The executor's globals (`getgenv`) and Roblox's (`getrenv`), shared by every mod.
+    pub genv: Option<TableRef>,
+    pub renv: Option<TableRef>,
+    /// Images decoded for Drawing and ImageLabels.
+    pub images: super::hstudio_sunc::ImageCache,
     /// The table of the screen the Roblox GUI takes the pointer with.
     rbx_screen: Option<TableRef>,
-    /// Roblox's `shared`, one table for every mod.
-    rbx_shared: Option<TableRef>,
+
     /// Errors of threads that a call resumed (`task.spawn`), for their
     /// owners to fail with once the call is over.
     thread_errors: Vec<(Owner, String, String)>,
@@ -917,9 +926,10 @@ impl Studio {
                 overlay: Vec::new(),
                 frame_no: 0,
                 rbx: super::hstudio_rbx::Rbx::new(),
-                rbx_game: None,
+                genv: None,
+                renv: None,
+                images: super::hstudio_sunc::ImageCache::default(),
                 rbx_screen: None,
-                rbx_shared: None,
                 thread_errors: Vec::new(),
                 world_quads: 0,
                 particles: 0,
@@ -939,6 +949,7 @@ impl Studio {
         }
         self.s.started = true;
         self.s.dir = game.data_dir();
+        self.s.rbx.workspace_dir = self.s.dir.join("workspace");
         self.s.ui.look = super::hstudio_theme::Look::load(&self.s.dir);
         let mods = self.s.mods_dir();
         if !mods.exists() {
@@ -1243,6 +1254,14 @@ impl Studio {
             let ps = rbx.child_named(rbx.local_player, "PlayerScripts");
             let _ = rbx.set_parent(sc, ps);
             env.borrow_mut().set_str("script", rbx.value(sc));
+            self.s.mods[i].script = Some(sc);
+        }
+        // getgc and filtergc find what was made after tracking starts.
+        if [&b"getgc"[..], b"filtergc", b"getreg", b"getproto"]
+            .iter()
+            .any(|w| src.windows(w.len()).any(|x| x == *w))
+        {
+            self.lua.track_objects(true);
         }
         let f = match self.lua.load_bytes(&src, &chunk, &env) {
             Ok(f) => f,
@@ -1252,6 +1271,7 @@ impl Studio {
             }
         };
         self.s.mods[i].state = ModState::Running;
+        self.s.mods[i].main_fn = Some(f.clone());
         // In a coroutine, as Roblox runs a script: its top level can wait.
         let co = self.lua.new_thread(f);
         match self.resume_in(game, Owner::Mod(i), &co, Vec::new(), LOAD_STEPS, Phase::Normal) {
@@ -1583,26 +1603,64 @@ impl Studio {
     // ------------------------------------------------------------- environments
 
     /// Globals for a mod or the console: the standard library and the API.
+    /// Globals for a mod or the console: its own table, falling back to the
+    /// executor's (`getgenv`: the studio's API and the executor library),
+    /// which falls back to Roblox's (`getrenv`: the standard library, game,
+    /// Instance, the data types, task).
     fn make_env(&mut self, console: bool) -> TableRef {
-        let env = new_env(&mut self.lua);
+        let genv = self.shared_envs();
+        let env = Rc::new(std::cell::RefCell::new(Table::new()));
+        {
+            let mut e = env.borrow_mut();
+            e.set_str("_G", Value::Table(env.clone()));
+            if console {
+                for (name, id, _) in CONSOLE_API {
+                    e.set_str(name, Native::host(name, *id));
+                }
+            }
+            let mut meta = Table::new();
+            meta.set_str("__index", Value::Table(genv));
+            e.meta = Some(Rc::new(std::cell::RefCell::new(meta)));
+        }
+        env
+    }
+
+    /// The executor's and Roblox's globals, made the first time.
+    fn shared_envs(&mut self) -> TableRef {
+        if let Some(g) = &self.s.genv {
+            return g.clone();
+        }
+        let renv = new_env(&mut self.lua);
+        let genv = Rc::new(std::cell::RefCell::new(Table::new()));
         let mut tables: HashMap<&str, Table> = HashMap::new();
+        // Roblox's own globals go in its environment; the rest are the studio's.
+        let roblox = |table: &str, name: &str| {
+            matches!(table, "task" | "game")
+                || (table.is_empty() && matches!(name, "wait" | "spawn" | "delay" | "tick" | "time" | "warn"))
+        };
         for (table, name, id, _) in API {
             let f = Native::host(name, *id);
             match *table {
-                "" => env.borrow_mut().set_str(name, f),
+                "" if roblox(table, name) => renv.borrow_mut().set_str(name, f),
+                "" => {
+                    super::hstudio_exec::mark(&f);
+                    genv.borrow_mut().set_str(name, f)
+                }
                 t => tables.entry(t).or_default().set_str(name, f),
             }
         }
-        if console {
-            for (name, id, _) in CONSOLE_API {
-                env.borrow_mut().set_str(name, Native::host(name, *id));
-            }
-        }
         for (name, t) in tables {
-            env.borrow_mut().set_str(name, Value::table(t));
+            let dest = if roblox(name, "") { &renv } else { &genv };
+            dest.borrow_mut().set_str(name, Value::table(t));
         }
-        self.roblox_globals(&env);
-        env
+        self.roblox_globals(&renv);
+        super::hstudio_sunc::executor_globals(&mut self.lua, &genv, &mut self.s.rbx);
+        let mut meta = Table::new();
+        meta.set_str("__index", Value::Table(renv.clone()));
+        genv.borrow_mut().meta = Some(Rc::new(std::cell::RefCell::new(meta)));
+        self.s.renv = Some(renv);
+        self.s.genv = Some(genv.clone());
+        genv
     }
 
     /// The Roblox layer's globals: its data types and Enum, `Instance`,
@@ -1615,28 +1673,17 @@ impl Studio {
         }
         let rbx = &mut self.s.rbx;
         g.set_str("Instance", super::hstudio_rbx::instance_table(rbx));
-        let game = match &self.s.rbx_game {
-            Some(t) => t.clone(),
-            None => {
-                let t = match g.get_str("game") {
-                    Value::Table(t) => t,
-                    _ => Rc::new(std::cell::RefCell::new(Table::new())),
-                };
-                rbx.adopt_game_table(&t);
-                self.s.rbx_game = Some(t.clone());
-                t
-            }
+        let game = match g.get_str("game") {
+            Value::Table(t) => t,
+            _ => Rc::new(std::cell::RefCell::new(Table::new())),
         };
-        g.set_str("game", Value::Table(game));
+        rbx.adopt_game_table(&game);
+        g.set_str("game", Value::Table(game.clone()));
+        g.set_str("Game", Value::Table(game));
         let ws = rbx.value(rbx.workspace);
         g.set_str("workspace", ws.clone());
         g.set_str("Workspace", ws);
-        let shared = self
-            .s
-            .rbx_shared
-            .get_or_insert_with(|| Rc::new(std::cell::RefCell::new(Table::new())))
-            .clone();
-        g.set_str("shared", Value::Table(shared));
+        g.set_str("shared", Value::table(Table::new()));
     }
 
     fn console_env(&mut self) -> TableRef {
@@ -2150,9 +2197,11 @@ impl Studio {
         // Roblox ScreenGuis, unless their own screen draws them.
         if !self.rbx_screen_open() && self.s.rbx.active {
             let now = self.s.now;
+            let ws = self.s.dir.join("workspace");
             super::hstudio_rbx_draw::lay_out(&mut self.s.rbx, game);
-            super::hstudio_rbx_draw::draw(&self.s.rbx, game, now);
+            super::hstudio_rbx_draw::draw(&self.s.rbx, game, now, &mut self.s.images, &ws);
         }
+        super::hstudio_sunc::draw_drawings(&self.s.rbx, game, &mut self.s.images);
         let panels: Vec<(Corner, Vec<String>)> = self
             .s
             .mods
@@ -3322,10 +3371,10 @@ pub const CONSOLE_API: &[(&str, u32, &str)] = &[
 ];
 
 /// A running script's view of the studio and the game.
-struct Ctx<'a> {
-    game: &'a mut dyn GameApi,
-    s: &'a mut State,
-    owner: Owner,
+pub(crate) struct Ctx<'a> {
+    pub(crate) game: &'a mut dyn GameApi,
+    pub(crate) s: &'a mut State,
+    pub(crate) owner: Owner,
     phase: Phase,
 }
 
@@ -3380,6 +3429,38 @@ impl Ctx<'_> {
             f,
         });
         Ok(vec![Value::Num(f64::from(id))])
+    }
+    /// `require(moduleScript)`: its Source (a hidden property here) runs
+    /// once, and what it returns is kept.
+    fn require_module(&mut self, lua: &mut Lua, m: u32) -> Res {
+        let rbx = &self.s.rbx;
+        if rbx.inst(m).class.name != "ModuleScript" {
+            return Err(bad_arg(lua, 0, "require", "ModuleScript expected"));
+        }
+        if let Some((_, v)) = rbx.loaded_modules.iter().find(|(id, _)| *id == m) {
+            return Ok(vec![v.clone()]);
+        }
+        let Some(src) = rbx
+            .inst(m)
+            .extra
+            .get("Source")
+            .and_then(Value::as_bytes)
+            .map(<[u8]>::to_vec)
+        else {
+            return Err(lua.rt_error(
+                "require: the ModuleScript has no source (set it with sethiddenproperty(module, \"Source\", code))",
+            ));
+        };
+        let chunk = rbx.full_name(m);
+        let env = super::hstudio_exec::caller_env(lua).ok_or_else(|| lua.rt_error("require: no environment"))?;
+        let f = lua.load_bytes(&src, &chunk, &env).map_err(|e| lua.rt_error(e))?;
+        let r = lua.call(self, &f, Vec::new())?;
+        let v = match r.into_iter().next() {
+            Some(v) if !v.is_nil() => v,
+            _ => return Err(lua.rt_error("require: the module must return exactly one value")),
+        };
+        self.s.rbx.loaded_modules.push((m, v.clone()));
+        Ok(vec![v])
     }
     fn storage_dir(&self) -> PathBuf {
         self.s.dir.join("storage").join(self.s.owner_name(self.owner))
@@ -4442,6 +4523,10 @@ impl super::hstudio_rbx::Env for Ctx<'_> {
     fn held(&self, key: &str) -> bool {
         self.s.held.contains(key)
     }
+    fn spawn_now(&mut self, lua: &mut Lua, f: Value, args: Vec<Value>) {
+        let co = lua.new_thread(f);
+        self.resume_now(lua, &co, args);
+    }
 }
 
 impl Host for Ctx<'_> {
@@ -4516,6 +4601,9 @@ impl Host for Ctx<'_> {
                 none()
             }
             6 => {
+                if let Some(m) = args.first().and_then(|v| self.s.rbx.id_of(v)) {
+                    return self.require_module(lua, m);
+                }
                 let name = check_text(lua, &args, 0, "require")?;
                 if let Some(v) = self.me().modules.get(&name) {
                     return Ok(vec![v.clone()]);
@@ -5157,6 +5245,7 @@ impl Host for Ctx<'_> {
             }
             300..=312 => self.task(lua, id, args),
             super::hstudio_rbx::FIRST_ID..=super::hstudio_rbx::LAST_ID => super::hstudio_rbx::call(self, lua, id, args),
+            super::hstudio_sunc::FIRST_ID..=super::hstudio_sunc::LAST_ID => self.sunc(lua, id, args),
             _ => Err(lua.rt_error(format!("unknown studio function {id}"))),
         }
     }

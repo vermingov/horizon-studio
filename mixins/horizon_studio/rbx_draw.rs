@@ -296,7 +296,7 @@ pub fn text_size(game: &mut dyn GameApi, text: &str, size: f64, font: Font, widt
 /// The ScreenGuis drawn: those in the PlayerGui and in CoreGui.
 fn screen_guis(rbx: &Rbx) -> Vec<Id> {
     let mut out = Vec::new();
-    for root in [rbx.player_gui, rbx.core_gui] {
+    for root in [rbx.player_gui, rbx.core_gui, rbx.hui] {
         for &c in rbx.children(root) {
             if rbx.inst(c).class.name == "ScreenGui" {
                 out.push(c);
@@ -427,7 +427,13 @@ fn group_alpha(rbx: &Rbx, id: Id) -> f64 {
 }
 
 /// Draws the GUI as last laid out: each object bottom first.
-pub fn draw(rbx: &Rbx, game: &mut dyn GameApi, now: f64) {
+pub fn draw(
+    rbx: &Rbx,
+    game: &mut dyn GameApi,
+    now: f64,
+    images: &mut super::hstudio_sunc::ImageCache,
+    workspace: &std::path::Path,
+) {
     let Some(frame) = &rbx.layout else { return };
     for &n in &frame.layout.draw_order {
         let Some(p) = frame.layout.get(n) else { continue };
@@ -473,8 +479,16 @@ pub fn draw(rbx: &Rbx, game: &mut dyn GameApi, now: f64) {
         if find(inst.class, "Image") {
             let img = inst.get("Image").as_text().unwrap_or_default();
             let ia = (1.0 - inst.get("ImageTransparency").to_num().unwrap_or(0.0)) * ga;
-            if !img.is_empty() && ia > 0.0 {
-                game.dp_rect(r, radius, argb(color(inst, "ImageColor3"), ia * 0.18));
+            // getcustomasset's images draw; Roblox's asset ids don't load here.
+            let file = img
+                .strip_prefix("rbxasset://horizon-studio/")
+                .and_then(|p| images.file(workspace, p));
+            match file {
+                Some(bytes) if ia > 0.0 => images.draw(game, &bytes, r, ia),
+                _ if !img.is_empty() && ia > 0.0 => {
+                    game.dp_rect(r, radius, argb(color(inst, "ImageColor3"), ia * 0.18))
+                }
+                _ => {}
             }
         }
         // The border, and a UIStroke on the edge.
@@ -882,7 +896,9 @@ pub fn screen_call(env: &mut dyn Env, lua: &mut Lua, which: u32, args: &[Value])
         0 => {
             let (rbx, game) = env.rbx_and_game();
             lay_out(rbx, game);
-            draw(rbx, game, now);
+            let mut images = std::mem::take(&mut rbx.screen_images);
+            draw(rbx, game, now, &mut images, &rbx.workspace_dir.clone());
+            rbx.screen_images = images;
             Ok(Vec::new())
         }
         // move(x, y)
@@ -1576,6 +1592,7 @@ pub fn step(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64, dt: f64, frame_no: 
     }
     sync(rbx, game);
     step_events(rbx, now, dt, frame_no);
+    super::hstudio_sunc::poll_network(rbx);
 }
 
 /// The DataModel brought up to the game: the character, the Camera and the

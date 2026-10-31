@@ -857,8 +857,40 @@ pub static CLASSES: &[C] = &[
     kept("Motor6D", "Instance"),
     kept("Highlight", "Instance"),
     kept("SelectionBox", "Instance"),
-    kept("ProximityPrompt", "Instance"),
-    kept("ClickDetector", "Instance"),
+    C {
+        lenient: true,
+        ..class(
+            "ProximityPrompt",
+            "Instance",
+            &[
+                p("ActionText", Str, S("Interact")),
+                p("ObjectText", Str, S("")),
+                p("HoldDuration", Num, N(0.0)),
+                p("MaxActivationDistance", Num, N(10.0)),
+                p("Enabled", Bool, B(true)),
+                p("RequiresLineOfSight", Bool, B(true)),
+                p("KeyboardKeyCode", K::Enum("KeyCode"), D::E("E")),
+            ],
+            &[
+                "Triggered",
+                "TriggerEnded",
+                "PromptShown",
+                "PromptHidden",
+                "PromptButtonHoldBegan",
+                "PromptButtonHoldEnded",
+            ],
+        )
+    },
+    C {
+        lenient: true,
+        ..class(
+            "ClickDetector",
+            "Instance",
+            &[p("MaxActivationDistance", Num, N(32.0)), p("CursorIcon", Str, S(""))],
+            &["MouseClick", "RightMouseClick", "MouseHoverEnter", "MouseHoverLeave"],
+        )
+    },
+    abstract_class("WebSocket", "Instance", &[], &["OnMessage", "OnClose"]),
     kept("Animation", "Instance"),
     kept("Animator", "Instance"),
     kept("Shirt", "Instance"),
@@ -990,6 +1022,10 @@ pub struct Conn {
     pub owner: Owner,
     pub f: Value,
     pub once: bool,
+    /// Disable() turned it off (getconnections).
+    pub enabled: bool,
+    /// The thread that connected it.
+    pub thread: Option<Rc<Thread>>,
 }
 
 pub struct Inst {
@@ -1011,6 +1047,9 @@ pub struct Inst {
     pub destroyed: bool,
     /// The parent can't change (services, destroyed instances).
     pub locked: bool,
+    /// Properties setscriptable turned off, and hidden ones it turned on.
+    pub unscriptable: HashSet<String>,
+    pub revealed: HashSet<String>,
 }
 
 impl Inst {
@@ -1124,6 +1163,38 @@ pub struct Rbx {
     pub last_health: Option<f32>,
     /// A script has used the layer: until then it costs the game nothing.
     pub active: bool,
+    /// gethui's container: a Folder outside the DataModel whose ScreenGuis draw.
+    pub hui: Id,
+    /// HTTP requests on their way, with the threads that wait for them.
+    pub http: Vec<HttpWait>,
+    /// Open WebSockets.
+    pub sockets: Vec<SocketEntry>,
+    /// Drawing objects (Drawing.new).
+    pub drawings: Vec<super::hstudio_sunc::Drawing>,
+    pub next_drawing: u32,
+    /// Methods written in Lua (the prelude's HttpGet and the like), by class.
+    pub lua_methods: Vec<(&'static str, &'static str, Value)>,
+    /// ModuleScripts `require` ran, and what they returned.
+    pub loaded_modules: Vec<(Id, Value)>,
+    /// The studio's workspace folder (getcustomasset's files), and the images
+    /// the GUI's own screen draws.
+    pub workspace_dir: std::path::PathBuf,
+    pub screen_images: super::hstudio_sunc::ImageCache,
+}
+
+/// An HTTP request a thread waits for.
+pub struct HttpWait {
+    pub owner: Owner,
+    pub thread: Rc<Thread>,
+    pub pending: super::hstudio_net::Pending,
+}
+
+/// A WebSocket: its Instance, the socket, and the thread waiting for it to open.
+pub struct SocketEntry {
+    pub id: Id,
+    pub owner: Owner,
+    pub socket: super::hstudio_net::Socket,
+    pub opening: Option<Rc<Thread>>,
 }
 
 /// A userdata of `data` with `meta`.
@@ -1204,6 +1275,15 @@ impl Rbx {
             layout: None,
             last_health: None,
             active: false,
+            hui: 0,
+            http: Vec::new(),
+            sockets: Vec::new(),
+            drawings: Vec::new(),
+            next_drawing: 1,
+            lua_methods: Vec::new(),
+            loaded_modules: Vec::new(),
+            workspace_dir: std::path::PathBuf::new(),
+            screen_images: super::hstudio_sunc::ImageCache::default(),
         };
         r.build();
         r
@@ -1289,6 +1369,11 @@ impl Rbx {
         for id in [character, self.root_part, self.head, humanoid, camera, mouse] {
             self.lock(id);
         }
+        let hui = self.make("Folder", None);
+        self.inst_mut(hui).name = "HiddenUI".into();
+        self.hui = hui;
+        // Roblox's Instance metatable is locked.
+        self.inst_meta.borrow_mut().set_readonly(true);
     }
 
     fn lock(&mut self, id: Id) {
@@ -1326,6 +1411,8 @@ impl Rbx {
                 owner,
                 destroyed: false,
                 locked: false,
+                unscriptable: HashSet::new(),
+                revealed: HashSet::new(),
             },
         );
         id
@@ -1366,15 +1453,8 @@ impl Rbx {
     /// Makes the shared `game` table the DataModel's value: it keeps the
     /// studio's `game.*` functions and gets the DataModel's members too.
     pub fn adopt_game_table(&mut self, t: &TableRef) {
-        let meta = host_meta(
-            "Instance",
-            &[
-                ("__index", INST_INDEX),
-                ("__newindex", INST_NEWINDEX),
-                ("__tostring", INST_TOSTRING),
-            ],
-        );
-        t.borrow_mut().meta = Some(meta);
+        // The same metatable as every Instance's, as in Roblox.
+        t.borrow_mut().meta = Some(self.inst_meta.clone());
         let game = self.game;
         self.inst_mut(game).value = Value::Table(t.clone());
     }
@@ -1581,6 +1661,12 @@ impl Rbx {
         self.ready.retain(|r| r.0 != owner);
         self.actions.retain(|a| a.1 != owner);
         self.render_steps.retain(|r| r.2 != owner);
+        self.http.retain(|h| h.owner != owner);
+        for s in self.sockets.iter().filter(|s| s.owner == owner) {
+            s.socket.close();
+        }
+        self.sockets.retain(|s| s.owner != owner);
+        self.drawings.retain(|d| d.owner != owner);
         if self.pointer.focus.is_some_and(|f| !self.insts.contains_key(&f)) {
             self.pointer.focus = None;
         }
@@ -1623,14 +1709,14 @@ impl Rbx {
         };
         if !inst.conns.is_empty() {
             let mut fired_once = 0;
-            for c in inst.conns.iter().filter(|c| &*c.event == event) {
+            for c in inst.conns.iter().filter(|c| &*c.event == event && c.enabled) {
                 self.deferred.push((c.owner, c.f.clone(), args.clone()));
                 if c.once {
                     fired_once += 1;
                 }
             }
             if fired_once > 0 {
-                inst.conns.retain(|c| !(c.once && &*c.event == event));
+                inst.conns.retain(|c| !(c.once && c.enabled && &*c.event == event));
                 self.conn_count -= fired_once;
             }
         }
@@ -1648,7 +1734,15 @@ impl Rbx {
         }
     }
 
-    fn connect(&mut self, id: Id, event: Rc<str>, owner: Owner, f: Value, once: bool) -> Result<u32, String> {
+    fn connect(
+        &mut self,
+        id: Id,
+        event: Rc<str>,
+        owner: Owner,
+        f: Value,
+        once: bool,
+        thread: Option<Rc<Thread>>,
+    ) -> Result<u32, String> {
         if self.conn_count >= MAX_CONNECTIONS {
             return Err(format!("too many connections ({MAX_CONNECTIONS})"));
         }
@@ -1661,6 +1755,8 @@ impl Rbx {
             owner,
             f,
             once,
+            enabled: true,
+            thread,
         });
         Ok(cid)
     }
@@ -1711,6 +1807,8 @@ pub trait Env: Host {
     fn rbx_and_game(&mut self) -> (&mut Rbx, &mut dyn GameApi);
     /// Whether a key ("key.keyboard.e") is held.
     fn held(&self, key: &str) -> bool;
+    /// Runs `f` with `args` now in a thread of its own, as task.spawn does.
+    fn spawn_now(&mut self, lua: &mut Lua, f: Value, args: Vec<Value>);
 }
 
 /// Methods, each with the class that has it.
@@ -1745,6 +1843,8 @@ const METHODS: &[(&str, &str)] = &[
     ("GetDebugId", "Instance"),
     ("GetActor", "Instance"),
     ("GetService", "DataModel"),
+    ("Send", "WebSocket"),
+    ("Close", "WebSocket"),
     ("FindService", "DataModel"),
     ("IsLoaded", "DataModel"),
     ("BindToClose", "DataModel"),
@@ -2103,8 +2203,9 @@ fn signal_method(env: &mut dyn Env, lua: &mut Lua, name: &str, args: &[Value]) -
                 .ok_or_else(|| bad_arg(lua, 1, name, "function expected"))?;
             let owner = env.owner();
             let rbx = env.rbx();
+            let thread = Some(lua.current_thread());
             let cid = rbx
-                .connect(s.inst, s.event.clone(), owner, f, name == "Once")
+                .connect(s.inst, s.event.clone(), owner, f, name == "Once", thread)
                 .map_err(|e| lua.rt_error(e))?;
             let c = ud(ConnRef { inst: s.inst, id: cid }, &rbx.conn_meta);
             Ok(vec![c])
@@ -2133,6 +2234,13 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
     let rbx = env.rbx();
     let inst = rbx.inst(id);
     let c = inst.class;
+    if inst.unscriptable.contains(&k) {
+        return Err(lua.rt_error(format!(
+            "{k} is not a valid member of {} \"{}\"",
+            c.name,
+            rbx.full_name(id)
+        )));
+    }
     let one = |v: Value| Ok(vec![v]);
     match k.as_str() {
         "Name" => return one(Value::str(&inst.name)),
@@ -2173,13 +2281,16 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
     if let Some(v) = derived {
         return one(v);
     }
-    if c.lenient
+    if (c.lenient || inst.revealed.contains(&k))
         && let Some(v) = inst.extra.get(&k)
     {
         return one(v.clone());
     }
     if has_event(c, &k) {
         return one(rbx.signal(id, &k));
+    }
+    if let Some((_, _, f)) = rbx.lua_methods.iter().find(|(cl, n, _)| *n == k && is_a(c, cl)) {
+        return one(f.clone());
     }
     if let Some(m) = find_method(c, &k) {
         return one(rbx.native(METHOD_BASE + m as u32, METHODS[m].0));
@@ -2237,6 +2348,13 @@ fn newindex(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Result<(), Thro
     let v = args.get(2).cloned().unwrap_or_default();
     let rbx = env.rbx();
     let c = rbx.inst(id).class;
+    if rbx.inst(id).unscriptable.contains(&key) {
+        return Err(lua.rt_error(format!(
+            "{key} is not a valid member of {} \"{}\"",
+            c.name,
+            rbx.full_name(id)
+        )));
+    }
     let bad = |what: &str, v: &Value| {
         lua.rt_error(format!(
             "Unable to assign property {key}. {what} expected, got {}",
@@ -2313,7 +2431,7 @@ fn newindex(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Result<(), Thro
             rbx.fire(id, "prop:Font", Vec::new());
             Ok(())
         }
-        _ if c.lenient => {
+        _ if c.lenient || rbx.inst(id).revealed.contains(&key) => {
             rbx.inst_mut(id).extra.insert(key, v);
             Ok(())
         }

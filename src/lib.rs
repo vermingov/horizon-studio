@@ -16,6 +16,8 @@ pub mod game {
     pub mod hstudio_crypt;
     #[path = "../../mixins/horizon_studio/examples.rs"]
     pub mod hstudio_examples;
+    #[path = "../../mixins/horizon_studio/exec.rs"]
+    pub mod hstudio_exec;
     #[path = "../../mixins/horizon_studio/link.rs"]
     pub mod hstudio_link;
     #[path = "../../mixins/horizon_studio/look.rs"]
@@ -46,6 +48,8 @@ pub mod game {
     pub mod hstudio_rbx_values;
     #[path = "../../mixins/horizon_studio/skins.rs"]
     pub mod hstudio_skins;
+    #[path = "../../mixins/horizon_studio/sunc.rs"]
+    pub mod hstudio_sunc;
     #[path = "../../mixins/horizon_studio/theme.rs"]
     pub mod hstudio_theme;
     #[path = "../../mixins/horizon_studio/ui.rs"]

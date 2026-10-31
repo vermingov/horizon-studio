@@ -306,8 +306,11 @@ fn load(lua: &mut Lua, _: &mut dyn Host, me: &Native, args: Vec<Value>) -> Res {
         || "load".to_owned(),
         |n| String::from_utf8_lossy(&n).trim_start_matches(['=', '@']).to_owned(),
     );
-    let env = match args.get(3) {
-        Some(Value::Table(t)) => t.clone(),
+    // The chunk gets the globals of the code that loads it.
+    let caller = lua.frame_info(1).map(|f| f.closure.env());
+    let env = match (args.get(3), caller) {
+        (Some(Value::Table(t)), _) => t.clone(),
+        (_, Some(env)) => env,
         _ => match me.state.borrow().first() {
             Some(Value::Table(t)) => t.clone(),
             _ => return Err(lua.rt_error("load has no environment")),

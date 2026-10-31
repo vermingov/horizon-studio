@@ -342,6 +342,10 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
     match (owner_class, name) {
         ("DataModel", "GetService" | "FindService") => {
             let n = text_arg(lua, args, 1, name)?;
+            // CoreGui is for identity 3 and up (setthreadidentity).
+            if n == "CoreGui" && super::hstudio_exec::identity(lua) < 3 {
+                return one(Value::Nil);
+            }
             let rbx = env.rbx();
             match rbx.service(&n) {
                 Some(s) => one(rbx.value(s)),
@@ -595,8 +599,11 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             }
             one(Value::str(&out))
         }
-        ("HttpService", _) => {
-            Err(lua.rt_error("HttpService requests aren't available here: use the studio's http.* functions"))
+        ("HttpService", _) => Err(lua.rt_error(format!("HttpService:{name} is not available here"))),
+        ("WebSocket", "Send" | "Close") => {
+            let data = args.get(1).and_then(|v| v.as_bytes().map(<[u8]>::to_vec));
+            super::hstudio_sunc::socket_method(env.rbx(), id, name, data);
+            none()
         }
         ("TextService", "GetTextSize") => {
             let text = text_arg(lua, args, 1, name)?;

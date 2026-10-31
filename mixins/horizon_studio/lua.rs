@@ -173,14 +173,24 @@ pub struct Native {
     pub name: Rc<str>,
     pub kind: NativeKind,
     pub state: RefCell<Vec<Value>>,
+    /// What a call runs instead (`hookfunction`).
+    redirect: RefCell<Option<Value>>,
 }
 
+#[derive(Clone)]
 pub enum NativeKind {
     Builtin(Builtin),
     Host(u32),
     /// `pcall` (false) or `xpcall` (true): the VM runs these itself, so a
     /// coroutine can yield inside them.
     Pcall(bool),
+    /// A Lua function wrapped as a native (`newcclosure`): the VM runs the
+    /// function in its place, so it can yield.
+    Wrap(Value),
+    /// The method call in progress (`getnamecallmethod`), looked up on the
+    /// first argument and called with the rest: `__namecall` as it is
+    /// without a hook.
+    Namecall,
 }
 
 impl Native {
@@ -188,26 +198,31 @@ impl Native {
         Native::with_state(name, f, Vec::new())
     }
     pub fn with_state(name: &str, f: Builtin, state: Vec<Value>) -> Value {
-        Value::Native(Rc::new(Native {
-            name: name.into(),
-            kind: NativeKind::Builtin(f),
-            state: RefCell::new(state),
-        }))
+        Native::of(name, NativeKind::Builtin(f), state)
     }
     pub fn host(name: &str, id: u32) -> Value {
-        Value::Native(Rc::new(Native {
-            name: name.into(),
-            kind: NativeKind::Host(id),
-            state: RefCell::new(Vec::new()),
-        }))
+        Native::of(name, NativeKind::Host(id), Vec::new())
     }
     /// `pcall`, or `xpcall` with `handler`.
     pub fn pcall(name: &str, handler: bool) -> Value {
+        Native::of(name, NativeKind::Pcall(handler), Vec::new())
+    }
+    /// A native of any kind.
+    pub fn of(name: &str, kind: NativeKind, state: Vec<Value>) -> Value {
         Value::Native(Rc::new(Native {
             name: name.into(),
-            kind: NativeKind::Pcall(handler),
-            state: RefCell::new(Vec::new()),
+            kind,
+            state: RefCell::new(state),
+            redirect: RefCell::new(None),
         }))
+    }
+    /// What a call to it runs instead, if it is hooked.
+    pub fn redirect(&self) -> Option<Value> {
+        self.redirect.borrow().clone()
+    }
+    /// Hooks it (Some) or unhooks it (None); the hook before.
+    pub fn set_redirect(&self, to: Option<Value>) -> Option<Value> {
+        std::mem::replace(&mut *self.redirect.borrow_mut(), to)
     }
 }
 
@@ -1211,6 +1226,7 @@ struct VarAst {
 
 /// An upvalue as the parser resolved it: `index` is a local of the
 /// enclosing function (`from_local`) or one of its upvalues.
+#[derive(Clone)]
 pub struct UpDesc {
     pub name: Rc<str>,
     pub from_local: bool,
@@ -2598,6 +2614,7 @@ pub struct LocalVar {
 
 /// A compiled function.
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct Proto {
     /// `function 'name'`, `function <main.lua:12>` or `main chunk`.
     pub name: Rc<str>,
@@ -2632,6 +2649,21 @@ pub struct Proto {
 
 #[allow(dead_code)]
 impl Proto {
+    /// A copy with constant `i` (from 0) set to `v`: a number, a string,
+    /// a boolean or nil (`debug.setconstant`); None for a slot that holds
+    /// no plain value.
+    pub fn with_constant(&self, i: usize, v: Value) -> Option<Proto> {
+        if i >= self.constants.len() || self.specials.iter().any(|s| s.0 as usize == i) {
+            return None;
+        }
+        let mut p = self.clone();
+        p.keys[i] = match &v {
+            Value::Str(_) => key_of(&v),
+            _ => None,
+        };
+        p.constants[i] = v;
+        Some(p)
+    }
     /// The constants as Luau numbers them: None for an import, a table
     /// template or a shared closure.
     pub fn constant_slots(&self) -> Vec<Option<Value>> {
@@ -4210,6 +4242,8 @@ fn interpolate(lua: &mut Lua, h: &mut dyn Host, _: &Native, args: Vec<Value>) ->
 /// what an existing closure runs and keep its identity.
 pub struct Closure {
     body: RefCell<Rc<Body>>,
+    /// What a call runs instead (`hookfunction`).
+    redirect: RefCell<Option<Value>>,
 }
 
 /// What a closure runs: its function, its upvalues and its globals.
@@ -4227,7 +4261,16 @@ impl Closure {
     pub fn from_body(body: Rc<Body>) -> Closure {
         Closure {
             body: RefCell::new(body),
+            redirect: RefCell::new(None),
         }
+    }
+    /// What a call to it runs instead, if it is hooked.
+    pub fn redirect(&self) -> Option<Value> {
+        self.redirect.borrow().clone()
+    }
+    /// Hooks it (Some) or unhooks it (None); the hook before.
+    pub fn set_redirect(&self, to: Option<Value>) -> Option<Value> {
+        std::mem::replace(&mut *self.redirect.borrow_mut(), to)
     }
     pub fn body(&self) -> Rc<Body> {
         self.body.borrow().clone()
@@ -4329,6 +4372,7 @@ struct ThreadState {
 struct Registry {
     closures: Vec<Weak<Closure>>,
     tables: Vec<Weak<RefCell<Table>>>,
+    threads: Vec<Weak<Thread>>,
     prune_at: usize,
 }
 
@@ -4596,8 +4640,26 @@ impl Lua {
         let mut f = f.clone();
         for _ in 0..64 {
             match f {
-                Value::Func(c) => return self.call_lua(h, c, args),
+                Value::Func(c) => match c.redirect() {
+                    Some(to) => f = to,
+                    None => return self.call_lua(h, c, args),
+                },
                 Value::Native(n) => {
+                    if let Some(to) = n.redirect() {
+                        f = to;
+                        continue;
+                    }
+                    match &n.kind {
+                        NativeKind::Wrap(inner) => {
+                            f = inner.clone();
+                            continue;
+                        }
+                        NativeKind::Namecall => {
+                            f = self.namecall_target(h, args.first().cloned().unwrap_or_default())?;
+                            continue;
+                        }
+                        _ => {}
+                    }
                     self.step()?;
                     return self.call_native(h, &n, args);
                 }
@@ -4635,11 +4697,31 @@ impl Lua {
         r
     }
     fn call_native(&mut self, h: &mut dyn Host, n: &Rc<Native>, args: Vec<Value>) -> Res {
-        match n.kind {
+        match &n.kind {
             NativeKind::Builtin(f) => f(self, h, n, args),
-            NativeKind::Host(id) => h.call(self, id, args),
-            NativeKind::Pcall(handler) => self.pcall_nested(h, handler, args),
+            NativeKind::Host(id) => h.call(self, *id, args),
+            NativeKind::Pcall(handler) => self.pcall_nested(h, *handler, args),
+            NativeKind::Wrap(_) | NativeKind::Namecall => self.call_value(h, &Value::Native(n.clone()), args),
         }
+    }
+    /// The method `obj:Name(...)` calls, for `__namecall` without a hook.
+    fn namecall_target(&mut self, h: &mut dyn Host, obj: Value) -> Result<Value, Throw> {
+        let Some(name) = self.namecall.clone() else {
+            return Err(self.rt_error("__namecall called without a method call"));
+        };
+        let f = self.index_raw_meta(h, &obj, &Value::Str(name.clone()))?;
+        if !f.is_callable() && self.meta(&f, Ev::Call).is_none() {
+            return Err(self.rt_error(format!(
+                "attempt to call a {} value (method '{}')",
+                f.type_name(),
+                String::from_utf8_lossy(&name)
+            )));
+        }
+        Ok(f)
+    }
+    /// `obj[key]` through `__index`, never `__namecall`.
+    fn index_raw_meta(&mut self, h: &mut dyn Host, obj: &Value, key: &Value) -> Result<Value, Throw> {
+        self.index(h, obj, key)
     }
     /// pcall and xpcall called from Rust (not from Lua code, where the VM
     /// runs them): protected calls of their own.
@@ -4957,7 +5039,7 @@ impl Lua {
                         }
                     }
                     Op::Namecall(a, kk) => {
-                        if let (Value::Userdata(_), Value::Str(name)) =
+                        if let (Value::Userdata(_) | Value::Table(_), Value::Str(name)) =
                             (&self.cur.stack[base + a as usize + 1], &k[kk as usize])
                         {
                             self.namecall = Some(name.clone());
@@ -5368,6 +5450,10 @@ impl Lua {
             let f = self.cur.stack[func].clone();
             match f {
                 Value::Func(c) => {
+                    if let Some(to) = c.redirect() {
+                        self.cur.stack[func] = to;
+                        continue;
+                    }
                     if self.cur.frames.len() >= MAX_DEPTH {
                         return Err(self.rt_error("stack overflow"));
                     }
@@ -5376,6 +5462,23 @@ impl Lua {
                     return Ok(true);
                 }
                 Value::Native(nat) => {
+                    if let Some(to) = nat.redirect() {
+                        self.cur.stack[func] = to;
+                        continue;
+                    }
+                    match &nat.kind {
+                        NativeKind::Wrap(inner) => {
+                            self.cur.stack[func] = inner.clone();
+                            continue;
+                        }
+                        NativeKind::Namecall => {
+                            let target =
+                                self.namecall_target(h, self.cur.stack.get(func + 1).cloned().unwrap_or_default())?;
+                            self.cur.stack[func] = target;
+                            continue;
+                        }
+                        _ => {}
+                    }
                     self.step()?;
                     if let NativeKind::Pcall(handler) = nat.kind {
                         return self.op_pcall(h, func, n, nres, handler, ret);
@@ -5706,8 +5809,10 @@ impl Lua {
         if !matches!(obj, Value::Table(_) | Value::Str(_) | Value::Userdata(_)) {
             return Err(self.rt_error(format!("attempt to index a {} value{}", obj.type_name(), p.desc(pc, 0))));
         }
-        // A userdata's `__namecall` takes every method call on it.
-        if let Value::Userdata(_) = obj
+        // A userdata's `__namecall` takes every method call on it (and a
+        // table's, as executors' hookmetamethod needs).
+        if matches!(obj, Value::Userdata(_) | Value::Table(_))
+            && obj.metatable().is_some()
             && let Some(nc) = self.meta(&obj, Ev::Namecall)
             && nc.is_callable()
         {
@@ -6155,7 +6260,7 @@ impl Lua {
 
     /// A coroutine that will run `f`.
     pub fn new_thread(&mut self, f: Value) -> Rc<Thread> {
-        Rc::new(Thread {
+        let t = Rc::new(Thread {
             state: RefCell::new(Some(ThreadState {
                 start: Some(f),
                 ..ThreadState::default()
@@ -6163,7 +6268,12 @@ impl Lua {
             status: std::cell::Cell::new(Status::Suspended),
             main: false,
             error: RefCell::new(None),
-        })
+        });
+        if let Some(r) = &mut self.registry {
+            r.threads.push(Rc::downgrade(&t));
+            r.prune();
+        }
+        t
     }
     /// The running thread (the main one outside coroutines).
     pub fn current_thread(&self) -> Rc<Thread> {
@@ -6229,7 +6339,22 @@ impl Lua {
     /// The running coroutine starts, or goes on from its yield.
     fn run_thread(&mut self, h: &mut dyn Host, args: Vec<Value>) -> Res {
         self.cur.runs = 1;
-        let r = if let Some(f) = self.cur.start.take() {
+        let r = if let Some(mut f) = self.cur.start.take() {
+            // A hooked function runs its hook; a newcclosure, what it wraps.
+            for _ in 0..64 {
+                let next = match &f {
+                    Value::Func(c) => c.redirect(),
+                    Value::Native(n) => n.redirect().or_else(|| match &n.kind {
+                        NativeKind::Wrap(inner) => Some(inner.clone()),
+                        _ => None,
+                    }),
+                    _ => None,
+                };
+                match next {
+                    Some(to) => f = to,
+                    None => break,
+                }
+            }
             match f {
                 Value::Func(c) => match self.step() {
                     Err(e) => Err(e),
@@ -6382,6 +6507,17 @@ impl Lua {
             r.prune();
         }
     }
+    /// Whether `getgc`'s tracking is on.
+    pub fn tracking(&self) -> bool {
+        self.registry.is_some()
+    }
+    /// The tracked threads still alive (`getreg`).
+    pub fn live_threads(&mut self) -> Vec<Rc<Thread>> {
+        self.registry
+            .as_ref()
+            .map(|r| r.threads.iter().filter_map(Weak::upgrade).collect())
+            .unwrap_or_default()
+    }
     /// The tracked closures still alive.
     pub fn live_closures(&mut self) -> Vec<Rc<Closure>> {
         self.registry
@@ -6403,6 +6539,7 @@ impl Registry {
         }
         self.closures.retain(|w| w.strong_count() > 0);
         self.tables.retain(|w| w.strong_count() > 0);
+        self.threads.retain(|w| w.strong_count() > 0);
         self.prune_at = ((self.closures.len() + self.tables.len()) * 2).max(1024);
     }
 }
