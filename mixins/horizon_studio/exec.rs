@@ -89,9 +89,15 @@ pub fn globals() -> Vec<(&'static str, Value)> {
         ("setthreadidentity", setthreadidentity),
         ("getidentity", getthreadidentity),
         ("setidentity", setthreadidentity),
+        // UNC's names for the thread identity.
+        ("getthreadcontext", getthreadidentity),
+        ("setthreadcontext", setthreadidentity),
         ("newproxy", newproxy),
         ("getfenv", getfenv),
         ("setfenv", setfenv),
+        // Base64 as plain globals (sUNC) and under the UNC names.
+        ("base64_encode", base64encode),
+        ("base64_decode", base64decode),
     ];
     let mut out: Vec<(&'static str, Value)> = Vec::new();
     for (name, f) in entries {
@@ -100,6 +106,8 @@ pub fn globals() -> Vec<(&'static str, Value)> {
         out.push((name, v));
     }
     out.push(("debug", Value::Table(debug_lib())));
+    out.push(("crypt", Value::Table(crypt_lib())));
+    out.push(("base64", Value::Table(base64_lib())));
     out
 }
 
@@ -692,6 +700,131 @@ fn lz4decompress(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) 
     let out = super::hstudio_crypt::lz4_decompress(&data, size as usize)
         .map_err(|e| lua.rt_error(format!("lz4decompress: {e}")))?;
     lua.charge(out.len())?;
+    one(Value::bytes(&out))
+}
+
+// ---------------------------------------------------------------- crypt (UNC)
+
+/// UNC's `crypt` library, on the crypt primitives in hstudio_crypt. sUNC
+/// deprecates this table (it warns one exists); UNC's check needs it.
+fn crypt_lib() -> TableRef {
+    let entries: &[(&str, super::hstudio_lua::Builtin)] = &[
+        ("base64encode", base64encode),
+        ("base64decode", base64decode),
+        ("base64_encode", base64encode),
+        ("base64_decode", base64decode),
+        ("generatebytes", c_generatebytes),
+        ("generatekey", c_generatekey),
+        ("hash", c_hash),
+        ("encrypt", c_encrypt),
+        ("decrypt", c_decrypt),
+    ];
+    let mut t = Table::new();
+    for (name, f) in entries {
+        let v = Native::builtin(name, *f);
+        mark(&v);
+        t.set_str(name, v);
+    }
+    // crypt.base64.encode / .decode (nested; the check doesn't descend here).
+    t.set_str("base64", Value::Table(base64_lib()));
+    Rc::new(RefCell::new(t))
+}
+
+/// `base64` and `crypt.base64`: `encode` and `decode`.
+fn base64_lib() -> TableRef {
+    let mut t = Table::new();
+    let enc = Native::builtin("encode", base64encode);
+    let dec = Native::builtin("decode", base64decode);
+    mark(&enc);
+    mark(&dec);
+    t.set_str("encode", enc);
+    t.set_str("decode", dec);
+    Rc::new(RefCell::new(t))
+}
+
+/// `crypt.generatebytes(n)`: `n` random bytes, as Base64.
+fn c_generatebytes(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let n = check_int(lua, &args, 0, "generatebytes")?;
+    if !(0..=1 << 20).contains(&n) {
+        return Err(bad_arg(lua, 0, "generatebytes", "a size from 0 to 1048576 expected"));
+    }
+    lua.charge(n as usize)?;
+    one(Value::str(&super::hstudio_crypt::base64_encode(
+        &super::hstudio_crypt::random_bytes(n as usize),
+    )))
+}
+
+/// `crypt.generatekey()`: a 32-byte AES key, as Base64.
+fn c_generatekey(_: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {
+    one(Value::str(&super::hstudio_crypt::base64_encode(
+        &super::hstudio_crypt::random_bytes(32),
+    )))
+}
+
+/// `crypt.hash(data, algorithm)`: the digest in hex. Algorithms: md5, sha1,
+/// sha224/256/384/512 and sha3-224/256/384/512.
+fn c_hash(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let data = check_str(lua, &args, 0, "hash")?;
+    let algo = check_str(lua, &args, 1, "hash")?;
+    let h = super::hstudio_crypt::Hash::from_name(&String::from_utf8_lossy(&algo))
+        .ok_or_else(|| bad_arg(lua, 1, "hash", "unknown hash algorithm"))?;
+    lua.charge(data.len())?;
+    one(Value::str(&h.hex(&data)))
+}
+
+/// A Base64 key or IV, decoded.
+fn b64_arg(lua: &Lua, args: &[Value], i: usize, fname: &str) -> Result<Vec<u8>, Throw> {
+    let s = check_str(lua, args, i, fname)?;
+    super::hstudio_crypt::base64_decode(&s[..]).map_err(|e| bad_arg(lua, i, fname, &format!("not Base64: {e}")))
+}
+
+/// A given IV cut to the mode's length when it is longer (UNC hands CBC a
+/// 32-byte key as the IV); a shorter one is left for the cipher to reject.
+fn iv_sized(iv: Vec<u8>, mode: super::hstudio_crypt::Mode) -> Vec<u8> {
+    let want = mode.iv_size();
+    if want > 0 && iv.len() > want {
+        iv[..want].to_vec()
+    } else {
+        iv
+    }
+}
+
+fn mode_arg(lua: &Lua, args: &[Value], i: usize, fname: &str) -> Result<super::hstudio_crypt::Mode, Throw> {
+    match opt_str(lua, args, i, fname)? {
+        None => Ok(super::hstudio_crypt::Mode::Cbc),
+        Some(s) => super::hstudio_crypt::Mode::from_name(&String::from_utf8_lossy(&s))
+            .ok_or_else(|| bad_arg(lua, i, fname, "unknown cipher mode")),
+    }
+}
+
+/// `crypt.encrypt(data, key, iv?, mode?)`: AES. `key` and `iv` are Base64
+/// (a random IV is made when none is given). Returns the Base64 ciphertext
+/// and the Base64 IV.
+fn c_encrypt(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let data = check_str(lua, &args, 0, "encrypt")?;
+    let key = b64_arg(lua, &args, 1, "encrypt")?;
+    let mode = mode_arg(lua, &args, 3, "encrypt")?;
+    let iv = match args.get(2) {
+        None | Some(Value::Nil) => super::hstudio_crypt::random_bytes(mode.iv_size().max(16)),
+        // A longer IV (UNC passes a 32-byte generatekey()) is cut to size.
+        Some(_) => iv_sized(b64_arg(lua, &args, 2, "encrypt")?, mode),
+    };
+    let out =
+        super::hstudio_crypt::encrypt(mode, &key, &iv, &data).map_err(|e| lua.rt_error(format!("encrypt: {e}")))?;
+    Ok(vec![
+        Value::str(&super::hstudio_crypt::base64_encode(&out)),
+        Value::str(&super::hstudio_crypt::base64_encode(&iv)),
+    ])
+}
+
+/// `crypt.decrypt(data, key, iv, mode?)`: the plaintext from Base64 inputs.
+fn c_decrypt(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let data = b64_arg(lua, &args, 0, "decrypt")?;
+    let key = b64_arg(lua, &args, 1, "decrypt")?;
+    let mode = mode_arg(lua, &args, 3, "decrypt")?;
+    let iv = iv_sized(b64_arg(lua, &args, 2, "decrypt")?, mode);
+    let out =
+        super::hstudio_crypt::decrypt(mode, &key, &iv, &data).map_err(|e| lua.rt_error(format!("decrypt: {e}")))?;
     one(Value::bytes(&out))
 }
 

@@ -1101,7 +1101,7 @@ pub fn pointer_button(rbx: &mut Rbx, left: bool, down: bool) {
     }
 }
 
-fn wheel(rbx: &mut Rbx, steps: f64) {
+pub fn wheel(rbx: &mut Rbx, steps: f64) {
     let over = rbx.pointer.hover.clone();
     let mouse = rbx.mouse;
     rbx.fire(

@@ -138,7 +138,7 @@
       "id": "executor",
       "title": "Executor functions (sUNC): hooks, debug, files, HTTP, Drawing",
       "summary": "The sUNC standard's functions: hookfunction, newcclosure, hookmetamethod, the debug library, getrawmetatable, getgenv and getrenv, getgc and filtergc, Base64 and LZ4, the workspace file system, request and WebSocket, Drawing, cloneref, getconnections, getsenv and hidden properties, and how they differ from a Roblox executor's.",
-      "text": "Horizon Studio has the executor functions of the [sUNC](https://docs.sunc.io) standard, so scripts written for Roblox executors run as mods: closures and hooks, the debug library, metatables, Base64 and LZ4, the collector, environments, a file system, HTTP and WebSockets, the Drawing library, Instances, signals, scripts and hidden properties. Each has an entry here.\n\n```lua\nlocal old\nold = hookmetamethod(game, \"__namecall\", function(self, ...)\n  if getnamecallmethod() == \"Destroy\" and self == workspace then\n    return warn(\"not destroying the workspace\")\n  end\n  return old(self, ...)\nend)\n\nwritefile(\"hello.txt\", \"Hello from \" .. identifyexecutor())\nlocal box = Drawing.new(\"Square\")\nbox.Size = Vector2.new(120, 40)\nbox.Position = Vector2.new(20, 20)\nbox.Filled = true\nbox.Visible = true\n```\n\n**Environments.** A mod's globals are its own table; names it doesn't have come from `getgenv()` (the executor's: the studio's API and this library, shared by every mod), and from there from `getrenv()` (Roblox's: the standard library, `game`, `workspace`, `Instance`, the data types, `task`). `getgenv().x = 1` gives every mod an `x`; `getrenv().game = nil` takes `game` from them all.\n\n**What is different from a Roblox executor**, because the scripts are mods and the game is Minecraft:\n\n- Every Lua function and thread is the executor's: there are no game scripts. `checkcaller()` is always true, `getcallingscript()` and `getscriptfromthread()` are nil, and `filtergc`'s `IgnoreExecutor` (true by default) skips every Lua function: pass `IgnoreExecutor = false`.\n- `getgc`, `filtergc`, `getreg` and live protos see what was made after the studio began tracking objects: from the load of the first mod whose source names one of them (or their first call), as tracking costs a little on every function and table made.\n- Hooks are global: `hookfunction(print, ...)` changes `print` for every mod. They stay until `restorefunction` (or the game restarts), even after the mod that made them stops.\n- `getscriptbytecode` is the studio's own dump of a mod's compiled main file, not Luau bytecode; `getscripthash` hashes that. A ModuleScript runs under `require` from its hidden `Source` (set with `sethiddenproperty`).\n- `replicatesignal` errors: there is no server. `fireclickdetector`, `fireproximityprompt` and `firetouchinterest` fire the events here, deferred like every signal.\n- Files live in the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), which scripts can't leave. `request`, `game:HttpGet` and WebSockets reach the internet only, never this computer or its network.\n- Drawings are in dp, Horizon's logical pixels (the Camera's ViewportSize), over the HUD and the mods' GUIs. Images (Drawing's `Data` and ImageLabels with a `getcustomasset` id) are PNGs drawn as blocks of colour, up to 48 x 48 of them.\n- There is no `crypt` library (sUNC warns when one exists): `base64encode`, `base64decode`, `lz4compress` and `lz4decompress` are globals.\n\nThese functions widen what a script can do (see the `limits` topic): run a script from someone you trust."
+      "text": "Horizon Studio has the executor functions of the [sUNC](https://docs.sunc.io) standard, so scripts written for Roblox executors run as mods: closures and hooks, the debug library, metatables, Base64 and LZ4, the collector, environments, a file system, HTTP and WebSockets, the Drawing library, Instances, signals, scripts and hidden properties. Each has an entry here.\n\n```lua\nlocal old\nold = hookmetamethod(game, \"__namecall\", function(self, ...)\n  if getnamecallmethod() == \"Destroy\" and self == workspace then\n    return warn(\"not destroying the workspace\")\n  end\n  return old(self, ...)\nend)\n\nwritefile(\"hello.txt\", \"Hello from \" .. identifyexecutor())\nlocal box = Drawing.new(\"Square\")\nbox.Size = Vector2.new(120, 40)\nbox.Position = Vector2.new(20, 20)\nbox.Filled = true\nbox.Visible = true\n```\n\n**Environments.** A mod's globals are its own table; names it doesn't have come from `getgenv()` (the executor's: the studio's API and this library, shared by every mod), and from there from `getrenv()` (Roblox's: the standard library, `game`, `workspace`, `Instance`, the data types, `task`). `getgenv().x = 1` gives every mod an `x`; `getrenv().game = nil` takes `game` from them all.\n\n**What is different from a Roblox executor**, because the scripts are mods and the game is Minecraft:\n\n- Every Lua function and thread is the executor's: there are no game scripts. `checkcaller()` is always true, `getcallingscript()` and `getscriptfromthread()` are nil, and `filtergc`'s `IgnoreExecutor` (true by default) skips every Lua function: pass `IgnoreExecutor = false`.\n- `getgc`, `filtergc`, `getreg` and live protos see what was made after the studio began tracking objects: from the load of the first mod whose source names one of them (or their first call), as tracking costs a little on every function and table made.\n- Hooks are global: `hookfunction(print, ...)` changes `print` for every mod. They stay until `restorefunction` (or the game restarts), even after the mod that made them stops.\n- `getscriptbytecode` is the studio's own dump of a mod's compiled main file, not Luau bytecode; `getscripthash` hashes that. A ModuleScript runs under `require` from its hidden `Source` (set with `sethiddenproperty`).\n- `replicatesignal` errors: there is no server. `fireclickdetector`, `fireproximityprompt` and `firetouchinterest` fire the events here, deferred like every signal.\n- Files live in the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), which scripts can't leave. `request`, `game:HttpGet` and WebSockets reach the internet only, never this computer or its network.\n- Drawings are in dp, Horizon's logical pixels (the Camera's ViewportSize), over the HUD and the mods' GUIs. Images (Drawing's `Data` and ImageLabels with a `getcustomasset` id) are PNGs drawn as blocks of colour, up to 48 x 48 of them.\n- `base64encode`, `base64decode`, `lz4compress` and `lz4decompress` are globals. For the older [UNC](https://github.com/unified-naming-convention/NamingStandard) standard the `crypt` library is here too (`crypt.base64encode`, `crypt.generatekey`, `crypt.hash`, `crypt.encrypt`/`decrypt` over AES), with `base64` and `cache` tables; sUNC deprecates `crypt` (its test warns one exists), UNC needs it.\n- UNC's console (`rconsoleprint`, `rconsoleclear`...) prints to the Studio console; its mouse input (`mouse1click`, `mousemoveabs`, `mousescroll`...) drives the Roblox GUI's pointer; `setclipboard` uses the system clipboard; `setfpscap`, `queue_on_teleport` and `messagebox` have nothing to act on here. UNC tests that read Roblox game content a mod can't have (CoreGui's modules, a character's Animate script) can't pass on Minecraft.\n\nThese functions widen what a script can do (see the `limits` topic): run a script from someone you trust."
     },
     {
       "id": "errors",
@@ -2262,6 +2262,251 @@
       "name": "setscriptable",
       "topic": "executor",
       "doc": "`setscriptable(instance, property, on)`\n\nMakes a property unreadable to scripts (false), or a hidden one readable (true); returns whether it was scriptable before.\n\n```lua\nlocal p = Instance.new(\"Part\")\nsetscriptable(p, \"Name\", false)\n```"
+    },
+    {
+      "name": "crypt.base64encode",
+      "topic": "executor",
+      "doc": "`crypt.base64encode(data)`\n\n`data` as Base64 text (also `base64encode`, `base64.encode`, `crypt.base64.encode`).\n\n```lua\nprint(crypt.base64encode(\"test\")) -- dGVzdA==\n```"
+    },
+    {
+      "name": "crypt.base64decode",
+      "topic": "executor",
+      "doc": "`crypt.base64decode(text)`\n\nBase64 text back to its bytes.\n\n```lua\nprint(crypt.base64decode(\"dGVzdA==\")) -- test\n```"
+    },
+    {
+      "name": "crypt.base64_encode",
+      "topic": "executor",
+      "doc": "`crypt.base64_encode(data)`\n\nThe same function as `crypt.base64encode`, under the name UNC uses.\n\n```lua\nprint(crypt.base64_encode ~= nil)\n```"
+    },
+    {
+      "name": "crypt.base64_decode",
+      "topic": "executor",
+      "doc": "`crypt.base64_decode(text)`\n\nThe same function as `crypt.base64decode`, under the name UNC uses.\n\n```lua\nprint(crypt.base64_decode ~= nil)\n```"
+    },
+    {
+      "name": "crypt.generatebytes",
+      "topic": "executor",
+      "doc": "`crypt.generatebytes(size)`\n\n`size` random bytes, as Base64 (decode it to get the raw bytes).\n\n```lua\nlocal b = crypt.generatebytes(16)\n```"
+    },
+    {
+      "name": "crypt.generatekey",
+      "topic": "executor",
+      "doc": "`crypt.generatekey()`\n\nA random 32-byte AES key, as Base64.\n\n```lua\nlocal key = crypt.generatekey()\n```"
+    },
+    {
+      "name": "crypt.hash",
+      "topic": "executor",
+      "doc": "`crypt.hash(data, algorithm)`\n\nThe digest of `data` in hex. Algorithms: `md5`, `sha1`, `sha224`/`256`/`384`/`512`, `sha3-224`/`256`/`384`/`512`.\n\n```lua\nprint(crypt.hash(\"test\", \"sha256\"))\n```"
+    },
+    {
+      "name": "crypt.encrypt",
+      "topic": "executor",
+      "doc": "`crypt.encrypt(data, key, iv?, mode?)`\n\nAES. `key` and `iv` are Base64; a random IV is made when none is given; `mode` is `CBC` (default), `ECB`, `CFB`, `OFB`, `CTR` or `GCM`. Returns the Base64 ciphertext and the Base64 IV.\n\n```lua\nlocal key = crypt.generatekey()\nlocal data, iv = crypt.encrypt(\"hi\", key, nil, \"CBC\")\n```"
+    },
+    {
+      "name": "crypt.decrypt",
+      "topic": "executor",
+      "doc": "`crypt.decrypt(data, key, iv, mode?)`\n\nThe plaintext from the Base64 `data`, `key` and `iv`.\n\n```lua\nprint(crypt.decrypt(data, key, iv, \"CBC\"))\n```"
+    },
+    {
+      "name": "base64.encode",
+      "topic": "executor",
+      "doc": "`base64.encode(data)`\n\n`data` as Base64 (also `base64encode`, `base64_encode`).\n\n```lua\nprint(base64.encode(\"test\"))\n```"
+    },
+    {
+      "name": "base64.decode",
+      "topic": "executor",
+      "doc": "`base64.decode(text)`\n\nBase64 text back to its bytes.\n\n```lua\nprint(base64.decode(\"dGVzdA==\"))\n```"
+    },
+    {
+      "name": "base64_encode",
+      "topic": "executor",
+      "doc": "`base64_encode(data)`\n\nThe same function as `base64encode`, under the name UNC uses.\n\n```lua\nprint(base64_encode ~= nil)\n```"
+    },
+    {
+      "name": "base64_decode",
+      "topic": "executor",
+      "doc": "`base64_decode(text)`\n\nThe same function as `base64decode`, under the name UNC uses.\n\n```lua\nprint(base64_decode ~= nil)\n```"
+    },
+    {
+      "name": "cache.invalidate",
+      "topic": "executor",
+      "doc": "`cache.invalidate(instance)`\n\nDrops the Instance's cached reference, so the next time it is read a new, non-equal reference is made.\n\n```lua\ncache.invalidate(workspace:FindFirstChildOfClass(\"Camera\"))\n```"
+    },
+    {
+      "name": "cache.iscached",
+      "topic": "executor",
+      "doc": "`cache.iscached(instance)`\n\nWhether this reference is the Instance's current cached one.\n\n```lua\nprint(cache.iscached(workspace))\n```"
+    },
+    {
+      "name": "cache.replace",
+      "topic": "executor",
+      "doc": "`cache.replace(instance, other)`\n\nMakes references to `instance` resolve to `other` from now on.\n\n```lua\ncache.replace(a, b)\n```"
+    },
+    {
+      "name": "rconsoleprint",
+      "topic": "executor",
+      "doc": "`rconsoleprint(text)`\n\nPrints a line in the Studio console.\n\n```lua\nrconsoleprint(\"hello\")\n```"
+    },
+    {
+      "name": "consoleprint",
+      "topic": "executor",
+      "doc": "`consoleprint(text)`\n\nThe same function as `rconsoleprint`, under the name UNC uses.\n\n```lua\nprint(consoleprint ~= nil)\n```"
+    },
+    {
+      "name": "rconsoleclear",
+      "topic": "executor",
+      "doc": "`rconsoleclear()`\n\nEmpties the Studio console.\n\n```lua\nrconsoleclear()\n```"
+    },
+    {
+      "name": "consoleclear",
+      "topic": "executor",
+      "doc": "`consoleclear()`\n\nThe same function as `rconsoleclear`, under the name UNC uses.\n\n```lua\nprint(consoleclear ~= nil)\n```"
+    },
+    {
+      "name": "rconsolecreate",
+      "topic": "executor",
+      "doc": "`rconsolecreate()`\n\nDoes nothing (the Studio console is always open).\n\n```lua\nrconsolecreate()\n```"
+    },
+    {
+      "name": "consolecreate",
+      "topic": "executor",
+      "doc": "`consolecreate()`\n\nThe same function as `rconsolecreate`, under the name UNC uses.\n\n```lua\nprint(consolecreate ~= nil)\n```"
+    },
+    {
+      "name": "rconsoledestroy",
+      "topic": "executor",
+      "doc": "`rconsoledestroy()`\n\nDoes nothing.\n\n```lua\nrconsoledestroy()\n```"
+    },
+    {
+      "name": "consoledestroy",
+      "topic": "executor",
+      "doc": "`consoledestroy()`\n\nThe same function as `rconsoledestroy`, under the name UNC uses.\n\n```lua\nprint(consoledestroy ~= nil)\n```"
+    },
+    {
+      "name": "rconsoleinput",
+      "topic": "executor",
+      "doc": "`rconsoleinput()`\n\nReturns `\"\"` (the Studio console has no blocking input).\n\n```lua\nlocal line = rconsoleinput()\n```"
+    },
+    {
+      "name": "consoleinput",
+      "topic": "executor",
+      "doc": "`consoleinput()`\n\nThe same function as `rconsoleinput`, under the name UNC uses.\n\n```lua\nprint(consoleinput ~= nil)\n```"
+    },
+    {
+      "name": "rconsolesettitle",
+      "topic": "executor",
+      "doc": "`rconsolesettitle(title)`\n\nDoes nothing (the console has no title bar of its own).\n\n```lua\nrconsolesettitle(\"My tool\")\n```"
+    },
+    {
+      "name": "rconsolename",
+      "topic": "executor",
+      "doc": "`rconsolename(title)`\n\nThe same function as `rconsolesettitle`, under the name UNC uses.\n\n```lua\nprint(rconsolename ~= nil)\n```"
+    },
+    {
+      "name": "consolesettitle",
+      "topic": "executor",
+      "doc": "`consolesettitle(title)`\n\nThe same function as `rconsolesettitle`, under the name UNC uses.\n\n```lua\nprint(consolesettitle ~= nil)\n```"
+    },
+    {
+      "name": "mouse1click",
+      "topic": "executor",
+      "doc": "`mouse1click()`\n\nA left press and release, onto the Roblox GUI's pointer (its screen must have the mouse; see the `roblox` topic).\n\n```lua\nmouse1click()\n```"
+    },
+    {
+      "name": "mouse1press",
+      "topic": "executor",
+      "doc": "`mouse1press()`\n\nHolds the left button down.\n\n```lua\nmouse1press()\n```"
+    },
+    {
+      "name": "mouse1release",
+      "topic": "executor",
+      "doc": "`mouse1release()`\n\nLets the left button up.\n\n```lua\nmouse1release()\n```"
+    },
+    {
+      "name": "mouse2click",
+      "topic": "executor",
+      "doc": "`mouse2click()`\n\nA right press and release.\n\n```lua\nmouse2click()\n```"
+    },
+    {
+      "name": "mouse2press",
+      "topic": "executor",
+      "doc": "`mouse2press()`\n\nHolds the right button down.\n\n```lua\nmouse2press()\n```"
+    },
+    {
+      "name": "mouse2release",
+      "topic": "executor",
+      "doc": "`mouse2release()`\n\nLets the right button up.\n\n```lua\nmouse2release()\n```"
+    },
+    {
+      "name": "mousemoveabs",
+      "topic": "executor",
+      "doc": "`mousemoveabs(x, y)`\n\nMoves the pointer to `x, y` in dp.\n\n```lua\nmousemoveabs(100, 100)\n```"
+    },
+    {
+      "name": "mousemoverel",
+      "topic": "executor",
+      "doc": "`mousemoverel(dx, dy)`\n\nMoves the pointer by `dx, dy` dp.\n\n```lua\nmousemoverel(5, 0)\n```"
+    },
+    {
+      "name": "mousescroll",
+      "topic": "executor",
+      "doc": "`mousescroll(amount)`\n\nScrolls the wheel (positive up).\n\n```lua\nmousescroll(1)\n```"
+    },
+    {
+      "name": "isrbxactive",
+      "topic": "executor",
+      "doc": "`isrbxactive()`\n\nWhether the game window is active (playing, not paused).\n\n```lua\nprint(isrbxactive())\n```"
+    },
+    {
+      "name": "isgameactive",
+      "topic": "executor",
+      "doc": "`isgameactive()`\n\nThe same function as `isrbxactive`, under the name UNC uses.\n\n```lua\nprint(isgameactive ~= nil)\n```"
+    },
+    {
+      "name": "setclipboard",
+      "topic": "executor",
+      "doc": "`setclipboard(text)`\n\nPuts `text` on the system clipboard.\n\n```lua\nsetclipboard(\"copied\")\n```"
+    },
+    {
+      "name": "toclipboard",
+      "topic": "executor",
+      "doc": "`toclipboard(text)`\n\nThe same function as `setclipboard`, under the name UNC uses.\n\n```lua\nprint(toclipboard ~= nil)\n```"
+    },
+    {
+      "name": "messagebox",
+      "topic": "executor",
+      "doc": "`messagebox(text[, title[, flags]])`\n\nShows `text` in the Studio console and returns 1 (the OK button); there is no modal dialog here.\n\n```lua\nmessagebox(\"done\", \"Info\", 0)\n```"
+    },
+    {
+      "name": "setfpscap",
+      "topic": "executor",
+      "doc": "`setfpscap(cap)`\n\nDoes nothing: Horizon's frame rate is the game's.\n\n```lua\nsetfpscap(60)\n```"
+    },
+    {
+      "name": "queue_on_teleport",
+      "topic": "executor",
+      "doc": "`queue_on_teleport(code)`\n\nDoes nothing: there is no teleport between games here.\n\n```lua\nqueue_on_teleport(\"print('next')\")\n```"
+    },
+    {
+      "name": "queueonteleport",
+      "topic": "executor",
+      "doc": "`queueonteleport(code)`\n\nThe same function as `queue_on_teleport`, under the name UNC uses.\n\n```lua\nprint(queueonteleport ~= nil)\n```"
+    },
+    {
+      "name": "setrbxclipboard",
+      "topic": "executor",
+      "doc": "`setrbxclipboard(data)`\n\nDoes nothing (no Roblox Studio clipboard here); returns true.\n\n```lua\nprint(setrbxclipboard(\"\"))\n```"
+    },
+    {
+      "name": "getthreadcontext",
+      "topic": "executor",
+      "doc": "`getthreadcontext()`\n\nThe same function as `getthreadidentity`, under the name UNC uses.\n\n```lua\nprint(getthreadcontext ~= nil)\n```"
+    },
+    {
+      "name": "setthreadcontext",
+      "topic": "executor",
+      "doc": "`setthreadcontext(level)`\n\nThe same function as `setthreadidentity`, under the name UNC uses.\n\n```lua\nprint(setthreadcontext ~= nil)\n```"
     }
   ]
 }

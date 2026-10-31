@@ -10,7 +10,8 @@
 
 use super::hstudio::{Ctx, GameApi, Owner};
 use super::hstudio_lua::{
-    Lua, MAX_STRING, Native, Res, Table, TableRef, Throw, Userdata, Value, bad_arg, check_str, check_text, opt_str,
+    Lua, MAX_STRING, Native, Res, Table, TableRef, Throw, Userdata, Value, bad_arg, check_str, check_text, opt_num,
+    opt_str,
 };
 use super::hstudio_rbx::{ConnRef, Env, Id, InstRef, Rbx, SignalRef, is_a};
 use super::hstudio_rbx_types::{Color3, Vector2};
@@ -71,7 +72,44 @@ pub const FUNCTIONS: &[(&str, u32)] = &[
     ("getrenderproperty", 2082),
     ("setrenderproperty", 2083),
     ("isrenderobj", 2084),
+    // UNC: the console (routed to the studio console).
+    ("rconsoleprint", 2103),
+    ("consoleprint", 2103),
+    ("rconsoleclear", 2104),
+    ("consoleclear", 2104),
+    ("rconsolecreate", 2105),
+    ("consolecreate", 2105),
+    ("rconsoledestroy", 2106),
+    ("consoledestroy", 2106),
+    ("rconsoleinput", 2107),
+    ("consoleinput", 2107),
+    ("rconsolesettitle", 2108),
+    ("rconsolename", 2108),
+    ("consolesettitle", 2108),
+    // UNC: input, routed to the Roblox layer's pointer.
+    ("mouse1click", 2110),
+    ("mouse1press", 2111),
+    ("mouse1release", 2112),
+    ("mouse2click", 2113),
+    ("mouse2press", 2114),
+    ("mouse2release", 2115),
+    ("mousemoveabs", 2116),
+    ("mousemoverel", 2117),
+    ("mousescroll", 2118),
+    ("isrbxactive", 2119),
+    ("isgameactive", 2119),
+    // UNC: clipboard and the rest.
+    ("setclipboard", 2120),
+    ("toclipboard", 2120),
+    ("messagebox", 2121),
+    ("setfpscap", 2122),
+    ("queue_on_teleport", 2123),
+    ("queueonteleport", 2123),
+    ("setrbxclipboard", 2124),
 ];
+
+/// The `cache` table's host ids.
+const CACHE: &[(&str, u32)] = &[("invalidate", 2100), ("iscached", 2101), ("replace", 2102)];
 
 const WS_OPEN: u32 = 2031;
 const CONN_FIRE: u32 = 2053;
@@ -165,6 +203,14 @@ pub fn executor_globals(lua: &mut Lua, genv: &TableRef, rbx: &mut Rbx) {
     }
     d.set_str("Fonts", Value::table(fonts));
     g.set_str("Drawing", Value::table(d));
+    // cache: the Instance registry's refs.
+    let mut cache = Table::new();
+    for (name, id) in CACHE {
+        let f = Native::host(name, *id);
+        super::hstudio_exec::mark(&f);
+        cache.set_str(name, f);
+    }
+    g.set_str("cache", Value::table(cache));
     // The prelude: HttpGet and friends, and WebSocket.connect.
     let ws_open = Native::host("connect", WS_OPEN);
     drop(g);
@@ -1304,6 +1350,96 @@ impl Ctx<'_> {
                 none()
             }
             DRAWING_TOSTRING => one(Value::str("Drawing")),
+            // ---- cache (the Instance registry)
+            2100 => {
+                if let Some(i) = args.first().and_then(|v| self.s.rbx.id_of(v)) {
+                    // A fresh reference: the old one is no longer the cached one.
+                    let new = self.s.rbx.new_reference(i);
+                    self.s.rbx.inst_mut(i).value = new;
+                }
+                none()
+            }
+            2101 => {
+                let cached = match (args.first(), args.first().and_then(|v| self.s.rbx.id_of(v))) {
+                    (Some(v), Some(i)) => v.raw_eq(&self.s.rbx.inst(i).value),
+                    _ => false,
+                };
+                one(Value::Bool(cached))
+            }
+            2102 => {
+                let a = inst(self, lua, &args, 0, fname)?;
+                let b = inst(self, lua, &args, 1, fname)?;
+                // `a` now resolves to `b`: its stored value becomes a ref to b.
+                let bv = self.s.rbx.new_reference(b);
+                self.s.rbx.inst_mut(a).value = bv;
+                let _ = a;
+                none()
+            }
+            // ---- the console
+            2103 => {
+                let text = check_text(lua, &args, 0, fname)?;
+                self.s.log(super::hstudio::LogKind::Output, text);
+                none()
+            }
+            2104 => {
+                self.s.log.clear();
+                none()
+            }
+            2105 | 2106 => none(),
+            2107 => one(Value::str("")),
+            2108 => {
+                let _ = opt_str(lua, &args, 0, fname)?;
+                none()
+            }
+            // ---- input, onto the Roblox layer's pointer
+            2110..=2118 => {
+                let rbx = &mut self.s.rbx;
+                rbx.active = true;
+                match id {
+                    2110..=2115 => {
+                        let left = id < 2113;
+                        if matches!(id, 2110 | 2113) {
+                            super::hstudio_rbx_draw::pointer_button(rbx, left, true);
+                            super::hstudio_rbx_draw::pointer_button(rbx, left, false);
+                        } else {
+                            super::hstudio_rbx_draw::pointer_button(rbx, left, matches!(id, 2111 | 2114));
+                        }
+                    }
+                    2116 => {
+                        let x = opt_num(lua, &args, 0, fname, rbx.pointer.x)?;
+                        let y = opt_num(lua, &args, 1, fname, rbx.pointer.y)?;
+                        super::hstudio_rbx_draw::pointer_moved(rbx, x, y);
+                    }
+                    2117 => {
+                        let (x, y) = (rbx.pointer.x, rbx.pointer.y);
+                        let dx = opt_num(lua, &args, 0, fname, 0.0)?;
+                        let dy = opt_num(lua, &args, 1, fname, 0.0)?;
+                        super::hstudio_rbx_draw::pointer_moved(rbx, x + dx, y + dy);
+                    }
+                    _ => {
+                        let steps = opt_num(lua, &args, 0, fname, 0.0)?;
+                        super::hstudio_rbx_draw::wheel(rbx, steps);
+                    }
+                }
+                none()
+            }
+            2119 => one(Value::Bool(self.game.screen() == "playing")),
+            // ---- clipboard and the rest
+            2120 => {
+                let text = check_text(lua, &args, 0, fname)?;
+                self.game.set_clipboard(&text);
+                none()
+            }
+            2121 => {
+                let text = check_text(lua, &args, 0, fname)?;
+                self.s.log(super::hstudio::LogKind::Info, format!("messagebox: {text}"));
+                // Roblox's MessageBox returns the button pressed; 1 (OK).
+                one(Value::Num(1.0))
+            }
+            2122..=2124 => {
+                // setfpscap, queue_on_teleport, setrbxclipboard: nothing to do here.
+                one(if id == 2124 { Value::Bool(true) } else { Value::Nil })
+            }
             _ => Err(lua.rt_error(format!("unknown executor function {id}"))),
         }
     }
@@ -1363,7 +1499,8 @@ impl Ctx<'_> {
 pub fn names() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = super::hstudio_exec::globals().into_iter().map(|g| g.0).collect();
     out.extend(FUNCTIONS.iter().map(|f| f.0));
-    out.extend(["http", "Drawing", "WebSocket"]);
+    out.extend(CACHE.iter().map(|c| c.0));
+    out.extend(["http", "Drawing", "WebSocket", "crypt", "base64", "cache"]);
     out
 }
 

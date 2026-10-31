@@ -1924,7 +1924,8 @@ box.Visible = true
 - `replicatesignal` errors: there is no server. `fireclickdetector`, `fireproximityprompt` and `firetouchinterest` fire the events here, deferred like every signal.
 - Files live in the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), which scripts can't leave. `request`, `game:HttpGet` and WebSockets reach the internet only, never this computer or its network.
 - Drawings are in dp, Horizon's logical pixels (the Camera's ViewportSize), over the HUD and the mods' GUIs. Images (Drawing's `Data` and ImageLabels with a `getcustomasset` id) are PNGs drawn as blocks of colour, up to 48 x 48 of them.
-- There is no `crypt` library (sUNC warns when one exists): `base64encode`, `base64decode`, `lz4compress` and `lz4decompress` are globals.
+- `base64encode`, `base64decode`, `lz4compress` and `lz4decompress` are globals. For the older [UNC](https://github.com/unified-naming-convention/NamingStandard) standard the `crypt` library is here too (`crypt.base64encode`, `crypt.generatekey`, `crypt.hash`, `crypt.encrypt`/`decrypt` over AES), with `base64` and `cache` tables; sUNC deprecates `crypt` (its test warns one exists), UNC needs it.
+- UNC's console (`rconsoleprint`, `rconsoleclear`...) prints to the Studio console; its mouse input (`mouse1click`, `mousemoveabs`, `mousescroll`...) drives the Roblox GUI's pointer; `setclipboard` uses the system clipboard; `setfpscap`, `queue_on_teleport` and `messagebox` have nothing to act on here. UNC tests that read Roblox game content a mod can't have (CoreGui's modules, a character's Animate script) can't pass on Minecraft.
 
 These functions widen what a script can do (see the `limits` topic): run a script from someone you trust.
 "##;
@@ -8653,6 +8654,644 @@ Makes a property unreadable to scripts (false), or a hidden one readable (true);
 ```lua
 local p = Instance.new("Part")
 setscriptable(p, "Name", false)
+```
+"##
+    ),
+    e!(
+        "crypt.base64encode",
+        "executor",
+        r##"
+`crypt.base64encode(data)`
+
+`data` as Base64 text (also `base64encode`, `base64.encode`, `crypt.base64.encode`).
+
+```lua
+print(crypt.base64encode("test")) -- dGVzdA==
+```
+"##
+    ),
+    e!(
+        "crypt.base64decode",
+        "executor",
+        r##"
+`crypt.base64decode(text)`
+
+Base64 text back to its bytes.
+
+```lua
+print(crypt.base64decode("dGVzdA==")) -- test
+```
+"##
+    ),
+    e!(
+        "crypt.base64_encode",
+        "executor",
+        r##"
+`crypt.base64_encode(data)`
+
+The same function as `crypt.base64encode`, under the name UNC uses.
+
+```lua
+print(crypt.base64_encode ~= nil)
+```
+"##
+    ),
+    e!(
+        "crypt.base64_decode",
+        "executor",
+        r##"
+`crypt.base64_decode(text)`
+
+The same function as `crypt.base64decode`, under the name UNC uses.
+
+```lua
+print(crypt.base64_decode ~= nil)
+```
+"##
+    ),
+    e!(
+        "crypt.generatebytes",
+        "executor",
+        r##"
+`crypt.generatebytes(size)`
+
+`size` random bytes, as Base64 (decode it to get the raw bytes).
+
+```lua
+local b = crypt.generatebytes(16)
+```
+"##
+    ),
+    e!(
+        "crypt.generatekey",
+        "executor",
+        r##"
+`crypt.generatekey()`
+
+A random 32-byte AES key, as Base64.
+
+```lua
+local key = crypt.generatekey()
+```
+"##
+    ),
+    e!(
+        "crypt.hash",
+        "executor",
+        r##"
+`crypt.hash(data, algorithm)`
+
+The digest of `data` in hex. Algorithms: `md5`, `sha1`, `sha224`/`256`/`384`/`512`, `sha3-224`/`256`/`384`/`512`.
+
+```lua
+print(crypt.hash("test", "sha256"))
+```
+"##
+    ),
+    e!(
+        "crypt.encrypt",
+        "executor",
+        r##"
+`crypt.encrypt(data, key, iv?, mode?)`
+
+AES. `key` and `iv` are Base64; a random IV is made when none is given; `mode` is `CBC` (default), `ECB`, `CFB`, `OFB`, `CTR` or `GCM`. Returns the Base64 ciphertext and the Base64 IV.
+
+```lua
+local key = crypt.generatekey()
+local data, iv = crypt.encrypt("hi", key, nil, "CBC")
+```
+"##
+    ),
+    e!(
+        "crypt.decrypt",
+        "executor",
+        r##"
+`crypt.decrypt(data, key, iv, mode?)`
+
+The plaintext from the Base64 `data`, `key` and `iv`.
+
+```lua
+print(crypt.decrypt(data, key, iv, "CBC"))
+```
+"##
+    ),
+    e!(
+        "base64.encode",
+        "executor",
+        r##"
+`base64.encode(data)`
+
+`data` as Base64 (also `base64encode`, `base64_encode`).
+
+```lua
+print(base64.encode("test"))
+```
+"##
+    ),
+    e!(
+        "base64.decode",
+        "executor",
+        r##"
+`base64.decode(text)`
+
+Base64 text back to its bytes.
+
+```lua
+print(base64.decode("dGVzdA=="))
+```
+"##
+    ),
+    e!(
+        "base64_encode",
+        "executor",
+        r##"
+`base64_encode(data)`
+
+The same function as `base64encode`, under the name UNC uses.
+
+```lua
+print(base64_encode ~= nil)
+```
+"##
+    ),
+    e!(
+        "base64_decode",
+        "executor",
+        r##"
+`base64_decode(text)`
+
+The same function as `base64decode`, under the name UNC uses.
+
+```lua
+print(base64_decode ~= nil)
+```
+"##
+    ),
+    e!(
+        "cache.invalidate",
+        "executor",
+        r##"
+`cache.invalidate(instance)`
+
+Drops the Instance's cached reference, so the next time it is read a new, non-equal reference is made.
+
+```lua
+cache.invalidate(workspace:FindFirstChildOfClass("Camera"))
+```
+"##
+    ),
+    e!(
+        "cache.iscached",
+        "executor",
+        r##"
+`cache.iscached(instance)`
+
+Whether this reference is the Instance's current cached one.
+
+```lua
+print(cache.iscached(workspace))
+```
+"##
+    ),
+    e!(
+        "cache.replace",
+        "executor",
+        r##"
+`cache.replace(instance, other)`
+
+Makes references to `instance` resolve to `other` from now on.
+
+```lua
+cache.replace(a, b)
+```
+"##
+    ),
+    e!(
+        "rconsoleprint",
+        "executor",
+        r##"
+`rconsoleprint(text)`
+
+Prints a line in the Studio console.
+
+```lua
+rconsoleprint("hello")
+```
+"##
+    ),
+    e!(
+        "consoleprint",
+        "executor",
+        r##"
+`consoleprint(text)`
+
+The same function as `rconsoleprint`, under the name UNC uses.
+
+```lua
+print(consoleprint ~= nil)
+```
+"##
+    ),
+    e!(
+        "rconsoleclear",
+        "executor",
+        r##"
+`rconsoleclear()`
+
+Empties the Studio console.
+
+```lua
+rconsoleclear()
+```
+"##
+    ),
+    e!(
+        "consoleclear",
+        "executor",
+        r##"
+`consoleclear()`
+
+The same function as `rconsoleclear`, under the name UNC uses.
+
+```lua
+print(consoleclear ~= nil)
+```
+"##
+    ),
+    e!(
+        "rconsolecreate",
+        "executor",
+        r##"
+`rconsolecreate()`
+
+Does nothing (the Studio console is always open).
+
+```lua
+rconsolecreate()
+```
+"##
+    ),
+    e!(
+        "consolecreate",
+        "executor",
+        r##"
+`consolecreate()`
+
+The same function as `rconsolecreate`, under the name UNC uses.
+
+```lua
+print(consolecreate ~= nil)
+```
+"##
+    ),
+    e!(
+        "rconsoledestroy",
+        "executor",
+        r##"
+`rconsoledestroy()`
+
+Does nothing.
+
+```lua
+rconsoledestroy()
+```
+"##
+    ),
+    e!(
+        "consoledestroy",
+        "executor",
+        r##"
+`consoledestroy()`
+
+The same function as `rconsoledestroy`, under the name UNC uses.
+
+```lua
+print(consoledestroy ~= nil)
+```
+"##
+    ),
+    e!(
+        "rconsoleinput",
+        "executor",
+        r##"
+`rconsoleinput()`
+
+Returns `""` (the Studio console has no blocking input).
+
+```lua
+local line = rconsoleinput()
+```
+"##
+    ),
+    e!(
+        "consoleinput",
+        "executor",
+        r##"
+`consoleinput()`
+
+The same function as `rconsoleinput`, under the name UNC uses.
+
+```lua
+print(consoleinput ~= nil)
+```
+"##
+    ),
+    e!(
+        "rconsolesettitle",
+        "executor",
+        r##"
+`rconsolesettitle(title)`
+
+Does nothing (the console has no title bar of its own).
+
+```lua
+rconsolesettitle("My tool")
+```
+"##
+    ),
+    e!(
+        "rconsolename",
+        "executor",
+        r##"
+`rconsolename(title)`
+
+The same function as `rconsolesettitle`, under the name UNC uses.
+
+```lua
+print(rconsolename ~= nil)
+```
+"##
+    ),
+    e!(
+        "consolesettitle",
+        "executor",
+        r##"
+`consolesettitle(title)`
+
+The same function as `rconsolesettitle`, under the name UNC uses.
+
+```lua
+print(consolesettitle ~= nil)
+```
+"##
+    ),
+    e!(
+        "mouse1click",
+        "executor",
+        r##"
+`mouse1click()`
+
+A left press and release, onto the Roblox GUI's pointer (its screen must have the mouse; see the `roblox` topic).
+
+```lua
+mouse1click()
+```
+"##
+    ),
+    e!(
+        "mouse1press",
+        "executor",
+        r##"
+`mouse1press()`
+
+Holds the left button down.
+
+```lua
+mouse1press()
+```
+"##
+    ),
+    e!(
+        "mouse1release",
+        "executor",
+        r##"
+`mouse1release()`
+
+Lets the left button up.
+
+```lua
+mouse1release()
+```
+"##
+    ),
+    e!(
+        "mouse2click",
+        "executor",
+        r##"
+`mouse2click()`
+
+A right press and release.
+
+```lua
+mouse2click()
+```
+"##
+    ),
+    e!(
+        "mouse2press",
+        "executor",
+        r##"
+`mouse2press()`
+
+Holds the right button down.
+
+```lua
+mouse2press()
+```
+"##
+    ),
+    e!(
+        "mouse2release",
+        "executor",
+        r##"
+`mouse2release()`
+
+Lets the right button up.
+
+```lua
+mouse2release()
+```
+"##
+    ),
+    e!(
+        "mousemoveabs",
+        "executor",
+        r##"
+`mousemoveabs(x, y)`
+
+Moves the pointer to `x, y` in dp.
+
+```lua
+mousemoveabs(100, 100)
+```
+"##
+    ),
+    e!(
+        "mousemoverel",
+        "executor",
+        r##"
+`mousemoverel(dx, dy)`
+
+Moves the pointer by `dx, dy` dp.
+
+```lua
+mousemoverel(5, 0)
+```
+"##
+    ),
+    e!(
+        "mousescroll",
+        "executor",
+        r##"
+`mousescroll(amount)`
+
+Scrolls the wheel (positive up).
+
+```lua
+mousescroll(1)
+```
+"##
+    ),
+    e!(
+        "isrbxactive",
+        "executor",
+        r##"
+`isrbxactive()`
+
+Whether the game window is active (playing, not paused).
+
+```lua
+print(isrbxactive())
+```
+"##
+    ),
+    e!(
+        "isgameactive",
+        "executor",
+        r##"
+`isgameactive()`
+
+The same function as `isrbxactive`, under the name UNC uses.
+
+```lua
+print(isgameactive ~= nil)
+```
+"##
+    ),
+    e!(
+        "setclipboard",
+        "executor",
+        r##"
+`setclipboard(text)`
+
+Puts `text` on the system clipboard.
+
+```lua
+setclipboard("copied")
+```
+"##
+    ),
+    e!(
+        "toclipboard",
+        "executor",
+        r##"
+`toclipboard(text)`
+
+The same function as `setclipboard`, under the name UNC uses.
+
+```lua
+print(toclipboard ~= nil)
+```
+"##
+    ),
+    e!(
+        "messagebox",
+        "executor",
+        r##"
+`messagebox(text[, title[, flags]])`
+
+Shows `text` in the Studio console and returns 1 (the OK button); there is no modal dialog here.
+
+```lua
+messagebox("done", "Info", 0)
+```
+"##
+    ),
+    e!(
+        "setfpscap",
+        "executor",
+        r##"
+`setfpscap(cap)`
+
+Does nothing: Horizon's frame rate is the game's.
+
+```lua
+setfpscap(60)
+```
+"##
+    ),
+    e!(
+        "queue_on_teleport",
+        "executor",
+        r##"
+`queue_on_teleport(code)`
+
+Does nothing: there is no teleport between games here.
+
+```lua
+queue_on_teleport("print('next')")
+```
+"##
+    ),
+    e!(
+        "queueonteleport",
+        "executor",
+        r##"
+`queueonteleport(code)`
+
+The same function as `queue_on_teleport`, under the name UNC uses.
+
+```lua
+print(queueonteleport ~= nil)
+```
+"##
+    ),
+    e!(
+        "setrbxclipboard",
+        "executor",
+        r##"
+`setrbxclipboard(data)`
+
+Does nothing (no Roblox Studio clipboard here); returns true.
+
+```lua
+print(setrbxclipboard(""))
+```
+"##
+    ),
+    e!(
+        "getthreadcontext",
+        "executor",
+        r##"
+`getthreadcontext()`
+
+The same function as `getthreadidentity`, under the name UNC uses.
+
+```lua
+print(getthreadcontext ~= nil)
+```
+"##
+    ),
+    e!(
+        "setthreadcontext",
+        "executor",
+        r##"
+`setthreadcontext(level)`
+
+The same function as `setthreadidentity`, under the name UNC uses.
+
+```lua
+print(setthreadcontext ~= nil)
 ```
 "##
     ),

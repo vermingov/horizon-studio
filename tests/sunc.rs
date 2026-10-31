@@ -342,7 +342,10 @@ fn encoding() {
         print(crypt)
     "##,
     );
-    assert_eq!(p, ["RHVtbXlTdHJpbmcAAg==\ttrue", "true\ttrue\ttrue", "nil"]);
+    assert_eq!(p[0], "RHVtbXlTdHJpbmcAAg==\ttrue");
+    assert_eq!(p[1], "true\ttrue\ttrue");
+    // UNC's crypt library is present (sUNC deprecates it, but it is here).
+    assert!(p[2].starts_with("table:"), "{}", p[2]);
 }
 
 #[test]
@@ -658,4 +661,99 @@ fn network_stays_on_the_internet() {
     );
     assert!(p[3].starts_with("false\t"), "{}", p[3]);
     assert_eq!(p[4], "function\tfunction\tfunction");
+}
+
+// ----------------------------------------------------------------- UNC additions
+
+#[test]
+fn crypt_library() {
+    let p = printed(
+        r##"
+        print(crypt.base64encode("test"), crypt.base64decode("dGVzdA==") == "test")
+        print(base64.encode("test"), base64.decode("dGVzdA=="), base64_encode("hi"))
+        print(crypt.base64.encode("test"), crypt.base64_decode("dGVzdA=="))
+        local key = crypt.generatekey()
+        print(#crypt.base64decode(key))
+        local size = 40
+        print(#crypt.base64decode(crypt.generatebytes(size)) == size)
+        local enc, iv = crypt.encrypt("secret message", key, nil, "CBC")
+        print(iv ~= nil, crypt.decrypt(enc, key, iv, "CBC") == "secret message")
+        local key2, iv2 = crypt.generatekey(), crypt.generatekey()
+        print(crypt.decrypt(crypt.encrypt("x", key2, iv2, "CBC"), key2, iv2, "CBC") == "x")
+        for _, a in { "sha1", "sha384", "sha512", "md5", "sha256", "sha3-224", "sha3-256", "sha3-512" } do
+            assert(#crypt.hash("test", a) > 0, a)
+        end
+        print(crypt.hash("test", "sha256"))
+    "##,
+    );
+    assert_eq!(p[0], "dGVzdA==\ttrue");
+    assert_eq!(p[1], "dGVzdA==\ttest\taGk=");
+    assert_eq!(p[2], "dGVzdA==\ttest");
+    assert_eq!(p[3], "32");
+    assert_eq!(p[4], "true");
+    assert_eq!(p[5], "true\ttrue");
+    assert_eq!(p[6], "true");
+    assert_eq!(p[7], "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08");
+}
+
+#[test]
+fn cache_and_input_and_console() {
+    let p = printed(
+        r##"
+        -- cache: references and invalidation
+        local container = Instance.new("Folder")
+        local part = Instance.new("Part", container)
+        assert(cache.iscached(part), "part should be cached")
+        cache.invalidate(container:FindFirstChild("Part"))
+        assert(part ~= container:FindFirstChild("Part"), "should be invalidated")
+        assert(not cache.iscached(part), "old ref should not be cached")
+        local a, fire = Instance.new("Part"), Instance.new("Fire")
+        cache.replace(a, fire)
+        print("cache ok")
+
+        -- input exists and runs
+        print(type(isrbxactive()), type(mouse1click), type(mousemoveabs), type(mousescroll))
+        mousemoveabs(50, 60)
+        mouse1press() mouse1release() mouse1click() mouse2click()
+        mousescroll(1)
+        print("input ok")
+
+        -- console routes to the studio log
+        rconsoleprint("from rconsole")
+        print(type(rconsoleinput()), type(consoleclear))
+
+        -- misc
+        print(identifyexecutor())
+        print(messagebox("hi"), setfpscap(60), setrbxclipboard(""))
+        setclipboard("copied text")
+    "##,
+    );
+    assert_eq!(p[0], "cache ok");
+    assert_eq!(p[1], "boolean\tfunction\tfunction\tfunction");
+    assert_eq!(p[2], "input ok");
+    assert_eq!(p[3], "string\tfunction");
+    assert_eq!(p[4], "Horizon Studio\t0.4.0");
+    assert_eq!(p[5], "1\tnil\ttrue");
+    // rconsoleprint reached the studio console.
+    assert!(log_has(&run_mod(r#"rconsoleprint("mark-xyz")"#, 0.6).0, "mark-xyz"));
+}
+
+fn log_has(st: &Studio, needle: &str) -> bool {
+    log(st).iter().any(|l| l.contains(needle))
+}
+
+#[test]
+fn thread_context_aliases_and_clipboard() {
+    let (_st, game, p) = run_mod(
+        r##"
+        print(type(getthreadcontext), type(setthreadcontext))
+        setthreadcontext(5)
+        print(getthreadcontext())
+        setclipboard("hello clipboard")
+    "##,
+        0.6,
+    );
+    assert_eq!(p[0], "function\tfunction");
+    assert_eq!(p[1], "5");
+    assert_eq!(game.clipboard, "hello clipboard");
 }
