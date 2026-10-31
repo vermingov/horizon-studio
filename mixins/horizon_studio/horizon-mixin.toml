@@ -26,6 +26,42 @@ name = "hstudio_lualib"
 source = "lualib.rs"
 
 [[module]]
+id = "rbx_types"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_types"
+source = "rbx_types.rs"
+
+[[module]]
+id = "rbx_layout"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_layout"
+source = "rbx_layout.rs"
+
+[[module]]
+id = "rbx_values"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_values"
+source = "rbx_values.rs"
+
+[[module]]
+id = "rbx"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx"
+source = "rbx.rs"
+
+[[module]]
+id = "rbx_methods"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_methods"
+source = "rbx_methods.rs"
+
+[[module]]
+id = "rbx_draw"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_draw"
+source = "rbx_draw.rs"
+
+[[module]]
 id = "studio"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio"

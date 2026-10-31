@@ -23,9 +23,10 @@ fn api_names() -> BTreeSet<String> {
         .collect()
 }
 
-/// An entry named like an API function: not an event, a widget or the standard library.
+/// An entry named like an API function: not an event, a widget, the
+/// standard library or Roblox's data types.
 fn api_like(e: &Entry) -> bool {
-    e.topic != "stdlib" && !e.name.contains(':')
+    e.topic != "stdlib" && e.topic != "roblox" && !e.name.contains(':')
 }
 
 /// A mod run headless; what it printed, without the `[m] ` in front.
@@ -160,7 +161,7 @@ fn every_function_a_mod_reaches_has_an_entry_and_every_stdlib_entry_exists() {
     }
     let gone: Vec<&str> = ENTRIES
         .iter()
-        .filter(|e| e.topic == "stdlib" && !present.contains(e.name) && e.name != "_G")
+        .filter(|e| (e.topic == "stdlib" || e.topic == "roblox") && !present.contains(e.name) && e.name != "_G")
         .map(|e| e.name)
         .collect();
     assert!(gone.is_empty(), "stdlib entries for what mods don't have: {gone:?}");

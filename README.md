@@ -31,6 +31,10 @@ native Horizon mod that adds:
   [ViaProxy](https://github.com/ViaVersion/ViaProxy), which ViaHorizon downloads and runs beside the game, so you can
   play on 1.8, 1.12.2, 1.20 or Beta servers with Horizon's 26.3. You type the server's real address; pick the version
   in Options → Mods → Horizon Studio (or `/via` in game), or leave it on Auto detect.
+- **Luau and Roblox scripts.** Luau's syntax (types, `+=`, `continue`, `` `{interpolated}` `` strings, if-expressions)
+  and standard library, `task.wait` and `task.spawn` with a scheduler, and Roblox's API on Minecraft: `game`,
+  `workspace`, `Instance.new`, `Vector3`, `CFrame`, `UDim2`, signals, TweenService and ScreenGuis drawn in game. A
+  Roblox UI script or a general Luau script runs as a script mod; see [Luau and Roblox scripts](#luau-and-roblox-scripts).
 - **Libraries and modules.** A mod can export functions for other mods to `import`: a UI library, a pathfinder, a
   shared config. Libraries load first, and mods using one reload with it. Mods send each other events, and
   `gfx.*` draws in Horizon's own style (rounded shapes, the Geist fonts) so a UI library can be written in Lua. The
@@ -358,6 +362,8 @@ The Library's **New mod** writes a file like this to start from.
 | `command(name, fn[, help])` | `/name args` calls `fn(args, words)`; a returned string shows in chat. Vanilla's command names are refused. |
 | `after(seconds, fn)`, `every(seconds, fn)`, `cancel(id)` | Timers; `after` and `every` return an id. |
 | `require(name)` | Loads another file of a folder mod. |
+| `task.wait([seconds])`, `task.spawn(fn, ...)`, `task.defer(fn, ...)`, `task.delay(seconds, fn, ...)`, `task.cancel(thread)` | Luau's task scheduler: wait without stopping the game (a mod's top level, commands, these threads and Roblox signal handlers can wait), and threads of their own now, after the current code, or later. `task.synchronize()` and `task.desynchronize()` do nothing. |
+| `wait([seconds])`, `spawn(fn)`, `delay(seconds, fn)`, `tick()`, `time()`, `warn(...)` | Roblox's older globals: `task.wait`, `task.defer` and `task.delay` as they were; seconds since 1970; the studio's clock; a warning in the console. |
 | `color(r, g, b[, a])` | A color number for `hud` functions. Colors are also `0xAARRGGBB` numbers or `"#rrggbb"` strings. |
 | `print(...)` | A line in the Studio console, after the mod's id. |
 | `chat.show(text)` | A line in your chat that only you see. |
@@ -533,8 +539,70 @@ Lua 5.3, interpreted by the studio itself (native mods cannot add libraries, so 
 bitwise operators (`& | ~ << >>` and unary `~`, on whole numbers) and `os.clock`, `os.time`, `os.date` (UTC) and
 `os.difftime`. `dump(value)` pretty-prints a value.
 
+And Luau's syntax and library, as Roblox has them: see [Luau and Roblox scripts](#luau-and-roblox-scripts).
+
 Not there: `goto`, integers as a separate type (numbers are 64-bit floats, printed
 without a fraction when whole), `io`, the rest of `os`, `string.pack`. Strings are byte strings, as in Lua.
+
+### Luau and Roblox scripts
+
+Roblox client scripts run as script mods: Luau, and the Roblox API a LocalScript uses, put onto what the studio
+already does.
+
+```lua
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+
+local gui = Instance.new("ScreenGui")
+gui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+
+local button = Instance.new("TextButton")
+button.Size = UDim2.fromOffset(160, 40)
+button.Position = UDim2.new(0.5, -80, 0.8, 0)
+button.Text = "Click me"
+button.Modal = true -- frees the mouse while the button shows
+button.Parent = gui
+Instance.new("UICorner", button)
+
+button.MouseButton1Click:Connect(function()
+  TweenService:Create(button, TweenInfo.new(0.3), { BackgroundColor3 = Color3.fromRGB(0, 170, 255) }):Play()
+end)
+```
+
+- **Luau.** Type annotations (read and dropped), `type` aliases and `::` casts; `+=`, `-=`, `*=`, `/=`, `//=`, `%=`,
+  `^=`, `..=`; `continue`; `` `hello {name}` `` strings; `if a then b else c` expressions; `for k, v in t do` without
+  `pairs`; `0b1010` and `1_000`. Its library: `typeof`, `table.find`, `create`, `clear`, `clone`, `freeze`,
+  `isfrozen`, `math.sign`, `round`, `noise`, `lerp`, `map`, and `bit32`.
+- **The scheduler.** A mod's top level, its commands and every thread it starts are coroutines, so `task.wait`,
+  `WaitForChild` and `signal:Wait()` wait without stopping the game. `on(...)` handlers and timers stay on the main
+  thread (start a thread there with `task.spawn` to wait).
+- **`game`** is the DataModel, shared by every mod as one game is by every script, and keeps the studio's `game.run`
+  and friends. `game:GetService(...)`, `workspace`, `script` (a LocalScript named after the mod) and `shared` work as
+  in Roblox. What a mod makes goes when it stops or reloads.
+- **Instances** have Roblox's properties (checked as Roblox checks them), events and methods: `FindFirstChild`,
+  `WaitForChild`, `GetChildren`, `GetDescendants`, `Clone`, `Destroy`, `IsA`, attributes, tags,
+  `GetPropertyChangedSignal`, a child by its name. Signals have `Connect`, `Once` and `Wait`, and are deferred, as
+  Roblox's are by default.
+- **ScreenGuis** in the PlayerGui (or CoreGui) are laid out as Roblox lays them out (UDim2 sizes and positions,
+  AnchorPoint, UIListLayout, UIGridLayout, UIPadding, UIScale, the constraints, ScrollingFrames, AutomaticSize,
+  ZIndex) and drawn on the HUD with Horizon's shapes and Geist fonts, UICorner, UIStroke and borders included. A GUI
+  pixel is a dp. The GUI takes the mouse while a visible button has `Modal = true` or a TextBox has focus, or after
+  **Left Alt**; Escape gives it back. Then hovers, clicks (`MouseButton1Click`, `Activated`), TextBoxes, scrolling
+  and dragging work.
+- **Input.** Keys and mouse buttons fire UserInputService's `InputBegan` and `InputEnded` (`input.KeyCode`), and
+  ContextActionService's actions; `UIS:IsKeyDown`, `Player:GetMouse()`.
+- **The world.** The LocalPlayer's Character follows the player (a stud is a block), `workspace.CurrentCamera`
+  follows the camera (`WorldToViewportPoint`), Parts in the Workspace are drawn in the world, and
+  `workspace:Raycast` goes through the world's blocks and the parts.
+- **Services:** Players, RunService (Heartbeat, RenderStepped, Stepped, BindToRenderStep), UserInputService,
+  TweenService, Debris, HttpService (JSON and GUIDs), TextService, GuiService, StarterGui (`SetCore` notifications in
+  chat), CollectionService, ContextActionService, Lighting (the world's time) and the containers.
+- **Data types and `Enum`:** Vector2, Vector3, CFrame, Color3, UDim, UDim2, Rect, NumberRange, NumberSequence,
+  ColorSequence, TweenInfo, BrickColor, Font, Random, Ray, RaycastParams, with their constructors, properties,
+  methods and operators, and the Enum tree (`Enum.KeyCode.E`).
+
+Not there: a server (RemoteEvents go nowhere), physics, animations, Roblox's assets (images, meshes and sounds by
+id), BillboardGuis and SurfaceGuis. The MCP's `roblox` topic (`docs`) lists every class, member and difference.
 
 ### Examples
 
@@ -560,6 +628,7 @@ The Library installs these; their source is in [`examples/`](examples).
 | UI Kit | a library mod: `gfx.*`, a canvas screen, `export` (installed with the studio) |
 | ViaHorizon | the ViaHorizon screen: `via.*`, a searchable list made with the UI Kit (`/via`, installed with the studio) |
 | UI Kit demo | `import("uikit")`: tabs, toggles, a slider, a text field, a list and a HUD card (`/kitdemo`) |
+| Roblox shop | A Roblox UI script in Luau: a ScreenGui shop with UICorner, UIStroke, UIListLayout, a TweenService slide-in, UserInputService's G key, buttons that buy (`/shop`) |
 
 ## Safety
 
@@ -587,7 +656,11 @@ ViaHorizon's to its network code, and one small helper per hook.
 | Module | What it is |
 |---|---|
 | `lua.rs` (`hstudio_lua`) | The Lua interpreter: lexer, parser with scope resolution, evaluator, tables, budgets |
-| `lualib.rs` (`hstudio_lualib`) | The standard library, Lua patterns, `string.format` |
+| `lualib.rs` (`hstudio_lualib`) | The standard library (Lua 5.3's and Luau's), Lua patterns, `string.format` |
+| `rbx_types.rs`, `rbx_layout.rs` (`hstudio_rbx_types`, `hstudio_rbx_layout`) | Roblox's data types and GUI layout, in plain Rust |
+| `rbx_values.rs` (`hstudio_rbx_values`) | Roblox's data types and `Enum` for scripts |
+| `rbx.rs`, `rbx_methods.rs` (`hstudio_rbx`, `hstudio_rbx_methods`) | The Roblox layer: the DataModel, Instances, their properties, events and methods, services, signals, tweens |
+| `rbx_draw.rs` (`hstudio_rbx_draw`) | The Roblox layer on the game: ScreenGuis drawn and clicked, input, Parts in the world, raycasts, each frame's step |
 | `studio.rs` (`hstudio`) | Script mods, hot reloading, events, timers, the API, the console |
 | `ui.rs` (`hstudio_ui`) | The screen: console, editor, library, docs, settings; input, the window's moving and sizing |
 | `assist.rs` (`hstudio_assist`) | The editor's and console's suggestions, and the live check of a script (syntax, unknown names) |
@@ -685,6 +758,8 @@ The built game needs resources prepared from your own Minecraft 26.3, as Horizon
 applies to the pinned Horizon and the modded game compiles. ViaHorizon's joins run end to end, through the game's
 network code and the real ViaProxy, against fake 1.8 servers. It has not been played in a running game yet: the
 drawing, layout and input are untested on screen, and ViaHorizon hasn't met a real server, so expect rough edges.
+The Luau syntax, the task scheduler and the Roblox layer (Instances, signals, tweens, ScreenGui layout,
+drawing and clicks, input, raycasts) are covered by tests on the fake game too, and have not met a running game yet.
 Natrium's particle loop and item merging are checked against Horizon's own (the same vertices, the same items, tick
 after tick, in the staged game), and so is its Video Settings section (its rows, search and clicks); what it gains in frames and ticks has not been measured on a real machine yet.
 

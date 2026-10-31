@@ -1363,6 +1363,94 @@ fn passable(id: &str) -> bool {
         || b == "tall_grass"
 }
 
+/// The first solid block a ray meets within `limit`: how far, the face's
+/// normal and the block's id (Amanatides and Woo's walk, a block at a time).
+fn first_block(
+    game: &mut dyn GameApi,
+    origin: Vector3,
+    unit: Vector3,
+    limit: f64,
+    ignore_water: bool,
+) -> Option<(f64, Vector3, String)> {
+    let mut cell = [
+        origin.x.floor() as i64,
+        origin.y.floor() as i64,
+        origin.z.floor() as i64,
+    ];
+    let d = [unit.x, unit.y, unit.z];
+    let o = [origin.x, origin.y, origin.z];
+    let step: [i64; 3] = d.map(|c| if c > 0.0 { 1 } else { -1 });
+    let mut next = [f64::INFINITY; 3];
+    let mut delta = [f64::INFINITY; 3];
+    for i in 0..3 {
+        if d[i].abs() > 1e-12 {
+            delta[i] = (1.0 / d[i]).abs();
+            let edge = if d[i] > 0.0 {
+                cell[i] as f64 + 1.0
+            } else {
+                cell[i] as f64
+            };
+            next[i] = (edge - o[i]) / d[i];
+        }
+    }
+    let mut t = 0.0;
+    let mut normal = Vector3::ZERO;
+    for _ in 0..2048 {
+        if t > limit {
+            return None;
+        }
+        match game.block(cell[0] as i32, cell[1] as i32, cell[2] as i32) {
+            None => return None,
+            Some(b) if !passable(&b) && !(ignore_water && b.contains("water")) => return Some((t, normal, b)),
+            _ => {}
+        }
+        let i = if next[0] < next[1] && next[0] < next[2] {
+            0
+        } else if next[1] < next[2] {
+            1
+        } else {
+            2
+        };
+        t = next[i];
+        next[i] += delta[i];
+        cell[i] += step[i];
+        let mut n = [0.0; 3];
+        n[i] = -(step[i] as f64);
+        normal = Vector3::new(n[0], n[1], n[2]);
+    }
+    None
+}
+
+/// The Mouse's Hit, Target and UnitRay, worked out as a script reads them:
+/// where the pointer (or the crosshair) points, through the blocks.
+pub fn mouse_refresh(env: &mut dyn Env) {
+    let (free, px, py) = {
+        let p = &env.rbx().pointer;
+        (p.free, p.x, p.y)
+    };
+    let game = env.game();
+    let (w, h, _) = game.dp();
+    let Some(cam) = game.camera() else { return };
+    let (mx, my) = if free {
+        (px, py)
+    } else {
+        (f64::from(w) / 2.0, f64::from(h) / 2.0)
+    };
+    let (o, d) = ray_through(&cam, mx, my, f64::from(w), f64::from(h));
+    let hit = first_block(game, o, d, 500.0, true).map_or(o + d * 500.0, |(t, _, _)| o + d * t);
+    let rbx = env.rbx();
+    let m = rbx.mouse;
+    let terrain = rbx.raw_get(rbx.workspace, "Terrain");
+    let target = if (hit - o).magnitude() < 499.0 {
+        terrain
+    } else {
+        Value::Nil
+    };
+    rbx.quiet_set(m, "Hit", cf(CFrame::from_position(hit)));
+    rbx.quiet_set(m, "Target", target);
+    rbx.quiet_set(m, "UnitRay", super::hstudio_rbx_values::wrap(Data::Ray(o, d)));
+}
+
 /// workspace:Raycast: through the world's blocks and the Workspace's parts;
 /// a RaycastResult table, or nil.
 pub fn raycast(
@@ -1452,62 +1540,7 @@ pub fn raycast(
     // Then the blocks, a step at a time (Amanatides and Woo).
     let limit = best.map_or(length, |b| b.0);
     let terrain = rbx.raw_get(rbx.workspace, "Terrain");
-    let block_hit = {
-        let game = env.game();
-        let mut cell = [
-            origin.x.floor() as i64,
-            origin.y.floor() as i64,
-            origin.z.floor() as i64,
-        ];
-        let d = [unit.x, unit.y, unit.z];
-        let o = [origin.x, origin.y, origin.z];
-        let step: [i64; 3] = d.map(|c| if c > 0.0 { 1 } else { -1 });
-        let mut next = [0.0f64; 3];
-        let mut delta = [f64::INFINITY; 3];
-        for i in 0..3 {
-            if d[i].abs() > 1e-12 {
-                delta[i] = (1.0 / d[i]).abs();
-                let edge = if d[i] > 0.0 {
-                    cell[i] as f64 + 1.0
-                } else {
-                    cell[i] as f64
-                };
-                next[i] = (edge - o[i]) / d[i];
-            } else {
-                next[i] = f64::INFINITY;
-            }
-        }
-        let mut t = 0.0;
-        let mut normal = Vector3::ZERO;
-        let mut found = None;
-        for _ in 0..2048 {
-            if t > limit {
-                break;
-            }
-            match game.block(cell[0] as i32, cell[1] as i32, cell[2] as i32) {
-                None => break,
-                Some(b) if !passable(&b) && !(ignore_water && b.contains("water")) => {
-                    found = Some((t, normal, b));
-                    break;
-                }
-                _ => {}
-            }
-            let i = if next[0] < next[1] && next[0] < next[2] {
-                0
-            } else if next[1] < next[2] {
-                1
-            } else {
-                2
-            };
-            t = next[i];
-            next[i] += delta[i];
-            cell[i] += step[i];
-            let mut n = [0.0; 3];
-            n[i] = -(step[i] as f64);
-            normal = Vector3::new(n[0], n[1], n[2]);
-        }
-        found
-    };
+    let block_hit = first_block(env.game(), origin, unit, limit, ignore_water);
     let mut t = Table::new();
     match (block_hit, best) {
         (Some((bt, n, b)), _) if bt <= limit => {
@@ -1541,6 +1574,14 @@ pub fn step(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64, dt: f64, frame_no: 
     if !rbx.active {
         return;
     }
+    sync(rbx, game);
+    step_events(rbx, now, dt, frame_no);
+}
+
+/// The DataModel brought up to the game: the character, the Camera and the
+/// time of day.
+pub fn sync(rbx: &mut Rbx, game: &mut dyn GameApi) {
+    let now = rbx.now;
     let ws = rbx.workspace;
     rbx.quiet_set(ws, "DistributedGameTime", Value::Num(now));
     if let Some(p) = game.player() {
@@ -1575,17 +1616,9 @@ pub fn step(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64, dt: f64, frame_no: 
         rbx.quiet_set(c, "FieldOfView", Value::Num(f64::from(cam.fov)));
         let (w, h, _) = game.dp();
         rbx.quiet_set(c, "ViewportSize", v2(Vector2::new(f64::from(w), f64::from(h))));
-        // The Mouse: where the pointer (or the crosshair) points.
-        let (mx, my) = if rbx.pointer.free {
-            (rbx.pointer.x, rbx.pointer.y)
-        } else {
-            (f64::from(w) / 2.0, f64::from(h) / 2.0)
-        };
-        let (o, d) = ray_through(&cam, mx, my, f64::from(w), f64::from(h));
-        let hit = mouse_hit(game, o, d);
+        // The pointer is the crosshair while the game has it.
+        let (mx, my) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
         let m = rbx.mouse;
-        rbx.quiet_set(m, "Hit", cf(CFrame::from_position(hit)));
-        rbx.quiet_set(m, "UnitRay", super::hstudio_rbx_values::wrap(Data::Ray(o, d)));
         if !rbx.pointer.free {
             rbx.pointer.x = mx;
             rbx.pointer.y = my;
@@ -1600,6 +1633,10 @@ pub fn step(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64, dt: f64, frame_no: 
         let (hh, mm) = (hours.floor() as u32, ((hours.fract()) * 60.0).floor() as u32);
         rbx.quiet_set(l, "TimeOfDay", Value::str(&format!("{hh:02}:{mm:02}:00")));
     }
+}
+
+/// The frame's events: RunService's, tweens, Debris and WaitForChild's timeouts.
+fn step_events(rbx: &mut Rbx, now: f64, dt: f64, frame_no: u64) {
     // RunService's events, then BindToRenderStep's functions, in priority order.
     let rs = rbx.service("RunService").unwrap_or(rbx.game);
     for ev in [
@@ -1661,21 +1698,6 @@ pub fn step(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64, dt: f64, frame_no: 
             !(inst.destroyed && matches!(&inst.value, Value::Userdata(u) if Rc::strong_count(u) == 1))
         });
     }
-}
-
-/// Where the mouse's ray first meets a block (or 500 studs on).
-fn mouse_hit(game: &mut dyn GameApi, o: Vector3, d: Vector3) -> Vector3 {
-    let mut t = 0.0;
-    while t < 200.0 {
-        let p = o + d * t;
-        match game.block(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32) {
-            None => break,
-            Some(b) if !passable(&b) => return p,
-            _ => {}
-        }
-        t += 0.1;
-    }
-    o + d * 500.0
 }
 
 /// The screen's text input and Changed for a TextBox as one types (tests).

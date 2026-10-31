@@ -1963,7 +1963,14 @@ fn inst_arg(env: &mut dyn Env, lua: &Lua, args: &[Value], i: usize, fname: &str)
 
 /// A host function of the layer.
 pub fn call(env: &mut dyn Env, lua: &mut Lua, id: u32, args: Vec<Value>) -> Res {
-    env.rbx().active = true;
+    if !env.rbx().active {
+        // The first use: the layer wakes up, with the game as it is now.
+        let now = env.now();
+        let (rbx, game) = env.rbx_and_game();
+        rbx.active = true;
+        rbx.now = now;
+        super::hstudio_rbx_draw::sync(rbx, game);
+    }
     match id {
         INST_INDEX => index(env, lua, &args),
         INST_NEWINDEX => {
@@ -2116,6 +2123,9 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
             env.rbx().inst(id).class.name
         )));
     };
+    if id == env.rbx().mouse && matches!(k.as_str(), "Hit" | "Target" | "UnitRay") {
+        super::hstudio_rbx_draw::mouse_refresh(env);
+    }
     if matches!(k.as_str(), "ViewportSize" | "ViewSizeX" | "ViewSizeY") {
         let snap = env_snapshot(env);
         env.rbx().refresh(id, &k, snap.as_ref());

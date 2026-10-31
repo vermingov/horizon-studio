@@ -773,6 +773,19 @@ fn example_steps(id: &str) -> Vec<Step> {
             Click("Go"),
             Frames(3),
         ],
+        "roblox_shop" => vec![
+            Frames(2),
+            Command("shop"),
+            Frames(10),
+            Click("Golden apple  —  12"),
+            Frames(3),
+            Click("Diamond sword  —  30"),
+            Frames(3),
+            Click("Diamond sword  —  30"),
+            Frames(3),
+            Click("Close (G)"),
+            Frames(10),
+        ],
         _ => panic!("no steps for example {id}"),
     }
 }

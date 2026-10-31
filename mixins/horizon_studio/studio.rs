@@ -1627,8 +1627,7 @@ impl Studio {
                 t
             }
         };
-        g.set_str("game", Value::Table(game.clone()));
-        g.set_str("Game", Value::Table(game));
+        g.set_str("game", Value::Table(game));
         let ws = rbx.value(rbx.workspace);
         g.set_str("workspace", ws.clone());
         g.set_str("Workspace", ws);
