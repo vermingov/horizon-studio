@@ -653,8 +653,8 @@ end)
   follows the camera (`WorldToViewportPoint`), Parts in the Workspace are drawn in the world, and
   `workspace:Raycast` goes through the world's blocks and the parts.
 - **Services:** Players, RunService (Heartbeat, RenderStepped, Stepped, BindToRenderStep), UserInputService,
-  TweenService, Debris, HttpService (JSON and GUIDs), TextService, GuiService, StarterGui (`SetCore` notifications in
-  chat), CollectionService, ContextActionService, Lighting (the world's time) and the containers. Services with
+  TweenService, Debris, HttpService (JSON and GUIDs), TextService (`GetTextSize`, `GetTextBoundsAsync`), GuiService,
+  StarterGui (`SetCore` notifications in chat; its ScreenGuis are copied into the PlayerGui), CollectionService, ContextActionService, Lighting (the world's time) and the containers. Services with
   nothing to do here that scripts still get at their top (TeleportService, VirtualUser, Stats and the like) are there
   too, taking any property.
 - **Data types and `Enum`:** Vector2, Vector3, CFrame, Color3, UDim, UDim2, Rect, NumberRange, NumberSequence,

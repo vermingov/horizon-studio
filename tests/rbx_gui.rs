@@ -1872,3 +1872,47 @@ fn text_bounds_async_agrees_with_get_text_size() {
     );
     assert_eq!(p[4], "rbxasset://fonts/families/SourceSansPro.json");
 }
+
+#[test]
+fn starter_gui_screens_are_copied_into_the_player_gui() {
+    let mut game = FakeGame::new("rbx-starter");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local StarterGui = game:GetService("StarterGui")
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "Hud"
+        gui.Parent = StarterGui
+        -- What it holds by the next frame goes with it.
+        local label = Instance.new("TextLabel", gui)
+        label.Size = UDim2.fromOffset(100, 20)
+        label.Text = "copied"
+        Instance.new("Folder", StarterGui).Name = "NotAGui"
+        task.wait()
+        local pg = game.Players.LocalPlayer.PlayerGui
+        local copy = pg:FindFirstChild("Hud")
+        print(copy ~= nil and copy ~= gui, copy.TextLabel.Text, pg:FindFirstChild("NotAGui"), gui.Parent == StarterGui)
+        -- Later changes to the one in StarterGui don't show; it isn't copied again.
+        label.Text = "changed"
+        task.wait()
+        print(#pg:GetChildren(), copy.TextLabel.Text)
+        -- Kept: there are no safe areas or core blur here.
+        gui.SafeAreaCompatibility = Enum.SafeAreaCompatibility.None
+        print(gui.SafeAreaCompatibility, gui.OnTopOfCoreBlur)
+    "#;
+    load(&mut game, &mut st, "starter", src, 0.6);
+    assert_eq!(
+        printed(&st, "starter"),
+        [
+            "true    copied    nil    true",
+            "1    copied",
+            "Enum.SafeAreaCompatibility.None    false"
+        ]
+    );
+    let drawn = hud(&mut st, &mut game);
+    assert_eq!(texts(&drawn), ["copied"]);
+    // The copy is the mod's: it goes when the mod stops.
+    let i = mod_index(&st, "starter");
+    st.set_enabled(&mut game, i, false);
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.s.rbx.children(st.s.rbx.player_gui).is_empty());
+}

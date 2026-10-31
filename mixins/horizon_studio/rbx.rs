@@ -673,6 +673,12 @@ pub static CLASSES: &[C] = &[
             p("IgnoreGuiInset", Bool, B(false)),
             p("ScreenInsets", K::Enum("ScreenInsets"), D::E("CoreUISafeInsets")),
             p("ClipToDeviceSafeArea", Bool, B(true)),
+            p(
+                "SafeAreaCompatibility",
+                K::Enum("SafeAreaCompatibility"),
+                D::E("FullscreenExtension"),
+            ),
+            p("OnTopOfCoreBlur", Bool, B(false)),
         ],
         &[],
     ),
@@ -1368,6 +1374,8 @@ pub struct Rbx {
     pub fresh_nodes: u64,
     /// UIPageLayouts turning to a page.
     pub page_turns: Vec<super::hstudio_rbx_draw::PageTurn>,
+    /// The GUIs in StarterGui already copied into the PlayerGui.
+    pub starter_copied: HashSet<Id>,
 }
 
 /// An HTTP request a thread waits for.
@@ -1477,6 +1485,7 @@ impl Rbx {
             fresh_layouts: 0,
             fresh_nodes: 0,
             page_turns: Vec::new(),
+            starter_copied: HashSet::new(),
         };
         r.build();
         r

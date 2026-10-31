@@ -2917,8 +2917,34 @@ pub fn step(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64, dt: f64, frame_no: 
         return;
     }
     sync(rbx, game);
+    copy_starter_gui(rbx);
     step_events(rbx, now, dt, frame_no);
     super::hstudio_sunc::poll_network(rbx);
+}
+
+/// A GUI put in StarterGui (a ScreenGui, a BillboardGui) is copied into
+/// the PlayerGui at the next frame, as a player's spawn copies them in
+/// Roblox: once each, what it holds then with it, for the mod that made it.
+/// What changes in StarterGui after doesn't show, as in Roblox.
+fn copy_starter_gui(rbx: &mut Rbx) {
+    let Some(starter) = rbx.service("StarterGui") else {
+        return;
+    };
+    let new: Vec<Id> = rbx
+        .children(starter)
+        .iter()
+        .copied()
+        .filter(|&c| is_a(rbx.inst(c).class, "LayerCollector") && !rbx.starter_copied.contains(&c))
+        .collect();
+    for id in new {
+        rbx.starter_copied.insert(id);
+        let Some(owner) = rbx.inst(id).owner else {
+            continue;
+        };
+        let copy = rbx.clone_tree(id, owner, true);
+        let gui = rbx.player_gui;
+        let _ = rbx.set_parent(copy, Some(gui));
+    }
 }
 
 /// The DataModel brought up to the game: the character, the Camera and the
