@@ -91,7 +91,7 @@ set `HORIZON_LAUNCHER` to point at it otherwise. Horizon must be installed and p
 
 Then play the **Native mods** instance. Or, by hand:
 
-1. `python3 tools/studio.py package` writes `target/horizon_studio-0.5.1.hnmod`.
+1. `python3 tools/studio.py package` writes `target/horizon_studio-0.5.2.hnmod`.
 2. Install it as a native mod in an instance, then **Build** ("I trust these mods: build"). The first build takes 10
    to 30 minutes; later ones are faster. From the command line:
    `horizon-launcher native-build mixins/horizon_studio --trust-native-code`.
@@ -805,7 +805,7 @@ The built game needs resources prepared from your own Minecraft 26.3, as Horizon
 
 ## Status
 
-0.5.1. The interpreter, the runtime and the screen's logic are covered by tests on a fake game, and the bundle
+0.5.2. The interpreter, the runtime and the screen's logic are covered by tests on a fake game, and the bundle
 applies to the pinned Horizon and the modded game compiles. ViaHorizon's joins run end to end, through the game's
 network code and the real ViaProxy, against fake 1.8 servers. It has not been played in a running game yet: the
 drawing, layout and input are untested on screen, and ViaHorizon hasn't met a real server, so expect rough edges.
