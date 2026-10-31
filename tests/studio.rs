@@ -535,6 +535,39 @@ fn requires_that_loop_say_which_files() {
     assert!(msg.contains("'a' is already loading"), "{msg}");
     assert!(msg.contains("main.lua -> a.lua -> b.lua -> a.lua"), "{msg}");
     assert!(!msg.contains("stack overflow"), "{msg}");
+    // main.lua starts the chain only when its top level began the loop,
+    // after a wait too; a command begins it at the first file it requires.
+    write_module(
+        &game,
+        "later",
+        &[
+            ("main.lua", "task.wait()\nrequire('a')\n"),
+            ("a.lua", "require('b')\nreturn {}\n"),
+            ("b.lua", "require('a')\nreturn {}\n"),
+        ],
+    );
+    write_module(
+        &game,
+        "lazy",
+        &[
+            (
+                "main.lua",
+                "command('lazy', function() local ok, e = pcall(require, 'a') return e end)\n",
+            ),
+            ("a.lua", "require('b')\nreturn {}\n"),
+            ("b.lua", "require('a')\nreturn {}\n"),
+        ],
+    );
+    run_for(&mut st, &mut game, 0.6);
+    let (msg, _) = failure(&st, "later");
+    assert!(msg.contains("(main.lua -> a.lua -> b.lua -> a.lua)"), "{msg}");
+    st.command("lazy");
+    st.frame(&mut game, 0.016);
+    let said = game.chats.last().cloned().unwrap_or_default();
+    assert!(
+        said.contains("'a' is already loading (a.lua -> b.lua -> a.lua)"),
+        "{said}"
+    );
     // main.lua runs once, by itself.
     write_module(&game, "selfish", &[("main.lua", "require('main')\n")]);
     run_for(&mut st, &mut game, 0.6);
@@ -798,10 +831,20 @@ fn files_are_added_renamed_and_deleted_to_the_trash() {
     // main.lua alone can't go; the whole module can.
     let e = st.delete_path(&mut game, &dir.join("main.lua")).unwrap_err();
     assert!(e.contains("delete the module instead"), "{e}");
+    let old = st.add_file(&mut game, &dir, "old").unwrap();
+    st.delete_path(&mut game, &old).unwrap();
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(dir.join("lib").join("helpers.lua"), "return 3, newer\n").unwrap();
+    run_for(&mut st, &mut game, 0.6);
     let moved = st.delete_path(&mut game, &dir).unwrap();
     assert_eq!(moved, game.dir.join("trash").join("kit"));
     assert!(!dir.exists() && moved.join("main.lua").is_file());
-    assert!(!moved.join("lib").exists(), "the module replaced the older trash/kit");
+    // It joins what was deleted from it before: the newest copy of each file.
+    assert!(moved.join("old.lua").is_file(), "deleted before, it stays");
+    assert_eq!(
+        std::fs::read_to_string(moved.join("lib").join("helpers.lua")).unwrap(),
+        "return 3, newer\n"
+    );
     assert!(log(&st).contains(&"Removed kit".to_owned()), "{:?}", log(&st));
     assert_eq!(st.s.editor.title, "scratch.lua");
     // So can a script.

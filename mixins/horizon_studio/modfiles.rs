@@ -291,8 +291,11 @@ pub fn make_module(mods: &Path, script: &Path, id: &str) -> Result<PathBuf, Stri
 }
 
 /// Moves a file or folder of the mods folder to the trash, at
-/// `trash/<its path in the mods folder>`, over an older copy of the same
-/// name there. Returns where it went.
+/// `trash/<its path in the mods folder>`, which keeps the newest copy of
+/// each file: a file goes over an older copy of the same name, and a
+/// folder joins the one of its name there (a module deleted after some of
+/// its files keeps them beside its own), replacing only the files both
+/// have. Returns where it went.
 pub fn to_trash(trash: &Path, mods: &Path, path: &Path) -> Result<PathBuf, String> {
     let rel = path
         .strip_prefix(mods)
@@ -300,17 +303,29 @@ pub fn to_trash(trash: &Path, mods: &Path, path: &Path) -> Result<PathBuf, Strin
         .filter(|r| !r.as_os_str().is_empty())
         .ok_or_else(|| format!("{} is not in the mods folder", path.display()))?;
     let dest = trash.join(rel);
-    let cleared = if dest.is_dir() {
-        std::fs::remove_dir_all(&dest)
-    } else if dest.exists() {
-        std::fs::remove_file(&dest)
-    } else {
-        Ok(())
-    };
-    cleared.map_err(|e| e.to_string())?;
     if let Some(dir) = dest.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::rename(path, &dest).map_err(|e| e.to_string())?;
+    move_over(path, &dest).map_err(|e| e.to_string())?;
     Ok(dest)
+}
+
+/// Moves `from` to `to`: a folder into a folder already there entry by
+/// entry, so what only `to` has stays, and anything else over what is there
+/// (links are moved as links, never followed).
+fn move_over(from: &Path, to: &Path) -> std::io::Result<()> {
+    let folder = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
+    if folder(from) && folder(to) {
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            move_over(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        return std::fs::remove_dir(from);
+    }
+    if folder(to) {
+        std::fs::remove_dir_all(to)?;
+    } else if std::fs::symlink_metadata(to).is_ok() {
+        std::fs::remove_file(to)?;
+    }
+    std::fs::rename(from, to)
 }

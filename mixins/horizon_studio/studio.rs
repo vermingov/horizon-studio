@@ -627,6 +627,9 @@ pub struct ScriptMod {
     /// The files whose `require` is under way, outermost first: requiring
     /// one of these again is a loop.
     pub loading: Vec<String>,
+    /// The thread its main file's top level runs in (it can wait): a loop
+    /// of requires begun there starts at main.lua.
+    pub main_thread: Option<std::rc::Weak<Thread>>,
     /// A module's other files as ModuleScripts under `script`: each one's
     /// Instance and the file's path in the module.
     pub module_scripts: Vec<(u32, String)>,
@@ -670,6 +673,7 @@ impl ScriptMod {
             zoom: None,
             modules: HashMap::new(),
             loading: Vec::new(),
+            main_thread: None,
             module_scripts: Vec::new(),
             pending: Vec::new(),
             ready: Vec::new(),
@@ -694,6 +698,7 @@ impl ScriptMod {
         self.zoom = None;
         self.modules.clear();
         self.loading.clear();
+        self.main_thread = None;
         self.module_scripts.clear();
         self.pending.clear();
         self.ready.clear();
@@ -1393,6 +1398,7 @@ impl Studio {
         self.s.mods[i].main_fn = Some(f.clone());
         // In a coroutine, as Roblox runs a script: its top level can wait.
         let co = self.lua.new_thread(f);
+        self.s.mods[i].main_thread = Some(Rc::downgrade(&co));
         match self.resume_in(game, Owner::Mod(i), &co, Vec::new(), LOAD_STEPS, Phase::Normal) {
             Some(Ok(vals)) => {
                 // A main file that returns a table offers it, as a module does.
@@ -3320,7 +3326,7 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "",
         "require",
         6,
-        "require(name): load name.lua from the mod's folder (folder mods)",
+        "require(name): load a file of this module once (\"lib\" is lib.lua, \"lib.util\" lib/util.lua; require(script.lib) too)",
     ),
     (
         "",
@@ -3996,7 +4002,17 @@ impl Ctx<'_> {
             ));
         }
         if self.me().loading.iter().any(|l| l == rel) {
-            let chain: Vec<String> = std::iter::once("main.lua".to_owned())
+            // main.lua began it when its top level is what runs; a handler or a
+            // command began it at the first file it required.
+            let current = lua.current_thread();
+            let in_main = self
+                .me()
+                .main_thread
+                .as_ref()
+                .is_some_and(|t| std::ptr::eq(t.as_ptr(), Rc::as_ptr(&current)));
+            let chain: Vec<String> = in_main
+                .then(|| "main.lua".to_owned())
+                .into_iter()
                 .chain(self.me().loading.iter().cloned())
                 .chain(std::iter::once(rel.to_owned()))
                 .collect();
