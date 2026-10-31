@@ -1974,3 +1974,166 @@ fn the_executor_styles_say_which_file_a_module_failed_in() {
         assert!(!drawn_contains(&game, "Failed in"), "{theme}: not about the file open");
     }
 }
+
+// ----------------------------------------------------------------- menus
+
+/// A drawn text's last record: its place in the record, where it starts
+/// (in dp) and its colour.
+fn last_drawn(game: &FakeGame, text: &str) -> (usize, (f32, f32), u32) {
+    let prefix = format!("text {text} @[");
+    let (k, rest) = game
+        .drawn
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(k, d)| d.strip_prefix(&prefix).map(|rest| (k, rest)))
+        .unwrap_or_else(|| panic!("{text:?} not drawn"));
+    let (at, colour) = rest.split_once("] ").unwrap();
+    let at: Vec<f32> = at.split(", ").map(|v| v.parse().unwrap()).collect();
+    (k, (at[0], at[1]), u32::from_str_radix(colour, 16).unwrap())
+}
+
+/// A rect drawn: where (in dp) and its colour (0xAARRGGBB).
+fn drawn_rect(line: &str) -> Option<([f32; 4], u32)> {
+    let rest = line.strip_prefix("rect [")?;
+    let (r, tail) = rest.split_once(']')?;
+    let r: Vec<f32> = r.split(", ").filter_map(|v| v.parse().ok()).collect();
+    let colour = u32::from_str_radix(tail.rsplit(' ').next()?, 16).ok()?;
+    Some(([r[0], r[1], r[2], r[3]], colour))
+}
+
+/// The colour of `text` (as last drawn) and of what it was drawn on: the
+/// last opaque rect drawn before it that holds where it starts.
+fn text_on(game: &FakeGame, text: &str) -> (u32, u32) {
+    let (k, (x, y), c) = last_drawn(game, text);
+    let bg = game.drawn[..k]
+        .iter()
+        .rev()
+        .filter_map(|d| drawn_rect(d))
+        .find(|(r, argb)| argb >> 24 == 0xFF && x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3])
+        .unwrap_or_else(|| panic!("nothing under {text:?}"))
+        .1;
+    (c, bg & 0xFF_FFFF)
+}
+
+/// WCAG's contrast ratio of two colours (0xRRGGBB).
+fn contrast(a: u32, b: u32) -> f32 {
+    let lum = |c: u32| {
+        let lin = |s: u32| {
+            let v = ((c >> s) & 0xFF) as f32 / 255.0;
+            if v <= 0.040_45 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(16) + 0.7152 * lin(8) + 0.0722 * lin(0)
+    };
+    let (la, lb) = (lum(a), lum(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// Whether `inner` lies inside `outer`.
+fn within(inner: [f32; 4], outer: [f32; 4]) -> bool {
+    inner[0] >= outer[0]
+        && inner[1] >= outer[1]
+        && inner[0] + inner[2] <= outer[0] + outer[2] + 0.01
+        && inner[1] + inner[3] <= outer[1] + outer[3] + 0.01
+}
+
+#[test]
+fn menus_read_and_fit_in_every_style() {
+    use horizon_studio::game::hstudio_theme::{Look, THEMES};
+    for (i, theme) in THEMES.iter().enumerate() {
+        for scale in [1.0, 1.5] {
+            let mut game = FakeGame::new(&format!("ui-menu-look-{}-{scale}", theme.id));
+            let mut st = studio(&mut game);
+            st.s.ui.open = true;
+            st.s.ui.look = Look {
+                theme: i,
+                scale,
+                motion: false,
+                ..Look::default()
+            };
+            st.create_module(&mut game, "Kit").unwrap();
+            st.s.ui.tab = Tab::Library;
+            st.s.ui.library_sel = mod_index(&st, "kit");
+            redraw(&mut st, &mut game);
+            handle(&mut st, &mut game, Input::Text(".".into()));
+            redraw(&mut st, &mut game);
+            let what = format!("{} at {scale}", theme.id);
+            let rect = st.s.ui.menu.as_ref().and_then(|m| m.rect).expect("drawn");
+            let screen = [0.0, 0.0, 960.0 / scale, 540.0 / scale];
+            assert!(within(rect, screen), "{what}: {rect:?}");
+            // Its text reads on it: an item, one that deletes, and both lit.
+            for label in ["New file...", "Delete module..."] {
+                let (c, bg) = text_on(&game, label);
+                assert!(contrast(c, bg) >= 4.5, "{what}: {label} {c:06x} on {bg:06x}");
+            }
+            for (k, label) in [(Key::Home, "main.lua"), (Key::End, "Delete module...")] {
+                handle(&mut st, &mut game, key(k, NONE));
+                redraw(&mut st, &mut game);
+                let (c, bg) = text_on(&game, label);
+                let plate = text_on(&game, "New file...").1;
+                assert_ne!(bg, plate, "{what}: {label} is lit");
+                assert!(contrast(c, bg) >= 4.5, "{what}: {label} {c:06x} on {bg:06x}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_menu_taller_than_the_screen_scrolls() {
+    use horizon_studio::game::hstudio_theme::Look;
+    use horizon_studio::game::hstudio_ui::{Menu, MenuCmd, MenuItem};
+    let mut game = FakeGame::new("ui-menu-scroll");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look = Look {
+        scale: 1.5,
+        motion: false,
+        ..Look::default()
+    };
+    let items: Vec<MenuItem> = (0..40)
+        .map(|n| MenuItem::new(format!("Item {n}"), MenuCmd::Reveal(st.s.dir.join(format!("f{n}")))))
+        .collect();
+    st.s.ui.menu = Some(Menu::new([20.0, 20.0], 0.0, items, st.s.now));
+    redraw(&mut st, &mut game);
+    let menu = st.s.ui.menu.clone().unwrap();
+    let rect = menu.rect.unwrap();
+    assert!(within(rect, [0.0, 0.0, 640.0, 360.0]), "{rect:?}");
+    assert!(
+        menu.scrolls() && menu.shown.0 == 0 && menu.shown.1 < 40,
+        "{:?}",
+        menu.shown
+    );
+    assert!(drawn_text(&game, "Item 0") && !drawn_text(&game, "Item 39"));
+    // The keys keep the lit item in view: End goes to the last.
+    handle(&mut st, &mut game, key(Key::End, NONE));
+    redraw(&mut st, &mut game);
+    assert!(drawn_text(&game, "Item 39") && !drawn_text(&game, "Item 0"));
+    assert_eq!(st.s.ui.menu.as_ref().unwrap().shown.1, 40);
+    // The wheel over it scrolls it; anywhere else it closes it.
+    let k = st.s.ui.dp_factor() / st.s.ui.look.scale;
+    handle(
+        &mut st,
+        &mut game,
+        Input::Mouse((rect[0] + 20.0) / k, (rect[1] + 20.0) / k),
+    );
+    for _ in 0..40 {
+        handle(&mut st, &mut game, Input::Wheel(1.0));
+    }
+    redraw(&mut st, &mut game);
+    assert!(drawn_text(&game, "Item 0"), "scrolled back up");
+    // An item shown after scrolling is chosen as any other.
+    let at = last_text_at(&game, "Item 3");
+    click(&mut st, &mut game, at);
+    assert!(st.s.ui.menu.is_none());
+    assert_eq!(game.opened.last(), Some(&st.s.dir.join("f3")));
+    let only = vec![MenuItem::new("Only", MenuCmd::NewScript)];
+    st.s.ui.menu = Some(Menu::new([20.0, 20.0], 0.0, only, st.s.now));
+    redraw(&mut st, &mut game);
+    handle(&mut st, &mut game, Input::Mouse(600.0, 330.0));
+    handle(&mut st, &mut game, Input::Wheel(-1.0));
+    assert!(st.s.ui.menu.is_none(), "the wheel elsewhere closes it");
+}

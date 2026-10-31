@@ -89,7 +89,7 @@ pub enum UiResult {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Action {
+pub enum Action {
     Tab(Tab),
     Select(usize),
     Toggle(usize),
@@ -199,8 +199,10 @@ pub enum MenuCmd {
     Reveal(PathBuf),
 }
 
-/// A row of a menu: its label, a hint at the right (a shortcut), whether it
-/// can be chosen and is the current choice, or a separator line.
+/// A row of a menu: its label, a hint at the right (a shortcut, or "›" for
+/// an item that opens another list in its place), whether it can be chosen,
+/// is the current choice or deletes something (it is in the danger colour),
+/// or a separator line.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MenuItem {
     pub label: String,
@@ -208,6 +210,7 @@ pub struct MenuItem {
     pub enabled: bool,
     pub checked: bool,
     pub separator: bool,
+    pub danger: bool,
     pub cmd: Option<MenuCmd>,
 }
 
@@ -219,17 +222,14 @@ impl MenuItem {
             enabled: true,
             checked: false,
             separator: false,
+            danger: false,
             cmd: Some(cmd),
         }
     }
     pub fn separator() -> MenuItem {
         MenuItem {
-            label: String::new(),
-            hint: String::new(),
-            enabled: false,
-            checked: false,
             separator: true,
-            cmd: None,
+            ..MenuItem::note("")
         }
     }
     pub fn checked(mut self, on: bool) -> MenuItem {
@@ -241,6 +241,16 @@ impl MenuItem {
         self.enabled = on;
         self
     }
+    /// Its shortcut, shown at the right ("Ctrl C").
+    pub fn keys(mut self, keys: &str) -> MenuItem {
+        self.hint = keys.to_owned();
+        self
+    }
+    /// In the danger colour: it deletes something.
+    pub fn danger(mut self) -> MenuItem {
+        self.danger = true;
+        self
+    }
     /// A line that says something and can't be chosen.
     pub fn note(label: impl Into<String>) -> MenuItem {
         MenuItem {
@@ -249,6 +259,7 @@ impl MenuItem {
             enabled: false,
             checked: false,
             separator: false,
+            danger: false,
             cmd: None,
         }
     }
@@ -342,10 +353,13 @@ pub(crate) fn row_label(st: &Studio, row: &ScriptRow) -> String {
 }
 
 /// A menu open over everything: where it opens (its top left, kept on the
-/// screen when drawn), its items, the one the keys are on, when it opened,
-/// and where it was drawn (clicks outside it close it). `anchor_h` is the
-/// height of what opened it (a chip, a button; 0 at the pointer), which a
-/// menu with no room below opens above.
+/// screen when drawn), its items, the one lit (the keys' or the pointer's),
+/// when it opened, and where it was drawn (clicks outside it close it).
+/// `anchor_h` is the height of what opened it (a chip, a button; 0 at the
+/// pointer), which a menu with no room below opens above. `target` is the
+/// row it is for, outlined while it is open. A menu taller than the screen
+/// shows its items from `scroll` on (`shown`: the first and the end, as
+/// drawn), and the wheel and the keys scroll it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Menu {
     pub at: [f32; 2],
@@ -354,6 +368,31 @@ pub struct Menu {
     pub opened_at: f64,
     pub rect: Option<[f32; 4]>,
     pub anchor_h: f32,
+    pub target: Option<[f32; 4]>,
+    pub scroll: usize,
+    pub shown: (usize, usize),
+}
+
+impl Menu {
+    /// A menu of `items` with its top left at `at` (above it, by `anchor_h`
+    /// more, when there is no room below), nothing lit.
+    pub fn new(at: [f32; 2], anchor_h: f32, items: Vec<MenuItem>, now: f64) -> Menu {
+        Menu {
+            at,
+            items,
+            sel: None,
+            opened_at: now,
+            rect: None,
+            anchor_h,
+            target: None,
+            scroll: 0,
+            shown: (0, 0),
+        }
+    }
+    /// Whether it was drawn with only some of its items (it scrolls).
+    pub fn scrolls(&self) -> bool {
+        self.rect.is_some() && self.shown != (0, self.items.len())
+    }
 }
 
 /// What the naming prompt names: a new script or module (Tab or its switch
@@ -1828,6 +1867,11 @@ fn inside(r: [f32; 4], (x, y): (f32, f32)) -> bool {
     x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3]
 }
 
+/// What a left click at `at` reaches: the topmost of the last frame's hits there.
+pub(crate) fn hit_at(ui: &Ui, at: (f32, f32)) -> Option<Action> {
+    ui.hits.iter().rev().find(|(r, _)| inside(*r, at)).map(|(_, a)| *a)
+}
+
 pub use super::hstudio_look::{code_line, draw, draw_screen};
 
 // ----------------------------------------------------------------- input
@@ -2046,6 +2090,13 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
             let k = st.s.ui.dp_factor() / st.s.ui.look.scale;
             let (x, y) = (x * k, y * k);
             st.s.ui.mouse = (x, y);
+            // Over an open menu, the item under the pointer is lit.
+            if st.s.ui.menu.is_some()
+                && let Some(Action::MenuPick(i)) = hit_at(&st.s.ui, (x, y))
+                && let Some(menu) = st.s.ui.menu.as_mut()
+            {
+                menu.sel = Some(usize::from(i));
+            }
             if let Some((from, h)) = st.s.ui.panel_drag {
                 let room = st.s.ui.panel_room.max(1.0);
                 st.s.ui.panel_h = (h + (from - y) / room).clamp(0.15, 0.8);
@@ -2102,8 +2153,7 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
             if st.s.ui.naming.is_some() {
                 // While the prompt is up only its own switch takes clicks:
                 // what is under it, as drawn last frame, takes none.
-                let at = st.s.ui.mouse;
-                let hit = st.s.ui.hits.iter().rev().find(|(r, _)| inside(*r, at)).map(|(_, a)| *a);
+                let hit = hit_at(&st.s.ui, st.s.ui.mouse);
                 if let (true, Some(action @ Action::NewKind(_))) = (left, hit) {
                     return act(st, game, action);
                 }
@@ -2129,7 +2179,7 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 st.s.ui.menu = None;
                 return UiResult::Used;
             }
-            let hit = st.s.ui.hits.iter().rev().find(|(r, _)| inside(*r, at)).map(|(_, a)| *a);
+            let hit = hit_at(&st.s.ui, at);
             // A press on the console's or the agent's text starts selecting it;
             // anywhere else, what was selected there is let go.
             st.s.ui.text_sel = None;
@@ -2196,6 +2246,27 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
         Input::Wheel(steps) => {
             let n = (steps.abs().ceil() as usize).max(1) * 3;
             let up = steps > 0.0;
+            // Nothing scrolls under the naming prompt.
+            if st.s.ui.naming.is_some() {
+                return UiResult::Used;
+            }
+            // Over a menu that scrolls, it scrolls; anywhere else the wheel
+            // closes the menu, and goes no further.
+            let mouse = st.s.ui.mouse;
+            if let Some(menu) = st.s.ui.menu.as_mut() {
+                if !menu.rect.is_some_and(|r| inside(r, mouse)) {
+                    st.s.ui.menu = None;
+                } else if menu.scrolls() {
+                    menu.scroll = if up {
+                        menu.scroll.saturating_sub(n / 3)
+                    } else {
+                        menu.scroll + n / 3
+                    };
+                    // The lit item is let go of: the wheel shows the others.
+                    menu.sel = None;
+                }
+                return UiResult::Used;
+            }
             // The script list, wherever it is drawn (Synapse has it beside every page).
             if let Some(r) = st.s.ui.scripts_at
                 && inside(r, st.s.ui.mouse)
@@ -2440,34 +2511,47 @@ fn scroll_to_thumb(st: &mut Studio, y: f32) {
 }
 
 /// The open menu's keys: Up and Down move over the items that can be
-/// chosen, Enter (or Space) chooses, Escape closes; others are kept from
-/// what is under it.
-fn menu_key(st: &mut Studio, game: &mut dyn GameApi, key: Key) {
-    let Some(menu) = st.s.ui.menu.as_mut() else { return };
+/// chosen (Home and End to the first and the last), Enter (or Space)
+/// chooses, Escape closes, and the studio's key closes it with the studio;
+/// others are kept from what is under it.
+fn menu_key(st: &mut Studio, game: &mut dyn GameApi, key: Key) -> UiResult {
+    let Some(menu) = st.s.ui.menu.as_mut() else {
+        return UiResult::Used;
+    };
     let choosable: Vec<usize> = (0..menu.items.len()).filter(|&i| menu.items[i].enabled).collect();
     let at = menu.sel.and_then(|s| choosable.iter().position(|&i| i == s));
     match key {
         Key::Escape => st.s.ui.menu = None,
+        Key::Toggle => {
+            st.s.ui.menu = None;
+            return UiResult::Close;
+        }
         Key::Down if !choosable.is_empty() => {
             menu.sel = Some(choosable[at.map_or(0, |a| (a + 1) % choosable.len())]);
         }
         Key::Up if !choosable.is_empty() => {
             menu.sel = Some(choosable[at.map_or(choosable.len() - 1, |a| (a + choosable.len() - 1) % choosable.len())]);
         }
+        Key::Home => menu.sel = choosable.first().copied(),
+        Key::End => menu.sel = choosable.last().copied(),
         Key::Enter | Key::Char(' ') => {
             if let Some(i) = menu.sel {
-                menu_pick(st, game, i);
+                return menu_pick(st, game, i);
             }
         }
         _ => {}
     }
+    UiResult::Used
 }
 
-/// Item `i` of the open menu chosen: the menu closes and its command runs.
-fn menu_pick(st: &mut Studio, game: &mut dyn GameApi, i: usize) {
-    let Some(menu) = st.s.ui.menu.take() else { return };
+/// Item `i` of the open menu chosen: the menu closes and its command runs
+/// (Close: the studio closes with it).
+fn menu_pick(st: &mut Studio, game: &mut dyn GameApi, i: usize) -> UiResult {
+    let Some(menu) = st.s.ui.menu.take() else {
+        return UiResult::Used;
+    };
     let Some(item) = menu.items.get(i).filter(|it| it.enabled) else {
-        return;
+        return UiResult::Used;
     };
     match item.cmd.clone() {
         Some(MenuCmd::Model(model)) => set_agent_model(st, model),
@@ -2494,6 +2578,7 @@ fn menu_pick(st: &mut Studio, game: &mut dyn GameApi, i: usize) {
         Some(MenuCmd::Reveal(path)) => game.open_folder(&path),
         None => {}
     }
+    UiResult::Used
 }
 
 /// Opens a file in the editor (unsaved edits in the one open saved first),
@@ -2554,7 +2639,7 @@ pub(crate) fn open_row_menu(st: &mut Studio, k: usize, at: (f32, f32)) {
                 MenuItem::new("New file...", MenuCmd::NewFile(folder.clone())),
                 MenuItem::new("Open main.lua", MenuCmd::Open(folder.join("main.lua"))),
                 MenuItem::new("Show in folder", MenuCmd::Reveal(folder.clone())),
-                MenuItem::new("Delete module...", MenuCmd::Delete(folder)),
+                MenuItem::new("Delete module...", MenuCmd::Delete(folder)).danger(),
             ]
         }
         ScriptRow::File { path, rel, .. } => {
@@ -2562,7 +2647,9 @@ pub(crate) fn open_row_menu(st: &mut Studio, k: usize, at: (f32, f32)) {
             vec![
                 MenuItem::new("Open", MenuCmd::Open(path.clone())),
                 MenuItem::new("Rename...", MenuCmd::Rename(path.clone())).enabled(!main),
-                MenuItem::new("Delete...", MenuCmd::Delete(path)).enabled(!main),
+                MenuItem::new("Delete...", MenuCmd::Delete(path))
+                    .enabled(!main)
+                    .danger(),
             ]
         }
         ScriptRow::Script { path, .. } => {
@@ -2571,18 +2658,11 @@ pub(crate) fn open_row_menu(st: &mut Studio, k: usize, at: (f32, f32)) {
             };
             vec![
                 MenuItem::new("Make it a module", MenuCmd::MakeModule(id)),
-                MenuItem::new("Delete...", MenuCmd::Delete(path)),
+                MenuItem::new("Delete...", MenuCmd::Delete(path)).danger(),
             ]
         }
     };
-    st.s.ui.menu = Some(Menu {
-        at: [at.0, at.1],
-        items,
-        sel: None,
-        opened_at: st.s.now,
-        rect: None,
-        anchor_h: 0.0,
-    });
+    st.s.ui.menu = Some(Menu::new([at.0, at.1], 0.0, items, st.s.now));
 }
 
 /// The Library's menu of mod `i`, under `at` (its "...", or the pointer):
@@ -2619,25 +2699,18 @@ pub(crate) fn open_library_menu(st: &mut Studio, i: usize, at: [f32; 4]) {
                 && let Some(rel) = super::hstudio_modfiles::rel_in(folder, &path).filter(|r| r != "main.lua")
             {
                 items.push(MenuItem::new(format!("Rename {rel}..."), MenuCmd::Rename(path.clone())));
-                items.push(MenuItem::new(format!("Delete {rel}..."), MenuCmd::Delete(path)));
+                items.push(MenuItem::new(format!("Delete {rel}..."), MenuCmd::Delete(path)).danger());
             }
             items.push(MenuItem::new("Show in folder", MenuCmd::Reveal(folder.clone())));
-            items.push(MenuItem::new("Delete module...", MenuCmd::Delete(folder.clone())));
+            items.push(MenuItem::new("Delete module...", MenuCmd::Delete(folder.clone())).danger());
             items
         }
         None => vec![
             MenuItem::new("Make it a module", MenuCmd::MakeModule(m.id.clone())),
-            MenuItem::new("Delete...", MenuCmd::Delete(m.main.clone())),
+            MenuItem::new("Delete...", MenuCmd::Delete(m.main.clone())).danger(),
         ],
     };
-    st.s.ui.menu = Some(Menu {
-        at: [at[0], at[1] + at[3] + 4.0],
-        items,
-        sel: None,
-        opened_at: st.s.now,
-        rect: None,
-        anchor_h: at[3],
-    });
+    st.s.ui.menu = Some(Menu::new([at[0], at[1] + at[3] + 4.0], at[3], items, st.s.now));
 }
 
 /// A right press on what was drawn at `at` (`action` is its hit): opens
@@ -2689,14 +2762,7 @@ fn open_new_menu(st: &mut Studio, at: [f32; 4]) {
         let label = format!("New file in {}...", st.s.mods[i].id);
         items.push(MenuItem::new(label, MenuCmd::NewFile(folder)));
     }
-    st.s.ui.menu = Some(Menu {
-        at: [at[0], at[1] + at[3] + 4.0],
-        items,
-        sel: None,
-        opened_at: st.s.now,
-        rect: None,
-        anchor_h: at[3],
-    });
+    st.s.ui.menu = Some(Menu::new([at[0], at[1] + at[3] + 4.0], at[3], items, st.s.now));
 }
 
 /// A file of a module (`path`): the module's folder and the file's path in it.
@@ -2876,9 +2942,10 @@ pub fn set_agent_model(st: &mut Studio, model: Option<String>) {
     st.s.ui.agent.say(AgentLineKind::Done, format!("Model: {label}."), now);
 }
 
-/// The agent's models in a menu under its chip, the current one marked.
-fn open_model_menu(st: &mut Studio) {
-    let Some(id) = agent_id(st) else { return };
+/// The agent's models, the current one marked, and a model typed by name
+/// (empty when the agent in use takes no model).
+pub(crate) fn model_items(st: &mut Studio) -> Vec<MenuItem> {
+    let Some(id) = agent_id(st) else { return Vec::new() };
     let current = agent_model(st);
     let mut items: Vec<MenuItem> = model_choices(&id)
         .iter()
@@ -2890,19 +2957,22 @@ fn open_model_menu(st: &mut Studio) {
     }
     items.push(MenuItem::separator());
     items.push(MenuItem::new("Other model...", MenuCmd::CustomModel));
+    items
+}
+
+/// The agent's models in a menu under its chip, the current one lit.
+fn open_model_menu(st: &mut Studio) {
+    let items = model_items(st);
+    if items.is_empty() {
+        return;
+    }
     let chip =
         st.s.ui
             .model_chip
             .unwrap_or([st.s.ui.mouse.0, st.s.ui.mouse.1, 0.0, 0.0]);
-    let sel = items.iter().position(|i| i.checked);
-    st.s.ui.menu = Some(Menu {
-        at: [chip[0], chip[1] + chip[3] + 4.0],
-        items,
-        sel,
-        opened_at: st.s.now,
-        rect: None,
-        anchor_h: chip[3],
-    });
+    let mut menu = Menu::new([chip[0], chip[1] + chip[3] + 4.0], chip[3], items, st.s.now);
+    menu.sel = menu.items.iter().position(|i| i.checked);
+    st.s.ui.menu = Some(menu);
 }
 
 fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
@@ -3137,7 +3207,7 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
         Action::AgentNext => agent_next(st),
         Action::AgentStop => agent_stop(st),
         Action::Block | Action::ScrollBar => {}
-        Action::MenuPick(i) => menu_pick(st, game, i as usize),
+        Action::MenuPick(i) => return menu_pick(st, game, i as usize),
         Action::ModelMenu => open_model_menu(st),
         Action::ClearLog => {
             st.s.log.clear();
@@ -3181,8 +3251,7 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
         return UiResult::Used;
     }
     if st.s.ui.menu.is_some() {
-        menu_key(st, game, key);
-        return UiResult::Used;
+        return menu_key(st, game, key);
     }
     if mods.ctrl
         && key == Key::Char('c')

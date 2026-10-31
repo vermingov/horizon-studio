@@ -102,6 +102,36 @@ pub(super) fn on(c: u32) -> u32 {
     }
 }
 
+/// A colour's relative luminance, as WCAG measures it (its alpha left out).
+fn luminance(c: u32) -> f32 {
+    let lin = |s: u32| {
+        let v = ((c >> s) & 0xFF) as f32 / 255.0;
+        if v <= 0.040_45 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(16) + 0.7152 * lin(8) + 0.0722 * lin(0)
+}
+
+/// How well two colours read on each other: WCAG's contrast ratio, 1 to 21.
+pub(super) fn contrast(a: u32, b: u32) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// `c` as text on `bg`: as it is when it reads there at `ratio` (WCAG's
+/// 4.5 for text), else moved toward what reads best on `bg` (black or
+/// white) until it does.
+pub(super) fn legible(c: u32, bg: u32, ratio: f32) -> u32 {
+    let best = on(bg);
+    (0..=10)
+        .map(|k| mix(c, best, k as f32 / 10.0))
+        .find(|&t| contrast(t, bg) >= ratio)
+        .unwrap_or(best)
+}
+
 /// Warnings' amber, the same in every theme (some themes' numbers are
 /// green), darker on a light page.
 pub(super) fn warn() -> u32 {
@@ -517,6 +547,11 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         studio_page(st, &mut p, [x0, 24.0, cw, h - 48.0], dt, false);
     }
     if st.s.ui.menu.is_some() {
+        // In the executor styles, in the studio's own colours (as its
+        // dialogs are): theirs are a title bar's and a button's.
+        if look.theme().layout != Layout::Studio {
+            use_look(&look, true);
+        }
         p.dy = 0.0;
         draw_menu(st, &mut p, w, h, dt);
     }
@@ -528,37 +563,79 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
 }
 
 /// The open menu: its items in a plate at its place, kept on the screen
-/// (opening upward where there is no room below). The row under the
-/// pointer or the keys is lit; the current choice has a dot; a hint (a
-/// shortcut) sits at the right. Clicks between its rows go nowhere.
+/// (opening upward where there is no room below, or as low as it fits).
+/// Its rows shrink to fit the screen, and a menu taller than that still
+/// shows what fits from its scroll on, with marks for the rest. One row is
+/// lit, the one the keys or the pointer are on; the current choice has a
+/// dot, a hint (a shortcut, or "›") sits at the right, and an item that
+/// deletes is in the danger colour, each kept readable on its row. The row
+/// the menu is for is outlined. Clicks between its rows go nowhere.
 fn draw_menu(st: &mut Studio, p: &mut P, w: f32, h: f32, dt: f32) {
-    const ROW: f32 = 26.0;
     const SEP: f32 = 9.0;
     const PAD: f32 = 5.0;
+    const MARK: f32 = 14.0;
     let now = st.s.now;
     let Some(menu) = st.s.ui.menu.clone() else { return };
+    let n = menu.items.len();
+    if n == 0 {
+        st.s.ui.menu = None;
+        return;
+    }
     let size = 12.5;
+    let room = (h - 16.0).max(60.0);
+    let seps = menu.items.iter().filter(|i| i.separator).count();
+    let rows = (n - seps).max(1);
+    let row = ((room - 2.0 * PAD - seps as f32 * SEP) / rows as f32)
+        .floor()
+        .clamp(20.0, 26.0);
+    let item_h = |i: usize| if menu.items[i].separator { SEP } else { row };
     let mut mw: f32 = 168.0;
-    let mut mh = 2.0 * PAD;
-    for it in &menu.items {
-        if it.separator {
-            mh += SEP;
-            continue;
-        }
+    for it in menu.items.iter().filter(|i| !i.separator) {
         let hint = if it.hint.is_empty() {
             0.0
         } else {
             p.measure(&it.hint, 11.5, Font::Mono) + 18.0
         };
         mw = mw.max(p.measure(&it.label, size, Font::Regular) + hint + 46.0);
-        mh += ROW;
     }
     let mw = mw.min(w - 16.0);
+    // What shows: everything, or from its scroll as much as fits, the lit
+    // item always among it.
+    let total = 2.0 * PAD + (0..n).map(item_h).sum::<f32>();
+    let (first, end) = if total <= room {
+        (0, n)
+    } else {
+        let end_from = |first: usize| {
+            let mut used = 2.0 * PAD + 2.0 * MARK;
+            let mut j = first;
+            while j < n && used + item_h(j) <= room {
+                used += item_h(j);
+                j += 1;
+            }
+            j.max(first + 1)
+        };
+        let mut first = menu.scroll.min(n - 1);
+        if let Some(s) = menu.sel {
+            first = first.min(s);
+        }
+        while menu.sel.is_some_and(|s| s >= end_from(first)) {
+            first += 1;
+        }
+        // Scrolled past the end, it shows as many as fit there.
+        while first > 0 && end_from(first - 1) == n {
+            first -= 1;
+        }
+        (first, end_from(first))
+    };
+    let scrolls = (first, end) != (0, n);
+    let mh = 2.0 * PAD + (first..end).map(item_h).sum::<f32>() + if scrolls { 2.0 * MARK } else { 0.0 };
     let mut x = menu.at[0].min(w - mw - 8.0).max(8.0);
     let mut y = menu.at[1];
     if y + mh > h - 8.0 {
-        // Above where it was asked for: over what opened it, or the pointer.
-        y = (menu.at[1] - mh - 8.0 - menu.anchor_h).max(8.0);
+        // Above where it was asked for (over what opened it, or the
+        // pointer), or else as low as it fits.
+        let above = menu.at[1] - mh - 8.0 - menu.anchor_h;
+        y = if above >= 8.0 { above } else { (h - 8.0 - mh).max(8.0) };
     }
     x = x.floor();
     y = y.floor();
@@ -567,50 +644,84 @@ fn draw_menu(st: &mut Studio, p: &mut P, w: f32, h: f32, dt: f32) {
     let (a, dy) = (p.alpha, p.dy);
     p.alpha = a * arrive;
     p.dy = dy + (1.0 - arrive) * -4.0;
+    if let Some(t) = menu.target {
+        p.border(t, 8.0, fade(pal().accent, 0.7));
+    }
+    let plate = pal().surface;
+    let lit = mix(plate, pal().accent, 0.18);
     p.rect([x + 1.0, y + 3.0, mw, mh], 10.0, fade(0xFF00_0000, 0.25));
-    p.rect(rect, 10.0, pal().surface);
+    p.rect(rect, 10.0, plate);
     p.border(rect, 10.0, pal().rule);
     st.s.ui.hits.push((rect, Action::Block));
     let mut ry = y + PAD;
-    for (i, it) in menu.items.iter().enumerate() {
+    if scrolls {
+        // A mark that there is more above, and below.
+        let c = legible(pal().muted, plate, 3.0);
+        let cx = x + mw / 2.0;
+        for k in 0..4 {
+            let f = k as f32;
+            if first > 0 {
+                p.rect([cx - f, ry + 4.0 + f, 1.0 + 2.0 * f, 1.0], 0.0, c);
+            }
+            if end < n {
+                p.rect(
+                    [cx - 3.0 + f, y + mh - PAD - MARK + 6.0 + f, 7.0 - 2.0 * f, 1.0],
+                    0.0,
+                    c,
+                );
+            }
+        }
+        ry += MARK;
+    }
+    for i in first..end {
+        let it = &menu.items[i];
         if it.separator {
             p.rect([x + 10.0, ry + SEP / 2.0, mw - 20.0, 1.0], 0.0, pal().rule);
             ry += SEP;
             continue;
         }
-        let r = [x + PAD, ry, mw - 2.0 * PAD, ROW];
+        let r = [x + PAD, ry, mw - 2.0 * PAD, row];
         let ui = &mut st.s.ui;
-        let over = it.enabled && inside(r, ui.mouse);
-        let hv = hover(ui, id("menu-row", i), over || menu.sel == Some(i), dt);
-        if it.enabled && hv > 0.01 {
-            p.rect(r, 7.0, fade(pal().accent, 0.18 * hv));
-        }
+        let hv = hover(ui, id("menu-row", i), it.enabled && menu.sel == Some(i), dt);
+        let bg = if hv > 0.01 {
+            let bg = mix(plate, lit, hv);
+            p.rect(r, 7.0, bg);
+            bg
+        } else {
+            plate
+        };
         if it.checked {
-            p.rect([r[0] + 10.0, ry + ROW / 2.0 - 3.0, 6.0, 6.0], 3.0, pal().accent);
+            p.rect([r[0] + 10.0, ry + row / 2.0 - 3.0, 6.0, 6.0], 3.0, pal().accent);
         }
-        let c = if it.enabled { pal().ink } else { pal().muted };
+        let c = match (it.enabled, it.danger) {
+            (false, _) => legible(pal().muted, bg, 3.0),
+            (true, true) => legible(pal().danger, bg, 4.5),
+            (true, false) => legible(pal().ink, bg, 4.5),
+        };
         let label = p.fit(&it.label, r[2] - 40.0, size, Font::Regular);
-        p.text(&label, r[0] + 26.0, top(ry + ROW / 2.0, size), size, Font::Regular, c);
+        p.text(&label, r[0] + 26.0, top(ry + row / 2.0, size), size, Font::Regular, c);
         if !it.hint.is_empty() {
             let hw = p.measure(&it.hint, 11.5, Font::Mono);
             p.text(
                 &it.hint,
                 r[0] + r[2] - 10.0 - hw,
-                top(ry + ROW / 2.0, 11.5),
+                top(ry + row / 2.0, 11.5),
                 11.5,
                 Font::Mono,
-                pal().muted,
+                legible(pal().muted, bg, 3.0),
             );
         }
         if it.enabled {
             ui.hits.push((r, Action::MenuPick(i.min(255) as u8)));
         }
-        ry += ROW;
+        ry += row;
     }
     p.alpha = a;
     p.dy = dy;
     if let Some(m) = st.s.ui.menu.as_mut() {
         m.rect = Some(rect);
+        m.scroll = first;
+        m.shown = (first, end);
     }
 }
 
