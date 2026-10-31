@@ -3303,9 +3303,16 @@ pub fn agent_ask(st: &mut Studio, text: &str) {
         .as_ref()
         .and_then(|p| p.strip_prefix(&mods_dir).ok())
         .map(|p| p.to_string_lossy().replace('\\', "/"));
+    let files = ed
+        .path
+        .as_deref()
+        .and_then(|p| st.mod_of_path(p))
+        .map(|i| st.s.mods[i].files())
+        .unwrap_or_default();
     let ctx = super::hstudio_agent::AgentContext {
         file,
         mods_dir: mods_dir.clone(),
+        files,
         selection: ed.selected_text().filter(|t| !t.trim().is_empty()),
         problems: ed
             .problems

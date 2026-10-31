@@ -7,7 +7,7 @@
 // studio's; `wait` answers frames later. What scripts print to chat, send, and
 // see in chat is kept, numbered, for `chat` (as the console's log is for `log`).
 
-use super::hstudio::{GameApi, ModState, Studio, VERSION, error_line};
+use super::hstudio::{GameApi, ModState, Studio, VERSION, error_place};
 use serde_json::{Value as Json, json};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -475,7 +475,9 @@ fn mod_ids(st: &Studio) -> String {
     if ids.is_empty() { "none".into() } else { ids.join(", ") }
 }
 
-/// The script mods as the Library shows them.
+/// The script mods as the Library shows them: a script's or a module's
+/// files, and for one that failed, the file and line of its error (for a
+/// module, the file `require` loaded when that is where it failed).
 pub fn mods(st: &Studio) -> Json {
     Json::Array(
         st.s.mods
@@ -486,16 +488,20 @@ pub fn mods(st: &Studio) -> Json {
                     ModState::Running => ("running", None, None),
                     ModState::Failed(e, t) => ("failed", Some(e.clone()), Some(t.clone())),
                 };
+                let place = error.as_deref().and_then(error_place);
                 json!({
                     "id": m.id,
                     "name": m.name,
                     "version": m.version,
                     "author": m.author,
                     "description": m.description,
+                    "kind": if m.folder.is_some() { "module" } else { "script" },
+                    "files": m.files(),
                     "enabled": m.enabled,
                     "state": state,
                     "error": error,
-                    "line": error.as_deref().and_then(error_line),
+                    "file": place.as_ref().map(|p| p.0.clone()),
+                    "line": place.map(|p| p.1),
                     "traceback": traceback,
                     "main": m.main,
                     "folder": m.folder,

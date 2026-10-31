@@ -3082,6 +3082,13 @@ pub fn error_line_in(msg: &str, trace: &str, chunk: &str) -> Option<usize> {
         .find_map(|(c, line)| (c == chunk).then_some(line))
 }
 
+/// Where an error happened: the innermost `<file>.lua:<line>:` of its
+/// message (the file a `require` loaded, when that is where it failed),
+/// else the place it starts with (`chunk:line:`).
+pub fn error_place(msg: &str) -> Option<(String, usize)> {
+    error_places(msg).pop().or_else(|| trace_place(msg))
+}
+
 /// A traceback line's place: "m/lib.lua:7: in f" is m/lib.lua, line 7.
 fn trace_place(line: &str) -> Option<(String, usize)> {
     let (chunk, rest) = line.trim_start().split_once(':')?;

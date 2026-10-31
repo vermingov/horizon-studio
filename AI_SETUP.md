@@ -73,9 +73,10 @@ Once the `horizon-studio` tools are available:
 
 ## 5. How to work from here
 
-- Write mods with `write_mod` (one `<id>.lua`, or a folder: `main.lua` and files it `require`s). It checks the mod
-  headless first and reports errors with their lines, then writes it where the game reads it; the game reloads it at
-  once.
+- Write mods with `write_mod`: a script is one `<id>.lua`; a module is a folder whose `main.lua` `require`s its other
+  files. For a module that exists, give only the files that change (the others stay), and `remove` deletes files. It
+  checks the mod headless first, as it will be on disk, and reports errors with their file and line, then writes it
+  where the game reads it; the game reloads it at once.
 - Shared code goes in a library: `export{...}` in one mod, `import("id")` in others. The bundled UI Kit (`uikit`) is
   one; `examples` lists the bundled mods and gives their source.
 - Test with `test_mod`: headless first (commands, chat, keys, Lua assertions, the player and blocks, script screens and
