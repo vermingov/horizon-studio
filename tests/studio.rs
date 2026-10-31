@@ -590,16 +590,17 @@ fn require_stays_inside_the_module() {
         assert!(msg.contains("bad module name"), "{id}: {msg}");
     }
     assert!(!log(&st).iter().any(|l| l.contains("escaped")), "{:?}", log(&st));
-    // A missing file names the ones the module has.
+    // A missing file names the file, and the ones the module has: "module"
+    // once, the mod (a file required is no mod, which import loads).
     write_module(
         &game,
         "lost",
-        &[("main.lua", "require('nope')\n"), ("util.lua", "return 1\n")],
+        &[("main.lua", "require('lib.nope')\n"), ("util.lua", "return 1\n")],
     );
     run_for(&mut st, &mut game, 0.6);
     let (msg, _) = failure(&st, "lost");
     assert!(
-        msg.contains("module 'nope' not found (nope.lua; the module has main.lua, util.lua)"),
+        msg.ends_with("require('lib.nope'): lib/nope.lua not found in this module (its files: main.lua, util.lua)"),
         "{msg}"
     );
 }

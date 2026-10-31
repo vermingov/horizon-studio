@@ -4324,7 +4324,12 @@ impl Ctx<'_> {
         }
         let Ok(src) = std::fs::read(path_in(&folder, rel)) else {
             let files = self.me().files().join(", ");
-            return Err(lua.rt_error(format!("module '{name}' not found ({rel}; the module has {files})")));
+            // The file is named as a file, and "module" is the mod, as
+            // everywhere else; Lua's "not found" stays for scripts that
+            // look for it.
+            return Err(lua.rt_error(format!(
+                "require('{name}'): {rel} not found in this module (its files: {files})"
+            )));
         };
         let env = self
             .me()
