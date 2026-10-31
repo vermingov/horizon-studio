@@ -419,6 +419,15 @@ fn an_agent_writes_tests_and_runs_a_mod_in_the_linked_game() {
     let (r, _) = call(&mut s, "delete_mod", json!({ "id": "greeter" }));
     assert_eq!(r["ok"], true);
     assert!(!mods_dir.join("greeter.lua").exists());
+    // The agent looks at the game: the game saves its next frame, the tool returns it.
+    let shot = s.call_tool("screenshot", &json!({}));
+    assert_ne!(shot["isError"], true, "{shot:#}");
+    assert_eq!(shot["content"][0]["type"], "image", "{shot:#}");
+    assert_eq!(shot["content"][0]["mimeType"], "image/png");
+    assert!(
+        shot["content"][0]["data"].as_str().unwrap().starts_with("iVBORw0KGgo"),
+        "a PNG"
+    );
 
     stop_tx.send(()).unwrap();
     game.join().unwrap();

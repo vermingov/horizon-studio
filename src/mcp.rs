@@ -14,7 +14,7 @@ use crate::mcp_docs::{self, Reference};
 use serde_json::{Value as Json, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -209,6 +209,27 @@ fn exchange<S: Read + Write>(mut stream: S, text: &str, auth: bool) -> Result<St
     Ok(line.trim().to_owned())
 }
 
+/// The PNG the game writes at `path` once it has drawn its next frame: read
+/// when whole (its size steady and its end mark there), within `limit`.
+fn wait_for_png(path: &Path, limit: std::time::Duration) -> Result<Vec<u8>, String> {
+    const END: &[u8] = b"IEND\xaeB`\x82";
+    let until = std::time::Instant::now() + limit;
+    let mut last = None;
+    while std::time::Instant::now() < until {
+        if let Ok(data) = std::fs::read(path) {
+            if data.ends_with(END) && last == Some(data.len()) {
+                return Ok(data);
+            }
+            last = Some(data.len());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(60));
+    }
+    Err(format!(
+        "the game didn't save the screenshot within {} s (is its window minimised?)",
+        limit.as_secs()
+    ))
+}
+
 fn base64(data: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -356,6 +377,15 @@ pub fn tools() -> Json {
             "reload_mod",
             "Reloads a mod in the running game (and the mods using it), or every mod without an id.",
             json!({ "id": id }),
+            &[]
+        ),
+        tool(
+            "screenshot",
+            "Looks at the running game: a picture of its window as the player sees it, through Horizon \
+              Studio's AI link (nothing to set up). The studio's window is hidden for it unless `studio` is true \
+              (then you see the editor and the console too). Use it to check what a mod draws: HUD panels, \
+              screens, 3D shapes, particles.",
+            json!({ "studio": { "type": "boolean", "description": "Show the studio's window too, if open (default false)." } }),
             &[]
         ),
         tool(
@@ -807,6 +837,18 @@ impl Server {
                         "note": "this server switches to it at the next call" })),
                     None => Ok(json!({ "updated": false, "version": VERSION, "note": "the newest release already" })),
                 }
+            }
+            "screenshot" => {
+                let studio = args.get("studio").and_then(Json::as_bool).unwrap_or(false);
+                let reply = self.live("screenshot", json!({ "studio": studio })).map_err(|e| {
+                    format!("{e} (the screenshot tool needs the game running with Horizon Studio; game_status says)")
+                })?;
+                let path = PathBuf::from(reply["path"].as_str().ok_or("the game gave no path")?);
+                let png = wait_for_png(&path, std::time::Duration::from_secs(8))?;
+                Ok(json!({ "content": [
+                    { "type": "image", "data": base64(&png), "mimeType": "image/png" },
+                    { "type": "text", "text": json!({ "ok": true, "bytes": png.len(), "studio_shown": reply["studio_shown"] }).to_string() },
+                ] }))
             }
             "horizon_ctl" => {
                 let command = str_arg(args, "command")?.trim();

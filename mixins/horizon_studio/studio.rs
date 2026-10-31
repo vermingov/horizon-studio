@@ -257,6 +257,12 @@ pub trait GameApi {
     fn place(&mut self, corner: Corner, w: f32, h: f32) -> (f32, f32);
     /// Shows a folder in the system's file manager.
     fn open_folder(&mut self, path: &Path);
+    /// Saves the next frame drawn as a PNG at `path` (as F2 does), for the
+    /// agent to look at the game. Where there is no window, an error.
+    fn screenshot(&mut self, path: &Path) -> Result<(), String> {
+        let _ = path;
+        Err("screenshots need the game's window".into())
+    }
     /// The camera of the frame being drawn (while the world draws), else of the last one.
     fn camera(&self) -> Option<Camera>;
     /// A solid quad in world space (`0xAARRGGBB`), seen from both sides and

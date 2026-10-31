@@ -558,6 +558,21 @@ fn handle(st: &mut Studio, game: &mut dyn GameApi, method: &str, params: &Json) 
                     .collect::<Vec<_>>(),
             }))
         }
+        // The next frame as a PNG, for the agent to see the game: the studio's
+        // window hidden for it unless `studio` is true. The MCP server reads
+        // the file once it is written.
+        "screenshot" => {
+            let dir = st.s.dir.join("screenshots");
+            std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            let path = dir.join("agent.png");
+            let _ = std::fs::remove_file(&path);
+            game.screenshot(&path)?;
+            let with_studio = params.get("studio").and_then(Json::as_bool).unwrap_or(false);
+            if st.s.ui.open && !with_studio {
+                st.s.ui.hidden_until = st.s.now + 0.4;
+            }
+            now(json!({ "ok": true, "path": path, "studio_shown": st.s.ui.open && with_studio }))
+        }
         "scan" => {
             st.scan(game);
             now(mods(st))

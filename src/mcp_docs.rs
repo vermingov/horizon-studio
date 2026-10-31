@@ -1425,7 +1425,7 @@ const MCP: &str = r##"
 2. `examples` for idioms (`examples` with an id gives the source).
 3. `write_mod` with the files; read its `check`: whether the mod loads, its error and line. Fix and write again.
 4. `test_mod` with steps, headless first. Then `game_status`; when it says `linked: true`, `test_mod` with `live: true`.
-5. In the running game: `run_lua`, `send_chat`, `game_log`, `reload_mod`; with Horizon started with `--control`, `horizon_ctl` (`screenshot` returns the image).
+5. In the running game: `run_lua`, `send_chat`, `game_log`, `reload_mod`, and `screenshot` to see what the mod draws; with Horizon started with `--control`, `horizon_ctl`.
 
 ## The tools
 
@@ -1443,6 +1443,7 @@ const MCP: &str = r##"
 - `game_log` (`since_log`, `since_chat`): the console's log and the chat from the game; give the last numbers seen to get only newer lines. Live only.
 - `reload_mod` (`id` optional): reloads a mod in the game (and the mods using it), or all; returns the mods' states. Live only.
 - `update_server` (no arguments): updates this server to the newest release of `horizon-studio-mcp`, in place (`{"updated", "from", "to"}` or `{"updated": false, "version"}`); it switches to the new binary at the next call, keeping the connection: no restart, no reinstall. The game's Options > Mods > Horizon Studio has the same as a button, and `horizon-studio-mcp update` from a shell. Whenever the binary is replaced (those, or the install line run again), a running server hands over to the new one before its next answer and sends `notifications/tools/list_changed`, so call `tools/list` again then.
+- `screenshot` (`studio` optional, default false): a picture of the running game's window, as the player sees it, returned as a PNG image. It goes through Horizon Studio's AI link, so it needs nothing set up (no `--control`). The studio's window is hidden for that frame unless `studio` is true. Live only; with the window minimised no frame is drawn, and it says so after 8 s.
 - `horizon_ctl` (`command`): one `horizon-ctl` command to Horizon itself (`state`, `ui`, `click ID`, `screenshot`, `goto X Y Z`, `inventory`, `command /...`, `help`...); `screenshot` returns the PNG. Needs a game started with `--control` (or `horizon-ctl launch --world NAME --wait`).
 
 A mod's state, as `list_mods`, `game_status` and `check_mod` give it: `id`, `name`, `version`, `author`, `description`, `enabled`, `state` (`running`, `failed`, `off`), `error`, `line`, `traceback`, `main`, `folder`, `library` (whether it exports), `imports`, `commands`, `handlers`, `timers`, `cost_ms`, `reloads`.

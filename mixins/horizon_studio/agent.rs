@@ -415,7 +415,9 @@ pub fn prompt(request: &str, ctx: &AgentContext) -> String {
          shows the new text.\n\
          - test_mod: tests a mod with steps (headless, or live: true in the running game).\n\
          - run_lua: runs Lua in the running game's console.\n\
-         - game_status, game_log: the game, the mods' states and errors, the console.\n\n",
+         - game_status, game_log: the game, the mods' states and errors, the console.\n\
+         - screenshot: a picture of the game as the player sees it (studio: true shows the editor too); \
+         look with it to check what a mod draws.\n\n",
     );
     p += &format!(
         "The mods folder is {}. A mod is a file <id>.lua or a folder <id>/ with main.lua and other files.\n",

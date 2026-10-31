@@ -377,6 +377,9 @@ pub struct Ui {
     /// The editor's scroll bar, from the last frame, and where its thumb is
     /// held (from its top) while dragged.
     pub scrollbar: Option<ScrollBar>,
+    /// The studio's window isn't drawn until then (the studio's clock): a
+    /// screenshot for the agent shows the game, not the editor over it.
+    pub hidden_until: f64,
     pub(crate) scroll_drag: Option<f32>,
     pub(crate) view: Option<EditorView>,
     /// Lines the last frame could show, for Page Up/Down.

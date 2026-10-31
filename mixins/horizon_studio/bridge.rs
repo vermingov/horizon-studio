@@ -266,6 +266,19 @@ impl GameApi for Host<'_, '_> {
             Err(e) => Err(e.to_string()),
         }
     }
+    fn screenshot(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let g = self.g_mut().ok_or("no game to look at")?;
+        let renderer = g.renderer.as_mut().ok_or("the game isn't drawing yet")?;
+        // F2's, or one already asked for: the next frame is theirs.
+        if renderer.screenshot.is_some() {
+            return Err("a screenshot is being taken: ask again in a moment".into());
+        }
+        renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
+            path: path.to_path_buf(),
+            size: None,
+        });
+        Ok(())
+    }
     fn data_dir(&self) -> PathBuf {
         self.g().native_data_dir(ID)
     }

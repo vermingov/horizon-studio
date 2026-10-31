@@ -242,6 +242,12 @@ impl GameApi for FakeGame {
     fn open_folder(&mut self, path: &std::path::Path) {
         self.opened.push(path.to_path_buf());
     }
+    fn screenshot(&mut self, path: &std::path::Path) -> Result<(), String> {
+        // A PNG's signature and end mark: enough for what reads it.
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(b"\0\0\0\0IEND\xaeB`\x82");
+        std::fs::write(path, png).map_err(|e| e.to_string())
+    }
     fn place(&mut self, corner: Corner, _w: f32, _h: f32) -> (f32, f32) {
         match corner {
             Corner::TopLeft => (2.0, 2.0),

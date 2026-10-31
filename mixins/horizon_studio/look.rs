@@ -445,6 +445,9 @@ const CAPTION_W: f32 = 46.0;
 
 pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
     let now = st.s.now;
+    if now < st.s.ui.hidden_until {
+        return;
+    }
     let look = st.s.ui.look.clone();
     use_look(&look, false);
     ease_palette(now);
