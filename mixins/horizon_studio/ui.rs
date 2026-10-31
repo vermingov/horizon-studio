@@ -816,6 +816,17 @@ impl Editor {
         };
         self.set_text(&text);
     }
+    /// The file it shows moved (renamed, or a script made a module's
+    /// main.lua): the same text, cursor, undo and unsaved edits, at its new
+    /// path, so a save writes there and not where it was.
+    pub fn moved(&mut self, to: &Path, title: &str) {
+        self.path = Some(to.to_path_buf());
+        self.title = title.to_owned();
+        self.disk = disk_stamp(to);
+        self.conflict = false;
+        // Its name is in what the live check says: it looks again.
+        self.checked = None;
+    }
     /// Reads the file again when it changed on disk (an agent wrote it):
     /// at once while there are no unsaved edits (the cursor stays where it
     /// was, and Ctrl+Z goes back), else it is marked as a conflict. True
@@ -2270,15 +2281,6 @@ fn open_model_menu(st: &mut Studio) {
     });
 }
 
-/// Before another file opens in the editor (`to`), the one open is saved
-/// if it has unsaved edits, so switching scripts never loses them.
-fn save_before_switch(st: &mut Studio, game: &mut dyn GameApi, to: Option<&PathBuf>) {
-    let ed = &st.s.editor;
-    if ed.dirty && ed.path.is_some() && ed.path.as_ref() != to {
-        st.save_editor(game);
-    }
-}
-
 fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
     // A row drawn last frame may be gone (the folder changed since).
     if let Action::Select(i) | Action::Toggle(i) | Action::Edit(i) | Action::Reload(i) = action
@@ -2295,13 +2297,14 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
             st.set_enabled(game, i, on);
         }
         Action::Edit(i) => {
-            save_before_switch(st, game, Some(&st.s.mods[i].main.clone()));
+            let main = st.s.mods[i].main.clone();
+            st.save_before_switch(game, Some(&main));
             st.edit_mod(i);
             st.s.ui.tab = Tab::Editor;
         }
         Action::EditScratch => {
             let path = st.scratch_path();
-            save_before_switch(st, game, Some(&path));
+            st.save_before_switch(game, Some(&path));
             if st.s.editor.path.as_ref() != Some(&path) {
                 st.s.editor.open(&path, "scratch.lua");
                 st.s.editor.error_line = None;

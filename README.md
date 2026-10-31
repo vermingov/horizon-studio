@@ -435,7 +435,9 @@ The Library's **New mod** writes a file like this to start from.
 The agent commands are those of Horizon's `horizon-ctl` ([agent control](https://github.com/horizon-rust/horizon/blob/main/docs/agent-control.md)),
 limited to reading the world and acting as the player: nothing that saves, quits or changes options.
 
-In the console only: `help([name])`, `clear()`, `reload([id])`, `mods()`, `edit(id)`, `new(name)`.
+In the console only: `help([name])`, `clear()`, `reload([id])`, `mods()`, `edit(id[, file])` (a module's other
+files by their path in it: `edit("tool", "lib.lua")`), `new(name[, kind])` (`new("Tool", "module")` makes a
+module).
 
 ### Screens
 

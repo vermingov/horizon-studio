@@ -1255,7 +1255,7 @@ The studio's Console tab runs Lua at once in the running game, like a Lua execut
 - What the console registers (`on`, `command`, `every`, `hud.panel`, `model.attach`...) lasts until `clear()`. A console handler that fails is removed; the console stays.
 - The console's `print` lines have no `[id]` prefix, and its `chat.show` lines no `[name]` prefix.
 - Only the console has the functions below; in a mod they are nil.
-- The Editor tab's Ctrl+Enter runs the open file in the console.
+- The Editor tab's Ctrl+Enter runs the open file in the console. On a file of a module, whose `require` the console can't do, it saves the file and reloads the module instead.
 
 ```lua
 help("player")          -- every function with "player" in its name
@@ -4143,17 +4143,19 @@ for id, state in pairs(mods()) do print(id, state) end
         "edit",
         "console",
         r##"
-`edit(id)`
+`edit(id[, file])`
 
-Console only. Opens a mod's main file in the studio's Editor tab (after the console line).
+Console only. Opens a mod in the studio's Editor tab (after the console line): its main file, or with `file` another file of a module, by its path in the module (`"lib.lua"`, `"lib/util"`; the `.lua` may be left out). Unsaved edits in the file open before are saved first.
 
-- `id` (string).
+- `id` (string): a mod id.
+- `file` (string, optional): a file of the module.
 - Returns: nothing.
 - Where: the console only.
-- Errors: `bad argument #1 to 'edit' (a mod id expected)`; `no script mod 'x'`.
+- Errors: `bad argument #1 to 'edit' (a mod id expected)`; `no script mod 'x'`; `'hello' is a script, one file: edit("hello") opens it`; `no nope.lua in tool (it has main.lua, lib.lua, shared.lua)`.
 
 ```lua
 edit("waypoints")
+edit("tool", "lib.lua")
 ```
 "##
     ),
@@ -4161,16 +4163,19 @@ edit("waypoints")
         "new",
         "console",
         r##"
-`new(name)`
+`new(name[, kind])`
 
-Console only. Makes a new single-file mod from the template (`<id>.lua`, the id made from the name) and opens it in the Editor. If the mod exists, the console logs `<id> already exists`.
+Console only. Makes a new mod and opens it in the Editor: a script, `<id>.lua` from the template (the id made from the name), or with `kind` `"module"` a module, the folder `<id>/` with `main.lua`, `shared.lua` and `lib.lua` (main.lua requires the other two, and every file shares the table shared.lua returns). If a mod has that id, the console logs `<id> already exists`. Unsaved edits in the file open are saved first.
 
 - `name` (string): the mod's name; the id is made from it.
+- `kind` (string, optional): `"script"` (the default) or `"module"`.
 - Returns: nothing.
 - Where: the console only.
+- Errors: `bad argument #2 to 'new' ("script" or "module" expected)`.
 
 ```lua
 new("My Tool")
+new("Night Light", "module")
 ```
 "##
     ),

@@ -15,7 +15,7 @@ use super::hstudio_lua::{
     check_str, check_table, check_text, opt_num, opt_str,
 };
 use super::hstudio_lualib::{inspect, new_env, quote, text_of};
-use super::hstudio_modfiles::{lua_files, path_in, rel_in, require_path};
+use super::hstudio_modfiles::{TEMPLATE, file_name, lua_files, path_in, prune_empty, rel_in, require_path, to_trash};
 use super::hstudio_ui::{Editor, ScriptScreen, Ui};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -858,8 +858,10 @@ pub struct State {
 
 enum Request {
     Reload(Option<String>),
-    Edit(String),
-    New(String),
+    /// A mod, and a file of it (its path in the module) or its main file.
+    Edit(String, Option<String>),
+    /// A new mod's name, and whether it is a module.
+    New(String, bool),
 }
 
 impl State {
@@ -1511,6 +1513,154 @@ impl Studio {
         self.scan(game);
         self.s.log(LogKind::Info, format!("Created {}", path.display()));
         Ok(path)
+    }
+
+    /// A new module called `name`: `<mods>/<id>/` with main.lua, shared.lua
+    /// and lib.lua, unless that id is taken; the scan loads it. Returns its
+    /// main.lua.
+    pub fn create_module(&mut self, game: &mut dyn GameApi, name: &str) -> Result<PathBuf, String> {
+        let name = name.trim();
+        let id = mod_id(name);
+        let mods = self.s.mods_dir();
+        std::fs::create_dir_all(&mods).map_err(|e| e.to_string())?;
+        let main = super::hstudio_modfiles::write_module(&mods, &id, name)?;
+        self.scan(game);
+        self.s
+            .log(LogKind::Info, format!("Created {}", mods.join(&id).display()));
+        Ok(main)
+    }
+
+    /// The trash: what the studio deletes goes there, as
+    /// `<studio>/trash/<its path in mods/>`, the newest copy of each.
+    pub fn trash_dir(&self) -> PathBuf {
+        self.s.dir.join("trash")
+    }
+
+    /// A file of a module, as the module's folder and the file's path in it.
+    fn module_file(&self, path: &Path) -> Option<(PathBuf, String)> {
+        let folder = self.s.mods[self.mod_of_path(path)?].folder.clone()?;
+        let rel = rel_in(&folder, path)?;
+        Some((folder, rel))
+    }
+
+    /// A new file in the module whose folder is `folder`, named as typed
+    /// ("util", "lib/util"), from a short template; the module reloads with
+    /// it. Returns its path.
+    pub fn add_file(&mut self, game: &mut dyn GameApi, folder: &Path, typed: &str) -> Result<PathBuf, String> {
+        let i = self
+            .mod_of_path(folder)
+            .filter(|&i| self.s.mods[i].folder.as_deref() == Some(folder))
+            .ok_or("that is not a module's folder")?;
+        let rel = file_name(typed)?;
+        let name = self.s.mods[i].name.clone();
+        let path = super::hstudio_modfiles::write_file(folder, &rel, &name)?;
+        self.s.log(LogKind::Info, format!("Created {}", path.display()));
+        self.scan(game);
+        Ok(path)
+    }
+
+    /// Renames a file of a module to what was typed; the module reloads, and
+    /// the editor follows the file if it has it open (its unsaved edits
+    /// too). Other files' `require` of the old name stay as they are.
+    /// Returns its new path.
+    pub fn rename_file(&mut self, game: &mut dyn GameApi, path: &Path, typed: &str) -> Result<PathBuf, String> {
+        let (folder, from) = self.module_file(path).ok_or("that is not a file of a module")?;
+        let to = file_name(typed)?;
+        if to == from {
+            return Ok(path.to_path_buf());
+        }
+        let new = super::hstudio_modfiles::rename_file(&folder, &from, &to)?;
+        self.s.log(LogKind::Info, format!("Renamed {from} to {to}"));
+        self.scan(game);
+        self.file_moved(path, Some(&new), &new);
+        Ok(new)
+    }
+
+    /// Moves a mod's file to the trash: one file of a module (not its
+    /// main.lua, which starts it: the module goes instead), or a whole mod
+    /// (a script's file, or a module's folder). Edits the editor has not
+    /// saved go with it. The editor then shows the module's main.lua, or
+    /// the scratch file when the whole mod went. Returns where it went.
+    pub fn delete_path(&mut self, game: &mut dyn GameApi, path: &Path) -> Result<PathBuf, String> {
+        let i = self.mod_of_path(path).ok_or("that is not a file of a mod")?;
+        let m = &self.s.mods[i];
+        let (target, folder) = match &m.folder {
+            None => (m.main.clone(), None),
+            Some(f) if f == path => (f.clone(), None),
+            Some(f) if rel_in(f, path).as_deref() == Some("main.lua") => {
+                return Err("main.lua starts the module: delete the module instead".into());
+            }
+            Some(f) => (path.to_path_buf(), Some(f.clone())),
+        };
+        let instead = match &folder {
+            Some(f) => f.join("main.lua"),
+            None => self.scratch_path(),
+        };
+        let ed = &mut self.s.editor;
+        if ed.dirty
+            && ed.path.as_deref().is_some_and(|p| p.starts_with(&target))
+            && let Err(e) = ed.save()
+        {
+            self.s.log(LogKind::Error, format!("Could not save: {e}"));
+        }
+        let moved = to_trash(&self.trash_dir(), &self.s.mods_dir(), &target)?;
+        if let Some(f) = &folder {
+            prune_empty(f, target.parent());
+        }
+        self.s.log(
+            LogKind::Info,
+            format!("Moved {} to {}", target.display(), moved.display()),
+        );
+        self.scan(game);
+        self.file_moved(&target, None, &instead);
+        Ok(moved)
+    }
+
+    /// Turns script `i` into a module: its file becomes `<id>/main.lua`, and
+    /// it keeps its id, storage and on/off state. It reloads, and the editor
+    /// follows it if it has it open. Returns main.lua's path.
+    pub fn make_module(&mut self, game: &mut dyn GameApi, i: usize) -> Result<PathBuf, String> {
+        let m = self.s.mods.get(i).ok_or("no such mod")?;
+        if m.folder.is_some() {
+            return Err(format!("{} is a module already", m.id));
+        }
+        let (old, id) = (m.main.clone(), m.id.clone());
+        let main = super::hstudio_modfiles::make_module(&self.s.mods_dir(), &old, &id)?;
+        self.s
+            .log(LogKind::Info, format!("Made {id} a module: {}", main.display()));
+        self.scan(game);
+        self.file_moved(&old, Some(&main), &main);
+        Ok(main)
+    }
+
+    /// After a file moved (`to`) or went (None): when the editor shows
+    /// `from`, or a file inside it, it follows the file to its new place with
+    /// its text, cursor and unsaved edits, or opens `instead`.
+    fn file_moved(&mut self, from: &Path, to: Option<&Path>, instead: &Path) {
+        let Some(open) = self.s.editor.path.clone().filter(|p| p.starts_with(from)) else {
+            return;
+        };
+        match to {
+            Some(to) => {
+                let new = match open.strip_prefix(from) {
+                    Ok(rest) if !rest.as_os_str().is_empty() => to.join(rest),
+                    _ => to.to_path_buf(),
+                };
+                let title = self.file_title(&new);
+                self.s.editor.moved(&new, &title);
+                self.mark_failure();
+            }
+            None => self.open_file(instead),
+        }
+    }
+
+    /// Before another file opens in the editor (`to`), the one open is saved
+    /// if it has unsaved edits, so switching files never loses them.
+    pub fn save_before_switch(&mut self, game: &mut dyn GameApi, to: Option<&Path>) {
+        let ed = &self.s.editor;
+        if ed.dirty && ed.path.is_some() && ed.path.as_deref() != to {
+            self.save_editor(game);
+        }
     }
 
     /// Writes bundled example `i` into the mods folder.
@@ -2415,28 +2565,78 @@ impl Studio {
                         }
                     }
                 }
-                Request::Edit(id) => {
+                Request::Edit(id, file) => {
                     if let Some(i) = self.s.mods.iter().position(|m| m.id == id) {
-                        self.edit_mod(i);
+                        let m = &self.s.mods[i];
+                        let path = match (&file, &m.folder) {
+                            (Some(rel), Some(folder)) => path_in(folder, rel),
+                            _ => m.main.clone(),
+                        };
+                        self.save_before_switch(game, Some(&path));
+                        self.open_file(&path);
                         self.s.ui.tab = super::hstudio_ui::Tab::Editor;
                     }
                 }
-                Request::New(name) => match self.create_mod(game, &name, None) {
-                    Ok(path) => {
-                        let title = path
-                            .file_name()
-                            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-                        self.s.editor.open(&path, &title);
-                        self.s.ui.tab = super::hstudio_ui::Tab::Editor;
+                Request::New(name, module) => {
+                    self.save_before_switch(game, None);
+                    let made = if module {
+                        self.create_module(game, &name)
+                    } else {
+                        self.create_mod(game, &name, None)
+                    };
+                    match made {
+                        Ok(path) => {
+                            self.open_file(&path);
+                            self.s.ui.tab = super::hstudio_ui::Tab::Editor;
+                        }
+                        Err(e) => self.s.log(LogKind::Error, e),
                     }
-                    Err(e) => self.s.log(LogKind::Error, e),
-                },
+                }
             }
         }
     }
 
-    /// Runs the editor's text as a console chunk (Ctrl+Enter).
+    /// Saves the editor's file if it has unsaved edits (the scan then reloads
+    /// its mod), and reloads the mod, turning it on, when that didn't: what
+    /// Run does on a module's file, and the executor styles' Execute File.
+    /// False when the file is no mod's.
+    pub fn reload_editor_mod(&mut self, game: &mut dyn GameApi) -> bool {
+        let Some(i) = self.s.editor.path.as_deref().and_then(|p| self.mod_of_path(p)) else {
+            return false;
+        };
+        let (id, reloads) = (self.s.mods[i].id.clone(), self.s.mods[i].reloads);
+        if self.s.editor.dirty {
+            self.save_editor(game);
+        }
+        if let Some(i) = self.s.mods.iter().position(|m| m.id == id)
+            && self.s.mods[i].reloads == reloads
+        {
+            self.set_enabled(game, i, true);
+            self.mark_failure();
+        }
+        true
+    }
+
+    /// Runs the editor's text as a console chunk (Ctrl+Enter). A module's
+    /// file can't run there (its `require` needs the module), so it is saved
+    /// and the module reloaded instead.
     pub fn run_editor(&mut self, game: &mut dyn GameApi) {
+        let module = self
+            .s
+            .editor
+            .path
+            .as_deref()
+            .and_then(|p| self.mod_of_path(p))
+            .filter(|&i| self.s.mods[i].folder.is_some());
+        if let Some(i) = module {
+            let id = self.s.mods[i].id.clone();
+            self.s.log(LogKind::Input, format!("> run {}", self.s.editor.title));
+            self.reload_editor_mod(game);
+            if self.s.mods.iter().any(|m| m.id == id && m.running()) {
+                self.s.log(LogKind::Info, format!("Ran {id} (reloaded)"));
+            }
+            return;
+        }
         let src = self.s.editor.text();
         let env = self.console_env();
         let name = self.s.editor.title.clone();
@@ -2543,9 +2743,6 @@ impl Studio {
 
 /// The editor's file on a first run: a place to try things.
 const SCRATCH: &str = "-- scratch.lua: a place to try code. Ctrl+Enter runs this file in the console;\n-- Ctrl+S saves it. Your mods go in the Library tab.\n\nlocal x, y, z = player.pos()\nif x then\n  print(string.format(\"You are at %.1f %.1f %.1f, facing %s\", x, y, z, player.facing()))\nend\n";
-
-/// A new mod from the Library's New button.
-const TEMPLATE: &str = "-- name: {name}\n-- version: 0.1.0\n-- description: What this mod does.\n\n-- This file runs when the mod loads, and again each time you save it.\nprint(\"{id} loaded\")\n\ncommand(\"{id}\", function(args)\n  return \"Hello from {name}!\"\nend, \"Says hello\")\n\non(\"tick\", function()\n  -- 20 times a second\nend)\n";
 
 /// The most a dropped mod may hold.
 const MAX_INSTALL_FILES: usize = 256;
@@ -3474,8 +3671,16 @@ pub const CONSOLE_API: &[(&str, u32, &str)] = &[
     ),
     ("reload", 202, "reload([id]): reload one script mod, or all"),
     ("mods", 203, "mods(): the script mods and their state"),
-    ("edit", 204, "edit(id): open a mod in the editor"),
-    ("new", 205, "new(name): make a new mod from the template and open it"),
+    (
+        "edit",
+        204,
+        "edit(id[, file]): open a mod's main file in the editor, or another file of a module (edit(\"tool\", \"lib.lua\"))",
+    ),
+    (
+        "new",
+        205,
+        "new(name[, kind]): make a new mod and open it: a script, or with \"module\" a module (main.lua, shared.lua and lib.lua)",
+    ),
 ];
 
 /// What `require` of a file says outside a module.
@@ -5359,17 +5564,44 @@ impl Host for Ctx<'_> {
             }
             202 | 204 => {
                 // The studio does these once the call returns: they need the interpreter.
-                let which = opt_str(lua, &args, 0, "reload")?.map(|s| text_of(&s));
-                if let Some(w) = &which
-                    && !self.s.mods.iter().any(|m| &m.id == w)
-                {
-                    return Err(lua.rt_error(format!("no script mod '{w}'")));
-                }
-                self.s.requests.push(match (which, id == 202) {
-                    (which, true) => Request::Reload(which),
-                    (Some(w), false) => Request::Edit(w),
-                    (None, false) => return Err(bad_arg(lua, 0, "edit", "a mod id expected")),
-                });
+                let fname = if id == 202 { "reload" } else { "edit" };
+                let which = opt_str(lua, &args, 0, fname)?.map(|s| text_of(&s));
+                let found = match &which {
+                    Some(w) => Some(
+                        self.s
+                            .mods
+                            .iter()
+                            .position(|m| &m.id == w)
+                            .ok_or_else(|| lua.rt_error(format!("no script mod '{w}'")))?,
+                    ),
+                    None => None,
+                };
+                let request = match (which, found) {
+                    (which, _) if id == 202 => Request::Reload(which),
+                    (Some(w), Some(i)) => {
+                        let file = match opt_str(lua, &args, 1, "edit")?.map(|s| text_of(&s)) {
+                            None => None,
+                            Some(f) => {
+                                let m = &self.s.mods[i];
+                                let Some(folder) = &m.folder else {
+                                    return Err(
+                                        lua.rt_error(format!("'{w}' is a script, one file: edit(\"{w}\") opens it"))
+                                    );
+                                };
+                                let rel = file_name(&f).map_err(|e| bad_arg(lua, 1, "edit", &e))?;
+                                if !path_in(folder, &rel).is_file() {
+                                    return Err(
+                                        lua.rt_error(format!("no {rel} in {w} (it has {})", m.files().join(", ")))
+                                    );
+                                }
+                                Some(rel)
+                            }
+                        };
+                        Request::Edit(w, file)
+                    }
+                    _ => return Err(bad_arg(lua, 0, "edit", "a mod id expected")),
+                };
+                self.s.requests.push(request);
                 none()
             }
             203 => {
@@ -5386,7 +5618,12 @@ impl Host for Ctx<'_> {
             }
             205 => {
                 let name = check_str(lua, &args, 0, "new")?;
-                self.s.requests.push(Request::New(text_of(&name)));
+                let module = match opt_str(lua, &args, 1, "new")?.map(|s| text_of(&s)).as_deref() {
+                    None | Some("script") => false,
+                    Some("module") => true,
+                    Some(_) => return Err(bad_arg(lua, 1, "new", "\"script\" or \"module\" expected")),
+                };
+                self.s.requests.push(Request::New(text_of(&name), module));
                 none()
             }
             300..=312 => self.task(lua, id, args),
