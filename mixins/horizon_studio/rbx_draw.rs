@@ -941,7 +941,8 @@ fn scroll_bars(inst: &super::hstudio_rbx::Inst, p: &layout::Placed) -> Vec<Bar> 
     bars
 }
 
-/// The bar of a ScrollingFrame under the pointer it is over, topmost first.
+/// The scroll bar under the pointer, of the topmost ScrollingFrame with one
+/// there.
 fn bar_at(rbx: &Rbx) -> Option<(Id, Bar)> {
     let f = rbx.layout.as_ref()?;
     let at = Vector2::new(rbx.pointer.x, rbx.pointer.y);

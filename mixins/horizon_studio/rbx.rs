@@ -2329,7 +2329,7 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
     }
     // AbsoluteSize and the layout's other outputs are worked out afresh
     // when the GUI changed since; the nodes laid out count as steps.
-    if super::hstudio_rbx_draw::OUTPUTS.contains(&k.as_str()) {
+    if super::hstudio_rbx_draw::OUTPUTS.contains(&k.as_str()) && find_prop(env.rbx().inst(id).class, &k).is_some() {
         let (rbx, game) = env.rbx_and_game();
         let nodes = super::hstudio_rbx_draw::fresh_layout(rbx, game, id);
         lua.charge(nodes * 16)?;
