@@ -1145,11 +1145,17 @@ impl Studio {
         }
         let mut fresh = Vec::new();
         let mut changed = Vec::new();
+        // The main files that are somewhere else now (a script made a
+        // module), from where to where.
+        let mut moved = Vec::new();
         for (id, main, folder) in found {
             match self.s.mods.iter().position(|m| m.id == id) {
                 Some(i) => {
                     let stamp = Self::stamp(&main, folder.as_deref());
                     if stamp != self.s.mods[i].stamp {
+                        if self.s.mods[i].main != main {
+                            moved.push((self.s.mods[i].main.clone(), main.clone()));
+                        }
                         self.s.mods[i].main = main;
                         self.s.mods[i].folder = folder;
                         if self.s.mods[i].enabled {
@@ -1199,6 +1205,65 @@ impl Studio {
                 self.s.log(LogKind::Info, &msg);
                 self.s.toast(msg);
             }
+        }
+        self.follow_open(&moved);
+    }
+
+    /// After a scan, the editor's file when it moved or went on disk without
+    /// the studio (an agent's write_mod made a script a module or removed a
+    /// file of a module; a file manager), so that a save never writes where
+    /// it was. A mod's main file that moved (`moved`: from where, to where)
+    /// takes the editor along, its text and unsaved edits too, and what is
+    /// there now is read, or with unsaved edits is a conflict, as for any
+    /// file changed on disk. A file of a mod that is gone gives way to its
+    /// module's main.lua, or to the scratch file when the whole mod went;
+    /// with unsaved edits it stays, marked as removed (a save writes it back).
+    fn follow_open(&mut self, moved: &[(PathBuf, PathBuf)]) {
+        let Some(path) = self.s.editor.path.clone() else {
+            return;
+        };
+        if let Some((_, to)) = moved.iter().find(|(from, _)| *from == path) {
+            // With the stamp it had: what is at `to` may not be what it read.
+            let disk = self.s.editor.disk;
+            let title = self.file_title(to);
+            self.s.editor.moved(to, &title);
+            self.s.editor.disk = disk;
+            if self.s.editor.sync_disk() {
+                self.s.editor.reloaded_at = Some(self.s.now);
+            }
+            self.mark_failure();
+            self.unfold_open();
+            return;
+        }
+        // Gone: a file it read or wrote (not one it never found), of the mods folder.
+        if self.s.editor.disk.is_none() || path.exists() || !path.starts_with(self.s.mods_dir()) {
+            return;
+        }
+        if self.s.editor.dirty {
+            self.s.editor.removed = true;
+            self.s.editor.disk = None;
+        } else {
+            let instead = self.instead_of(&path);
+            self.open_file(&instead);
+        }
+    }
+
+    /// What the editor shows in place of a file that is gone: the main.lua
+    /// of the module it was in, or the scratch file.
+    fn instead_of(&self, path: &Path) -> PathBuf {
+        match self.mod_of_path(path) {
+            Some(i) => self.s.mods[i].main.clone(),
+            None => self.scratch_path(),
+        }
+    }
+
+    /// The file the editor still shows, with its unsaved edits, after it was
+    /// removed from disk, let go: its module's main.lua opens, or the
+    /// scratch file.
+    pub fn close_removed(&mut self) {
+        if let Some(path) = self.s.editor.path.clone() {
+            let instead = self.instead_of(&path);
+            self.open_file(&instead);
         }
     }
 
@@ -1604,16 +1669,18 @@ impl Studio {
         }
         let new = super::hstudio_modfiles::rename_file(&folder, &from, &to)?;
         self.s.log(LogKind::Info, format!("Renamed {from} to {to}"));
-        self.scan(game);
         self.file_moved(path, Some(&new), &new);
+        self.scan(game);
+        self.settle_open();
         Ok(new)
     }
 
     /// Moves a mod's file to the trash: one file of a module (not its
     /// main.lua, which starts it: the module goes instead), or a whole mod
     /// (a script's file, or a module's folder). Edits the editor has not
-    /// saved go with it. The editor then shows the module's main.lua, or
-    /// the scratch file when the whole mod went. Returns where it went.
+    /// saved go with it (when they can't be saved, nothing is deleted). The
+    /// editor then shows the module's main.lua, or the scratch file when the
+    /// whole mod went. Returns where it went.
     pub fn delete_path(&mut self, game: &mut dyn GameApi, path: &Path) -> Result<PathBuf, String> {
         let i = self.mod_of_path(path).ok_or("that is not a file of a mod")?;
         let m = &self.s.mods[i];
@@ -1630,11 +1697,9 @@ impl Studio {
             None => self.scratch_path(),
         };
         let ed = &mut self.s.editor;
-        if ed.dirty
-            && ed.path.as_deref().is_some_and(|p| p.starts_with(&target))
-            && let Err(e) = ed.save()
-        {
-            self.s.log(LogKind::Error, format!("Could not save: {e}"));
+        if ed.dirty && ed.path.as_deref().is_some_and(|p| p.starts_with(&target)) {
+            ed.save()
+                .map_err(|e| format!("could not save {}: {e}; nothing was deleted", ed.title))?;
         }
         let moved = to_trash(&self.trash_dir(), &self.s.mods_dir(), &target)?;
         if let Some(f) = &folder {
@@ -1644,8 +1709,9 @@ impl Studio {
             LogKind::Info,
             format!("Moved {} to {}", target.display(), moved.display()),
         );
-        self.scan(game);
         self.file_moved(&target, None, &instead);
+        self.scan(game);
+        self.settle_open();
         Ok(moved)
     }
 
@@ -1661,14 +1727,17 @@ impl Studio {
         let main = super::hstudio_modfiles::make_module(&self.s.mods_dir(), &old, &id)?;
         self.s
             .log(LogKind::Info, format!("Made {id} a module: {}", main.display()));
-        self.scan(game);
         self.file_moved(&old, Some(&main), &main);
+        self.scan(game);
+        self.settle_open();
         Ok(main)
     }
 
-    /// After a file moved (`to`) or went (None): when the editor shows
-    /// `from`, or a file inside it, it follows the file to its new place with
-    /// its text, cursor and unsaved edits, or opens `instead`.
+    /// After the studio moved a file (`to`) or deleted it (None), before the
+    /// scan: when the editor shows `from`, or a file inside it, it follows
+    /// the file to its new place with its text, cursor and unsaved edits, or
+    /// opens `instead`, so the scan finds it where it is and doesn't take it
+    /// for a file removed. `settle_open` then names it as the scan's mods do.
     fn file_moved(&mut self, from: &Path, to: Option<&Path>, instead: &Path) {
         let Some(open) = self.s.editor.path.clone().filter(|p| p.starts_with(from)) else {
             return;
@@ -1681,11 +1750,30 @@ impl Studio {
                 };
                 let title = self.file_title(&new);
                 self.s.editor.moved(&new, &title);
-                self.mark_failure();
-                self.unfold_open();
             }
             None => self.open_file(instead),
         }
+    }
+
+    /// After a scan that changed the mod of the editor's file: its title (a
+    /// script made a module is `<id>/main.lua` now), the line the mod failed
+    /// at, and its module unfolded in the script list. A file of no mod (the
+    /// scratch file, its console error marked) is left as it is.
+    fn settle_open(&mut self) {
+        let Some(path) = self.s.editor.path.clone() else {
+            return;
+        };
+        if self.mod_of_path(&path).is_none() {
+            return;
+        }
+        let title = self.file_title(&path);
+        if title != self.s.editor.title {
+            self.s.editor.title = title;
+            // Its name is in what the live check says: it looks again.
+            self.s.editor.checked = None;
+        }
+        self.mark_failure();
+        self.unfold_open();
     }
 
     /// Before another file opens in the editor (`to`), the one open is saved

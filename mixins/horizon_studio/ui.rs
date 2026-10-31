@@ -155,9 +155,11 @@ pub(crate) enum Action {
     PanelResize,
     FocusPanel,
     Problem(usize),
-    /// The editor's file changed on disk while edited: take that, or keep these.
+    /// The editor's file changed on disk while edited: take that, or keep
+    /// these; removed from disk while edited, let it go.
     ReloadFile,
     KeepMine,
+    CloseRemoved,
     /// The agent: the next one found, or stop it.
     AgentNext,
     AgentStop,
@@ -807,6 +809,9 @@ pub struct Editor {
     pub disk: Option<(u64, Option<std::time::SystemTime>)>,
     /// The file changed on disk while this buffer had unsaved edits.
     pub conflict: bool,
+    /// The file was removed from disk while this buffer had unsaved edits:
+    /// they stay, and a save writes the file back.
+    pub removed: bool,
     /// When the file was read again after a change elsewhere (an agent's).
     pub reloaded_at: Option<f64>,
 }
@@ -836,6 +841,7 @@ impl Default for Editor {
             edited_at: 0.0,
             disk: None,
             conflict: false,
+            removed: false,
             reloaded_at: None,
         }
     }
@@ -967,12 +973,12 @@ impl Editor {
     }
     /// The file it shows moved (renamed, or a script made a module's
     /// main.lua): the same text, cursor, undo and unsaved edits, at its new
-    /// path, so a save writes there and not where it was.
+    /// path, so a save writes there and not where it was. A conflict with a
+    /// change made elsewhere moved with the file, and stays.
     pub fn moved(&mut self, to: &Path, title: &str) {
         self.path = Some(to.to_path_buf());
         self.title = title.to_owned();
         self.disk = disk_stamp(to);
-        self.conflict = false;
         // Its name is in what the live check says: it looks again.
         self.checked = None;
     }
@@ -989,6 +995,8 @@ impl Editor {
             return false;
         }
         self.disk = now;
+        // Removed, it is back.
+        self.removed = false;
         if self.dirty {
             self.conflict = true;
             return false;
@@ -1038,6 +1046,7 @@ impl Editor {
         self.dirty = false;
         self.problem = None;
         self.conflict = false;
+        self.removed = false;
         self.disk = disk_stamp(&path);
         Ok(path)
     }
@@ -2995,7 +3004,11 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
                 ed.reloaded_at = Some(st.s.now);
             }
         }
-        Action::KeepMine => st.s.editor.conflict = false,
+        Action::KeepMine => {
+            st.s.editor.conflict = false;
+            st.s.editor.removed = false;
+        }
+        Action::CloseRemoved => st.close_removed(),
         Action::AgentNext => agent_next(st),
         Action::AgentStop => agent_stop(st),
         Action::Block | Action::ScrollBar => {}

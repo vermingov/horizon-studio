@@ -862,6 +862,164 @@ fn a_script_becomes_a_module_and_the_editor_follows() {
 }
 
 #[test]
+fn a_script_made_a_module_elsewhere_takes_the_editor_along() {
+    use horizon_studio::headless::write_mod;
+    let mut game = FakeGame::new("convert-elsewhere");
+    let mut st = studio(&mut game);
+    let mods = game.mods_dir();
+    game.write_mod("solo.lua", "-- name: Solo\nprint('one file')\n");
+    run_for(&mut st, &mut game, 0.6);
+    st.edit_mod(mod_index(&st, "solo"));
+    // An agent's write_mod makes the open script a module: the editor goes
+    // to its main.lua and reads what the agent wrote there.
+    let files = [
+        ("main.lua".to_owned(), "print('a module now, and longer')\n".to_owned()),
+        ("lib.lua".to_owned(), "return {}\n".to_owned()),
+    ];
+    write_mod(&mods, "solo", &files).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    let main = mods.join("solo").join("main.lua");
+    assert_eq!(st.s.editor.path.as_ref(), Some(&main));
+    assert_eq!(st.s.editor.title, "solo/main.lua");
+    assert_eq!(st.s.editor.text(), "print('a module now, and longer')\n");
+    assert!(!st.s.editor.dirty && !st.s.editor.conflict);
+    // A save goes to the module, and no solo.lua comes back beside it.
+    st.s.editor.insert("-- my edit\n");
+    st.save_editor(&mut game);
+    run_for(&mut st, &mut game, 0.6);
+    assert!(!mods.join("solo.lua").exists());
+    assert!(std::fs::read_to_string(&main).unwrap().starts_with("-- my edit"));
+    let i = mod_index(&st, "solo");
+    assert!(st.s.mods[i].folder.is_some() && st.s.mods[i].running());
+    // With unsaved edits they come along, and as main.lua is not what the
+    // editor read, it asks first (Reload, or Keep mine).
+    game.write_mod("duo.lua", "print('duo')\n");
+    run_for(&mut st, &mut game, 0.6);
+    st.edit_mod(mod_index(&st, "duo"));
+    st.s.editor.insert("-- unsaved\n");
+    let files = [("main.lua".to_owned(), "print('the agent wrote this')\n".to_owned())];
+    write_mod(&mods, "duo", &files).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    let duo = mods.join("duo").join("main.lua");
+    assert_eq!(st.s.editor.path.as_ref(), Some(&duo));
+    assert!(st.s.editor.dirty && st.s.editor.conflict);
+    assert_eq!(st.s.editor.text(), "-- unsaved\nprint('duo')\n");
+    st.save_editor(&mut game);
+    assert!(!mods.join("duo.lua").exists());
+    assert!(
+        std::fs::read_to_string(&duo)
+            .unwrap()
+            .starts_with("-- unsaved\nprint('duo')")
+    );
+    // Moved in a file manager, the same file: no question.
+    game.write_mod("tri.lua", "print('tri')\n");
+    run_for(&mut st, &mut game, 0.6);
+    st.edit_mod(mod_index(&st, "tri"));
+    st.s.editor.insert("-- mine\n");
+    std::fs::create_dir_all(mods.join("tri")).unwrap();
+    std::fs::rename(mods.join("tri.lua"), mods.join("tri").join("main.lua")).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    assert_eq!(st.s.editor.title, "tri/main.lua");
+    assert!(st.s.editor.dirty && !st.s.editor.conflict);
+}
+
+#[test]
+fn a_file_removed_elsewhere_gives_way_or_keeps_its_edits() {
+    use horizon_studio::headless::remove_files;
+    let mut game = FakeGame::new("removed-elsewhere");
+    let mut st = studio(&mut game);
+    let mods = game.mods_dir();
+    st.create_module(&mut game, "Kit").unwrap();
+    let dir = mods.join("kit");
+    for f in ["old", "gone", "back"] {
+        std::fs::write(dir.join(format!("{f}.lua")), format!("return '{f}'\n")).unwrap();
+    }
+    run_for(&mut st, &mut game, 0.6);
+    // Open with nothing unsaved: removed by an agent's write_mod, main.lua shows.
+    st.open_file(&dir.join("old.lua"));
+    remove_files(&mods, "kit", &["old.lua".to_owned()]).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    assert!(!st.s.editor.removed);
+    // With unsaved edits: they stay, marked as removed, and nothing writes it back.
+    st.open_file(&dir.join("gone.lua"));
+    st.s.editor.insert("-- mine\n");
+    remove_files(&mods, "kit", &["gone.lua".to_owned()]).unwrap();
+    run_for(&mut st, &mut game, 1.2);
+    assert_eq!(st.s.editor.title, "kit/gone.lua");
+    assert!(st.s.editor.removed && st.s.editor.dirty);
+    assert!(st.s.editor.text().starts_with("-- mine"));
+    assert!(!dir.join("gone.lua").exists());
+    // Let go (the banner's Close): main.lua opens.
+    st.close_removed();
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    assert!(!st.s.editor.removed && !st.s.editor.dirty);
+    // Kept: a save writes it back, and the module has it again.
+    st.open_file(&dir.join("back.lua"));
+    st.s.editor.insert("-- keep this\n");
+    remove_files(&mods, "kit", &["back.lua".to_owned()]).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    assert!(st.s.editor.removed);
+    st.save_editor(&mut game);
+    assert!(!st.s.editor.removed);
+    assert!(
+        std::fs::read_to_string(dir.join("back.lua"))
+            .unwrap()
+            .starts_with("-- keep this")
+    );
+    assert!(
+        st.s.mods[mod_index(&st, "kit")]
+            .files()
+            .contains(&"back.lua".to_owned())
+    );
+    // A whole mod gone: the scratch file.
+    st.edit_mod(mod_index(&st, "hello"));
+    std::fs::remove_file(mods.join("hello.lua")).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    assert_eq!(st.s.editor.title, "scratch.lua");
+}
+
+#[test]
+fn a_delete_whose_save_fails_deletes_nothing() {
+    let mut game = FakeGame::new("delete-save-fails");
+    let mut st = studio(&mut game);
+    st.create_module(&mut game, "Kit").unwrap();
+    let lib = game.mods_dir().join("kit").join("lib.lua");
+    st.open_file(&lib);
+    st.s.editor.insert("-- my unsaved work\n");
+    // The save will fail: a folder stands where the file was.
+    std::fs::remove_file(&lib).unwrap();
+    std::fs::create_dir_all(&lib).unwrap();
+    let e = st.delete_path(&mut game, &lib).unwrap_err();
+    assert!(
+        e.contains("could not save kit/lib.lua") && e.contains("nothing was deleted"),
+        "{e}"
+    );
+    assert!(lib.is_dir() && !game.dir.join("trash").exists());
+    assert_eq!(st.s.editor.title, "kit/lib.lua");
+    assert!(st.s.editor.dirty && st.s.editor.text().starts_with("-- my unsaved work"));
+}
+
+#[test]
+fn a_conflict_moves_with_a_renamed_file() {
+    let mut game = FakeGame::new("rename-conflict");
+    let mut st = studio(&mut game);
+    st.create_module(&mut game, "Kit").unwrap();
+    let dir = game.mods_dir().join("kit");
+    let util = st.add_file(&mut game, &dir, "util").unwrap();
+    st.open_file(&util);
+    st.s.editor.insert("-- mine\n");
+    // Someone else writes the file meanwhile: a conflict.
+    std::fs::write(&util, "-- theirs, a longer line than before\nreturn {}\n").unwrap();
+    st.s.editor.sync_disk();
+    assert!(st.s.editor.conflict);
+    let new = st.rename_file(&mut game, &util, "helpers").unwrap();
+    assert_eq!(st.s.editor.path.as_ref(), Some(&new));
+    assert!(st.s.editor.conflict, "the change elsewhere moved with the file");
+    assert!(st.s.editor.dirty && st.s.editor.text().starts_with("-- mine"));
+}
+
+#[test]
 fn console_new_and_edit_know_modules() {
     use horizon_studio::game::hstudio_ui::Tab;
     let mut game = FakeGame::new("console-modules");
@@ -870,8 +1028,16 @@ fn console_new_and_edit_know_modules() {
     assert!(game.mods_dir().join("tool").join("main.lua").is_file());
     assert_eq!(st.s.editor.title, "tool/main.lua");
     assert_eq!(st.s.ui.tab, Tab::Editor);
+    // Unsaved edits are saved before edit() opens another file.
+    st.s.editor.insert("-- unsaved in main\n");
     console(&mut st, &mut game, "edit('tool', 'lib.lua')");
     assert_eq!(st.s.editor.title, "tool/lib.lua");
+    let main = game.mods_dir().join("tool").join("main.lua");
+    assert!(
+        std::fs::read_to_string(&main)
+            .unwrap()
+            .starts_with("-- unsaved in main")
+    );
     console(&mut st, &mut game, "edit('tool', 'shared')");
     assert_eq!(st.s.editor.title, "tool/shared.lua");
     console(&mut st, &mut game, "edit('tool')");
@@ -886,8 +1052,15 @@ fn console_new_and_edit_know_modules() {
     assert!(out.iter().any(|l| l.contains("no nope.lua in tool")), "{out:?}");
     let out = console(&mut st, &mut game, "edit('hello', 'x.lua')");
     assert!(out.iter().any(|l| l.contains("'hello' is a script")), "{out:?}");
+    // And before new() makes and opens one.
+    st.s.editor.insert("-- unsaved in tool\n");
     console(&mut st, &mut game, "new('Plain')");
     assert_eq!(st.s.editor.title, "plain.lua");
+    assert!(
+        std::fs::read_to_string(game.mods_dir().join("tool").join("main.lua"))
+            .unwrap()
+            .starts_with("-- unsaved in tool")
+    );
     let out = console(&mut st, &mut game, "new('Plain')");
     assert!(out.iter().any(|l| l.contains("plain already exists")), "{out:?}");
 }

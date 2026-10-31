@@ -1722,3 +1722,40 @@ fn a_mod_opens_from_the_library_though_saving_first_rescans() {
     assert_eq!(st.s.editor.title, "zz.lua");
     assert!(!st.s.mods.iter().any(|m| m.id == "hello"));
 }
+
+#[test]
+fn a_file_removed_while_edited_asks_to_let_it_go_or_keep_it() {
+    let mut game = FakeGame::new("ui-removed");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.create_module(&mut game, "Kit").unwrap();
+    let mods = game.mods_dir();
+    let lib = mods.join("kit").join("lib.lua");
+    st.open_file(&lib);
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    st.s.editor.click(0, 0, false);
+    type_text(&mut st, &mut game, "-- mine\n");
+    horizon_studio::headless::remove_files(&mods, "kit", &["lib.lua".to_owned()]).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    redraw(&mut st, &mut game);
+    assert!(drawn_contains(
+        &game,
+        "This file was removed from disk while you were editing it."
+    ));
+    // Keep mine: a save writes it back.
+    let at = text_at(&game, "Keep mine");
+    click(&mut st, &mut game, at);
+    assert!(!st.s.editor.removed && st.s.editor.dirty);
+    handle(&mut st, &mut game, key(Key::Char('s'), CTRL));
+    assert!(std::fs::read_to_string(&lib).unwrap().starts_with("-- mine"));
+    // Close: the edits go, and main.lua opens.
+    type_text(&mut st, &mut game, "-- more\n");
+    horizon_studio::headless::remove_files(&mods, "kit", &["lib.lua".to_owned()]).unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "Close");
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    assert!(!lib.exists());
+}

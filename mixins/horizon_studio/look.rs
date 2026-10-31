@@ -2450,10 +2450,12 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
 }
 
 /// Over the code: the file changed on disk while it had edits here (take
-/// that, or keep these), or a note that it was read again.
+/// that, or keep these), or was removed from disk (let it go, or keep these
+/// to save it again), or a note that it was read again.
 fn file_changed(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     let now = st.s.now;
-    let c = glide(&mut st.s.ui, id("conflict", 0), st.s.editor.conflict, dt);
+    let removed = st.s.editor.removed;
+    let c = glide(&mut st.s.ui, id("conflict", 0), st.s.editor.conflict || removed, dt);
     let base = p.alpha;
     if c > 0.01 {
         p.alpha = base * c;
@@ -2482,26 +2484,34 @@ fn file_changed(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
             Action::KeepMine,
             dt,
         );
-        let rw = p.measure("Reload", 13.0, Font::Medium) + 28.0;
+        let (label, action, said) = if removed {
+            (
+                "Close",
+                Action::CloseRemoved,
+                "This file was removed from disk while you were editing it.",
+            )
+        } else {
+            (
+                "Reload",
+                Action::ReloadFile,
+                "This file changed on disk while you were editing it.",
+            )
+        };
+        let rw = p.measure(label, 13.0, Font::Medium) + 28.0;
         bx -= rw + 6.0;
         pill(
             &mut st.s.ui,
             p,
             "reload-file",
-            "Reload",
+            label,
             bx,
             cy - 13.0,
             26.0,
             Style::Secondary,
-            Action::ReloadFile,
+            action,
             dt,
         );
-        let msg = p.fit(
-            "This file changed on disk while you were editing it.",
-            bx - r[0] - 24.0,
-            13.0,
-            Font::Regular,
-        );
+        let msg = p.fit(said, bx - r[0] - 24.0, 13.0, Font::Regular);
         p.text(&msg, r[0] + 14.0, top(cy, 13.0), 13.0, Font::Regular, pal().ink);
         p.alpha = base;
     }
