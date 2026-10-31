@@ -642,9 +642,13 @@ end)
   and dragging work.
 - **Input.** Keys and mouse buttons fire UserInputService's `InputBegan` and `InputEnded` (`input.KeyCode`), and
   ContextActionService's actions; `UIS:IsKeyDown`, `Player:GetMouse()`.
-- **The world.** The LocalPlayer's Character follows the player (a stud is a block), `workspace.CurrentCamera`
-  follows the camera (`WorldToViewportPoint`), Parts in the Workspace are drawn in the world, and
-  `workspace:Raycast` goes through the world's blocks and the parts.
+- **The world.** `game.Players.LocalPlayer` is you, by your profile's name and a UserId from your UUID
+  (`game.LocalPlayer` is Horizon's own shortcut for it). Its Character is an R6 rig that follows you (a stud is a
+  block), whose Humanoid has your health, the game's WalkSpeed and JumpPower, how you move and your state (Running,
+  Jumping, Freefall, Swimming...); dying and coming back gives you a new Character. Moving its HumanoidRootPart (its
+  CFrame, `PivotTo`, a tween) teleports you with `/tp`, and `Humanoid:MoveTo` walks you there (MoveToFinished
+  fires). `workspace.CurrentCamera` follows the camera (`WorldToViewportPoint`), Parts in the Workspace are drawn in
+  the world, and `workspace:Raycast` goes through the world's blocks and the parts.
 - **Services:** Players, RunService (Heartbeat, RenderStepped, Stepped, BindToRenderStep), UserInputService,
   TweenService, Debris, HttpService (JSON and GUIDs), TextService, GuiService, StarterGui (`SetCore` notifications in
   chat), CollectionService, ContextActionService, Lighting (the world's time) and the containers.
@@ -750,6 +754,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `rbx_values.rs` (`hstudio_rbx_values`) | Roblox's data types and `Enum` for scripts |
 | `rbx.rs`, `rbx_methods.rs` (`hstudio_rbx`, `hstudio_rbx_methods`) | The Roblox layer: the DataModel, Instances, their properties, events and methods, services, signals, tweens |
 | `rbx_draw.rs` (`hstudio_rbx_draw`) | The Roblox layer on the game: ScreenGuis drawn and clicked, input, Parts in the world, raycasts, each frame's step |
+| `rbx_world.rs` (`hstudio_rbx_world`) | The Roblox layer's world: the LocalPlayer and its character following the player, teleports, `Humanoid:MoveTo` |
 | `exec.rs` (`hstudio_exec`) | The executor (sUNC) functions that need only the interpreter: hooks, newcclosure, debug, metatables, encoding, getgc |
 | `sunc.rs` (`hstudio_sunc`) | The executor functions on the studio: environments, files, HTTP, WebSockets, Drawing, Instances, signals, scripts |
 | `net.rs`, `crypt.rs` (`hstudio_net`, `hstudio_crypt`) | HTTP and WebSockets for scripts (the internet only); hashes, Base64 and LZ4 |
