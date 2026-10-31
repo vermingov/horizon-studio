@@ -754,21 +754,25 @@ fn render_the_editor_at_every_size() {
             kind: AgentLineKind::You,
             text: "Make the waypoints glow at night".into(),
             at: now,
+            jump: None,
         },
         AgentLine {
             kind: AgentLineKind::Said,
             text: "I'll read the script first, then add a glow that turns on after dusk.".into(),
             at: now,
+            jump: None,
         },
         AgentLine {
             kind: AgentLineKind::ToolOk,
             text: "read_mod waypoints".into(),
             at: now,
+            jump: None,
         },
         AgentLine {
             kind: AgentLineKind::Tool,
             text: "write_mod waypoints".into(),
             at: now,
+            jump: None,
         },
     ];
     let settle = |st: &mut Studio, p: &mut Preview| {

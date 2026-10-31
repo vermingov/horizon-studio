@@ -200,6 +200,62 @@ fn an_agent_opens_and_reads_the_players_scripts() {
         "not opened"
     );
 
+    // A change typed into the open script as the player watches: the answer
+    // comes once it is all in (asking whether it is doesn't hurry it).
+    let (r, error) = call_json(&mut s, "open_script", json!({ "id": "greeter" }));
+    assert!(!error, "{r:#}");
+    let mods_dir = game.with(|st, _| {
+        st.s.ui.tab = horizon_studio::game::hstudio_ui::Tab::Editor;
+        st.s.mods_dir()
+    });
+    let on_disk = std::fs::read_to_string(mods_dir.join("greeter.lua")).unwrap();
+    let (r, error) = call_json(
+        &mut s,
+        "edit_script",
+        json!({ "old_text": "local count = 0", "new_text": "local count = 0\nlocal greeted = {}" }),
+    );
+    assert!(!error, "{r:#}");
+    assert_eq!(r["did"], "Typed lines 3-4 into greeter.lua", "{r:#}");
+    assert_eq!((&r["lines"], &r["animated"]), (&json!([3, 4]), &json!(true)));
+    assert!(r.get("cut_short").is_none(), "nothing cut it short: {r:#}");
+    let (texts, _) = call(&mut s, "read_script", json!({}));
+    assert!(texts[1].contains("     4\tlocal greeted = {}"), "{}", texts[1]);
+    let state: Json = serde_json::from_str(&texts[0]).unwrap();
+    assert_eq!(state["dirty"], true);
+    assert_eq!(
+        std::fs::read_to_string(mods_dir.join("greeter.lua")).unwrap(),
+        on_disk,
+        "not saved yet"
+    );
+    // The tools that read the disk say the editor has more.
+    let (r, _) = call_json(&mut s, "read_mod", json!({ "id": "greeter" }));
+    assert_eq!(r["editor_unsaved"]["file"], "greeter.lua", "{r:#}");
+    let (status, _) = call_json(&mut s, "game_status", json!({}));
+    assert_eq!(status["game"]["editor"]["unsaved"]["by"], "Claude Code", "{status:#}");
+    // Saved: the game reloads the mod.
+    let (r, error) = call_json(&mut s, "save_script", json!({}));
+    assert!(!error, "{r:#}");
+    assert_eq!(
+        (&r["saved"], &r["mod"]["state"]),
+        (&json!(true), &json!("running")),
+        "{r:#}"
+    );
+    assert!(
+        std::fs::read_to_string(mods_dir.join("greeter.lua"))
+            .unwrap()
+            .contains("local greeted = {}")
+    );
+    let (r, _) = call_json(&mut s, "read_mod", json!({ "id": "greeter" }));
+    assert!(r.get("editor_unsaved").is_none(), "{r:#}");
+    // What isn't there as the editor has it is an error that says what to do.
+    let (r, error) = call_json(
+        &mut s,
+        "edit_script",
+        json!({ "old_text": "local nope = 1", "new_text": "local nope = 2" }),
+    );
+    assert!(error);
+    assert!(r.as_str().unwrap().contains("read_script"), "{r}");
+
     game.end();
     // Without the game the editor's tools say where they work.
     let (r, error) = call_json(&mut s, "read_script", json!({}));

@@ -570,8 +570,8 @@ fn handle(
         })),
         "ping" => now(json!({ "ok": true })),
         // The player's editor, live (hstudio_coach): read a file as it has
-        // it, open one.
-        "editor" | "open" => now(super::hstudio_coach::call(st, game, by, method, params)?),
+        // it, open one, type a change in (and whether it is in), save it.
+        "editor" | "open" | "edit" | "typed" | "save" => now(super::hstudio_coach::call(st, game, by, method, params)?),
         "mods" => now(mods(st)),
         // This game's own API reference (its version's).
         "docs" => now(Json::String(super::hstudio_look::docs_markdown())),
@@ -669,7 +669,7 @@ fn handle(
         other => {
             return Err(format!(
                 "unknown method '{other}' (status, ping, mods, docs, lua, screenshot, scan, reload, enable, send, key, \
-                 chat_in, chat, log, wait, editor, open)"
+                 chat_in, chat, log, wait, editor, open, edit, typed, save)"
             ));
         }
     })

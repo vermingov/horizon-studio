@@ -1077,6 +1077,12 @@ impl Editor {
         self.disk = disk_stamp(&path);
         Ok(path)
     }
+    /// Whether the file on disk is no longer the one this buffer last read
+    /// or wrote (changed, or removed, elsewhere), whether or not that was
+    /// noticed yet.
+    pub fn disk_changed(&self) -> bool {
+        self.removed || self.conflict || self.path.as_deref().is_some_and(|p| disk_stamp(p) != self.disk)
+    }
     /// Text as the buffer holds it: Windows line ends as `\n`, tabs as the
     /// indent (what `insert` and `set_text` do to what they are given).
     pub fn normal(s: &str) -> String {
@@ -3413,6 +3419,8 @@ pub struct AgentLine {
     pub text: String,
     /// When it came (its motion).
     pub at: f64,
+    /// The code it is about, for what an agent did in the editor.
+    pub jump: Option<super::hstudio_coach::Jump>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3428,6 +3436,8 @@ pub enum AgentLineKind {
     Error,
     /// The end of its answer.
     Done,
+    /// What an agent did in the editor (it typed lines in, opened a file).
+    Action,
 }
 
 /// The Agent panel: the conversation, the agent working, the conversation
@@ -3453,13 +3463,23 @@ pub struct AgentPane {
 const AGENT_LINES: usize = 400;
 
 impl AgentPane {
-    fn say(&mut self, kind: AgentLineKind, text: impl Into<String>, at: f64) {
+    pub(crate) fn say(&mut self, kind: AgentLineKind, text: impl Into<String>, at: f64) {
+        self.say_jump(kind, text, None, at);
+    }
+    /// A line about some code, which `jump` goes to.
+    pub(crate) fn say_jump(
+        &mut self,
+        kind: AgentLineKind,
+        text: impl Into<String>,
+        jump: Option<super::hstudio_coach::Jump>,
+        at: f64,
+    ) {
         let text = text.into();
         if text.trim().is_empty() {
             return;
         }
         self.seq += 1;
-        self.lines.push(AgentLine { kind, text, at });
+        self.lines.push(AgentLine { kind, text, at, jump });
         if self.lines.len() > AGENT_LINES {
             self.lines.drain(..self.lines.len() - AGENT_LINES);
         }
@@ -3503,7 +3523,9 @@ pub fn agent_ask(st: &mut Studio, text: &str) {
         return;
     };
     // It reads the file from disk: unsaved edits are saved first, so it
-    // works on what the player sees (and its writes don't conflict).
+    // works on what the player sees (and its writes don't conflict); an
+    // agent's edit being typed in is all in first.
+    super::hstudio_coach::finish_typing(st, "the player asked the agent");
     if st.s.editor.dirty && st.s.editor.path.is_some() {
         match st.s.editor.save() {
             Ok(path) => {

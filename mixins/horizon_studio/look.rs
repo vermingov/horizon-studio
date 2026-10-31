@@ -1834,6 +1834,7 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
             K::ToolFailed => (Font::Mono, 12.0, pal().danger, 14.0, Some(pal().danger), false),
             K::Error => (Font::Regular, 13.0, pal().danger, 0.0, None, false),
             K::Done => (Font::Regular, 11.5, pal().muted, 0.0, None, false),
+            K::Action => (Font::Regular, 12.5, pal().ink_soft, 14.0, Some(pal().accent), false),
         };
         let pieces = p.wrap_sep(&line.text, w - indent - 8.0, size, font);
         let n = pieces.len();
@@ -2245,14 +2246,16 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
         }
     }
     ed.scroll = ed.scroll.min(ed.lines.len().saturating_sub(1));
-    let cur_chars = ed.lines[ed.row][..ed.col].chars().count();
+    // The columns shown follow the cursor, or an agent's caret while the view follows that.
+    let (hrow, hcol) = super::hstudio_coach::followed_caret(&st.s.ui.coach, ed).unwrap_or((ed.row, ed.col));
+    let cur_chars = ed.lines[hrow][..hcol].chars().count();
     if cur_chars < ed.hscroll {
         ed.hscroll = cur_chars.saturating_sub(4);
     }
     loop {
-        let line = &ed.lines[ed.row];
+        let line = &ed.lines[hrow];
         let from = line.char_indices().nth(ed.hscroll).map_or(line.len(), |(i, _)| i);
-        if from > ed.col || p.measure(&line[from..ed.col], code_size(), Font::Mono) <= text_w - 8.0 {
+        if from > hcol || p.measure(&line[from..hcol], code_size(), Font::Mono) <= text_w - 8.0 {
             break;
         }
         ed.hscroll += 4;
@@ -2327,6 +2330,15 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
             );
             p.rect([panel[0] + 12.0, ly + 7.0, 6.0, 6.0], 3.0, pal().danger);
         }
+        coach_row(
+            p,
+            &st.s.ui.coach,
+            ed,
+            r,
+            from,
+            [panel[0], panel[2], text_x, text_w, ly],
+            now,
+        );
         if let Some(((r1, c1), (r2, c2))) = sel
             && r >= r1
             && r <= r2
@@ -2430,6 +2442,7 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
             fade(pal().accent, blink),
         );
     }
+    agent_caret(p, &st.s.ui.coach, ed, [text_x, text_w, top_y, bottom, s]);
     if ed.lines.len() > rows {
         let track = panel[3] - 24.0;
         let bar = (track * rows as f32 / ed.lines.len() as f32).max(24.0);
@@ -2485,6 +2498,101 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
         let ly = top_y + (ed.row as f32 - st.s.ui.smooth[1]) * code_line();
         draw_suggest(st, p, [wx, ly, code_line()], &typed, false, dt);
     }
+}
+
+/// What an agent's edit shows on code row `r` (its text drawn from byte
+/// `from`; the panel's left and width, the text's left and width, the
+/// row's top): the text the edit is about to replace, tinted, and the lines
+/// it just put in, lit a moment.
+fn coach_row(
+    p: &mut P,
+    coach: &super::hstudio_coach::Coach,
+    ed: &super::hstudio_ui::Editor,
+    r: usize,
+    from: usize,
+    [px, pw, text_x, text_w, ly]: [f32; 5],
+    now: f64,
+) {
+    use super::hstudio_coach::{FLASH, Phase};
+    if let Some(f) = &coach.flash
+        && ed.path.as_ref() == Some(&f.path)
+        && (f.first..=f.last).contains(&r)
+        && motion()
+    {
+        let k = ((now - f.at) / FLASH).clamp(0.0, 1.0) as f32;
+        p.rect(
+            [px + 6.0, ly, pw - 12.0, code_line()],
+            6.0,
+            fade(pal().accent, 0.10 * (1.0 - k)),
+        );
+    }
+    let Some(t) = coach.typing.as_ref().filter(|t| {
+        t.phase == Phase::ShowOld && ed.path.as_ref() == Some(&t.path) && (t.from.0..=t.old_to.0).contains(&r)
+    }) else {
+        return;
+    };
+    let line = &ed.lines[r];
+    let a = floor_char(line, if r == t.from.0 { t.from.1 } else { 0 }).max(from);
+    let b = floor_char(line, if r == t.old_to.0 { t.old_to.1 } else { line.len() }).max(a);
+    let sx = text_x + p.measure(&line[from..a], code_size(), Font::Mono);
+    let mut sw = p.measure(&line[a..b], code_size(), Font::Mono);
+    if r != t.old_to.0 {
+        sw += 6.0;
+    }
+    let sw = sw.min(text_x + text_w - sx).max(0.0);
+    p.rect([sx, ly + 1.0, sw, code_line() - 2.0], 3.0, fade(pal().danger, 0.22));
+}
+
+/// An agent's caret where its edit is coming in: solid, in the accent, with
+/// the agent's name on a flag above it (below when there is no room), both
+/// kept inside the text's width (at its edge when the caret is past it).
+fn agent_caret(
+    p: &mut P,
+    coach: &super::hstudio_coach::Coach,
+    ed: &super::hstudio_ui::Editor,
+    [text_x, text_w, top_y, bottom, s]: [f32; 5],
+) {
+    let Some(t) = coach
+        .typing
+        .as_ref()
+        .filter(|t| t.phase == super::hstudio_coach::Phase::Typing && ed.path.as_ref() == Some(&t.path))
+    else {
+        return;
+    };
+    let (row, col) = t.at;
+    let Some(line) = ed.lines.get(row) else {
+        return;
+    };
+    let y = top_y + (row as f32 - s) * code_line();
+    if y < top_y - 0.5 || y + code_line() > bottom + 0.5 {
+        return;
+    }
+    let from = line.char_indices().nth(ed.hscroll).map_or(line.len(), |(i, _)| i);
+    let col = floor_char(line, col);
+    let x = if col >= from {
+        text_x + p.measure(&line[from..col], code_size(), Font::Mono)
+    } else {
+        text_x
+    };
+    let x = x.clamp(text_x, text_x + text_w - 2.0).floor();
+    p.rect([x, y + 2.0, 2.0, code_line() - 4.0], 1.0, pal().accent);
+    let (size, h) = (10.5, 16.0);
+    let w = p.measure(&t.by.name, size, Font::Medium) + 12.0;
+    let fy = if y - h >= top_y - 10.0 {
+        y - h + 2.0
+    } else {
+        y + code_line() - 2.0
+    };
+    let fx = x.min(text_x + text_w - w).max(text_x - 4.0);
+    p.rect([fx, fy, w, h], 5.0, pal().accent);
+    p.text(
+        &t.by.name,
+        fx + 6.0,
+        top(fy + h / 2.0, size),
+        size,
+        Font::Medium,
+        on_accent(),
+    );
 }
 
 /// Over the code: the file changed on disk while it had edits here (take

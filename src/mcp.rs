@@ -31,7 +31,9 @@ is one file, <id>.lua; a module is a folder whose main.lua requires its other fi
 the files that change, and `remove` deletes files); a library calls export(table) and others import(\"id\"). Fix what `write_mod`'s check reports; \
 then `test_mod` with steps, headless first (no game needed) and live once `game_status` says the game is linked. \
 `run_lua`, `send_chat` and `game_log` work in the running game; `horizon_ctl` plays it and takes screenshots when the \
-game runs with --control. Mods are sandboxed Lua: no files, no network, a step budget per call.";
+game runs with --control. In the player's own editor, live: `read_script` reads a script as they have it (unsaved edits \
+too), `edit_script` types a change into it as they watch, `save_script` saves it, `open_script` opens one. Mods are \
+sandboxed Lua: no files, no network, a step budget per call.";
 
 // ------------------------------------------------------------------ paths
 
@@ -466,6 +468,38 @@ pub fn tools() -> Json {
             &[]
         ),
         tool(
+            "edit_script",
+            "Changes a script in the player's editor while they watch: the text it replaces shows a moment, then the \
+              new text types in at your own caret, named, about 70 characters a second (2 s at most), and it answers \
+              once it is in. Give one of: old_text and new_text (old_text exactly as read_script shows it, there once; \
+              one function or block per call), start_line and new_text (whole lines from 1; end_line too; end_line = \
+              start_line - 1 puts lines in before start_line, start_line one past the last line adds them at the end, \
+              new_text \"\" removes them), or text (the whole file). It is one undo step for the player, and lands at \
+              once while they are typing or nobody sees the editor. It stays unsaved unless save is true (save_script \
+              saves it), but with the studio closed it is saved. A file the editor doesn't have open is written to \
+              disk at once instead, and its mod reloads. Returns the lines it covers and the live check's problems. \
+              Live only.",
+            script_props(json!({
+                "old_text": { "type": "string", "description": "The code to replace, as it is now (read_script)." },
+                "new_text": { "type": "string", "description": "What comes in its place (or in start_line's)." },
+                "start_line": { "type": "integer", "description": "The first whole line to replace, from 1." },
+                "end_line": { "type": "integer", "description": "The last (default start_line; start_line - 1 inserts)." },
+                "text": { "type": "string", "description": "The whole file's new text." },
+                "typing": { "type": "boolean", "description": "Type it in as the player watches (default true); false puts it in at once." },
+                "save": { "type": "boolean", "description": "Save it afterwards, and the mod reloads (default false while the studio is open)." },
+            })),
+            &[]
+        ),
+        tool(
+            "save_script",
+            "Saves the script the player's editor has open, as Ctrl+S does, and the game reloads its mod; returns \
+              the mod's state (running, or failed at a file and line) and the live check's problems. It waits while \
+              the player is typing in it, and refuses when the file changed on disk since the editor read it (the \
+              player chooses then). Live only.",
+            script_props(json!({})),
+            &[]
+        ),
+        tool(
             "horizon_ctl",
             "A horizon-ctl command to Horizon itself, for a game started with --control (or by \
               `horizon-ctl launch --world NAME --wait`): state, ui, click ID, screenshot (returns the image), \
@@ -691,6 +725,23 @@ impl Server {
         self.live("status", json!({})).is_ok()
     }
 
+    /// When the player's editor in the running game has unsaved edits to a
+    /// file of mod `id`, a note that says so: the files on disk, which the
+    /// other tools use, don't have them yet.
+    fn editor_unsaved(&mut self, id: &str) -> Option<Json> {
+        let editor = self.live("status", json!({})).ok()?["editor"].clone();
+        let file = editor["file"].as_str().unwrap_or("it").to_owned();
+        (editor["dirty"] == true && editor["mod"] == id).then(|| {
+            json!({
+                "file": file,
+                "note": format!(
+                    "the player's editor has unsaved edits to {file}: this used the file on disk; read_script shows \
+                     the editor's text, and save_script saves it"
+                ),
+            })
+        })
+    }
+
     /// A request to the player's editor in the game (`hstudio_coach`), with
     /// its errors made plain: an older game has no editor, and the editor
     /// tools work in the running game only. One that changes something
@@ -814,9 +865,11 @@ impl Server {
             "read_mod" => {
                 let id = str_arg(args, "id")?;
                 let files = read_mod(&dir()?, id)?;
-                Ok(
-                    json!({ "id": id, "files": files.into_iter().map(|(k, v)| (k, Json::String(v))).collect::<serde_json::Map<_, _>>() }),
-                )
+                let mut out = json!({ "id": id, "files": files.into_iter().map(|(k, v)| (k, Json::String(v))).collect::<serde_json::Map<_, _>>() });
+                if let Some(note) = self.editor_unsaved(id) {
+                    out["editor_unsaved"] = note;
+                }
+                Ok(out)
             }
             "write_mod" => {
                 let id = str_arg(args, "id")?;
@@ -873,14 +926,21 @@ impl Server {
             }
             "check_mod" => {
                 let id = str_arg(args, "id")?;
-                let source = match files_to_load(args)? {
-                    Some(files) => given_files(id, files, dir().ok()),
-                    None => Source::Installed {
-                        mods_dir: dir()?,
-                        id: id.to_owned(),
-                    },
+                let (source, installed) = match files_to_load(args)? {
+                    Some(files) => (given_files(id, files, dir().ok()), false),
+                    None => (
+                        Source::Installed {
+                            mods_dir: dir()?,
+                            id: id.to_owned(),
+                        },
+                        true,
+                    ),
                 };
-                check(&source).map(|(r, _)| r)
+                let mut report = check(&source).map(|(r, _)| r)?;
+                if installed && let Some(note) = self.editor_unsaved(id) {
+                    report["editor_unsaved"] = note;
+                }
+                Ok(report)
             }
             "test_mod" => {
                 let id = str_arg(args, "id")?;
@@ -892,7 +952,11 @@ impl Server {
                     if let Some(files) = files_to_load(args)? {
                         write_mod(&dir()?, id, &files)?;
                     }
-                    return self.live_test(id, steps);
+                    let mut report = self.live_test(id, steps)?;
+                    if let Some(note) = self.editor_unsaved(id) {
+                        report["editor_unsaved"] = note;
+                    }
+                    return Ok(report);
                 }
                 let source = match files_to_load(args)? {
                     Some(files) => given_files(id, files, dir().ok()),
@@ -994,6 +1058,29 @@ impl Server {
                 ] }))
             }
             "open_script" => self.editor_live("open", args, true, 10.0),
+            "edit_script" => {
+                let r = self.editor_live("edit", args, true, 0.0)?;
+                let Some(id) = r["typing"].as_u64() else {
+                    return Ok(r);
+                };
+                // It types in over a couple of seconds: asked again every few
+                // frames (asking doesn't hurry it).
+                let until = Instant::now() + Duration::from_secs(15);
+                loop {
+                    self.live("wait", json!({ "frames": 3 }))?;
+                    let t = self.live("typed", json!({ "id": id }))?;
+                    if t["done"] == true {
+                        return Ok(t["result"].clone());
+                    }
+                    if Instant::now() >= until {
+                        return Ok(
+                            json!({ "ok": true, "still_typing": true, "typing": id, "file": r["file"],
+                            "did": format!("Still typing into {}", r["file"].as_str().unwrap_or("the script")) }),
+                        );
+                    }
+                }
+            }
+            "save_script" => self.editor_live("save", args, true, 8.0),
             "read_script" => {
                 let mut state = self.editor_live("editor", args, false, 0.0)?;
                 let lines = state.as_object_mut().and_then(|o| o.remove("lines"));
