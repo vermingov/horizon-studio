@@ -53,23 +53,10 @@ fn flag(inst: &super::hstudio_rbx::Inst, k: &str) -> bool {
     inst.get(k).truthy()
 }
 
-/// Text without rich text's tags (`<b>`, `<font color="...">`).
+/// Text without rich text's tags (`<b>`, `<font color="...">`), as it is
+/// drawn: `<br />` a new line, `<uppercase>` in capitals.
 pub fn strip_tags(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut depth = false;
-    for c in s.chars() {
-        match c {
-            '<' => depth = true,
-            '>' if depth => depth = false,
-            _ if !depth => out.push(c),
-            _ => {}
-        }
-    }
-    out.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
+    layout::parse_rich(s).text
 }
 
 /// A node's properties from its instance's.
@@ -101,15 +88,19 @@ fn fill(node: &mut layout::Node, inst: &super::hstudio_rbx::Inst, focused: bool)
     }
     if find(c, "Text") {
         let mut text = inst.get("Text").as_text().unwrap_or_default();
+        let mut rich = Vec::new();
         // A TextBox being edited shows its text as it is, tags and all, so
         // the caret goes where the text has it.
         if flag(inst, "RichText") && !(c.name == "TextBox" && focused) {
-            text = strip_tags(&text);
+            let read = layout::parse_rich(&text);
+            (text, rich) = (read.text, read.spans);
         }
         if c.name == "TextBox" && text.is_empty() && !focused {
             text = inst.get("PlaceholderText").as_text().unwrap_or_default();
+            rich = Vec::new();
         }
         node.text = text;
+        node.rich = rich;
         node.text_size = num(inst, "TextSize");
         node.font = as_font(&inst.get("FontFace")).unwrap_or_default();
         node.text_scaled = flag(inst, "TextScaled");
@@ -846,12 +837,26 @@ pub fn draw(
                 // A line wholly outside the clip goes (a turned one may turn into it).
                 if upright
                     && let Some(c) = clip
-                    && (line.position.y + t.size < c.min.y || line.position.y > c.max.y)
+                    && (line.position.y + line.height.max(t.size) < c.min.y || line.position.y > c.max.y)
                 {
                     continue;
                 }
                 let mut o = 0.0;
-                if let Some((c, thick)) = outline {
+                if !line.runs.is_empty() {
+                    // Rich text, run by run.
+                    let tm = own.as_ref().and_then(|_| game.dp_mark());
+                    let paint = RunPaint {
+                        color: tc,
+                        alpha: ta,
+                        group: (gc, ga),
+                        line_height: lh,
+                        outline,
+                    };
+                    o = draw_runs(game, line, &paint);
+                    if let (Some(m), Some(s)) = (tm, &own) {
+                        game.dp_shade(m, s);
+                    }
+                } else if let Some((c, thick)) = outline {
                     o = thick;
                     let om = outline_shade.as_ref().and_then(|_| game.dp_mark());
                     for (dx, dy) in [(-thick, 0.0), (thick, 0.0), (0.0, -thick), (0.0, thick)] {
@@ -861,7 +866,7 @@ pub fn draw(
                         game.dp_shade(m, s);
                     }
                 }
-                if ta > 0.0 {
+                if ta > 0.0 && line.runs.is_empty() {
                     let tm = own.as_ref().and_then(|_| game.dp_mark());
                     game.dp_text(&line.text, at, size, font, argb(tc, ta));
                     if let (Some(m), Some(s)) = (tm, &own) {
@@ -909,6 +914,67 @@ pub fn draw(
     while let Some(bars) = bars_over.pop() {
         draw_bars(rbx, game, frame, Some(bars));
     }
+}
+
+/// What a line of rich text is drawn with: the text's colour and opacity,
+/// the tint and opacity of the groups it is in, LineHeight, and the
+/// object's outline (a UIStroke round the text, or its TextStroke).
+struct RunPaint {
+    color: Color3,
+    alpha: f64,
+    group: (Color3, f64),
+    line_height: f32,
+    outline: Option<(u32, f32)>,
+}
+
+/// Draws a line of rich text run by run, each on the line's bottom: its
+/// mark behind it, its stroke (or the object's outline) round it, its text
+/// in its own colour, size and font, and its underline and strike-through.
+/// Returns how far the strokes reach out.
+fn draw_runs(game: &mut dyn GameApi, line: &layout::TextLine, paint: &RunPaint) -> f32 {
+    let (gc, ga) = paint.group;
+    let mut reach: f32 = 0.0;
+    for run in &line.runs {
+        let size = run.size as f32;
+        let font = studio_font(&run.font);
+        let st = &run.style;
+        let (x, w) = (run.x as f32, run.width as f32);
+        // Its own line box, on the line's bottom; Geist's is 1.45 times the size.
+        let tall = size * paint.line_height;
+        let top = (line.position.y + line.height) as f32 - tall;
+        let at = [x, top - (size * 1.45 - tall) / 2.0];
+        let color = st.color.map_or(paint.color, |c| times(c, gc));
+        let alpha = paint.alpha * (1.0 - st.transparency.unwrap_or(0.0));
+        if let Some((mc, mt)) = st.mark {
+            game.dp_rect([x, top, w, tall], 0.0, argb(times(mc, gc), (1.0 - mt) * ga));
+        }
+        let stroke = st
+            .stroke
+            .map(|(sc, thick, t)| (argb(times(sc, gc), (1.0 - t) * alpha), thick as f32))
+            .or(paint.outline);
+        if let Some((c, thick)) = stroke
+            && thick > 0.0
+        {
+            reach = reach.max(thick);
+            for (dx, dy) in [(-thick, 0.0), (thick, 0.0), (0.0, -thick), (0.0, thick)] {
+                game.dp_text(&run.text, [at[0] + dx, at[1] + dy], size, font, c);
+            }
+        }
+        if alpha > 0.0 {
+            let c = argb(color, alpha);
+            game.dp_text(&run.text, at, size, font, c);
+            // The baseline: about a third of the size below the box's middle.
+            let base = top + tall / 2.0 + size * 0.33;
+            let thick = (size / 14.0).max(1.0);
+            if st.underline {
+                game.dp_rect([x, base + size * 0.08, w, thick], 0.0, c);
+            }
+            if st.strike {
+                game.dp_rect([x, base - size * 0.3, w, thick], 0.0, c);
+            }
+        }
+    }
+    reach
 }
 
 /// Draws a ScrollingFrame's thumbs: (the frame, the thumbs, their corner

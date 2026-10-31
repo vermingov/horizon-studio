@@ -639,8 +639,9 @@ end)
   AnchorPoint, UIListLayout, UIGridLayout, UIPadding, UIScale, the constraints, ScrollingFrames, AutomaticSize,
   ZIndex) and drawn on the HUD with Horizon's shapes and Geist fonts, UICorner, UIStroke, borders and UIGradients
   (every keypoint, turned and moved) included; `ClipsDescendants` cuts exactly, `Rotation` turns an object and what it
-  holds, a CanvasGroup tints and fades all it holds, and a `getcustomasset` image is drawn as it is, with its
-  `ScaleType` (Fit, Crop, Tile, Slice), `ImageRectOffset`/`ImageRectSize` and `ImageColor3`. A GUI pixel is a dp. The GUI takes the mouse while a visible button has `Modal = true` or a TextBox has focus, or after
+  holds, a CanvasGroup tints and fades all it holds, `RichText`'s markup is drawn (colours, sizes, faces, bold,
+  underline, strokes, marks, capitals), and a `getcustomasset` image is drawn as it is, with its `ScaleType` (Fit,
+  Crop, Tile, Slice), `ImageRectOffset`/`ImageRectSize` and `ImageColor3`. A GUI pixel is a dp. The GUI takes the mouse while a visible button has `Modal = true` or a TextBox has focus, or after
   **Left Alt**; Escape gives it back (first letting go of a TextBox). Then hovers, clicks (`MouseButton1Click`,
   `Activated`), TextBoxes (a caret, selecting with Shift or a drag, the clipboard, `MultiLine`), scrolling (the wheel
   each way `ScrollingDirection` allows, and both bars, which drag) and dragging work.

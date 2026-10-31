@@ -1380,3 +1380,36 @@ fn images_without_textures_draw_in_blocks() {
     say(&mut st, &mut game, "part");
     assert_eq!(hud(&mut st, &mut game), ["rect [0.0, 0.0, 100.3, 100.3] r0 ff000080"]);
 }
+
+#[test]
+fn rich_text_draws_its_runs() {
+    let mut game = FakeGame::new("rbx-rich");
+    let mut st = studio(&mut game);
+    let src = r##"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local label = Instance.new("TextLabel", gui)
+        label.Size = UDim2.fromOffset(300, 40)
+        label.BackgroundTransparency = 1
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.TextColor3 = Color3.new(1, 1, 1)
+        label.RichText = true
+        label.Text = '<font color="#FF0000">Red</font> <u>under</u><br/><mark color="#00FF00">marked</mark>'
+        print(label.ContentText == "Red under\nmarked", label.TextBounds)
+    "##;
+    load(&mut game, &mut st, "rich", src, 0.6);
+    assert_eq!(printed(&st, "rich"), ["true    54, 16"]);
+    let drawn = hud(&mut st, &mut game);
+    // Two lines of 8 in the middle of 40: from 12 and 20, each run in its colour.
+    assert_eq!(texts(&drawn), ["Red", " ", "under", "marked"], "{drawn:#?}");
+    assert!(drawn.contains(&"text Red @[0.0, 10.2] ff0000".to_owned()), "{drawn:#?}");
+    assert!(drawn.contains(&"text under @[24.0, 10.2] ffffff".to_owned()));
+    // The underline, under "under".
+    let under = index_of(&drawn, "text under @");
+    assert!(
+        drawn[under + 1].starts_with("rect [24.0, ") && drawn[under + 1].ends_with(", 30.0, 1.0] r0 ffffffff"),
+        "{drawn:#?}"
+    );
+    // The mark, behind "marked".
+    let marked = index_of(&drawn, "text marked @");
+    assert_eq!(drawn[marked - 1], "rect [0.0, 20.0, 36.0, 8.0] r0 ff00ff00");
+}

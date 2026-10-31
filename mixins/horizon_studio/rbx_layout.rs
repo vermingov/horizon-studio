@@ -20,7 +20,7 @@
 // GUI coordinates: the origin is under the top bar, so an IgnoreGuiInset
 // ScreenGui starts at -inset.
 
-use super::hstudio_rbx_types::{Font, Rect, UDim, UDim2, Vector2};
+use super::hstudio_rbx_types::{Color3, Font, FontEnum, FontStyle, FontWeight, Rect, UDim, UDim2, Vector2};
 use std::ops::{Index, IndexMut};
 
 /// A node's place in its Tree.
@@ -362,6 +362,9 @@ pub struct Node {
     pub text_truncate: TextTruncate,
     /// The characters drawn, from the start; -1 draws them all.
     pub max_visible_graphemes: i32,
+    /// RichText's runs over `text` (which is then the text without its
+    /// tags), in order and covering it all; empty for plain text.
+    pub rich: Vec<Span>,
 
     // ScrollingFrame
     pub canvas_size: UDim2,
@@ -463,6 +466,7 @@ impl Node {
             text_y_alignment: TextYAlignment::Center,
             text_truncate: TextTruncate::None,
             max_visible_graphemes: -1,
+            rich: Vec::new(),
             canvas_size: UDim2::new(0.0, 0.0, 2.0, 0.0),
             canvas_position: Vector2::ZERO,
             automatic_canvas_size: AutomaticSize::None,
@@ -706,6 +710,24 @@ pub struct TextLine {
     /// The byte offset in the node's text of its first character (the
     /// spaces a wrap breaks at belong to no line).
     pub start: usize,
+    /// How tall the line is on screen: its text size times LineHeight, the
+    /// largest of its runs' for rich text.
+    pub height: f64,
+    /// Rich text's runs, left to right; empty for plain text.
+    pub runs: Vec<TextRun>,
+}
+
+/// A run of a line of rich text, in one style.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextRun {
+    pub text: String,
+    /// Where it starts on screen, and how wide it is.
+    pub x: f64,
+    pub width: f64,
+    /// Its text size on screen, and its font.
+    pub size: f64,
+    pub font: Font,
+    pub style: RichStyle,
 }
 
 /// A text object's text, laid out in its content area.
@@ -836,6 +858,316 @@ impl Layout {
         let id = self.hit_test(point)?;
         let p = self.get(id)?;
         (p.class.is_some_and(Class::is_button) && p.interactable).then_some(id)
+    }
+}
+
+// ---------------------------------------------------------------- rich text
+
+/// A stretch of rich text's style: what its tags set (None and false leave
+/// the text object's own).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RichStyle {
+    /// `<font color>`, `<font transparency>` and `<font size>`.
+    pub color: Option<Color3>,
+    pub transparency: Option<f64>,
+    pub size: Option<f64>,
+    /// `<font face>` or `<font family>`: a family's asset; `<font weight>`.
+    pub family: Option<String>,
+    pub weight: Option<FontWeight>,
+    /// `<b>`, `<i>`, `<u>` and `<s>`.
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strike: bool,
+    /// `<stroke>` round the letters: its colour, thickness and transparency.
+    pub stroke: Option<(Color3, f64, f64)>,
+    /// `<mark>` behind them: its colour and transparency.
+    pub mark: Option<(Color3, f64)>,
+    /// `<uppercase>` (`<uc>`) and `<smallcaps>` (`<sc>`); `small` marks the
+    /// small capitals smallcaps makes of lowercase letters (0.8 the size).
+    pub uppercase: bool,
+    pub smallcaps: bool,
+    pub small: bool,
+}
+
+/// A run of rich text: bytes `start` to `end` of its text, in one style.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+    pub style: RichStyle,
+}
+
+/// Rich text read: its text without the tags, and its runs, in order and
+/// covering it all.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RichText {
+    pub text: String,
+    pub spans: Vec<Span>,
+}
+
+/// A run's text size and font: its own, or the text object's (`size` and
+/// `font`) with what its tags change.
+pub fn run_font(style: &RichStyle, size: f64, font: &Font) -> (f64, Font) {
+    let mut f = font.clone();
+    if let Some(family) = &style.family {
+        f.family = family.clone();
+    }
+    if let Some(w) = style.weight {
+        f.weight = w;
+    }
+    if style.bold && f.weight.value() < FontWeight::Bold.value() {
+        f.weight = FontWeight::Bold;
+    }
+    if style.italic {
+        f.style = FontStyle::Italic;
+    }
+    let size = style.size.unwrap_or(size) * if style.small { 0.8 } else { 1.0 };
+    (size, f)
+}
+
+/// The largest text size of the runs over bytes `at` to `at + len` (the
+/// run at `at` for an empty line), or `size` for plain text.
+fn rich_size(spans: &[Span], at: usize, len: usize, size: f64) -> f64 {
+    let font = Font::default();
+    let sized = |sp: &Span| run_font(&sp.style, size, &font).0;
+    let end = at + len;
+    let over = spans.iter().filter(|sp| sp.end > at && sp.start < end);
+    match over.map(sized).reduce(f64::max) {
+        Some(s) => s,
+        None => spans
+            .iter()
+            .find(|sp| sp.start <= at && at <= sp.end)
+            .map_or(size, sized),
+    }
+}
+
+/// Rich text as Roblox reads its markup: `<b>`, `<i>`, `<u>`, `<s>`,
+/// `<br />`, `<font color size face family weight transparency>`,
+/// `<stroke color thickness transparency>`, `<mark color transparency>`,
+/// `<uppercase>` (`<uc>`), `<smallcaps>` (`<sc>`) and `<!-- comments -->`,
+/// with `&lt;`, `&gt;`, `&quot;`, `&apos;` and `&amp;` for the characters.
+/// Tags it doesn't know are dropped; a `<` that starts no tag (`1 < 2`) is
+/// text.
+pub fn parse_rich(s: &str) -> RichText {
+    let mut out = RichText::default();
+    let mut stack: Vec<(&'static str, RichStyle)> = Vec::new();
+    let plain = RichStyle::default();
+    let mut i = 0;
+    while i < s.len() {
+        let rest = &s[i..];
+        let style = stack.last().map_or(&plain, |t| &t.1).clone();
+        if rest.starts_with("<!--") {
+            i += rest.find("-->").map_or(rest.len(), |e| e + 3);
+            continue;
+        }
+        // A tag starts with a letter or a slash after its `<`, and holds no other `<`.
+        if rest.starts_with('<')
+            && rest[1..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '/')
+            && let Some(end) = rest.find('>')
+            && !rest[1..end].contains('<')
+        {
+            i += end + 1;
+            rich_tag(&rest[1..end], &style, &mut stack, &mut out);
+            continue;
+        }
+        let entities = [
+            ("&lt;", '<'),
+            ("&gt;", '>'),
+            ("&quot;", '"'),
+            ("&apos;", '\''),
+            ("&amp;", '&'),
+        ];
+        if let Some((name, c)) = entities.iter().find(|(e, _)| rest.starts_with(e)) {
+            rich_push(&mut out, *c, &style);
+            i += name.len();
+            continue;
+        }
+        let c = rest.chars().next().unwrap_or(' ');
+        rich_push(&mut out, c, &style);
+        i += c.len_utf8();
+    }
+    out
+}
+
+/// One tag's work: a style opened, closed, or a new line.
+fn rich_tag(tag: &str, style: &RichStyle, stack: &mut Vec<(&'static str, RichStyle)>, out: &mut RichText) {
+    let tag = tag.trim();
+    let (closing, body) = match tag.strip_prefix('/') {
+        Some(b) => (true, b.trim()),
+        None => (false, tag),
+    };
+    let lone = body.ends_with('/');
+    let body = body.trim_end_matches('/').trim();
+    let (name, attrs) = body.split_once(char::is_whitespace).unwrap_or((body, ""));
+    let name: &'static str = match name.to_ascii_lowercase().as_str() {
+        "b" => "b",
+        "i" => "i",
+        "u" => "u",
+        "s" => "s",
+        "br" => "br",
+        "font" => "font",
+        "stroke" => "stroke",
+        "mark" => "mark",
+        "uppercase" | "uc" => "uppercase",
+        "smallcaps" | "sc" => "smallcaps",
+        _ => return,
+    };
+    if closing {
+        if let Some(at) = stack.iter().rposition(|(n, _)| *n == name) {
+            stack.truncate(at);
+        }
+        return;
+    }
+    if name == "br" {
+        rich_push(out, '\n', style);
+        return;
+    }
+    let mut st = style.clone();
+    let attrs = rich_attributes(attrs);
+    let attr = |k: &str| attrs.iter().find(|(a, _)| a == k).map(|(_, v)| v.as_str());
+    let number = |k: &str| attr(k).and_then(|v| v.trim().parse::<f64>().ok());
+    match name {
+        "b" => st.bold = true,
+        "i" => st.italic = true,
+        "u" => st.underline = true,
+        "s" => st.strike = true,
+        "uppercase" => st.uppercase = true,
+        "smallcaps" => st.smallcaps = true,
+        "font" => {
+            if let Some(c) = attr("color").and_then(rich_color) {
+                st.color = Some(c);
+            }
+            if let Some(n) = number("size") {
+                st.size = Some(n.max(1.0));
+            }
+            if let Some(n) = number("transparency") {
+                st.transparency = Some(n.clamp(0.0, 1.0));
+            }
+            if let Some(face) = attr("face") {
+                match FontEnum::from_name_or_alias(face.trim()).and_then(|e| Font::from_enum(e).ok()) {
+                    Some(f) => {
+                        st.family = Some(f.family);
+                        st.weight = Some(f.weight);
+                    }
+                    None => {
+                        st.family = Some(Font::from_name(face.trim(), FontWeight::Regular, FontStyle::Normal).family)
+                    }
+                }
+            }
+            if let Some(family) = attr("family") {
+                st.family = Some(family.trim().to_string());
+            }
+            if let Some(w) = attr("weight").and_then(rich_weight) {
+                st.weight = Some(w);
+            }
+        }
+        "stroke" => {
+            let color = attr("color").and_then(rich_color).unwrap_or(Color3::new(0.0, 0.0, 0.0));
+            st.stroke = Some((
+                color,
+                number("thickness").unwrap_or(1.0).max(0.0),
+                number("transparency").unwrap_or(0.0).clamp(0.0, 1.0),
+            ));
+        }
+        _ => {
+            let color = attr("color")
+                .and_then(rich_color)
+                .unwrap_or(Color3::from_rgb(255.0, 255.0, 0.0));
+            st.mark = Some((color, number("transparency").unwrap_or(0.0).clamp(0.0, 1.0)));
+        }
+    }
+    if !lone {
+        stack.push((name, st));
+    }
+}
+
+/// A tag's attributes: `name="value"`, `name='value'` or `name=value`.
+fn rich_attributes(s: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = s.trim();
+    while let Some(eq) = rest.find('=') {
+        let key = rest[..eq].trim().to_ascii_lowercase();
+        let after = rest[eq + 1..].trim_start();
+        let (value, next) = match after.chars().next() {
+            Some(q @ ('"' | '\'')) => match after[1..].find(q) {
+                Some(e) => (&after[1..1 + e], &after[e + 2..]),
+                None => (&after[1..], ""),
+            },
+            _ => {
+                let e = after.find(char::is_whitespace).unwrap_or(after.len());
+                (&after[..e], &after[e..])
+            }
+        };
+        out.push((key, value.to_string()));
+        rest = next.trim_start();
+    }
+    out
+}
+
+/// A colour as rich text writes one: `#FF7800`, `#F80` or `rgb(255, 120, 0)`.
+fn rich_color(v: &str) -> Option<Color3> {
+    let v = v.trim();
+    if let Some(hex) = v.strip_prefix('#') {
+        let n = u32::from_str_radix(hex, 16).ok()?;
+        let ch = |x: u32| f64::from(x & 0xFF);
+        return match hex.len() {
+            6 => Some(Color3::from_rgb(ch(n >> 16), ch(n >> 8), ch(n))),
+            3 => Some(Color3::from_rgb(
+                ch((n >> 8) & 0xF) * 17.0,
+                ch((n >> 4) & 0xF) * 17.0,
+                ch(n & 0xF) * 17.0,
+            )),
+            _ => None,
+        };
+    }
+    let inner = v.strip_prefix("rgb(")?.strip_suffix(')')?;
+    let parts: Vec<f64> = inner
+        .split(',')
+        .map(|p| p.trim().parse().ok())
+        .collect::<Option<Vec<f64>>>()?;
+    match parts[..] {
+        [r, g, b] => Some(Color3::from_rgb(r, g, b)),
+        _ => None,
+    }
+}
+
+/// A weight by its name (`bold`, `SemiBold`) or its number (100 to 900).
+fn rich_weight(v: &str) -> Option<FontWeight> {
+    let v = v.trim();
+    if let Ok(n) = v.parse::<f64>() {
+        let n = ((n / 100.0).round() * 100.0).clamp(100.0, 900.0) as i32;
+        return FontWeight::from_value(n);
+    }
+    FontWeight::ALL
+        .iter()
+        .copied()
+        .find(|w| w.name().eq_ignore_ascii_case(v))
+}
+
+/// A character of rich text in `style`: capitals for `<uppercase>`, small
+/// ones for the lowercase letters `<smallcaps>` raises.
+fn rich_push(out: &mut RichText, c: char, style: &RichStyle) {
+    let small = style.smallcaps && c.is_lowercase();
+    let mut st = style.clone();
+    st.small = small;
+    let mut put = |c: char| {
+        let at = out.text.len();
+        out.text.push(c);
+        let end = out.text.len();
+        match out.spans.last_mut() {
+            Some(last) if last.end == at && last.style == st => last.end = end,
+            _ => out.spans.push(Span {
+                start: at,
+                end,
+                style: st.clone(),
+            }),
+        }
+    };
+    if style.uppercase || small {
+        c.to_uppercase().for_each(&mut put);
+    } else {
+        put(c);
     }
 }
 
@@ -1242,7 +1574,7 @@ impl<'a> Pass<'a> {
             if limits.constrained {
                 text_size = text_size.min(limits.max).max(limits.min);
             }
-            let (_, bounds) = self.wrap(&node.text, text_size, &node.font, node.line_height, wrap);
+            let (_, bounds) = self.wrap(&node.text, &node.rich, text_size, &node.font, node.line_height, wrap);
             extent = extent.max(bounds);
         }
         Vector2::new(extent.x + pad[0] + pad[2], extent.y + pad[1] + pad[3])
@@ -1675,7 +2007,7 @@ impl<'a> Pass<'a> {
     /// A text object's text in its content area.
     fn text(&mut self, id: NodeId, content: Area, ctx: &Context) -> TextLayout {
         let node = self.node(id);
-        let (text, font) = (&node.text, &node.font);
+        let (text, font, spans) = (&node.text, &node.font, &node.rich);
         let (line_height, scaled) = (node.line_height, node.text_scaled);
         let wrapped = node.text_wrapped || scaled;
         let (x_align, y_align) = (node.text_x_alignment, node.text_y_alignment);
@@ -1688,7 +2020,7 @@ impl<'a> Pass<'a> {
             let mut size = bottom;
             let mut s = top;
             while s >= bottom {
-                let (_, b) = self.wrap(text, s, font, line_height, width);
+                let (_, b) = self.wrap(text, spans, s, font, line_height, width);
                 if b.x <= content.w && b.y <= content.h {
                     size = s;
                     break;
@@ -1701,18 +2033,32 @@ impl<'a> Pass<'a> {
         } else {
             node.text_size
         };
-        let (mut lines, bounds) = self.wrap(text, size, font, line_height, width);
+        let (mut lines, bounds) = self.wrap(text, spans, size, font, line_height, width);
         let fits = bounds.x <= content.w && bounds.y <= content.h;
         let step = size * line_height;
-        let drawn = if wrapped && step > 0.0 {
+        // Rich text's lines are as tall as their largest runs.
+        let heights: Vec<f64> = lines
+            .iter()
+            .map(|l| rich_size(spans, l.2, l.0.len(), size) * line_height)
+            .collect();
+        let drawn = if wrapped && step > 0.0 && spans.is_empty() {
             lines.len().min(((content.h / step) + 1e-9).floor().max(0.0) as usize)
+        } else if wrapped && step > 0.0 {
+            let mut used = 0.0;
+            heights
+                .iter()
+                .take_while(|&&h| {
+                    used += h;
+                    used <= content.h + 1e-9
+                })
+                .count()
         } else {
             lines.len()
         };
         if node.text_truncate != TextTruncate::None {
             let cut_below = drawn < lines.len();
             lines.truncate(drawn);
-            self.truncate(&mut lines, cut_below, content.w, size, font, node.text_truncate);
+            self.truncate(&mut lines, spans, cut_below, content.w, size, font, node.text_truncate);
         }
         let fx = match x_align {
             TextXAlignment::Left => 0.0,
@@ -1724,20 +2070,41 @@ impl<'a> Pass<'a> {
             TextYAlignment::Center => 0.5,
             TextYAlignment::Bottom => 1.0,
         };
-        let top = content.y + (content.h - drawn as f64 * step) * fy;
+        let total = if spans.is_empty() {
+            drawn as f64 * step
+        } else {
+            heights.iter().take(drawn).sum()
+        };
+        let top = content.y + (content.h - total) * fy;
+        let mut below = 0.0;
         let mut lines: Vec<TextLine> = lines
             .into_iter()
             .take(drawn)
             .enumerate()
-            .map(|(i, (text, w, start))| TextLine {
-                text,
-                position: ctx.point(Vector2::new(content.x + (content.w - w) * fx, top + i as f64 * step)),
-                width: w * ctx.k,
-                start,
+            .map(|(i, (text, w, start))| {
+                let y = if spans.is_empty() {
+                    top + i as f64 * step
+                } else {
+                    top + below
+                };
+                below += heights[i];
+                TextLine {
+                    text,
+                    position: ctx.point(Vector2::new(content.x + (content.w - w) * fx, y)),
+                    width: w * ctx.k,
+                    start,
+                    height: heights[i] * ctx.k,
+                    runs: Vec::new(),
+                }
             })
             .collect();
         if let Ok(max) = usize::try_from(node.max_visible_graphemes) {
-            self.visible(&mut lines, text, max, size, font, ctx.k);
+            self.visible(&mut lines, text, spans, max, size, font, ctx.k);
+        }
+        if !spans.is_empty() {
+            for line in &mut lines {
+                self.runs(line, text, spans, size, font, ctx.k);
+            }
         }
         TextLayout {
             size: size * ctx.k,
@@ -1753,6 +2120,7 @@ impl<'a> Pass<'a> {
     fn wrap(
         &mut self,
         text: &str,
+        spans: &[Span],
         size: f64,
         font: &Font,
         line_height: f64,
@@ -1763,27 +2131,99 @@ impl<'a> Pass<'a> {
         for paragraph in text.split('\n') {
             match width {
                 None => lines.push((paragraph.to_string(), at)),
-                Some(w) => self.wrap_paragraph(paragraph, at, size, font, w, &mut lines),
+                Some(w) => self.wrap_paragraph(paragraph, spans, at, size, font, w, &mut lines),
             }
             at += paragraph.len() + 1;
         }
         let measured: Vec<(String, f64, usize)> = lines
             .into_iter()
             .map(|(line, start)| {
-                let w = (self.measure)(&line, size, font);
+                let w = self.width(spans, start, &line, size, font);
                 (line, w, start)
             })
             .collect();
         let widest = measured.iter().map(|l| l.1).fold(0.0, f64::max);
-        let bounds = Vector2::new(widest, measured.len() as f64 * size * line_height);
+        let tall = if spans.is_empty() {
+            measured.len() as f64 * size * line_height
+        } else {
+            measured
+                .iter()
+                .map(|l| rich_size(spans, l.2, l.0.len(), size) * line_height)
+                .sum()
+        };
+        let bounds = Vector2::new(widest, tall);
         (measured, bounds)
+    }
+
+    /// How wide `s` is, which starts at byte `at` of a text object's text,
+    /// at text size `size`: each of rich text's runs in its own size and font.
+    fn width(&mut self, spans: &[Span], at: usize, s: &str, size: f64, font: &Font) -> f64 {
+        if spans.is_empty() {
+            return (self.measure)(s, size, font);
+        }
+        let end = at + s.len();
+        let mut w = 0.0;
+        for span in spans.iter().filter(|sp| sp.end > at && sp.start < end) {
+            let (a, b) = (span.start.max(at) - at, span.end.min(end) - at);
+            if let Some(piece) = s.get(a..b) {
+                let (run_size, run_font) = run_font(&span.style, size, font);
+                w += (self.measure)(piece, run_size, &run_font);
+            }
+        }
+        w
+    }
+
+    /// A rich line's runs, from its text: the parts of the object's text it
+    /// shows, each in its run's style, and what truncation added ("...") in
+    /// the style of what it follows. The line's width becomes theirs.
+    fn runs(&mut self, line: &mut TextLine, text: &str, spans: &[Span], size: f64, font: &Font, k: f64) {
+        let from = &text[line.start.min(text.len())..];
+        let mut kept = line.text.bytes().zip(from.bytes()).take_while(|(a, b)| a == b).count();
+        while !line.text.is_char_boundary(kept) {
+            kept -= 1;
+        }
+        let (at, end) = (line.start, line.start + kept);
+        let mut x = line.position.x;
+        let mut runs = Vec::new();
+        let mut last = spans
+            .iter()
+            .find(|sp| sp.end > at)
+            .or(spans.last())
+            .map(|sp| sp.style.clone())
+            .unwrap_or_default();
+        let mut push = |pass: &mut Self, piece: &str, style: &RichStyle| {
+            let (run_size, run_font) = run_font(style, size, font);
+            let width = (pass.measure)(piece, run_size, &run_font) * k;
+            runs.push(TextRun {
+                text: piece.to_string(),
+                x,
+                width,
+                size: run_size * k,
+                font: run_font,
+                style: style.clone(),
+            });
+            x += width;
+        };
+        for span in spans.iter().filter(|sp| sp.end > at && sp.start < end) {
+            let piece = &text[span.start.max(at)..span.end.min(end)];
+            push(self, piece, &span.style);
+            last = span.style.clone();
+        }
+        if kept < line.text.len() {
+            let suffix = line.text[kept..].to_string();
+            push(self, &suffix, &last);
+        }
+        line.width = x - line.position.x;
+        line.runs = runs;
     }
 
     /// A paragraph that starts at byte `at` of its text, wrapped to `width`:
     /// its lines and where each starts.
+    #[allow(clippy::too_many_arguments)]
     fn wrap_paragraph(
         &mut self,
         paragraph: &str,
+        spans: &[Span],
         at: usize,
         size: f64,
         font: &Font,
@@ -1798,13 +2238,13 @@ impl<'a> Pass<'a> {
             word_at += word.len() + 1;
             if !line.is_empty() {
                 let candidate = format!("{line} {word}");
-                if (self.measure)(&candidate, size, font) <= width {
+                if self.width(spans, start, &candidate, size, font) <= width {
                     line = candidate;
                     continue;
                 }
                 lines.push((std::mem::take(&mut line), start));
             }
-            if (self.measure)(word, size, font) <= width {
+            if self.width(spans, here, word, size, font) <= width {
                 line = word.to_string();
                 start = here;
                 continue;
@@ -1813,7 +2253,7 @@ impl<'a> Pass<'a> {
             for (i, ch) in word.char_indices() {
                 let mut candidate = line.clone();
                 candidate.push(ch);
-                if !line.is_empty() && (self.measure)(&candidate, size, font) > width {
+                if !line.is_empty() && self.width(spans, start, &candidate, size, font) > width {
                     lines.push((std::mem::take(&mut line), start));
                     line.push(ch);
                     start = here + i;
@@ -1830,9 +2270,11 @@ impl<'a> Pass<'a> {
 
     /// TextTruncate: each line too wide for `width`, and the last one when
     /// lines below it are cut off, ends in "..." where that still fits.
+    #[allow(clippy::too_many_arguments)]
     fn truncate(
         &mut self,
         lines: &mut [(String, f64, usize)],
+        spans: &[Span],
         cut_below: bool,
         width: f64,
         size: f64,
@@ -1842,11 +2284,75 @@ impl<'a> Pass<'a> {
         let last = lines.len().saturating_sub(1);
         for (i, line) in lines.iter_mut().enumerate() {
             if line.1 > width + 1e-9 || (cut_below && i == last) {
+                if !spans.is_empty() {
+                    let (cut, w) = self.rich_ellipsis(&line.0, spans, line.2, width, size, font, how);
+                    (line.0, line.1) = (cut, w);
+                    continue;
+                }
                 let cut = self.ellipsis(&line.0, width, size, font, how);
                 line.1 = (self.measure)(&cut, size, font);
                 line.0 = cut;
             }
         }
+    }
+
+    /// `ellipsis` for a line of rich text starting at byte `at`: its start
+    /// measured run by run, and "..." in the style of what it follows. The
+    /// line cut, and its width.
+    #[allow(clippy::too_many_arguments)]
+    fn rich_ellipsis(
+        &mut self,
+        line: &str,
+        spans: &[Span],
+        at: usize,
+        width: f64,
+        size: f64,
+        font: &Font,
+        how: TextTruncate,
+    ) -> (String, f64) {
+        let ends: Vec<usize> = line
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(line.len()))
+            .collect();
+        let wide = |pass: &mut Self, end: usize| {
+            let kept = line[..end].trim_end();
+            // The dots take the style of the last character kept.
+            let style = spans
+                .iter()
+                .find(|sp| sp.start < at + kept.len().max(1) && sp.end >= at + kept.len())
+                .map(|sp| sp.style.clone())
+                .unwrap_or_default();
+            let (dot_size, dot_font) = run_font(&style, size, font);
+            pass.width(spans, at, kept, size, font) + (pass.measure)("...", dot_size, &dot_font)
+        };
+        let (mut lo, mut hi) = (0, ends.len());
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if wide(self, ends[mid]) <= width {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        let Some(best) = lo.checked_sub(1) else {
+            let mut dots = String::from("...");
+            while !dots.is_empty() && (self.measure)(&dots, size, font) > width {
+                dots.pop();
+            }
+            let w = (self.measure)(&dots, size, font);
+            return (dots, w);
+        };
+        let mut end = ends[best];
+        let mid_word = end > 0 && !line[..end].ends_with(' ') && line[end..].starts_with(|c: char| c != ' ');
+        if how == TextTruncate::SplitWord
+            && mid_word
+            && let Some(space) = line[..end].rfind(' ')
+        {
+            end = space;
+        }
+        let w = wide(self, end);
+        (format!("{}...", line[..end].trim_end()), w)
     }
 
     /// The longest start of `line` that fits `width` with "..." after it
@@ -1889,7 +2395,17 @@ impl<'a> Pass<'a> {
 
     /// MaxVisibleGraphemes: only the first `max` characters of `text` stay
     /// in the lines, which keep their places.
-    fn visible(&mut self, lines: &mut Vec<TextLine>, text: &str, max: usize, size: f64, font: &Font, k: f64) {
+    #[allow(clippy::too_many_arguments)]
+    fn visible(
+        &mut self,
+        lines: &mut Vec<TextLine>,
+        text: &str,
+        spans: &[Span],
+        max: usize,
+        size: f64,
+        font: &Font,
+        k: f64,
+    ) {
         let end = text.char_indices().nth(max).map_or(text.len(), |(i, _)| i);
         lines.retain(|l| l.start < end);
         for line in lines.iter_mut() {
@@ -1899,7 +2415,7 @@ impl<'a> Pass<'a> {
             }
             if keep < line.text.len() {
                 line.text.truncate(keep);
-                line.width = (self.measure)(&line.text, size, font) * k;
+                line.width = self.width(spans, line.start, &line.text, size, font) * k;
             }
         }
     }

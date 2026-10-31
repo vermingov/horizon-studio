@@ -11,7 +11,8 @@ use horizon_studio::game::hstudio_rbx_layout::{
     ScrollBarInset, SizeConstraint, SortOrder, StartCorner, TOP_BAR, TextTruncate, TextXAlignment, TextYAlignment,
     Tree, VerticalAlignment, Viewport, ZIndexBehavior,
 };
-use horizon_studio::game::hstudio_rbx_types::{Font, UDim, UDim2, Vector2};
+use horizon_studio::game::hstudio_rbx_layout::{RichStyle, RichText, parse_rich};
+use horizon_studio::game::hstudio_rbx_types::{Color3, Font, FontWeight, UDim, UDim2, Vector2};
 
 /// A monospace font: each character is half the text size wide.
 fn mono(text: &str, size: f64, _font: &Font) -> f64 {
@@ -831,6 +832,217 @@ fn max_visible_graphemes_shows_the_start() {
     tree[label].text = "héllo".into();
     tree[label].max_visible_graphemes = 2;
     assert_eq!(text_lines(&run(&tree), label)[0].0, "hé");
+}
+
+// ---------------------------------------------------------------- rich text
+
+/// The runs of rich text as (text, its style).
+fn spans(rich: &RichText) -> Vec<(&str, RichStyle)> {
+    rich.spans
+        .iter()
+        .map(|sp| (&rich.text[sp.start..sp.end], sp.style.clone()))
+        .collect()
+}
+
+fn red() -> RichStyle {
+    RichStyle {
+        color: Some(Color3::new(1.0, 0.0, 0.0)),
+        ..RichStyle::default()
+    }
+}
+
+fn bold() -> RichStyle {
+    RichStyle {
+        bold: true,
+        ..RichStyle::default()
+    }
+}
+
+#[test]
+fn rich_text_reads_roblox_markup() {
+    let r = parse_rich(r##"<font color="#FF0000">Red</font> plain <b>bold</b><br/>next"##);
+    assert_eq!(r.text, "Red plain bold\nnext");
+    let plain = RichStyle::default();
+    assert_eq!(
+        spans(&r),
+        [
+            ("Red", red()),
+            (" plain ", plain.clone()),
+            ("bold", bold()),
+            ("\nnext", plain.clone())
+        ]
+    );
+    // The runs cover the text, in order.
+    assert_eq!(r.spans.first().unwrap().start, 0);
+    assert!(r.spans.windows(2).all(|w| w[0].end == w[1].start));
+    assert_eq!(r.spans.last().unwrap().end, r.text.len());
+    // Escapes, comments, line breaks; unknown tags go, a lone < stays.
+    let text = |s: &str| parse_rich(s).text;
+    assert_eq!(text("&lt;b&gt; &amp; &quot;q&quot; &apos;"), "<b> & \"q\" '");
+    assert_eq!(text("a<!-- hidden -->b<!-- open"), "ab");
+    assert_eq!(text("a<br>b<br />c<BR/>d"), "a\nb\nc\nd");
+    assert_eq!(text("<blink>x</blink> 1 < 2 and 3 > 2"), "x 1 < 2 and 3 > 2");
+    assert_eq!(text("<uppercase>abc</uppercase> <uc>d</uc>"), "ABC D");
+    // Small capitals: the lowercase letters as capitals 0.8 the size.
+    let r = parse_rich("<sc>Hello</sc>");
+    assert_eq!(r.text, "HELLO");
+    let small: Vec<(&str, bool)> = spans(&r).into_iter().map(|(t, s)| (t, s.small)).collect();
+    assert_eq!(small, [("H", false), ("ELLO", true)]);
+    // Nesting, and a closing tag that closes what it holds too.
+    let r = parse_rich("<b><i>x</i>y</b>z<b>a<i>b</b>c");
+    let styles: Vec<(&str, bool, bool)> = spans(&r).into_iter().map(|(t, s)| (t, s.bold, s.italic)).collect();
+    assert_eq!(
+        styles,
+        [
+            ("x", true, true),
+            ("y", true, false),
+            ("z", false, false),
+            ("a", true, false),
+            ("b", true, true),
+            ("c", false, false)
+        ]
+    );
+    // Font attributes, quoted either way.
+    let r = parse_rich(r#"<font size='30' face="GothamBold" transparency="0.5">x</font>"#);
+    let s = &r.spans[0].style;
+    assert_eq!((s.size, s.transparency), (Some(30.0), Some(0.5)));
+    assert_eq!(s.family.as_deref(), Some("rbxasset://fonts/families/Montserrat.json"));
+    assert_eq!(s.weight, Some(FontWeight::Bold));
+    let style = |m: &str| parse_rich(m).spans[0].style.clone();
+    assert_eq!(
+        style(r#"<font color="rgb(0, 51, 255)">x</font>"#).color,
+        Some(Color3::new(0.0, 0.2, 1.0))
+    );
+    assert_eq!(
+        style(r##"<font color="#f80">x</font>"##).color,
+        Some(Color3::from_rgb(255.0, 136.0, 0.0))
+    );
+    assert_eq!(
+        style(r#"<font weight="heavy">x</font>"#).weight,
+        Some(FontWeight::Heavy)
+    );
+    assert_eq!(style(r#"<font weight="650">x</font>"#).weight, Some(FontWeight::Bold));
+    assert_eq!(
+        style(r#"<font family="rbxasset://fonts/families/Ubuntu.json">x</font>"#)
+            .family
+            .as_deref(),
+        Some("rbxasset://fonts/families/Ubuntu.json")
+    );
+    assert_eq!(
+        style(r##"<stroke color="#00A2FF" thickness="2" transparency="0.25">x</stroke>"##).stroke,
+        Some((Color3::from_rgb(0.0, 162.0, 255.0), 2.0, 0.25))
+    );
+    assert_eq!(
+        style(r##"<mark color="#009966" transparency="0.5">x</mark>"##).mark,
+        Some((Color3::from_rgb(0.0, 153.0, 102.0), 0.5))
+    );
+    let s = style("<u><s>x</s></u>");
+    assert!(s.underline && s.strike);
+}
+
+/// Monospace, half as wide as tall, and half again as wide in a bold weight.
+fn mono_bold(text: &str, size: f64, font: &Font) -> f64 {
+    let w = text.chars().count() as f64 * size / 2.0;
+    if font.bold() { w * 1.5 } else { w }
+}
+
+/// A label's rich lines as (text, x, y, width, height) and their runs as
+/// (text, x, width, size).
+#[allow(clippy::type_complexity)]
+fn rich_lines(l: &Layout, id: NodeId) -> Vec<((String, f64, f64, f64, f64), Vec<(String, f64, f64, f64)>)> {
+    let t = l.get(id).unwrap().text.clone().unwrap();
+    t.lines
+        .into_iter()
+        .map(|l| {
+            let runs = l.runs.iter().map(|r| (r.text.clone(), r.x, r.width, r.size)).collect();
+            ((l.text, l.position.x, l.position.y, l.width, l.height), runs)
+        })
+        .collect()
+}
+
+fn s(t: &str) -> String {
+    t.to_string()
+}
+
+#[test]
+fn rich_text_runs() {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    let label = add(&mut tree, Class::TextLabel, gui, px(0.0, 0.0), px(400.0, 100.0));
+    let rich = parse_rich(r##"<font color="#FF0000">Red</font> plain <b>bold</b><br/>next"##);
+    tree[label].text = rich.text;
+    tree[label].rich = rich.spans;
+    tree[label].text_size = 20.0;
+    tree[label].text_x_alignment = TextXAlignment::Left;
+    tree[label].text_y_alignment = TextYAlignment::Top;
+    let l = tree.layout(&Viewport::new(800.0, 600.0, TOP_BAR), &mut mono_bold);
+    // Two lines: three runs (red, plain, bold, each measured in its own
+    // font: bold is wider here), then "next".
+    assert_eq!(
+        rich_lines(&l, label),
+        [
+            (
+                (s("Red plain bold"), 0.0, 0.0, 160.0, 20.0),
+                vec![
+                    (s("Red"), 0.0, 30.0, 20.0),
+                    (s(" plain "), 30.0, 70.0, 20.0),
+                    (s("bold"), 100.0, 60.0, 20.0)
+                ]
+            ),
+            ((s("next"), 0.0, 20.0, 40.0, 20.0), vec![(s("next"), 0.0, 40.0, 20.0)])
+        ]
+    );
+    let t = l.get(label).unwrap().text.clone().unwrap();
+    assert_eq!(t.bounds, v(160.0, 40.0));
+    let run = &t.lines[0].runs[2];
+    assert_eq!((run.font.weight, run.style.bold), (FontWeight::Bold, true));
+    // A larger run makes its line taller, and the lines below move down.
+    let rich = parse_rich(r#"small <font size="40">big</font><br/>after"#);
+    tree[label].text = rich.text;
+    tree[label].rich = rich.spans;
+    let l = tree.layout(&Viewport::new(800.0, 600.0, TOP_BAR), &mut mono_bold);
+    let lines = rich_lines(&l, label);
+    assert_eq!(lines[0].0, (s("small big"), 0.0, 0.0, 120.0, 40.0));
+    assert_eq!(lines[0].1[1], (s("big"), 60.0, 60.0, 40.0));
+    assert_eq!(lines[1].0, (s("after"), 0.0, 40.0, 50.0, 20.0));
+    assert_eq!(l.get(label).unwrap().text.clone().unwrap().bounds, v(120.0, 60.0));
+    // Wrapping measures run by run too: "small" and "big" don't fit 100.
+    tree[label].size = px(100.0, 100.0);
+    tree[label].text_wrapped = true;
+    let l = tree.layout(&Viewport::new(800.0, 600.0, TOP_BAR), &mut mono_bold);
+    let lines: Vec<String> = rich_lines(&l, label).into_iter().map(|l| l.0.0).collect();
+    assert_eq!(lines, ["small", "big", "after"]);
+}
+
+#[test]
+fn rich_text_truncates_and_types_out_run_by_run() {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    // 55 wide: 11 characters of 5.
+    let label = add(&mut tree, Class::TextLabel, gui, px(0.0, 0.0), px(55.0, 20.0));
+    let set = |tree: &mut Tree, markup: &str| {
+        let rich = parse_rich(markup);
+        tree[label].text = rich.text;
+        tree[label].rich = rich.spans;
+    };
+    set(&mut tree, "<b>Hello</b> world wide");
+    tree[label].text_size = 10.0;
+    tree[label].text_x_alignment = TextXAlignment::Left;
+    tree[label].text_truncate = TextTruncate::AtEnd;
+    let runs = |tree: &Tree| -> Vec<(String, bool)> {
+        let l = run(tree);
+        let t = l.get(label).unwrap().text.clone().unwrap();
+        t.lines[0].runs.iter().map(|r| (r.text.clone(), r.style.bold)).collect()
+    };
+    // The dots take the style of what they follow.
+    assert_eq!(runs(&tree), [(s("Hello"), true), (s(" wo"), false), (s("..."), false)]);
+    set(&mut tree, "<b>Hello world</b> wide");
+    assert_eq!(runs(&tree), [(s("Hello wo"), true), (s("..."), true)]);
+    // MaxVisibleGraphemes cuts the runs.
+    set(&mut tree, "<b>Hel</b>lo");
+    tree[label].text_truncate = TextTruncate::None;
+    tree[label].max_visible_graphemes = 4;
+    assert_eq!(runs(&tree), [(s("Hel"), true), (s("l"), false)]);
 }
 
 // ---------------------------------------------------------------- scrolling and clipping
