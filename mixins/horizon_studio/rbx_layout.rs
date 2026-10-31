@@ -1306,6 +1306,26 @@ fn rich_push(out: &mut RichText, c: char, style: &RichStyle) {
     }
 }
 
+/// How large text is drawn, as TextBounds has it: wrapped to `width` if
+/// given, each rich run in its own size and font.
+pub fn text_bounds(
+    text: &str,
+    spans: &[Span],
+    size: f64,
+    font: &Font,
+    width: Option<f64>,
+    measure: &mut dyn FnMut(&str, f64, &Font) -> f64,
+) -> Vector2 {
+    let tree = Tree::new();
+    let mut pass = Pass {
+        tree: &tree,
+        measure,
+        placed: Vec::new(),
+        forced: Vec::new(),
+    };
+    pass.wrap(text, spans, size, font, 1.0, width).1
+}
+
 // ---------------------------------------------------------------- images
 
 /// Enum.ScaleType: how an image fills its object.

@@ -1836,3 +1836,39 @@ fn reads_in_the_new_layouts_lay_out_as_the_whole_gui_does() {
         assert_eq!(alone[i], outputs(rbx, id), "{}", rbx.full_name(id));
     }
 }
+
+#[test]
+fn text_bounds_async_agrees_with_get_text_size() {
+    let mut game = FakeGame::new("rbx-bounds");
+    let mut st = studio(&mut game);
+    // The fake game's characters are 6 wide at any size.
+    let src = r#"
+        local TextService = game:GetService("TextService")
+        local params = Instance.new("GetTextBoundsParams")
+        params.Text = "hello world"
+        params.Size = 14
+        params.Font = Font.fromEnum(Enum.Font.SourceSans)
+        params.Width = 40
+        local a = TextService:GetTextBoundsAsync(params)
+        local b = TextService:GetTextSize("hello world", 14, Enum.Font.SourceSans, Vector2.new(40, 1000))
+        print(a == b, a)
+        params.Width = 0
+        print(TextService:GetTextBoundsAsync(params), TextService:GetTextSize("hello world", 14, Enum.Font.SourceSans, Vector2.new(math.huge, math.huge)))
+        params.RichText = true
+        params.Text = "<b>hello</b> <font size='28'>world</font>"
+        print(TextService:GetTextBoundsAsync(params))
+        print(pcall(function() return TextService:GetTextBoundsAsync(workspace) end))
+        print(Instance.new("GetTextBoundsParams").Font.Family)
+    "#;
+    load(&mut game, &mut st, "bounds", src, 0.6);
+    let p = printed(&st, "bounds");
+    assert_eq!(p[0], "true    30, 28");
+    assert_eq!(p[1], "66, 14    66, 14");
+    assert_eq!(p[2], "66, 28", "a line as tall as its largest run");
+    assert!(
+        p[3].starts_with("false    ") && p[3].contains("GetTextBoundsParams expected"),
+        "{}",
+        p[3]
+    );
+    assert_eq!(p[4], "rbxasset://fonts/families/SourceSansPro.json");
+}

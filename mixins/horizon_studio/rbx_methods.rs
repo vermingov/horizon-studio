@@ -617,6 +617,34 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             let (w, h) = super::hstudio_rbx_draw::text_size(env.game(), &text, size, face, frame.x);
             one(v2(Vector2::new(w, h)))
         }
+        // As GetTextSize, from a GetTextBoundsParams; its Width wraps the
+        // text (0 doesn't), and rich text is measured run by run.
+        ("TextService", "GetTextBoundsAsync") => {
+            let rbx = env.rbx();
+            let p = args
+                .get(1)
+                .and_then(|v| rbx.id_of(v))
+                .filter(|&p| rbx.inst(p).class.name == "GetTextBoundsParams")
+                .ok_or_else(|| bad_arg(lua, 1, name, "GetTextBoundsParams expected"))?;
+            let text = rbx.raw_get(p, "Text").as_text().unwrap_or_default();
+            let size = rbx.raw_get(p, "Size").to_num().unwrap_or(8.0);
+            let font = super::hstudio_rbx_values::as_font(&rbx.raw_get(p, "Font")).unwrap_or_default();
+            let width = rbx.raw_get(p, "Width").to_num().filter(|w| *w > 0.0);
+            let rich = rbx.raw_get(p, "RichText").truthy();
+            let game = env.game();
+            let (w, h) = if rich {
+                let read = super::hstudio_rbx_layout::parse_rich(&text);
+                let mut measure = |t: &str, s: f64, f: &super::hstudio_rbx_types::Font| -> f64 {
+                    f64::from(game.dp_measure(t, s as f32, super::hstudio_rbx_draw::studio_font(f)))
+                };
+                let b =
+                    super::hstudio_rbx_layout::text_bounds(&read.text, &read.spans, size, &font, width, &mut measure);
+                (b.x.ceil(), b.y.ceil())
+            } else {
+                super::hstudio_rbx_draw::text_size(game, &text, size, font, width.unwrap_or(f64::INFINITY))
+            };
+            one(v2(Vector2::new(w, h)))
+        }
         ("GuiService", "GetGuiInset") => Ok(vec![v2(Vector2::ZERO), v2(Vector2::ZERO)]),
         ("GuiService", "IsTenFootInterface") => one(Value::Bool(false)),
         ("StarterGui", "SetCore") => {

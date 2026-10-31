@@ -901,6 +901,19 @@ pub static CLASSES: &[C] = &[
             &[],
         )
     },
+    // TextService:GetTextBoundsAsync's question.
+    class(
+        "GetTextBoundsParams",
+        "Instance",
+        &[
+            p("Text", Str, S("")),
+            p("Font", K::Font, D::Font("SourceSans")),
+            p("Size", Num, N(8.0)),
+            p("Width", Num, N(0.0)),
+            p("RichText", Bool, B(false)),
+        ],
+        &[],
+    ),
     // Kept with whatever properties scripts give them; nothing draws them.
     kept("SurfaceGui", "LayerCollector"),
     // Laid out and drawn as Frames (what they show, a 3D view or a video,
@@ -2098,6 +2111,7 @@ const METHODS: &[(&str, &str)] = &[
     ("PostAsync", "HttpService"),
     ("RequestAsync", "HttpService"),
     ("GetTextSize", "TextService"),
+    ("GetTextBoundsAsync", "TextService"),
     ("GetGuiInset", "GuiService"),
     ("IsTenFootInterface", "GuiService"),
     ("SetCore", "StarterGui"),
