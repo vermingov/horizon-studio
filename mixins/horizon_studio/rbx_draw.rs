@@ -256,7 +256,7 @@ fn find(c: &'static super::hstudio_rbx::C, prop: &str) -> bool {
 /// The layout class an instance is laid out as.
 fn layout_class(c: &'static super::hstudio_rbx::C) -> Class {
     match c.name {
-        "CanvasGroup" => Class::Frame,
+        "CanvasGroup" | "ViewportFrame" | "VideoFrame" => Class::Frame,
         name => Class::from_name(name).unwrap_or(Class::Folder),
     }
 }

@@ -1166,3 +1166,48 @@ fn without_marks_the_gui_is_drawn_as_best_it_can_be() {
     let drawn = hud(&mut st, &mut game);
     assert_eq!(drawn, ["rect [150.0, 20.0, 50.0, 20.0] r0 ff800080"]);
 }
+
+#[test]
+fn viewport_frames_draw_as_frames() {
+    // A ViewportFrame's 3D view and a VideoFrame's video aren't drawn, but
+    // both are frames: a background, and children laid out inside.
+    let mut game = FakeGame::new("rbx-viewport");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local view = Instance.new("ViewportFrame", gui)
+        view.Position = UDim2.fromOffset(10, 10)
+        view.Size = UDim2.fromOffset(100, 80)
+        view.BackgroundColor3 = Color3.new(0, 0, 1)
+        view.BorderSizePixel = 0
+        view.CurrentCamera = Instance.new("Camera", view)
+        local label = Instance.new("TextLabel", view)
+        label.Size = UDim2.fromScale(1, 0.5)
+        label.BorderSizePixel = 0
+        label.Text = "inside"
+        local video = Instance.new("VideoFrame", gui)
+        video.Position = UDim2.fromOffset(200, 10)
+        video.Size = UDim2.fromOffset(50, 50)
+        video.BorderSizePixel = 0
+        video.Video = "rbxassetid://5"
+        video.Played:Connect(function(v) print("played", v, video.Playing) end)
+        print(view.AbsoluteSize, label.AbsoluteSize, video.IsLoaded, pcall(function() video.IsLoaded = true end))
+        video:Play()
+    "#;
+    load(&mut game, &mut st, "viewport", src, 0.6);
+    let p = printed(&st, "viewport");
+    assert!(
+        p[0].starts_with("100, 80    100, 40    false    false    ") && p[0].contains("read only"),
+        "{p:#?}"
+    );
+    assert_eq!(p[1], "played    rbxassetid://5    true");
+    let drawn = hud(&mut st, &mut game);
+    for want in [
+        "rect [10.0, 10.0, 100.0, 80.0] r0 ff0000ff",
+        "rect [10.0, 10.0, 100.0, 40.0] r0 ffa3a2a5",
+        "rect [200.0, 10.0, 50.0, 50.0] r0 ffa3a2a5",
+    ] {
+        assert!(drawn.contains(&want.to_owned()), "{want}: {drawn:#?}");
+    }
+    assert!(drawn.iter().any(|d| d.starts_with("text inside @")));
+}

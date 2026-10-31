@@ -804,6 +804,15 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             let h: &mut dyn Host = env;
             lua.call(h, &f, args[1..].to_vec())
         }
+        // A video doesn't load here: playing it only says so.
+        ("VideoFrame", "Play" | "Pause") => {
+            let play = name == "Play";
+            let rbx = env.rbx();
+            rbx.raw_set(id, "Playing", Value::Bool(play));
+            let video = rbx.raw_get(id, "Video");
+            rbx.fire(id, if play { "Played" } else { "Paused" }, vec![video]);
+            none()
+        }
         ("Sound", "Play" | "Resume") => {
             let rbx = env.rbx();
             rbx.quiet_set(id, "Playing", Value::Bool(true));

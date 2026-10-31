@@ -872,8 +872,42 @@ pub static CLASSES: &[C] = &[
     // Kept with whatever properties scripts give them; nothing draws them.
     kept("BillboardGui", "LayerCollector"),
     kept("SurfaceGui", "LayerCollector"),
-    kept("ViewportFrame", "GuiObject"),
-    kept("VideoFrame", "GuiObject"),
+    // Laid out and drawn as Frames (what they show, a 3D view or a video,
+    // isn't), and lenient as they were when only kept.
+    C {
+        lenient: true,
+        ..class(
+            "ViewportFrame",
+            "GuiObject",
+            &[
+                p("CurrentCamera", Obj, D::Nil),
+                p("Ambient", K::C3, Rgb(200.0, 200.0, 200.0)),
+                p("LightColor", K::C3, Rgb(140.0, 140.0, 140.0)),
+                p("LightDirection", K::V3, D::V3(-1.0, -1.0, -1.0)),
+                p("ImageColor3", K::C3, Rgb(255.0, 255.0, 255.0)),
+                p("ImageTransparency", Num, N(0.0)),
+            ],
+            &[],
+        )
+    },
+    C {
+        lenient: true,
+        ..class(
+            "VideoFrame",
+            "GuiObject",
+            &[
+                p("Video", Str, S("")),
+                p("Playing", Bool, B(false)),
+                p("Looped", Bool, B(false)),
+                p("Volume", Num, N(1.0)),
+                p("TimePosition", Num, N(0.0)),
+                ro("TimeLength", Num, N(0.0)),
+                ro("IsLoaded", Bool, B(false)),
+                ro("Resolution", K::V2, D::V2(0.0, 0.0)),
+            ],
+            &["DidLoop", "Ended", "Loaded", "Paused", "Played"],
+        )
+    },
     kept("UIFlexItem", "UIComponent"),
     kept("UIPageLayout", "UIGridStyleLayout"),
     kept("UITableLayout", "UIGridStyleLayout"),
@@ -2015,6 +2049,8 @@ const METHODS: &[(&str, &str)] = &[
     ("Fire", "BindableEvent"),
     ("Invoke", "BindableFunction"),
     ("Play", "Sound"),
+    ("Play", "VideoFrame"),
+    ("Pause", "VideoFrame"),
     ("Stop", "Sound"),
     ("Pause", "Sound"),
     ("Resume", "Sound"),
