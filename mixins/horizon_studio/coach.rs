@@ -89,6 +89,19 @@ pub struct Coach {
     /// Where the code and the open mark's bubble were drawn last frame.
     pub code_at: Option<[f32; 4]>,
     pub bubble_at: Option<[f32; 4]>,
+    /// The lesson an agent gives in the editor, if one is on.
+    pub lesson: Option<Lesson>,
+    /// What the player did, for an agent that waits for them, oldest
+    /// first; the newest one's number, and the newest any agent had.
+    events: VecDeque<Event>,
+    last_event: u64,
+    given: u64,
+    /// An agent waits for the player until then (each of its asks keeps
+    /// it on): which, and whether it is the game's own, in its run.
+    waiting_until: f64,
+    waiting_by: Option<(By, bool)>,
+    /// The coach saves the editor's file (not the player).
+    saving: bool,
 }
 
 /// A note over the code: what an agent changed elsewhere, its Agent panel
@@ -122,6 +135,13 @@ impl Default for Coach {
             followed: None,
             code_at: None,
             bubble_at: None,
+            lesson: None,
+            events: VecDeque::new(),
+            last_event: 0,
+            given: 0,
+            waiting_until: f64::NEG_INFINITY,
+            waiting_by: None,
+            saving: false,
         }
     }
 }
@@ -519,6 +539,7 @@ pub fn read(st: &mut Studio, params: &Json) -> Result<Json, String> {
         "more": to < count,
         "lines": page,
         "marks": marks_json(st, &t.path),
+        "lesson": lesson_json(st),
     });
     if open {
         out["cursor"] = place(ed, (ed.row, ed.col));
@@ -588,6 +609,7 @@ pub fn summary(st: &Studio) -> Json {
         "typing": typing_state(st),
         "unsaved": unsaved.map(|u| json!({ "file": u.file, "by": u.by.name, "conn": u.by.conn })),
         "marks": st.s.ui.coach.marks.len(),
+        "lesson": lesson_json(st),
     })
 }
 
@@ -650,20 +672,9 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
         if let Some(wait) = switch_waits(st) {
             return Ok(wait);
         }
-        let ed = &st.s.editor;
-        if ed.dirty {
-            return Err(if agents_only(st) {
-                format!(
-                    "your edits to {} aren't saved: save_script saves them, then open_script opens another file",
-                    ed.title
-                )
-            } else {
-                format!(
-                    "the player has unsaved edits in {}: open_script opens another file once they are saved \
-                     (Ctrl+S); edit_script can change {} without opening it",
-                    ed.title, t.file
-                )
-            });
+        let also = format!("; edit_script can change {} without opening it", t.file);
+        if let Some(why) = unsaved_refusal(st, "open_script", &also) {
+            return Err(why);
         }
         st.open_file(&t.path);
         // A new mod isn't one yet: its title is what it will be.
@@ -1228,6 +1239,7 @@ pub fn step(st: &mut Studio, game: &mut dyn GameApi) {
     }
     type_on(st, game);
     follow_marks(st);
+    expire_events(st);
 }
 
 /// The edit being typed in, a frame on: in once its time is up.
@@ -1475,7 +1487,9 @@ fn save_now(st: &mut Studio, game: &mut dyn GameApi, by: &By, in_run: bool) -> R
              them), and read_mod shows the file"
         ));
     }
+    st.s.ui.coach.saving = true;
     st.save_editor(game);
+    st.s.ui.coach.saving = false;
     if st.s.editor.dirty {
         return Err(format!("could not save {file}: the console says why"));
     }
@@ -1511,6 +1525,10 @@ fn save_into(st: &mut Studio, game: &mut dyn GameApi, t: &Typing, result: &mut J
 /// to keep them or take them back. Other agents' edits are theirs to save.
 fn end_turn(st: &mut Studio, game: &mut dyn GameApi, ok: bool) {
     finish_typing(st, "the agent's turn ended");
+    // Its run is over: it waits for the player no more.
+    if st.s.ui.coach.waiting_by.as_ref().is_some_and(|w| w.1) {
+        st.s.ui.coach.waiting_until = f64::NEG_INFINITY;
+    }
     let Some(u) = st.s.ui.coach.unsaved.take() else {
         return;
     };
@@ -1656,8 +1674,10 @@ pub fn save(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
 
 /// The link's editor methods for the agent `by`: `editor` reads, `open`
 /// opens, `edit` changes, `typed` says whether an edit is in, `save`
-/// saves, `mark` points at lines and `unmark` clears marks. A request that
-/// changes something and carries a `key` is done
+/// saves, `mark` points at lines and `unmark` clears marks, `lesson`
+/// starts a lesson and `player_event` gives what the player did since (an
+/// agent waiting for them). A request that changes something and carries a
+/// `key` is done
 /// once: sent again with the same key (its client trying again after a
 /// timeout), it gets the same answer. One that has to wait for the player
 /// isn't kept, so asking again tries again.
@@ -1689,6 +1709,12 @@ pub fn call(st: &mut Studio, game: &mut dyn GameApi, by: &By, method: &str, para
             finish_typing(st, "clear_marks came");
             unmark(st, by, params)
         }
+        "lesson" => {
+            finish_typing(st, "start_lesson came");
+            lesson(st, game, by, params)
+        }
+        // Waiting for the player never hurries an edit either.
+        "player_event" => player_event(st, by, params),
         other => Err(format!("no editor method '{other}'")),
     };
     let waits = answer.as_ref().is_ok_and(|a| a["busy"] == true);
@@ -1706,8 +1732,8 @@ pub fn call(st: &mut Studio, game: &mut dyn GameApi, by: &By, method: &str, para
 
 // ----------------------------------------------------------------- marks
 
-/// The most marks there are at once (the oldest goes for a new one), and
-/// the most a note says, in characters.
+/// The most marks there are at once besides a lesson's steps (the oldest
+/// goes for a new one), and the most a note says, in characters.
 pub const MAX_MARKS: usize = 20;
 const NOTE_CHARS: usize = 500;
 /// How few letters a mark's lines may have and still be looked for in a
@@ -1760,6 +1786,8 @@ pub struct Mark {
     pub span: Option<(usize, usize)>,
     pub note: String,
     pub tone: Tone,
+    /// The lesson's step it is (from 0), if it is one.
+    pub step: Option<usize>,
     pub by: By,
     /// Its lines as last seen: in a file opened again, they are looked for.
     text: Vec<String>,
@@ -1860,6 +1888,7 @@ fn marks_json(st: &Studio, path: &Path) -> Json {
                     "tone": m.tone.name(),
                     "note": m.note,
                     "by": m.by.name,
+                    "step": m.step.map(|i| i + 1),
                 })
             })
             .collect(),
@@ -1902,10 +1931,12 @@ pub fn mark(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let in_run = in_run(st, by);
     let c = &mut st.s.ui.coach;
     if flag(params, "replace") == Some(true) {
-        c.marks.retain(|m| m.by.name != by.name);
+        c.marks.retain(|m| m.step.is_some() || m.by.name != by.name);
     }
-    if c.marks.len() >= MAX_MARKS {
-        c.marks.remove(0);
+    if c.marks.iter().filter(|m| m.step.is_none()).count() >= MAX_MARKS
+        && let Some(i) = c.marks.iter().position(|m| m.step.is_none())
+    {
+        c.marks.remove(i);
     }
     let id = c.next_mark;
     c.next_mark += 1;
@@ -1918,6 +1949,7 @@ pub fn mark(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
         span,
         note,
         tone,
+        step: None,
         by: by.clone(),
         text: lines[first..=last].to_vec(),
     });
@@ -1969,9 +2001,11 @@ pub fn mark(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
 }
 
 /// The link's `unmark`: a mark cleared (`mark`, its number), a file's
-/// marks (`id`, `file` or `scratch`), or with none of these every mark.
+/// marks (`id`, `file` or `scratch`), or with none of these every mark, and
+/// the lesson ends. A lesson's steps go with the lesson only.
 pub fn unmark(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let given = |k: &str| params.get(k).is_some_and(|v| !v.is_null());
+    let mut ended = false;
     let (cleared, did) = if given("mark") {
         let id = params["mark"]
             .as_u64()
@@ -1983,6 +2017,13 @@ pub fn unmark(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
             .iter()
             .position(|m| m.id == id)
             .ok_or_else(|| format!("there is no mark {id} now (read_script lists a file's marks)"))?;
+        if let Some(step) = c.marks[i].step {
+            return Err(format!(
+                "mark {id} is step {} of the lesson: clear_marks without mark ends the lesson, and start_lesson \
+                 starts another",
+                step + 1
+            ));
+        }
         let m = c.marks.remove(i);
         (
             1,
@@ -1996,20 +2037,28 @@ pub fn unmark(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
         let t = target(st, params, false)?;
         let c = &mut st.s.ui.coach;
         let before = c.marks.len();
-        c.marks.retain(|m| m.path != t.path);
+        c.marks.retain(|m| m.path != t.path || m.step.is_some());
         let n = before - c.marks.len();
         (n, format!("Cleared {} in {}", notes_text(n), t.file))
     } else {
         let c = &mut st.s.ui.coach;
+        ended = c.lesson.is_some();
         let n = c.marks.len();
+        end_lesson(c);
         c.marks.clear();
-        (n, format!("Cleared {}", notes_text(n)))
+        c.open_mark = None;
+        let did = match (n, ended) {
+            (0, true) => "Ended the lesson".to_owned(),
+            (n, true) => format!("Cleared {} and ended the lesson", notes_text(n)),
+            (n, false) => format!("Cleared {}", notes_text(n)),
+        };
+        (n, did)
     };
-    if cleared > 0 {
+    if cleared > 0 || ended {
         let in_run = in_run(st, by);
         say(st, by, in_run, did.clone(), None);
     }
-    Ok(json!({ "ok": true, "cleared": cleared, "did": did }))
+    Ok(json!({ "ok": true, "cleared": cleared, "lesson_ended": ended, "did": did }))
 }
 
 fn line_hash(line: &str) -> u64 {
@@ -2235,44 +2284,85 @@ fn next_mark(st: &mut Studio, game: &mut dyn GameApi) {
     go_to_mark(st, game, next);
 }
 
-/// The × of a mark's note: the mark goes.
+/// The × of a mark's note: the mark goes (an agent waiting hears of it);
+/// a lesson's step's ends the lesson.
 fn close_mark(st: &mut Studio, id: u32) {
     let c = &mut st.s.ui.coach;
-    c.marks.retain(|m| m.id != id);
+    let Some(i) = c.marks.iter().position(|m| m.id == id) else {
+        return;
+    };
+    if c.marks[i].step.is_some() {
+        return lesson_end(st);
+    }
+    let m = c.marks.remove(i);
     if c.open_mark == Some(id) {
         c.open_mark = None;
     }
+    let did = format!(
+        "The player closed your note on {} of {}",
+        lines_text(m.first + 1, m.last + 1),
+        m.file
+    );
+    push_event(
+        st,
+        "dismissed",
+        json!({ "marks": [id], "file": m.file, "lines": [m.first + 1, m.last + 1], "did": did }),
+    );
 }
 
-/// The note chip's ×: every mark goes.
+/// The note chip's ×: every mark goes but a lesson's steps.
 fn clear_marks(st: &mut Studio) {
     let c = &mut st.s.ui.coach;
-    c.marks.clear();
-    c.open_mark = None;
+    let gone: Vec<u32> = c.marks.iter().filter(|m| m.step.is_none()).map(|m| m.id).collect();
+    c.marks.retain(|m| m.step.is_some());
+    if c.open_mark.is_some_and(|id| gone.contains(&id)) {
+        c.open_mark = None;
+    }
+    if !gone.is_empty() {
+        let did = format!("The player cleared {}", notes_text(gone.len()));
+        push_event(st, "dismissed", json!({ "marks": gone, "did": did }));
+    }
 }
 
 /// What a click on what agents show in the editor does: a mark's note
-/// opened, or its × pressed; the whole note shown; the next mark gone to;
-/// every mark cleared.
+/// opened (a lesson's step's goes to that step), or its × pressed; the
+/// whole note shown; the next mark gone to; every mark cleared; and the
+/// lesson's chip and buttons.
 pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) {
     match action {
         Action::MarkOpen(id) => {
-            let c = &mut st.s.ui.coach;
-            c.open_mark = Some(id);
-            c.more = false;
+            let step = st.s.ui.coach.marks.iter().find(|m| m.id == id).and_then(|m| m.step);
+            match step {
+                Some(i) => lesson_go(st, game, i),
+                None => {
+                    let c = &mut st.s.ui.coach;
+                    c.open_mark = Some(id);
+                    c.more = false;
+                }
+            }
         }
         Action::MarkClose(id) => close_mark(st, id),
         Action::MarkMore => st.s.ui.coach.more = true,
         Action::NextMark => next_mark(st, game),
         Action::ClearMarks => clear_marks(st),
+        Action::LessonShow => {
+            if let Some(at) = st.s.ui.coach.lesson.as_ref().map(|l| l.at) {
+                show_step(st, game, at, true);
+            }
+        }
+        Action::LessonBack => lesson_back(st, game),
+        Action::LessonNext => lesson_next(st, game),
+        Action::LessonCheck => lesson_check(st),
+        Action::LessonEnd => lesson_end(st),
         _ => {}
     }
 }
 
 /// The editor's keys for what agents show there: Esc closes the note open
-/// (before Esc closes the studio). True when the key was theirs.
+/// (before Esc closes the studio), and while a lesson is on Alt+Right and
+/// Alt+Left step it (when the keys go to the code). True when the key was
+/// theirs.
 pub fn key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> bool {
-    let _ = game;
     if st.s.ui.tab != Tab::Editor {
         return false;
     }
@@ -2281,5 +2371,654 @@ pub fn key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> boo
         st.s.ui.coach.open_mark = None;
         return true;
     }
+    let to_code = super::hstudio_ui::target(&st.s.ui) == super::hstudio_ui::Target::Editor;
+    if mods.alt && !mods.ctrl && c.lesson.is_some() && to_code {
+        match key {
+            Key::Right => lesson_next(st, game),
+            Key::Left => lesson_back(st, game),
+            _ => return false,
+        }
+        return true;
+    }
     false
+}
+
+// ----------------------------------------------------------------- lessons
+
+/// The most steps a lesson has, and the most its title, a step's
+/// explanation and its task say, in characters.
+pub const MAX_STEPS: usize = 20;
+const TITLE_CHARS: usize = 80;
+const EXPLAIN_CHARS: usize = 2000;
+const TASK_CHARS: usize = 300;
+
+/// A lesson an agent gives in the editor: numbered steps, each lines of a
+/// script with a note (a mark of its own), that the player goes through
+/// with Next and Back.
+pub struct Lesson {
+    pub title: String,
+    pub by: By,
+    pub steps: Vec<Step>,
+    /// The step showing, from 0.
+    pub at: usize,
+    /// The steps whose explanation the Agent panel has had.
+    seen: Vec<bool>,
+}
+
+/// A lesson's step: its mark, what it explains at more length, and what the
+/// player is to try.
+pub struct Step {
+    pub mark: u32,
+    pub explain: String,
+    pub task: Option<String>,
+}
+
+/// What the bubble of a lesson's step shows besides its note: where the
+/// lesson is, what to try, the step's explanation, and whether someone can
+/// check the player's try (Check shows).
+pub struct StepView {
+    pub at: usize,
+    pub of: usize,
+    pub task: Option<String>,
+    pub explain: String,
+    pub check: bool,
+}
+
+/// A step asked for, before it is a mark.
+struct Planned {
+    target: Target,
+    place: Place,
+    text: Vec<String>,
+    note: String,
+    tone: Tone,
+    explain: String,
+    task: Option<String>,
+}
+
+/// "1 step", "3 steps".
+fn steps_text(n: usize) -> String {
+    if n == 1 { "1 step".into() } else { format!("{n} steps") }
+}
+
+/// Why the editor can't open another file for an agent (`tool` asks): the
+/// unsaved edits of the file open, the agent's own or the player's (`also`
+/// says what the agent can do meanwhile).
+fn unsaved_refusal(st: &Studio, tool: &str, also: &str) -> Option<String> {
+    let ed = &st.s.editor;
+    if !ed.dirty {
+        return None;
+    }
+    Some(if agents_only(st) {
+        format!(
+            "your edits to {} aren't saved: save_script saves them, then {tool} opens another file",
+            ed.title
+        )
+    } else {
+        format!(
+            "the player has unsaved edits in {}: {tool} opens another file once they are saved (Ctrl+S){also}",
+            ed.title
+        )
+    })
+}
+
+/// The link's `lesson`: a lesson of numbered steps in the editor, each
+/// lines of a script with a note, what it explains at more length (the
+/// Agent panel shows it, or where there is none the step's bubble) and what
+/// the player is to try. Its first step shows, its file opened as
+/// open_script opens one: not while the player is using the studio, nor
+/// over unsaved edits. The player then goes through it with Next and Back.
+/// A new lesson takes the place of the one shown.
+pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> Result<Json, String> {
+    let title = clean(
+        text(params, "title").ok_or("title names the lesson, in a few words")?,
+        TITLE_CHARS,
+    );
+    let steps = params
+        .get("steps")
+        .and_then(Json::as_array)
+        .filter(|s| !s.is_empty())
+        .ok_or("steps is the lesson's steps: [{start_line, end_line, note, explain, task}, ...]")?;
+    if steps.len() > MAX_STEPS {
+        return Err(format!("a lesson has at most {MAX_STEPS} steps, not {}", steps.len()));
+    }
+    let own_file = |p: &Json| {
+        ["id", "file", "scratch"]
+            .iter()
+            .any(|k| p.get(*k).is_some_and(|v| !v.is_null()))
+    };
+    let base = target(st, params, false)?;
+    follow_marks(st);
+    // Each file read once, the one open as the editor has it.
+    let mut read: Vec<(PathBuf, Vec<String>)> = Vec::new();
+    let mut planned = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        let n = i + 1;
+        let t = if own_file(step) {
+            // A step's file alone is a file of the lesson's mod.
+            let mut asked = step.clone();
+            if text(step, "id").is_none()
+                && flag(step, "scratch") != Some(true)
+                && let Some(id) = text(params, "id")
+            {
+                asked["id"] = json!(id);
+            }
+            target(st, &asked, false).map_err(|e| format!("step {n}: {e}"))?
+        } else {
+            base.clone()
+        };
+        let lines = match read.iter().find(|(p, _)| *p == t.path) {
+            Some((_, lines)) => lines.clone(),
+            None => {
+                let lines = if st.s.editor.path.as_deref() == Some(t.path.as_path()) {
+                    st.s.editor.lines.clone()
+                } else {
+                    disk_lines(&t.path, &t.file)?
+                };
+                read.push((t.path.clone(), lines.clone()));
+                lines
+            }
+        };
+        let place = mark_place(&lines, &t.file, step).map_err(|e| format!("step {n}: {e}"))?;
+        let note = clean(raw(step, "note").unwrap_or(""), NOTE_CHARS);
+        if note.is_empty() {
+            return Err(format!(
+                "step {n} has no note: say in a sentence or two what its lines do"
+            ));
+        }
+        let tone = Tone::parse(text(step, "tone")).map_err(|e| format!("step {n}: {e}"))?;
+        planned.push(Planned {
+            text: lines[place.first..=place.last].to_vec(),
+            target: t,
+            place,
+            note,
+            tone,
+            explain: clean(raw(step, "explain").unwrap_or(""), EXPLAIN_CHARS),
+            task: text(step, "task")
+                .map(|t| clean(t, TASK_CHARS))
+                .filter(|t| !t.is_empty()),
+        });
+    }
+    // Its first step's file opens as open_script opens one.
+    let first = planned[0].target.clone();
+    if st.s.editor.path.as_deref() != Some(first.path.as_path()) {
+        if let Some(wait) = switch_waits(st) {
+            return Ok(wait);
+        }
+        if let Some(why) = unsaved_refusal(st, "start_lesson", "") {
+            return Err(why);
+        }
+    }
+    let in_run = in_run(st, by);
+    let c = &mut st.s.ui.coach;
+    end_lesson(c);
+    let mut files: Vec<String> = Vec::new();
+    let mut lesson_steps = Vec::new();
+    for (i, p) in planned.into_iter().enumerate() {
+        let id = c.next_mark;
+        c.next_mark += 1;
+        if !files.contains(&p.target.file) {
+            files.push(p.target.file.clone());
+        }
+        c.marks.push(Mark {
+            id,
+            path: p.target.path,
+            file: p.target.file,
+            first: p.place.first,
+            last: p.place.last,
+            span: p.place.span,
+            note: p.note,
+            tone: p.tone,
+            step: Some(i),
+            by: by.clone(),
+            text: p.text,
+        });
+        lesson_steps.push(Step {
+            mark: id,
+            explain: p.explain,
+            task: p.task,
+        });
+    }
+    let n = lesson_steps.len();
+    let marks: Vec<u32> = lesson_steps.iter().map(|s| s.mark).collect();
+    c.lesson = Some(Lesson {
+        title: title.clone(),
+        by: by.clone(),
+        steps: lesson_steps,
+        at: 0,
+        seen: vec![false; n],
+    });
+    track(st);
+    let place = match files.as_slice() {
+        [one] => format!("in {one}"),
+        many => format!("in {} files", many.len()),
+    };
+    let did = format!("Lesson \"{title}\": {} {place}", steps_text(n));
+    let jump = Jump {
+        path: first.path.clone(),
+        file: first.file.clone(),
+        first: 0,
+        last: 0,
+        mark: Some(marks[0]),
+    };
+    say(st, by, in_run, did.clone(), Some(jump));
+    // The Agent panel shows its steps' explanations, unless the player has
+    // the keys in another of the panel's tabs.
+    let now = st.s.now;
+    let (busy, editing) = (st.s.ui.coach.player_busy(now), st.s.ui.coach.player_editing(now));
+    let ui = &mut st.s.ui;
+    if ui.look.theme().layout == super::hstudio_theme::Layout::Studio
+        && (!ui.panel_focus || ui.panel == super::hstudio_ui::Panel::Agent)
+    {
+        if ui.panel != super::hstudio_ui::Panel::Agent {
+            ui.panel_tab_at = now;
+        }
+        ui.panel = super::hstudio_ui::Panel::Agent;
+        ui.panel_hidden = false;
+    }
+    if !busy {
+        ui.tab = Tab::Editor;
+    }
+    show_step(st, game, 0, !editing);
+    if !st.s.ui.open {
+        st.s.toast(format!("{} started a lesson in the editor: \"{title}\"", by.name));
+    }
+    Ok(json!({
+        "ok": true,
+        "did": did,
+        "steps": n,
+        "marks": marks,
+        "seq": st.s.ui.coach.last_event,
+    }))
+}
+
+/// The lesson ended: its steps' marks go.
+fn end_lesson(c: &mut Coach) {
+    if c.lesson.take().is_none() {
+        return;
+    }
+    let open = c.open_mark;
+    if c.marks.iter().any(|m| m.step.is_some() && Some(m.id) == open) {
+        c.open_mark = None;
+    }
+    c.marks.retain(|m| m.step.is_none());
+}
+
+/// Shows step `i` of the lesson: its file opens (the one open saved first,
+/// as the script list does: it is the player's own step, or a file the
+/// lesson's start found clean), its note opens and, with `scroll`, its
+/// lines show. The first time a step shows, the Agent panel says which it
+/// is and has its explanation.
+fn show_step(st: &mut Studio, game: &mut dyn GameApi, i: usize, scroll: bool) {
+    let now = st.s.now;
+    let Some(l) = st.s.ui.coach.lesson.as_mut() else {
+        return;
+    };
+    let i = i.min(l.steps.len() - 1);
+    l.at = i;
+    let first_time = !std::mem::replace(&mut l.seen[i], true);
+    let (id, of, explain) = (l.steps[i].mark, l.steps.len(), l.steps[i].explain.clone());
+    let Some(m) = st.s.ui.coach.marks.iter().find(|m| m.id == id) else {
+        return;
+    };
+    let (path, file) = (m.path.clone(), m.file.clone());
+    if st.s.editor.path.as_ref() != Some(&path) {
+        if !path.is_file() {
+            st.s.toast(format!("{file} isn't there any more"));
+            return;
+        }
+        st.save_before_switch(game, Some(&path));
+        st.open_file(&path);
+    }
+    follow_marks(st);
+    let c = &mut st.s.ui.coach;
+    let Some(m) = c.marks.iter().find(|m| m.id == id) else {
+        return;
+    };
+    let (first, last) = (m.first, m.last);
+    c.open_mark = Some(id);
+    c.more = false;
+    if scroll {
+        reveal_rows(st, first, last);
+    }
+    if first_time {
+        let jump = Jump {
+            path,
+            file: file.clone(),
+            first,
+            last,
+            mark: Some(id),
+        };
+        let said = format!("Step {} of {of}: {} in {file}", i + 1, lines_text(first + 1, last + 1));
+        let pane = &mut st.s.ui.agent;
+        pane.say_jump(AgentLineKind::Action, said, Some(jump), now);
+        pane.say(AgentLineKind::Said, explain, now);
+    }
+}
+
+/// Step `i` of the lesson for an event: its number, how many there are, its
+/// file and lines, and what the player did there (`did`, given the step's
+/// words: "step 2 of 3 (lines 4-6 of timer.lua)").
+fn step_event(st: &Studio, i: usize, did: impl Fn(&str) -> String) -> Json {
+    let c = &st.s.ui.coach;
+    let Some(l) = &c.lesson else {
+        return json!({});
+    };
+    let of = l.steps.len();
+    let m = l.steps.get(i).and_then(|s| c.marks.iter().find(|m| m.id == s.mark));
+    let Some(m) = m else {
+        return json!({ "step": i + 1, "of": of });
+    };
+    let at = format!(
+        "step {} of {of} ({} of {})",
+        i + 1,
+        lines_text(m.first + 1, m.last + 1),
+        m.file
+    );
+    json!({
+        "step": i + 1,
+        "of": of,
+        "file": m.file,
+        "lines": [m.first + 1, m.last + 1],
+        "did": did(&at),
+    })
+}
+
+/// The lesson's Next: the next step, or on the last one the lesson is done.
+fn lesson_next(st: &mut Studio, game: &mut dyn GameApi) {
+    let Some(l) = &st.s.ui.coach.lesson else {
+        return;
+    };
+    let (at, of, title) = (l.at, l.steps.len(), l.title.clone());
+    if at + 1 < of {
+        show_step(st, game, at + 1, true);
+        let data = step_event(st, at + 1, |s| format!("The player went on to {s}"));
+        push_event(st, "next", data);
+        return;
+    }
+    end_lesson(&mut st.s.ui.coach);
+    let did = format!("The player finished the lesson \"{title}\"");
+    push_event(st, "done", json!({ "of": of, "did": did }));
+    let now = st.s.now;
+    st.s.ui.agent.say(AgentLineKind::Done, "Lesson finished.", now);
+}
+
+/// The lesson's Back: the step before.
+fn lesson_back(st: &mut Studio, game: &mut dyn GameApi) {
+    let Some(at) = st.s.ui.coach.lesson.as_ref().map(|l| l.at).filter(|&at| at > 0) else {
+        return;
+    };
+    show_step(st, game, at - 1, true);
+    let data = step_event(st, at - 1, |s| format!("The player went back to {s}"));
+    push_event(st, "back", data);
+}
+
+/// A click on a step's mark or its number: that step.
+fn lesson_go(st: &mut Studio, game: &mut dyn GameApi, i: usize) {
+    let Some(at) = st.s.ui.coach.lesson.as_ref().map(|l| l.at) else {
+        return;
+    };
+    show_step(st, game, i, true);
+    if i != at {
+        let (kind, word) = if i > at { ("next", "on") } else { ("back", "back") };
+        let data = step_event(st, i, |s| format!("The player went {word} to {s}"));
+        push_event(st, kind, data);
+    }
+}
+
+/// The lesson's Check: an agent waiting for the player gets the step's
+/// lines as they are now and the live check's problems; else the game's own
+/// agent is asked to check the step, in a new turn of the conversation.
+fn lesson_check(st: &mut Studio) {
+    let c = &st.s.ui.coach;
+    let Some(l) = &c.lesson else {
+        return;
+    };
+    let (i, of, title) = (l.at, l.steps.len(), l.title.clone());
+    let task = l.steps[i].task.clone().unwrap_or_default();
+    let Some(m) = c.marks.iter().find(|m| m.id == l.steps[i].mark) else {
+        return;
+    };
+    let (path, file, first, last) = (m.path.clone(), m.file.clone(), m.first, m.last);
+    let rows = lines_text(first + 1, last + 1);
+    let now = st.s.now;
+    if waiting(st) {
+        let open = st.s.editor.path.as_ref() == Some(&path);
+        let lines = if open {
+            st.s.editor.lines.clone()
+        } else {
+            disk_lines(&path, &file).unwrap_or_default()
+        };
+        let end = last.min(lines.len().saturating_sub(1));
+        let text = lines.get(first..=end).map(|l| l.join("\n")).unwrap_or_default();
+        let siblings = siblings_of(st, &path);
+        let problems = super::hstudio_assist::check(&lines, &file, siblings.as_ref());
+        let did = format!(
+            "The player pressed Check on step {} of {of} ({rows} of {file}): read it, then tell them how they did",
+            i + 1
+        );
+        let data = json!({
+            "step": i + 1,
+            "of": of,
+            "task": task,
+            "file": file,
+            "lines": [first + 1, last + 1],
+            "text": text,
+            "problems": problems_json(&problems),
+            "dirty": open && st.s.editor.dirty,
+            "did": did,
+        });
+        push_event(st, "check", data);
+        st.s.ui
+            .agent
+            .say(AgentLineKind::You, format!("Check step {}: {task}", i + 1), now);
+    } else if !super::hstudio_ui::agent_busy(st) && super::hstudio_ui::agent_name(st).is_some() {
+        let ask = format!(
+            "I did step {} of the lesson \"{title}\" ({file} {rows}): {}. Check my code and tell me how I did.",
+            i + 1,
+            task.trim().trim_end_matches('.')
+        );
+        super::hstudio_ui::agent_ask(st, &ask);
+    }
+}
+
+/// The lesson's × (its bubble's, or the header chip's): it ends.
+fn lesson_end(st: &mut Studio) {
+    let Some(l) = &st.s.ui.coach.lesson else {
+        return;
+    };
+    let (at, of) = (l.at, l.steps.len());
+    end_lesson(&mut st.s.ui.coach);
+    let did = format!("The player closed the lesson at step {} of {of}", at + 1);
+    push_event(st, "closed", json!({ "step": at + 1, "of": of, "did": did }));
+    let now = st.s.now;
+    st.s.ui.agent.say(AgentLineKind::Done, "Lesson closed.", now);
+}
+
+/// What the bubble of mark `id` shows besides its note, when it is the
+/// lesson's step.
+pub fn step_view(st: &mut Studio, id: u32) -> Option<StepView> {
+    let l = st.s.ui.coach.lesson.as_ref()?;
+    let at = l.steps.iter().position(|s| s.mark == id)?;
+    let (of, task, explain) = (l.steps.len(), l.steps[at].task.clone(), l.steps[at].explain.clone());
+    let check = task.is_some() && can_check(st);
+    Some(StepView {
+        at,
+        of,
+        task,
+        explain,
+        check,
+    })
+}
+
+/// Whether someone can check the player's try: an agent waiting for them,
+/// or the game's own agent, found and not working.
+fn can_check(st: &mut Studio) -> bool {
+    waiting(st) || (!super::hstudio_ui::agent_busy(st) && super::hstudio_ui::agent_name(st).is_some())
+}
+
+/// The lesson for the state the link gives: its title, the step showing,
+/// its file and lines.
+fn lesson_json(st: &Studio) -> Json {
+    let c = &st.s.ui.coach;
+    let Some(l) = &c.lesson else {
+        return Json::Null;
+    };
+    let m = c.marks.iter().find(|m| m.id == l.steps[l.at].mark);
+    json!({
+        "title": l.title,
+        "step": l.at + 1,
+        "of": l.steps.len(),
+        "file": m.map(|m| m.file.clone()),
+        "lines": m.map(|m| [m.first + 1, m.last + 1]),
+        "by": l.by.name,
+    })
+}
+
+/// The lesson in a line, for the game's own agent's prompt: 'A lesson is
+/// open in the editor: "Events", step 3 of 5 (greeter.lua lines 12-18).'
+pub fn lesson_line(st: &Studio) -> Option<String> {
+    let c = &st.s.ui.coach;
+    let l = c.lesson.as_ref()?;
+    let m = c.marks.iter().find(|m| m.id == l.steps[l.at].mark)?;
+    Some(format!(
+        "A lesson is open in the editor: \"{}\", step {} of {} ({} {}).",
+        l.title,
+        l.at + 1,
+        l.steps.len(),
+        m.file,
+        lines_text(m.first + 1, m.last + 1)
+    ))
+}
+
+// ----------------------------------------------------------------- the player's events
+
+/// How long an agent counts as waiting for the player after it last asked
+/// for their events (wait_for_player asks every few frames).
+const WAITING: f64 = 3.0;
+/// The most events kept, for how long, and how long a step the player went
+/// to is kept while nobody waits.
+const MAX_EVENTS: usize = 16;
+const EVENTS_KEPT: f64 = 300.0;
+const STEPS_KEPT: f64 = 30.0;
+
+/// Something the player did, for an agent that waits for them: its number,
+/// when, what it was, and what it says.
+struct Event {
+    seq: u64,
+    at: f64,
+    kind: &'static str,
+    data: Json,
+}
+
+/// Keeps something the player did for an agent waiting for them (or one
+/// that asks soon).
+fn push_event(st: &mut Studio, kind: &'static str, mut data: Json) {
+    let now = st.s.now;
+    let c = &mut st.s.ui.coach;
+    c.last_event += 1;
+    data["event"] = json!(kind);
+    if c.events.len() >= MAX_EVENTS {
+        c.events.pop_front();
+    }
+    c.events.push_back(Event {
+        seq: c.last_event,
+        at: now,
+        kind,
+        data,
+    });
+}
+
+/// The events that went stale go: after five minutes, and a step the player
+/// went to after 30 s while nobody waits.
+fn expire_events(st: &mut Studio) {
+    let now = st.s.now;
+    let c = &mut st.s.ui.coach;
+    let waiting = now < c.waiting_until;
+    c.events.retain(|e| {
+        let age = now - e.at;
+        age < EVENTS_KEPT && (waiting || age < STEPS_KEPT || !matches!(e.kind, "next" | "back"))
+    });
+}
+
+/// The link's `player_event`: the oldest thing the player did that the
+/// agent hasn't had (`after`: the number of the last it had; without it,
+/// the newest any agent had), or `none`. Asking keeps the agent waiting for
+/// the player a moment: the Agent panel says so, and Enter there sends it
+/// what they write.
+pub fn player_event(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
+    let after = match params.get("after") {
+        None | Some(Json::Null) => None,
+        Some(v) => Some(
+            v.as_u64()
+                .ok_or("after is the number (seq) of the last event you had")?,
+        ),
+    };
+    let in_run = in_run(st, by);
+    let now = st.s.now;
+    let c = &mut st.s.ui.coach;
+    c.waiting_until = now + WAITING;
+    c.waiting_by = Some((by.clone(), in_run));
+    let after = after.unwrap_or(c.given);
+    let Some(e) = c.events.iter().find(|e| e.seq > after) else {
+        return Ok(json!({ "event": "none", "seq": after }));
+    };
+    let mut out = e.data.clone();
+    out["seq"] = json!(e.seq);
+    out["age_s"] = json!(((now - e.at) * 10.0).round() / 10.0);
+    c.given = c.given.max(e.seq);
+    Ok(out)
+}
+
+/// Whether an agent waits for the player now.
+pub fn waiting(st: &Studio) -> bool {
+    st.s.now < st.s.ui.coach.waiting_until
+}
+
+/// What the Agent panel says while an agent waits for the player: "Waiting
+/// for you" for the game's own, in its run, else with the agent's name.
+pub fn waiting_label(st: &Studio) -> Option<String> {
+    let (by, in_run) = st.s.ui.coach.waiting_by.as_ref().filter(|_| waiting(st))?;
+    Some(if *in_run {
+        "Waiting for you".into()
+    } else {
+        format!("{} is waiting for you", by.name)
+    })
+}
+
+/// What the player wrote in the Agent panel while an agent waits for them:
+/// it goes to that agent, and shows as theirs.
+pub fn reply(st: &mut Studio, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    let now = st.s.now;
+    let pane = &mut st.s.ui.agent;
+    pane.scroll = 0.0;
+    pane.say(AgentLineKind::You, text, now);
+    let text = cut(text, 4000);
+    let did = format!("The player wrote to you: {text}");
+    push_event(st, "message", json!({ "text": text, "did": did }));
+}
+
+/// The player saved the editor's file (Ctrl+S, Save, Save File, a switch):
+/// an agent waiting for them, or giving a lesson, hears of it. The coach's
+/// own saves aren't the player's.
+pub fn saved(st: &mut Studio) {
+    let c = &st.s.ui.coach;
+    if c.saving || (c.lesson.is_none() && !waiting(st)) {
+        return;
+    }
+    let Some(path) = st.s.editor.path.clone() else {
+        return;
+    };
+    let file = st.s.editor.title.clone();
+    let m = mod_state(st, &path);
+    let did = format!("The player s{}", &saved_text(&file, &m)[1..]);
+    push_event(st, "saved", json!({ "file": file, "mod": m, "did": did }));
+}
+
+/// A new turn of the game's own agent: the events kept for an agent go
+/// (the turn has what the player asked).
+pub fn new_turn(st: &mut Studio) {
+    st.s.ui.coach.events.clear();
 }

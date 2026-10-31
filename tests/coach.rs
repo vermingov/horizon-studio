@@ -1859,3 +1859,483 @@ fn a_mark_has_one_line_in_the_agent_panel() {
     let jump = st.s.ui.agent.lines.iter().find_map(|l| l.jump.clone()).unwrap();
     assert_eq!(jump.mark, Some(st.s.ui.coach.marks[0].id), "its Show opens its note");
 }
+
+// ----------------------------------------------------------------- lessons
+
+const ALT: Mods = Mods {
+    ctrl: false,
+    shift: false,
+    alt: true,
+};
+
+/// The Agent panel's lines, with their kinds, from the `from`th on.
+fn said(st: &Studio, from: usize) -> Vec<(AgentLineKind, String)> {
+    st.s.ui.agent.lines[from..]
+        .iter()
+        .map(|l| (l.kind, l.text.clone()))
+        .collect()
+}
+
+/// A three-step lesson over kit/: two steps in main.lua, one in lib/util.lua.
+fn kit_lesson() -> Json {
+    json!({
+        "title": "Modules",
+        "id": "kit",
+        "steps": [
+            { "start_line": 1, "note": "require loads lib/util.lua once.", "explain": "A module's files load with require." },
+            { "start_line": 2, "note": "This calls the helper.", "task": "Make it print 3.", "explain": "util is the table lib/util.lua returns." },
+            { "start_line": 1, "file": "lib/util.lua", "note": "The helper itself.", "explain": "It returns a table of functions." },
+        ],
+    })
+}
+
+#[test]
+fn a_lesson_steps_through_its_notes_once_each_in_the_panel() {
+    let (mut game, mut st) = with_module("coach-lesson");
+    let main = game.mods_dir().join("kit/main.lua");
+    st.open_file(&main);
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    redraw(&mut st, &mut game);
+    let r = ask(&mut st, &mut game, "lesson", kit_lesson()).unwrap();
+    assert_eq!(r["did"], "Lesson \"Modules\": 3 steps in 2 files", "{r}");
+    assert_eq!(r["marks"].as_array().unwrap().len(), 3);
+    let marks: Vec<u32> = r["marks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m.as_u64().unwrap() as u32)
+        .collect();
+    // Step 1 shows: its note open, its line in the panel, its explanation.
+    assert_eq!(st.s.ui.coach.open_mark, Some(marks[0]));
+    assert_eq!(
+        said(&st, 0),
+        [
+            (
+                AgentLineKind::Action,
+                "Claude Code: Lesson \"Modules\": 3 steps in 2 files".to_owned()
+            ),
+            (AgentLineKind::Action, "Step 1 of 3: line 1 in kit/main.lua".into()),
+            (AgentLineKind::Said, "A module's files load with require.".into()),
+        ]
+    );
+    assert_eq!(st.s.ui.panel, horizon_studio::game::hstudio_ui::Panel::Agent);
+    // Alt+Right goes on, and a step in another file opens it.
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    assert_eq!(st.s.ui.coach.open_mark, Some(marks[1]));
+    assert_eq!((st.s.editor.row, st.s.editor.col), (0, 0), "the cursor stays");
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    assert_eq!(st.s.editor.title, "kit/lib/util.lua");
+    assert_eq!(st.s.ui.coach.open_mark, Some(marks[2]));
+    let n = st.s.ui.agent.lines.len();
+    // Back and on again: the steps said once.
+    handle(&mut st, &mut game, key(Key::Left, ALT));
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    assert_eq!(st.s.ui.agent.lines.len(), n, "no explanation twice");
+    assert_eq!(
+        said(&st, 3)
+            .iter()
+            .filter(|(k, _)| *k == AgentLineKind::Action)
+            .map(|(_, t)| t.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "Step 2 of 3: line 2 in kit/main.lua",
+            "Step 3 of 3: line 1 in kit/lib/util.lua"
+        ]
+    );
+    // Next on the last step: the lesson is done and its marks go.
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    assert!(st.s.ui.coach.lesson.is_none());
+    assert!(st.s.ui.coach.marks.is_empty());
+    assert_eq!(
+        st.s.ui.agent.lines.last().map(|l| l.text.as_str()),
+        Some("Lesson finished.")
+    );
+    // Without a lesson, Alt+Right moves the cursor as Right does.
+    st.s.editor.click(0, 0, false);
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    assert_eq!(st.s.editor.col, 1);
+}
+
+#[test]
+fn a_lesson_is_stepped_with_its_buttons_and_its_chip() {
+    let (mut game, mut st) = with_module("coach-lesson-buttons");
+    st.s.ui.agent.agents = Some(Vec::new());
+    let main = game.mods_dir().join("kit/main.lua");
+    std::fs::write(
+        &main,
+        "local util = require('lib.util')\nprint(util.two())\nprint('three')\n",
+    )
+    .unwrap();
+    st.scan(&mut game);
+    st.open_file(&main);
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    let mut lesson = kit_lesson();
+    lesson["steps"][2] = json!({ "start_line": 3, "note": "The last line.", "task": "Read it again." });
+    ask(&mut st, &mut game, "lesson", lesson).unwrap();
+    still(&mut st, &mut game);
+    let bubble = st.s.ui.coach.bubble_at.unwrap();
+    assert!(inside(bubble, text_at(&game, "require loads lib/util.lua once.")));
+    assert!(inside(bubble, text_at(&game, "Step 1 of 3")));
+    assert!(texts_at(&game, "Back").is_empty(), "no Back on the first step");
+    // The Agent panel shows the explanation, so the bubble doesn't.
+    assert!(!inside(bubble, text_at(&game, "A module's files load with require.")));
+    let next = text_at(&game, "Next");
+    click(&mut st, &mut game, (next.0 + 2.0, next.1 + 4.0));
+    assert_eq!(st.s.ui.coach.lesson.as_ref().unwrap().at, 1);
+    still(&mut st, &mut game);
+    text_at(&game, "Step 2 of 3");
+    assert!(inside(
+        st.s.ui.coach.bubble_at.unwrap(),
+        text_at(&game, "Try: Make it print 3.")
+    ));
+    // No agent to check with: no Check.
+    assert!(texts_at(&game, "Check").is_empty());
+    let back = text_at(&game, "Back");
+    click(&mut st, &mut game, (back.0 + 2.0, back.1 + 4.0));
+    assert_eq!(st.s.ui.coach.lesson.as_ref().unwrap().at, 0);
+    // A click on a step's number goes to it.
+    still(&mut st, &mut game);
+    let three = texts_at(&game, "3")
+        .into_iter()
+        .find(|at| at.0 < st.s.ui.coach.code_at.unwrap()[0] + 30.0)
+        .expect("step 3's number in the gutter");
+    click(&mut st, &mut game, (three.0 + 1.0, three.1 + 4.0));
+    assert_eq!(st.s.ui.coach.lesson.as_ref().unwrap().at, 2);
+    // Esc closes the note; the header's chip opens it again.
+    still(&mut st, &mut game);
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    assert_eq!(st.s.ui.coach.open_mark, None);
+    still(&mut st, &mut game);
+    let chip = text_at(&game, "Lesson 3/3");
+    click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 4.0));
+    assert_eq!(
+        st.s.ui.coach.open_mark,
+        st.s.ui.coach.lesson.as_ref().map(|l| l.steps[2].mark)
+    );
+    // Done on the last step; the chip's × ends the lesson.
+    still(&mut st, &mut game);
+    text_at(&game, "Done");
+    let cross = texts_at(&game, "×")
+        .into_iter()
+        .find(|at| (at.1 - chip.1).abs() < 6.0 && at.0 > chip.0)
+        .unwrap();
+    click(&mut st, &mut game, (cross.0 + 2.0, cross.1 + 4.0));
+    assert!(st.s.ui.coach.lesson.is_none() && st.s.ui.coach.marks.is_empty());
+    assert_eq!(st.s.ui.agent.lines.last().unwrap().text, "Lesson closed.");
+}
+
+#[test]
+fn the_players_lesson_events_reach_a_waiting_agent() {
+    use horizon_studio::game::hstudio_ui::Panel;
+    let (mut game, mut st) = editing("coach-events", "greet", GREET);
+    st.s.ui.agent.agents = Some(Vec::new());
+    let r = ask(
+        &mut st,
+        &mut game,
+        "lesson",
+        json!({ "title": "Printing", "steps": [
+            { "start_line": 2, "note": "print shows text in the console.", "task": "Print hello instead." },
+            { "start_line": 3, "note": "return ends the script." },
+        ] }),
+    )
+    .unwrap();
+    assert_eq!(r["seq"], 0);
+    // Nothing yet; asking makes the agent one that waits.
+    let none = ask(&mut st, &mut game, "player_event", json!({})).unwrap();
+    assert_eq!(none["event"], "none");
+    assert!(coach::waiting(&st));
+    assert_eq!(
+        coach::waiting_label(&st).as_deref(),
+        Some("Claude Code is waiting for you")
+    );
+    // Next, Back, Check (someone waits: Check shows), a save, the lesson's ×.
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    handle(&mut st, &mut game, key(Key::Left, ALT));
+    st.s.editor.click(1, "print('".len(), false);
+    handle(&mut st, &mut game, Input::Text("oh ".into()));
+    ask(&mut st, &mut game, "player_event", json!({ "after": 99 })).unwrap();
+    still(&mut st, &mut game);
+    let check = text_at(&game, "Check");
+    click(&mut st, &mut game, (check.0 + 2.0, check.1 + 4.0));
+    handle(&mut st, &mut game, key(Key::Char('s'), CTRL));
+    still(&mut st, &mut game);
+    let bubble = st.s.ui.coach.bubble_at.unwrap();
+    let cross = texts_at(&game, "×").into_iter().find(|at| inside(bubble, *at)).unwrap();
+    click(&mut st, &mut game, (cross.0 + 2.0, cross.1 + 4.0));
+    assert!(st.s.ui.coach.lesson.is_none());
+    // They come oldest first, numbered, each once.
+    let mut got = Vec::new();
+    loop {
+        let e = ask(&mut st, &mut game, "player_event", json!({})).unwrap();
+        if e["event"] == "none" {
+            break;
+        }
+        got.push(e);
+    }
+    let kinds: Vec<&str> = got.iter().map(|e| e["event"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["next", "back", "check", "saved", "closed"]);
+    assert_eq!((&got[0]["step"], &got[0]["of"]), (&json!(2), &json!(2)));
+    assert_eq!(got[0]["did"], "The player went on to step 2 of 2 (line 3 of greet.lua)");
+    assert_eq!(got[1]["step"], 1);
+    assert_eq!(
+        (&got[2]["task"], &got[2]["text"], &got[2]["dirty"]),
+        (&json!("Print hello instead."), &json!("print('oh hi')"), &json!(true))
+    );
+    assert!(got[2]["problems"].is_array());
+    assert_eq!(got[3]["mod"]["state"], "running");
+    assert_eq!(got[4]["step"], 1);
+    let seqs: Vec<u64> = got.iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+    assert_eq!(seqs, [1, 2, 3, 4, 5]);
+    // after gives them again from there (an answer lost on the way is asked for again).
+    let again = ask(&mut st, &mut game, "player_event", json!({ "after": 2 })).unwrap();
+    assert_eq!(again["event"], "check");
+    // Check went to the agent: the panel says so.
+    assert!(
+        st.s.ui
+            .agent
+            .lines
+            .iter()
+            .any(|l| l.kind == AgentLineKind::You && l.text == "Check step 1: Print hello instead.")
+    );
+    // What the player writes in the Agent panel goes to the agent waiting.
+    st.s.ui.panel = Panel::Agent;
+    st.s.ui.panel_hidden = false;
+    st.s.ui.panel_focus = true;
+    still(&mut st, &mut game);
+    text_at(&game, "Claude Code is waiting for you");
+    handle(&mut st, &mut game, Input::Text("why?".into()));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    let e = ask(&mut st, &mut game, "player_event", json!({})).unwrap();
+    assert_eq!((&e["event"], &e["text"]), (&json!("message"), &json!("why?")));
+    assert!(
+        !horizon_studio::game::hstudio_ui::agent_busy(&st),
+        "no run of the game's own agent"
+    );
+    assert_eq!(st.s.ui.agent.lines.last().unwrap().text, "why?");
+    // Nobody waiting any more: the steps the player goes to go stale after
+    // 30 s, everything after five minutes, and at most 16 are kept.
+    run_for(&mut st, &mut game, 4.0);
+    assert!(!coach::waiting(&st));
+    ask(
+        &mut st,
+        &mut game,
+        "lesson",
+        json!({ "title": "Again", "steps": [{ "start_line": 1, "note": "One." }, { "start_line": 2, "note": "Two." }] }),
+    )
+    .unwrap();
+    // (While the Agent panel's input has the keys, Alt+arrows are its own.)
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    assert_eq!(st.s.ui.coach.lesson.as_ref().unwrap().at, 0);
+    st.s.ui.panel_focus = false;
+    for _ in 0..10 {
+        handle(&mut st, &mut game, key(Key::Right, ALT));
+        handle(&mut st, &mut game, key(Key::Left, ALT));
+    }
+    let e = ask(&mut st, &mut game, "player_event", json!({ "after": 6 })).unwrap();
+    assert_eq!((&e["event"], &e["seq"]), (&json!("next"), &json!(11)), "the newest 16");
+    run_for(&mut st, &mut game, 31.0);
+    let e = ask(&mut st, &mut game, "player_event", json!({ "after": 6 })).unwrap();
+    assert_eq!(e["event"], "none", "{e}");
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    let e = ask(&mut st, &mut game, "player_event", json!({})).unwrap();
+    assert_eq!(e["event"], "next");
+}
+
+#[test]
+fn a_lesson_opens_its_file_only_when_it_may_and_says_what_is_wrong() {
+    let (mut game, mut st) = with_module("coach-lesson-open");
+    let hello = game.mods_dir().join("hello.lua");
+    std::fs::write(&hello, "print('hello')\n").unwrap();
+    st.scan(&mut game);
+    st.open_file(&hello);
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    // The player is using the studio: it waits.
+    st.s.ui.coach.input_at = st.s.now;
+    let r = ask(&mut st, &mut game, "lesson", kit_lesson()).unwrap();
+    assert_eq!(r["busy"], true, "{r}");
+    assert!(st.s.ui.coach.lesson.is_none());
+    // Unsaved edits in the file open: it says so, and opens nothing.
+    st.s.ui.coach.input_at = f64::NEG_INFINITY;
+    st.s.editor.insert("-- mine\n");
+    let e = ask(&mut st, &mut game, "lesson", kit_lesson()).unwrap_err();
+    assert!(e.contains("the player has unsaved edits in hello.lua"), "{e}");
+    assert_eq!(st.s.editor.title, "hello.lua");
+    // Saved, it opens the first step's file.
+    st.save_editor(&mut game);
+    ask(&mut st, &mut game, "lesson", kit_lesson()).unwrap();
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    // What isn't a lesson says why.
+    let step = json!({ "start_line": 1, "note": "One." });
+    for (params, says) in [
+        (json!({ "steps": [step] }), "title"),
+        (json!({ "title": "T", "steps": [] }), "steps is the lesson's steps"),
+        (
+            json!({ "title": "T", "steps": vec![step.clone(); 21] }),
+            "at most 20 steps",
+        ),
+        (
+            json!({ "title": "T", "steps": [step, { "start_line": 1 }] }),
+            "step 2 has no note",
+        ),
+        (
+            json!({ "title": "T", "steps": [step, { "start_line": 9, "note": "Far." }] }),
+            "step 2: kit/main.lua has 2 lines",
+        ),
+        (
+            json!({ "title": "T", "steps": [{ "start_line": 1, "note": "N", "file": "nope.lua" }] }),
+            "step 1: kit has no file nope.lua",
+        ),
+    ] {
+        let e = ask(&mut st, &mut game, "lesson", params.clone()).unwrap_err();
+        assert!(e.contains(says), "{params}: {e}");
+    }
+    // A step's mark goes with the lesson only; clearing everything ends it.
+    let id = st.s.ui.coach.lesson.as_ref().unwrap().steps[0].mark;
+    let e = ask(&mut st, &mut game, "unmark", json!({ "mark": id })).unwrap_err();
+    assert!(e.contains("is step 1 of the lesson"), "{e}");
+    let r = ask(&mut st, &mut game, "unmark", json!({ "id": "kit" })).unwrap();
+    assert_eq!((&r["cleared"], &r["lesson_ended"]), (&json!(0), &json!(false)));
+    assert_eq!(coach::summary(&st)["lesson"]["step"], 1);
+    assert_eq!(
+        coach::lesson_line(&st).as_deref(),
+        Some("A lesson is open in the editor: \"Modules\", step 1 of 3 (kit/main.lua line 1).")
+    );
+    let r = ask(&mut st, &mut game, "unmark", json!({})).unwrap();
+    assert_eq!(
+        (&r["lesson_ended"], &r["did"]),
+        (&json!(true), &json!("Cleared 3 notes and ended the lesson"))
+    );
+    assert!(coach::summary(&st)["lesson"].is_null());
+}
+
+#[cfg(unix)]
+#[test]
+fn check_asks_the_games_agent_when_none_is_waiting() {
+    use horizon_studio::game::hstudio_agent::AgentSpec;
+    let (mut game, mut st) = editing("coach-check", "greet", GREET);
+    // A stand-in agent: it says back what it was asked.
+    st.s.ui.agent.agents = Some(vec![AgentSpec {
+        id: "custom".into(),
+        name: "Echo".into(),
+        program: "/bin/echo".into(),
+        args: vec!["{prompt}".into()],
+        json: false,
+    }]);
+    ask(
+        &mut st,
+        &mut game,
+        "lesson",
+        json!({ "title": "Printing", "steps": [
+            { "start_line": 2, "note": "print shows text.", "task": "Print hello instead." },
+        ] }),
+    )
+    .unwrap();
+    st.s.ui.panel_hidden = true;
+    still(&mut st, &mut game);
+    let check = text_at(&game, "Check");
+    click(&mut st, &mut game, (check.0 + 2.0, check.1 + 4.0));
+    let asked = "I did step 1 of the lesson \"Printing\" (greet.lua line 2): Print hello instead. Check my code and \
+                 tell me how I did.";
+    assert!(
+        st.s.ui
+            .agent
+            .lines
+            .iter()
+            .any(|l| l.kind == AgentLineKind::You && l.text == asked),
+        "{:?}",
+        st.s.ui.agent.lines.iter().map(|l| &l.text).collect::<Vec<_>>()
+    );
+    // Its prompt has the lesson where the player is.
+    for _ in 0..200 {
+        run_for(&mut st, &mut game, 0.05);
+        if !horizon_studio::game::hstudio_ui::agent_busy(&st) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let echoed: String =
+        st.s.ui
+            .agent
+            .lines
+            .iter()
+            .map(|l| l.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+    assert!(
+        echoed.contains("A lesson is open in the editor: \"Printing\", step 1 of 1 (greet.lua line 2)."),
+        "{echoed}"
+    );
+    // With the panel hidden, the explanation is the bubble's: none here; and
+    // with no agent at all, no Check.
+    st.s.ui.agent.agents = Some(Vec::new());
+    still(&mut st, &mut game);
+    assert!(texts_at(&game, "Check").is_empty());
+}
+
+#[test]
+fn every_style_draws_a_lesson_inside_its_code() {
+    use horizon_studio::game::hstudio_theme::{Look, THEMES};
+    let (mut game, mut st) = editing("coach-lesson-styles", "sum", TEN);
+    st.s.ui.agent.agents = Some(Vec::new());
+    let explain =
+        "This explanation is long, as an agent's can be, and goes in the note where no panel shows it. ".repeat(5);
+    ask(
+        &mut st,
+        &mut game,
+        "lesson",
+        json!({ "title": "Sums", "steps": [
+            { "start_line": 3, "note": "Adds a and b.", "task": "Add c too.", "explain": explain },
+            { "start_line": 4, "note": "Prints the total." },
+        ] }),
+    )
+    .unwrap();
+    st.s.ui.panel_hidden = true;
+    let mut drawn = 0;
+    for i in 0..THEMES.len() {
+        for rect in [Some([10.0, 10.0, 330.0, 230.0]), None] {
+            st.s.ui.look = Look {
+                theme: i,
+                rect,
+                motion: false,
+                ..Look::default()
+            };
+            st.s.ui.tab = Tab::Editor;
+            st.s.editor.scroll = 0;
+            redraw(&mut st, &mut game);
+            redraw(&mut st, &mut game);
+            let c = &st.s.ui.coach;
+            let code = c.code_at.unwrap();
+            let Some(b) = c.bubble_at else {
+                assert!(code[3] < 90.0, "theme {i} {rect:?}: no bubble in {code:?}");
+                continue;
+            };
+            drawn += 1;
+            assert!(
+                b[0] >= code[0]
+                    && b[1] >= code[1]
+                    && b[0] + b[2] <= code[0] + code[2]
+                    && b[1] + b[3] <= code[1] + code[3],
+                "theme {i} {rect:?}: {b:?} in {code:?}"
+            );
+            // Its buttons are in it, and with no panel to show it, the explanation.
+            let next = text_at(&game, "Next");
+            assert!(inside(b, next), "theme {i} {rect:?}");
+            if code[3] > 300.0 {
+                assert!(inside(b, text_at(&game, "Try: Add c too.")), "theme {i} {rect:?}");
+                let start = "This explanation is long";
+                let line = game
+                    .drawn
+                    .iter()
+                    .find(|d| d.starts_with(&format!("text {start}")))
+                    .unwrap_or_else(|| panic!("theme {i} {rect:?}: no explanation"));
+                assert!(!line.is_empty());
+            }
+        }
+    }
+    assert!(drawn >= THEMES.len(), "{drawn}");
+}

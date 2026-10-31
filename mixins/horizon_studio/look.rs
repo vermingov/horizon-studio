@@ -899,6 +899,14 @@ fn footer(st: &mut Studio, p: &mut P, x: f32, cy: f32, w: f32) {
             Panel::Problems => &[("↑ ↓", "choose"), ("⏎", "go to it"), ("Esc", "back to the code")],
             Panel::Agent => &[("⏎", "ask"), ("Esc", "back to the code"), ("Ctrl `", "hide the panel")],
         },
+        // An agent's lesson: its keys first.
+        Tab::Editor if st.s.ui.coach.lesson.is_some() => &[
+            ("Alt →", "next step"),
+            ("Alt ←", "back"),
+            ("Esc", "close the note"),
+            ("Ctrl S", "save and reload"),
+            ("Ctrl Z", "undo"),
+        ],
         Tab::Editor => &[
             ("Ctrl S", "save and reload"),
             ("Ctrl ⏎", "run"),
@@ -1824,6 +1832,8 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
     let log_h = h - field_h - 8.0;
     const ROW: f32 = 19.0;
     let busy = super::hstudio_ui::agent_busy(st);
+    // An agent waiting for the player (wait_for_player): its turn is theirs.
+    let waiting = super::hstudio_coach::waiting_label(st);
     let visible = (log_h / ROW).floor().max(0.0) as usize;
     let want = visible + st.s.ui.agent.scroll.ceil() as usize + 2;
     let mut rows: Vec<Said> = Vec::new();
@@ -1896,11 +1906,11 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
     smooth(&mut st.s.ui.smooth[7], target, dt);
     let scroll = st.s.ui.smooth[7];
     let (base, dy) = (p.alpha, p.dy);
-    let working = if busy { 1 } else { 0 };
-    if rows.is_empty() && !busy {
+    let working = if busy || waiting.is_some() { 1 } else { 0 };
+    if rows.is_empty() && !busy && waiting.is_none() {
         let msg = match name {
             Some(n) => format!(
-                "Ask {n} to write or change this script. It sees the open file, what you selected and its problems, and works through Horizon Studio's MCP: it types its changes into the editor as you watch, and Show on its lines here goes to what it changed."
+                "Ask {n} to write or change this script. It sees the open file, what you selected and its problems, and works through Horizon Studio's MCP: it types its changes into the editor as you watch, points at code with notes and teaches with lessons, and Show on its lines here goes to the code."
             ),
             None => "No agent found on this computer. Install Claude Code (claude) or omp, set up the MCP (Copy AI setup prompt), then press Look for an agent.".to_owned(),
         };
@@ -1962,11 +1972,11 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
     }
     p.alpha = base;
     p.dy = dy;
-    if busy {
+    if busy || waiting.is_some() {
         let ly = y + log_h - ROW * (1.0 - scroll);
         if ly + ROW <= y + log_h + 0.5 {
             let lw = p.text(
-                "Working",
+                waiting.as_deref().unwrap_or("Working"),
                 x,
                 top(ly + ROW / 2.0, 12.5),
                 12.5,
@@ -2008,6 +2018,7 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
     let tx = f[0] + 26.0;
     if input.text.is_empty() {
         let hint = match (name, busy) {
+            _ if waiting.is_some() => "It's waiting for you: Enter sends it what you write here.".to_owned(),
             (_, true) => "It's working. Stop ends it; send your next request when it's done.".to_owned(),
             (Some(n), _) => format!("Ask {n} about this script, Enter sends."),
             (None, _) => "No agent found.".to_owned(),
@@ -2363,7 +2374,7 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
             );
             p.rect([panel[0] + 12.0, ly + 7.0, 6.0, 6.0], 3.0, pal().danger);
         }
-        coach_row(
+        let step = coach_row(
             p,
             &st.s.ui.coach,
             ed,
@@ -2372,6 +2383,7 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
             [panel[0], panel[2], text_x, text_w, ly],
             now,
         );
+        note_hits.extend(step);
         if let Some(((r1, c1), (r2, c2))) = sel
             && r >= r1
             && r <= r2
@@ -2545,7 +2557,9 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
 /// `from`; the panel's left and width, the text's left and width, the
 /// row's top): the text the edit is about to replace, tinted, and the lines
 /// it just put in, lit a moment; and an agent's marks, a band in their
-/// colour with a bar at the gutter's left, what they are about underlined.
+/// colour with a bar at the gutter's left, what they are about underlined,
+/// and a lesson's step's number in a circle on its first row, which goes to
+/// that step (its hit).
 fn coach_row(
     p: &mut P,
     coach: &super::hstudio_coach::Coach,
@@ -2554,8 +2568,9 @@ fn coach_row(
     from: usize,
     [px, pw, text_x, text_w, ly]: [f32; 5],
     now: f64,
-) {
+) -> Option<([f32; 4], Action)> {
     use super::hstudio_coach::{FLASH, Phase};
+    let mut hit = None;
     for m in coach
         .marks
         .iter()
@@ -2563,12 +2578,30 @@ fn coach_row(
     {
         let c = tone_color(m.tone);
         let open = coach.open_mark == Some(m.id);
+        // A lesson's other steps are fainter than the one it is on.
+        let k = if m.step.is_some() && !open { 0.5 } else { 1.0 };
         p.rect(
             [px + 6.0, ly, pw - 12.0, code_line()],
             0.0,
-            fade(c, if open { 0.16 } else { 0.10 }),
+            fade(c, if open { 0.16 } else { 0.10 } * k),
         );
-        p.rect([px + 6.0, ly, 3.0, code_line()], 0.0, c);
+        p.rect([px + 6.0, ly, 3.0, code_line()], 0.0, fade(c, k));
+        if let Some(step) = m.step.filter(|_| r == m.first) {
+            let d = 15.0;
+            let dot = [px + 10.0, ly + (code_line() - d) / 2.0, d, d];
+            p.rect(dot, d / 2.0, fade(c, k));
+            let label = (step + 1).to_string();
+            let lw = p.measure(&label, 10.0, Font::Medium);
+            p.text(
+                &label,
+                dot[0] + (d - lw) / 2.0,
+                top(dot[1] + d / 2.0, 10.0),
+                10.0,
+                Font::Medium,
+                on(c),
+            );
+            hit = Some((dot, Action::MarkOpen(m.id)));
+        }
         if let Some((a, b)) = m.span.filter(|_| r == m.first) {
             let line = &ed.lines[r];
             let a = floor_char(line, a).max(from);
@@ -2597,7 +2630,7 @@ fn coach_row(
     let Some(t) = coach.typing.as_ref().filter(|t| {
         t.phase == Phase::ShowOld && ed.path.as_ref() == Some(&t.path) && (t.from.0..=t.old_to.0).contains(&r)
     }) else {
-        return;
+        return hit;
     };
     let line = &ed.lines[r];
     let a = floor_char(line, if r == t.from.0 { t.from.1 } else { 0 }).max(from);
@@ -2609,6 +2642,7 @@ fn coach_row(
     }
     let sw = sw.min(text_x + text_w - sx).max(0.0);
     p.rect([sx, ly + 1.0, sw, code_line() - 2.0], 3.0, fade(pal().danger, 0.22));
+    hit
 }
 
 /// An agent's caret where its edit is coming in: solid, in the accent, with
@@ -2711,7 +2745,8 @@ pub(super) fn tone_color(t: super::hstudio_coach::Tone) -> u32 {
 
 /// An agent's note at the end of its mark's first line (row `r`, its text
 /// drawn from byte `from`), in its colour, while its bubble isn't the one
-/// open: a click opens it. Its hit, when there was room to draw it.
+/// open: a click opens it. Its hit, when there was room to draw it. (A
+/// lesson's steps have their number instead.)
 fn mark_note(
     p: &mut P,
     coach: &super::hstudio_coach::Coach,
@@ -2721,7 +2756,11 @@ fn mark_note(
     [text_x, text_w, ly]: [f32; 3],
 ) -> Option<([f32; 4], Action)> {
     let m = coach.marks.iter().rev().find(|m| {
-        m.first == r && !m.note.is_empty() && coach.open_mark != Some(m.id) && ed.path.as_ref() == Some(&m.path)
+        m.first == r
+            && !m.note.is_empty()
+            && m.step.is_none()
+            && coach.open_mark != Some(m.id)
+            && ed.path.as_ref() == Some(&m.path)
     })?;
     let line = &ed.lines[r];
     let end = text_x + p.measure(&line[from..], code_size(), Font::Mono) + 20.0;
@@ -2755,20 +2794,59 @@ fn mark_ticks(
     }
 }
 
+/// How many lines of each group of a bubble's words show (`lens`: each
+/// group's lines and its share): each group at most its share unless all
+/// of it is asked for, and all of them at most `fit` lines, the last groups
+/// giving way first (the first keeps a line). And whether a More would show
+/// more.
+fn bubble_lines(lens: &[(usize, usize)], all: bool, fit: usize) -> (Vec<usize>, bool) {
+    let mut keep: Vec<usize> = lens
+        .iter()
+        .map(|&(n, share)| if all { n } else { n.min(share) })
+        .collect();
+    let cut = keep.iter().zip(lens).any(|(k, &(n, _))| *k < n);
+    if keep.iter().sum::<usize>() + usize::from(cut) <= fit {
+        return (keep, cut);
+    }
+    let mut total: usize = keep.iter().sum();
+    for i in (0..keep.len()).rev() {
+        let least = usize::from(i == 0);
+        while total > fit && keep[i] > least {
+            keep[i] -= 1;
+            total -= 1;
+        }
+    }
+    (keep, false)
+}
+
 /// The open mark's note in a bubble under its lines (over them when there
 /// is no room below), from its first line's indent, at most 520 wide. It
 /// stays inside the code's panel, never taller than the panel less two rows:
-/// the note is cut to fit, and to eight lines until its More is pressed.
-/// Its × clears the mark; clicks elsewhere on it reach nothing under it.
-/// (`text_x`: where the code's text starts; the code's top and bottom; the
-/// view's row at its top, as drawn.)
+/// its words are cut to fit, and to their share (eight lines of note) until
+/// its More is pressed. A lesson's step has what to try, its explanation
+/// when the Agent panel doesn't show it (the executor styles have none),
+/// and where the lesson is with Back, Check and Next (Done on its last
+/// step). Its × clears the mark, a step's ends the lesson; clicks elsewhere
+/// on it reach nothing under it. (`text_x`: where the code's text starts;
+/// the code's top and bottom; the view's row at its top, as drawn.)
 fn note_bubble(st: &mut Studio, p: &mut P, panel: [f32; 4], [text_x, top_y, bottom, s]: [f32; 4], dt: f32) {
+    use super::hstudio_ui::Panel;
     const LINE: f32 = 17.0;
     const PAD: f32 = 10.0;
-    const SOFT: usize = 8;
+    const FOOT: f32 = 32.0;
+    let shown = super::hstudio_coach::shown_mark(&st.s.ui.coach, &st.s.editor);
+    let Some(mark) = shown.filter(|m| !m.note.is_empty()).map(|m| m.id) else {
+        return;
+    };
+    let step = super::hstudio_coach::step_view(st, mark);
+    let ui = &st.s.ui;
+    let explained = ui.look.theme().layout == Layout::Studio
+        && !ui.panel_hidden
+        && ui.panel == Panel::Agent
+        && ui.panel_at.is_some();
     let ed = &st.s.editor;
     let coach = &st.s.ui.coach;
-    let Some(m) = super::hstudio_coach::shown_mark(coach, ed).filter(|m| !m.note.is_empty()) else {
+    let Some(m) = coach.marks.iter().find(|m| m.id == mark) else {
         return;
     };
     let lh = code_line();
@@ -2779,31 +2857,50 @@ fn note_bubble(st: &mut Studio, p: &mut P, panel: [f32; 4], [text_x, top_y, bott
     // Its lines scrolled away, it waits for them.
     let area = [panel[0] + 8.0, panel[1] + 4.0, panel[2] - 16.0, panel[3] - 8.0];
     let w = area[2].min(520.0);
-    if y1 <= top_y || y0 >= bottom || w < 120.0 || area[3] < 2.0 * PAD + LINE {
+    let foot = if step.is_some() { FOOT } else { 0.0 };
+    if y1 <= top_y || y0 >= bottom || w < 120.0 || area[3] < 2.0 * PAD + LINE + foot {
         return;
     }
     let line = &ed.lines[m.first];
     let indent = (line.len() - line.trim_start().len()).saturating_sub(ed.hscroll);
     let ix = p.measure(&" ".repeat(indent), code_size(), Font::Mono);
     let x = (text_x + ix - 14.0).min(area[0] + area[2] - w).max(area[0]);
-    let (mark, tone, note) = (m.id, tone_color(m.tone), m.note.clone());
-    let soft = if coach.more { usize::MAX } else { SOFT };
-    // The rows it may take: the panel less two rows, so what it is about shows beside it.
-    let room = (panel[3] - 2.0 * lh).max(2.0 * PAD + LINE).min(area[3]);
-    let fit = ((room - 2.0 * PAD) / LINE).floor().max(1.0) as usize;
+    let (tone, note, all) = (tone_color(m.tone), m.note.clone(), coach.more);
+    // Its words by group (the note, what to try, the explanation), each in
+    // its colour with its share of lines.
     let tw = w - 52.0;
-    let mut lines = p.wrap(&note, tw, 12.5, Font::Regular);
-    let mut more = false;
-    if lines.len() > soft.min(fit) {
-        // Cut: "More" shows the rest when the panel has room for it.
-        more = soft < fit;
-        let keep = if more { soft } else { fit };
-        lines.truncate(keep);
-        let last = format!("{} …", lines[keep - 1]);
-        lines[keep - 1] = p.fit(&last, tw, 12.5, Font::Regular);
+    let mut groups: Vec<(Vec<String>, u32, usize)> = vec![(p.wrap(&note, tw, 12.5, Font::Regular), pal().ink, 8)];
+    if let Some(v) = &step {
+        if let Some(task) = &v.task {
+            groups.push((
+                p.wrap(&format!("Try: {task}"), tw, 12.5, Font::Regular),
+                pal().ink_soft,
+                3,
+            ));
+        }
+        if !explained && !v.explain.is_empty() {
+            groups.push((p.wrap(&v.explain, tw, 12.5, Font::Regular), pal().muted, 4));
+        }
     }
-    let n = lines.len() + usize::from(more);
-    let h = 2.0 * PAD + LINE * n as f32;
+    // The rows it may take: the panel less two rows, so what it is about shows beside it.
+    let room = (panel[3] - 2.0 * lh).max(2.0 * PAD + LINE + foot).min(area[3]);
+    let fit = ((room - 2.0 * PAD - foot) / LINE).floor().max(1.0) as usize;
+    let lens: Vec<(usize, usize)> = groups.iter().map(|(l, _, share)| (l.len(), *share)).collect();
+    let (keep, more) = bubble_lines(&lens, all, fit);
+    let mut rows: Vec<(String, u32)> = Vec::new();
+    for ((lines, c, _), k) in groups.into_iter().zip(keep) {
+        let cut = k < lines.len();
+        for (i, l) in lines.into_iter().take(k).enumerate() {
+            let l = if cut && i + 1 == k {
+                p.fit(&format!("{l} …"), tw, 12.5, Font::Regular)
+            } else {
+                l
+            };
+            rows.push((l, c));
+        }
+    }
+    let n = rows.len() + usize::from(more);
+    let h = 2.0 * PAD + LINE * n as f32 + foot;
     let (below, above, floor) = (y1 + 4.0, y0 - 4.0 - h, area[1] + area[3]);
     let y = if below + h <= floor {
         below
@@ -2820,12 +2917,12 @@ fn note_bubble(st: &mut Studio, p: &mut P, panel: [f32; 4], [text_x, top_y, bott
     p.rect(r, 10.0, pal().surface);
     p.border(r, 10.0, fade(tone, 0.55));
     p.rect([x + 8.0, y + 9.0, 3.0, h - 18.0], 1.5, tone);
-    for (i, l) in lines.iter().enumerate() {
+    for (i, (l, c)) in rows.iter().enumerate() {
         let cy = y + PAD + LINE * (i as f32 + 0.5);
-        p.text(l, x + 20.0, top(cy, 12.5), 12.5, Font::Regular, pal().ink);
+        p.text(l, x + 20.0, top(cy, 12.5), 12.5, Font::Regular, *c);
     }
     if more {
-        let cy = y + PAD + LINE * (lines.len() as f32 + 0.5);
+        let cy = y + PAD + LINE * (rows.len() as f32 + 0.5);
         let lw = p.measure("More", 12.0, Font::Medium);
         let mr = [x + 16.0, cy - LINE / 2.0, lw + 8.0, LINE];
         let hv = hover(ui, id("note-more", 0), inside(mr, ui.mouse), dt);
@@ -2833,6 +2930,38 @@ fn note_bubble(st: &mut Studio, p: &mut P, panel: [f32; 4], [text_x, top_y, bott
         p.text("More", x + 20.0, top(cy, 12.0), 12.0, Font::Medium, c);
         p.rect([x + 20.0, cy + 7.0, lw, 1.0], 0.0, fade(c, hv));
         ui.hits.push((mr, Action::MarkMore));
+    }
+    if let Some(v) = &step {
+        // Where the lesson is, and its buttons at the right: Next (Done on
+        // its last step), Check when someone can check, Back after the first.
+        let fy = y + h - PAD - 26.0;
+        let last = v.at + 1 == v.of;
+        let mut buttons = vec![(
+            "lesson-next",
+            if last { "Done" } else { "Next" },
+            Style::Primary,
+            Action::LessonNext,
+        )];
+        if v.check {
+            buttons.push(("lesson-check", "Check", Style::Secondary, Action::LessonCheck));
+        }
+        if v.at > 0 {
+            buttons.push(("lesson-back", "Back", Style::Quiet, Action::LessonBack));
+        }
+        let mut bx = x + w - 10.0;
+        for (key, label, style, action) in buttons {
+            let bw = p.measure(label, 13.0, Font::Medium) + 28.0;
+            if bx - bw < x + 18.0 {
+                break;
+            }
+            bx -= bw;
+            pill(ui, p, key, label, bx, fy, 26.0, style, action, dt);
+            bx -= 6.0;
+        }
+        let at = format!("Step {} of {}", v.at + 1, v.of);
+        if x + 20.0 + p.measure(&at, 12.0, Font::Medium) < bx - 6.0 {
+            p.text(&at, x + 20.0, top(fy + 13.0, 12.0), 12.0, Font::Medium, pal().muted);
+        }
     }
     let xr = [x + w - 28.0, y + 6.0, 22.0, 22.0];
     let hv = hover(ui, id("note-close", 0), inside(xr, ui.mouse), dt);
@@ -2846,22 +2975,45 @@ fn note_bubble(st: &mut Studio, p: &mut P, panel: [f32; 4], [text_x, top_y, bott
         Font::Regular,
         mix(pal().muted, pal().ink, hv),
     );
-    ui.hits.push((xr, Action::MarkClose(mark)));
+    let close = if step.is_some() {
+        Action::LessonEnd
+    } else {
+        Action::MarkClose(mark)
+    };
+    ui.hits.push((xr, close));
     ui.coach.bubble_at = Some(r);
     p.alpha = base;
 }
 
 /// In the editor's header (at `x`, its top `y`, up to `right`), while
 /// agents have marked code: "3 notes" in the newest mark's colour, which
-/// goes to the next mark, and a × that clears them. Its width (0: not
-/// drawn).
+/// goes to the next mark, and a × that clears them; while a lesson is on,
+/// "Lesson 2/5" instead, which shows its step again, and a × that ends it.
+/// Its width (0: not drawn).
 fn coach_chip(st: &mut Studio, p: &mut P, x: f32, y: f32, right: f32, dt: f32) -> f32 {
     let c = &st.s.ui.coach;
-    let Some(newest) = c.marks.last() else {
-        return 0.0;
+    let (label, tone, go, close) = match &c.lesson {
+        Some(l) => {
+            let step = c.marks.iter().find(|m| m.id == l.steps[l.at].mark);
+            (
+                format!("Lesson {}/{}", l.at + 1, l.steps.len()),
+                step.map_or(pal().accent, |m| tone_color(m.tone)),
+                Action::LessonShow,
+                Action::LessonEnd,
+            )
+        }
+        None => {
+            let Some(newest) = c.marks.last() else {
+                return 0.0;
+            };
+            (
+                super::hstudio_coach::notes_text(c.marks.len()),
+                tone_color(newest.tone),
+                Action::NextMark,
+                Action::ClearMarks,
+            )
+        }
     };
-    let tone = tone_color(newest.tone);
-    let label = super::hstudio_coach::notes_text(c.marks.len());
     let lw = p.measure(&label, 12.0, Font::Medium);
     let w = 21.0 + lw + 30.0;
     if x + w > right {
@@ -2893,8 +3045,8 @@ fn coach_chip(st: &mut Studio, p: &mut P, x: f32, y: f32, right: f32, dt: f32) -
         Font::Regular,
         mix(pal().muted, pal().ink, hx),
     );
-    ui.hits.push((main, Action::NextMark));
-    ui.hits.push((cross, Action::ClearMarks));
+    ui.hits.push((main, go));
+    ui.hits.push((cross, close));
     w
 }
 
@@ -3545,6 +3697,7 @@ fn docs() -> Vec<Doc> {
     out.push(Doc::Para("horizon-studio-mcp lets AI agents (Claude Code, omp, Codex, Cursor...) make mods here: they write and test them, headless and in this game, run Lua in the console and read what happened. Copy AI setup prompt, at the top right, copies a prompt for your agent that sets it all up; once one is connected, its name shows there. Options > Mods > Horizon Studio turns the AI link off.".into()));
     out.push(Doc::Para("An agent can work in this editor as you watch: it opens any script, reads it as you have it (unsaved edits too), and types its changes in at a caret of its own with its name on it. Your cursor stays where it is, the view follows the agent until you scroll, and any key or click puts the rest of its change in at once. Ctrl+Z takes a whole change back. Its changes stay unsaved until it saves them (or you do); nothing you are typing is saved for you. A file you don't have open is changed on disk instead, and a note over the code shows it. The Agent panel says what it did, and Show there goes to that code.".into()));
     out.push(Doc::Para("It can point at code too: lines highlighted in a colour (red for an error, amber for a warning, green for something right) with a note. The newest note shows in a bubble under its lines, the others at the end of their line (a click opens them); the bubble's × removes a note and Esc closes it. The editor's header counts the notes: a click goes to the next, its × clears them. Notes stay on their lines as you edit.".into()));
+    out.push(Doc::Para("And it can teach: a lesson is numbered steps over your code, each a note with something to try, and an explanation in the Agent panel (in the note, in the executor styles). Next and Back, or Alt+Right and Alt+Left, go through it; Check asks the agent to look at what you did; Done or the × ends it. While the agent waits for you the panel says so, and Enter sends it your answer.".into()));
     out.push(Doc::Heading("Commands in chat".into()));
     out.push(Doc::Para(
         "/studio opens this screen, /studio reload reloads every script mod, /lua <code> runs code.".into(),

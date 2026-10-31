@@ -38,8 +38,8 @@
 //   server"); its tools then appear as `mcp__horizon-studio__<tool>`. The flag
 //   takes several values (`<tools...>`), so it goes last, after the prompt.
 //   New tools of the server (the player's editor: open_script, read_script,
-//   edit_script, save_script, mark_lines, clear_marks) are approved with the
-//   rest, nothing to add.
+//   edit_script, save_script, mark_lines, clear_marks, start_lesson,
+//   wait_for_player) are approved with the rest, nothing to add.
 // - `--permission-mode default` (Manual mode) is passed too: in it a `-p` run
 //   denies every call that needs approval (Bash, Edit, Write...) since nobody
 //   can answer, whatever the user's settings make their default mode; reads
@@ -396,6 +396,9 @@ pub struct AgentContext {
     pub selection: Option<String>,
     /// The editor's problems: "hello.lua:12: unexpected symbol near 'end'".
     pub problems: Vec<String>,
+    /// The lesson open in the editor, in a line: 'A lesson is open in the
+    /// editor: "Events", step 3 of 5 (greeter.lua lines 12-18).'
+    pub lesson: Option<String>,
 }
 
 /// The mod a file of the mods folder belongs to: "statue/main.lua" -> "statue".
@@ -444,6 +447,9 @@ pub fn prompt(request: &str, ctx: &AgentContext) -> String {
          - open_script: opens any script (any mod, any file of a module) in the editor.\n\
          - mark_lines, clear_marks: point at code in the editor: lines highlighted with a short note beside \
          them, such as where a bug is and why (tone error, warning, good or note).\n\
+         - start_lesson, wait_for_player: teach in the editor: numbered steps the player goes through with \
+         Next and Back, each lines with a note, an explanation and a task to try; wait_for_player tells you \
+         when they press Check or write to you.\n\
          - game_status, game_log: the game, the mods' states and errors, the console.\n\
          - screenshot: a picture of the game as the player sees it (studio: true shows the editor too); \
          look with it to check what a mod draws.\n\n",
@@ -483,6 +489,9 @@ pub fn prompt(request: &str, ctx: &AgentContext) -> String {
             p += &format!("- and {} more\n", problems.len() - PROBLEMS);
         }
     }
+    if let Some(lesson) = ctx.lesson.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+        p += &format!("{}\n", cut(&one_line(lesson), 300));
+    }
     p += "\nHow to work:\n\
           - For the script open in the editor: read_script, then edit_script, then save_script when the change \
           is complete (edits you leave unsaved are saved when you finish, if nobody changed the file since). \
@@ -491,6 +500,9 @@ pub fn prompt(request: &str, ctx: &AgentContext) -> String {
           read_mod.\n\
           - When the player asks what is wrong, mark the lines with mark_lines and a note of one or two \
           sentences, and explain in your answer.\n\
+          - When they want to learn, start_lesson, then wait_for_player (it answers within 30 s; call it again \
+          to go on waiting); when they press Check, read_script, point at mistakes with mark_lines and tell \
+          them how they did.\n\
           - Answer briefly, in plain text without Markdown: your answer is shown in a small panel in the game.\n\n\
           The player's request:\n";
     p += request.trim();
@@ -535,9 +547,17 @@ pub enum AgentEvent {
 
 /// The horizon-studio tools that act in the player's editor: each says what
 /// it did there as a line of its own in the Agent panel (one that jumps to
-/// the code), so their calls and results show no line besides, unless one
-/// fails.
-pub const EDITOR_TOOLS: &[&str] = &["open_script", "edit_script", "save_script", "mark_lines", "clear_marks"];
+/// the code), or for wait_for_player the panel's Waiting for you, so their
+/// calls and results show no line besides, unless one fails.
+pub const EDITOR_TOOLS: &[&str] = &[
+    "open_script",
+    "edit_script",
+    "save_script",
+    "mark_lines",
+    "clear_marks",
+    "start_lesson",
+    "wait_for_player",
+];
 
 /// A tool's name without the horizon-studio MCP prefix (Claude Code's
 /// `mcp__horizon-studio__`, omp's `mcp__horizon_studio_`).

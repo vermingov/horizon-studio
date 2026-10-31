@@ -185,6 +185,13 @@ pub(crate) enum Action {
     /// The editor header's notes chip: the next mark, or its × (every mark cleared).
     NextMark,
     ClearMarks,
+    /// An agent's lesson: its step shown again (the header's chip), a step
+    /// back or on, its step checked, the lesson ended (a ×).
+    LessonShow,
+    LessonBack,
+    LessonNext,
+    LessonCheck,
+    LessonEnd,
 }
 
 /// What a menu item does when chosen.
@@ -3238,9 +3245,16 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
         Action::MenuPick(i) => menu_pick(st, game, i as usize),
         Action::ModelMenu => open_model_menu(st),
         Action::AgentJump(seq) => super::hstudio_coach::go(st, game, seq),
-        Action::MarkOpen(_) | Action::MarkClose(_) | Action::MarkMore | Action::NextMark | Action::ClearMarks => {
-            super::hstudio_coach::act(st, game, action)
-        }
+        Action::MarkOpen(_)
+        | Action::MarkClose(_)
+        | Action::MarkMore
+        | Action::NextMark
+        | Action::ClearMarks
+        | Action::LessonShow
+        | Action::LessonBack
+        | Action::LessonNext
+        | Action::LessonCheck
+        | Action::LessonEnd => super::hstudio_coach::act(st, game, action),
         Action::ClearLog => {
             st.s.log.clear();
             st.s.ui.log_scroll = 0;
@@ -3583,7 +3597,10 @@ pub fn agent_ask(st: &mut Studio, text: &str) {
             .iter()
             .map(|p| format!("{}:{}: {}", ed.title, p.line, p.message))
             .collect(),
+        lesson: super::hstudio_coach::lesson_line(st),
     };
+    // A new turn: what the player did before, kept for an agent waiting, is stale.
+    super::hstudio_coach::new_turn(st);
     let prompt = super::hstudio_agent::prompt(text, &ctx);
     let _ = std::fs::create_dir_all(&mods_dir);
     let pane = &mut st.s.ui.agent;
@@ -3756,6 +3773,11 @@ fn problems_key(st: &mut Studio, key: Key) {
 fn agent_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
     let _ = game;
     match key {
+        // An agent waiting for the player gets what they write.
+        Key::Enter if super::hstudio_coach::waiting(st) => {
+            let reply = std::mem::take(&mut st.s.ui.agent_input).text;
+            super::hstudio_coach::reply(st, reply.trim());
+        }
         // While it works, what is typed waits in the line.
         Key::Enter if !agent_busy(st) => {
             let ask = std::mem::take(&mut st.s.ui.agent_input).text;

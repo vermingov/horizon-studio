@@ -571,8 +571,9 @@ fn handle(
         "ping" => now(json!({ "ok": true })),
         // The player's editor, live (hstudio_coach): read a file as it has
         // it, open one, type a change in (and whether it is in), save it,
-        // point at lines with a note and clear those marks.
-        "editor" | "open" | "edit" | "typed" | "save" | "mark" | "unmark" => {
+        // point at lines with a note and clear those marks, give a lesson,
+        // and what the player did since (for an agent waiting for them).
+        "editor" | "open" | "edit" | "typed" | "save" | "mark" | "unmark" | "lesson" | "player_event" => {
             now(super::hstudio_coach::call(st, game, by, method, params)?)
         }
         "mods" => now(mods(st)),
@@ -672,7 +673,7 @@ fn handle(
         other => {
             return Err(format!(
                 "unknown method '{other}' (status, ping, mods, docs, lua, screenshot, scan, reload, enable, send, key, \
-                 chat_in, chat, log, wait, editor, open, edit, typed, save, mark, unmark)"
+                 chat_in, chat, log, wait, editor, open, edit, typed, save, mark, unmark, lesson, player_event)"
             ));
         }
     })

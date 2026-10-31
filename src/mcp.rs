@@ -32,9 +32,10 @@ the files that change, and `remove` deletes files); a library calls export(table
 then `test_mod` with steps, headless first (no game needed) and live once `game_status` says the game is linked. \
 `run_lua`, `send_chat` and `game_log` work in the running game; `horizon_ctl` plays it and takes screenshots when the \
 game runs with --control. In the player's own editor, live: `read_script` reads a script as they have it (unsaved edits \
-too), `edit_script` types a change into it as they watch, `save_script` saves it, `open_script` opens one, and \
-`mark_lines` points at lines with a note (`clear_marks` clears them). Mods are sandboxed Lua: no files, no network, a \
-step budget per call.";
+too), `edit_script` types a change into it as they watch, `save_script` saves it, `open_script` opens one, \
+`mark_lines` points at lines with a note (`clear_marks` clears them), and `start_lesson` teaches with numbered steps \
+they go through, `wait_for_player` telling you when they press Check or write to you. Mods are sandboxed Lua: no \
+files, no network, a step budget per call.";
 
 // ------------------------------------------------------------------ paths
 
@@ -525,10 +526,58 @@ pub fn tools() -> Json {
         tool(
             "clear_marks",
             "Clears marks from the player's editor: one by its number (mark), a file's (id, file or scratch), or \
-              with none of these every mark. Live only.",
+              with none of these every mark, which also ends a lesson. Live only.",
             script_props(json!({
                 "mark": { "type": "integer", "description": "A mark's number, as mark_lines gave it." },
             })),
+            &[]
+        ),
+        tool(
+            "start_lesson",
+            "Teaches in the player's editor: a lesson of numbered steps, each lines of a script with a note (in \
+              a bubble, as mark_lines shows one), what it explains at more length (explain, shown in the Agent \
+              panel) and something to try (task). The player goes through it with Next and Back (Alt+Right, \
+              Alt+Left), and Check on a step with a task asks you to look at their code: call wait_for_player to \
+              hear it. A step's file is the lesson's (id, file, scratch; else the file open) unless it names its \
+              own. The first step's file opens only while the player isn't using the studio (it waits up to 10 s) \
+              and the file open has no unsaved edits. A new lesson replaces the one shown. Returns the steps' mark \
+              numbers. Live only.",
+            script_props(json!({
+                "title": { "type": "string", "description": "What the lesson is about, in a few words." },
+                "steps": {
+                    "type": "array", "minItems": 1, "maxItems": 20,
+                    "description": "The steps, in order (1 to 20).",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "start_line": { "type": "integer", "description": "The step's first line, from 1." },
+                            "end_line": { "type": "integer", "description": "Its last (default start_line)." },
+                            "note": { "type": "string", "description": "What these lines do, in a sentence or two." },
+                            "explain": { "type": "string", "description": "More about it, for the Agent panel." },
+                            "task": { "type": "string", "description": "Something to try here, such as: change 20 to 40." },
+                            "tone": { "type": "string", "enum": ["note", "error", "warning", "good"] },
+                            "id": { "type": "string", "description": "Another mod's file for this step." },
+                            "file": { "type": "string", "description": "Another file for this step." },
+                            "scratch": { "type": "boolean", "description": "The scratch file for this step." },
+                        },
+                        "required": ["start_line", "note"],
+                    },
+                },
+            })),
+            &["title", "steps"]
+        ),
+        tool(
+            "wait_for_player",
+            "Waits for the player in the editor and returns what they did, for at most timeout_s seconds \
+              (default 30, 5 to 50): next or back (the lesson's step they went to), check (they want their try \
+              of a step checked: its lines as they are now, the task and the live check's problems), done or \
+              closed (the lesson ended), dismissed (they closed your notes), saved (they saved, with the mod's \
+              state), message (what they wrote to you in the Agent panel), or timeout: nothing yet, call it again \
+              to go on waiting. What they did while you weren't waiting comes first. While you wait the Agent \
+              panel says so, and Enter there sends you their answer. Live only.",
+            json!({
+                "timeout_s": { "type": "integer", "description": "How long to wait, in seconds (default 30, 5 to 50)." },
+            }),
             &[]
         ),
         tool(
@@ -624,6 +673,9 @@ pub struct Server {
     /// The published reference, once fetched or read from the cache (None:
     /// the built-in one).
     docs: Arc<Mutex<Option<Arc<Reference>>>>,
+    /// The number of the last of the player's events wait_for_player gave
+    /// (or of the newest when start_lesson began): it goes on from there.
+    events_after: Option<u64>,
 }
 
 impl Server {
@@ -815,6 +867,35 @@ impl Server {
                 return Err(format!("{why}: try again in a moment"));
             }
             self.live("wait", json!({ "frames": 15 }))?;
+        }
+    }
+
+    /// wait_for_player: the next thing the player does in the editor (a
+    /// lesson's Next, Back or Check, a note closed, a save, what they write
+    /// in the Agent panel), asked for every few frames for at most
+    /// `timeout_s` seconds (5 to 50, default 30), so the server is never
+    /// held long: the agent calls again to go on waiting.
+    fn wait_for_player(&mut self, args: &Json) -> Result<Json, String> {
+        let secs = args.get("timeout_s").and_then(Json::as_u64).unwrap_or(30).clamp(5, 50);
+        let start = Instant::now();
+        loop {
+            let mut ask = json!({});
+            if let Some(after) = self.events_after {
+                ask["after"] = json!(after);
+            }
+            let event = self.editor_live("player_event", &ask, true, 0.0)?;
+            if event["event"] != "none" {
+                self.events_after = event["seq"].as_u64().or(self.events_after);
+                return Ok(event);
+            }
+            if start.elapsed() >= Duration::from_secs(secs) {
+                return Ok(json!({
+                    "event": "timeout",
+                    "waited_s": secs,
+                    "did": format!("Nothing from the player in {secs} s: call wait_for_player again to go on waiting"),
+                }));
+            }
+            self.live("wait", json!({ "frames": 6 }))?;
         }
     }
 
@@ -1115,6 +1196,15 @@ impl Server {
             "save_script" => self.editor_live("save", args, true, 8.0),
             "mark_lines" => self.editor_live("mark", args, true, 0.0),
             "clear_marks" => self.editor_live("unmark", args, true, 0.0),
+            "start_lesson" => {
+                let r = self.editor_live("lesson", args, true, 10.0)?;
+                // What the player does from now on is the lesson's.
+                if let Some(seq) = r["seq"].as_u64() {
+                    self.events_after = Some(seq);
+                }
+                Ok(r)
+            }
+            "wait_for_player" => self.wait_for_player(args),
             "read_script" => {
                 let mut state = self.editor_live("editor", args, false, 0.0)?;
                 let lines = state.as_object_mut().and_then(|o| o.remove("lines"));

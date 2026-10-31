@@ -265,6 +265,7 @@ fn the_prompt_has_the_editor_context() {
         files: Vec::new(),
         selection: Some("world.set_block(x, y, z, 'stone')".into()),
         problems: vec!["statue/main.lua:12: unexpected symbol near 'end'".into()],
+        lesson: None,
     };
     let p = prompt("Make the statue taller", &ctx);
     for part in [
@@ -374,10 +375,35 @@ fn the_prompt_teaches_the_live_editor() {
         "write_mod for a new mod",
         "mark_lines, clear_marks: point at code",
         "When the player asks what is wrong, mark the lines",
+        "start_lesson, wait_for_player: teach in the editor",
+        "When they want to learn, start_lesson, then wait_for_player",
+        "call it again",
     ] {
         assert!(p.contains(part), "{part:?} missing in:\n{p}");
     }
     assert!(!p.contains("Change mods only with write_mod"), "{p}");
+    assert!(!p.contains("A lesson is open"), "{p}");
+    // A lesson open in the editor: where the player is in it.
+    let line = "A lesson is open in the editor: \"Events\", step 3 of 5 (greeter.lua lines 12-18).";
+    let p = prompt(
+        "is this right?",
+        &AgentContext {
+            file: Some("greeter.lua".into()),
+            mods_dir: PathBuf::from("/m"),
+            lesson: Some(line.into()),
+            ..Default::default()
+        },
+    );
+    assert!(p.contains(&format!("{line}\n")), "{p}");
+    // Everything at once stays a prompt of a reasonable size.
+    let big = AgentContext {
+        selection: Some("x".repeat(50_000)),
+        problems: (1..=40).map(|i| format!("a.lua:{i}: oops")).collect(),
+        lesson: Some("y".repeat(5000)),
+        ..Default::default()
+    };
+    let p = prompt("fix", &big);
+    assert!(p.len() < 8000, "{}", p.len());
 }
 
 #[test]

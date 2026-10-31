@@ -2824,6 +2824,8 @@ impl Studio {
                 if self.s.editor.error_line.is_none() {
                     self.mark_failure();
                 }
+                // An agent waiting for the player hears of it.
+                super::hstudio_coach::saved(self);
             }
             Err(e) => self.s.log(LogKind::Error, format!("Could not save: {e}")),
         }

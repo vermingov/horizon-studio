@@ -119,6 +119,7 @@ fn an_agent_opens_and_reads_the_players_scripts() {
         "save_script",
         "mark_lines",
         "clear_marks",
+        "start_lesson",
     ] {
         let t = tools["result"]["tools"]
             .as_array()
@@ -282,6 +283,66 @@ fn an_agent_opens_and_reads_the_players_scripts() {
     let (r, error) = call_json(&mut s, "clear_marks", json!({}));
     assert!(!error, "{r:#}");
     assert_eq!(r["cleared"], 1);
+    // A lesson, and the player stepping through it while the agent waits.
+    let (r, error) = call_json(
+        &mut s,
+        "start_lesson",
+        json!({ "title": "Greeting", "steps": [
+            { "start_line": 3, "note": "The count starts at 0.", "task": "Start it at 1." },
+            { "start_line": 5, "note": "Each greet counts." },
+        ] }),
+    );
+    assert!(!error, "{r:#}");
+    assert_eq!(r["steps"], 2, "{r:#}");
+    let (status, _) = call_json(&mut s, "game_status", json!({}));
+    assert_eq!(
+        (
+            &status["game"]["editor"]["lesson"]["title"],
+            &status["game"]["editor"]["lesson"]["step"]
+        ),
+        (&json!("Greeting"), &json!(1)),
+        "{status:#}"
+    );
+    // The player presses Alt+Right a moment after the agent begins to wait.
+    let player = game.player.clone();
+    let pressed = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        let next: PlayerAct = Box::new(|st, game| {
+            use horizon_studio::game::hstudio_ui::{Input, Key, Mods, handle};
+            let mods = Mods {
+                ctrl: false,
+                shift: false,
+                alt: true,
+            };
+            handle(
+                st,
+                game,
+                Input::Key {
+                    key: Key::Right,
+                    down: true,
+                    repeat: false,
+                    mods,
+                },
+            );
+        });
+        player.send(next).unwrap();
+    });
+    let (r, error) = call_json(&mut s, "wait_for_player", json!({ "timeout_s": 10 }));
+    pressed.join().unwrap();
+    assert!(!error, "{r:#}");
+    assert_eq!(
+        (&r["event"], &r["step"], &r["of"]),
+        (&json!("next"), &json!(2), &json!(2)),
+        "{r:#}"
+    );
+    // Nothing more: after its timeout it says so, for the agent to ask again.
+    let asked = Instant::now();
+    let (r, error) = call_json(&mut s, "wait_for_player", json!({ "timeout_s": 5 }));
+    assert!(!error, "{r:#}");
+    assert_eq!(r["event"], "timeout", "{r:#}");
+    assert!(asked.elapsed() >= Duration::from_secs(5) && asked.elapsed() < Duration::from_secs(20));
+    let (r, _) = call_json(&mut s, "clear_marks", json!({}));
+    assert_eq!(r["lesson_ended"], true, "{r:#}");
     // What isn't there as the editor has it is an error that says what to do.
     let (r, error) = call_json(
         &mut s,
