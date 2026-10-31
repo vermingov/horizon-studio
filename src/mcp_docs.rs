@@ -550,7 +550,7 @@ Use `pcall` around code that may fail. Running out of steps (an endless loop), a
 ## Making and installing mods
 
 - In a world, F8 (rebindable in Options > Mods) opens the studio: Console, Editor, Library, Docs and Settings. The Library's New button (or N) and the + at the top of the Editor's script list open the New prompt: a name, and a Script | Module switch (Tab turns it). A script is `<id>.lua` from a template; a module is `<id>/` with `main.lua`, `shared.lua` and `lib.lua`, wired together with `require`. In the Editor, Ctrl+S saves (the mod reloads) and Ctrl+Enter runs the file in the console (on a module's file, it saves it and reloads the module).
-- The Editor's script list shows a module as a folder that folds open to its files. The menus of its rows (their "...", or a right click) add, rename and delete a module's files, delete a mod, and make a script a module (its file becomes `<id>/main.lua`, keeping its id, storage and on/off state). A delete asks first and moves what it deletes to `trash/`. In the Library each mod has the same menu (its "...", a right click on its row, or the . key), with a module's files to open, which is how the executor styles, which have no script list, reach them; F there makes a new file of a module and M makes a script a module. When the open script is made a module elsewhere (an agent's `write_mod`), the editor follows it to its main.lua, unsaved edits and all; when the open file is removed, its module's main.lua opens, or with unsaved edits the file stays open, marked as removed (a save writes it back, Close lets it go).
+- The Editor's script list shows a module as a folder that folds open to its files. The menus of its rows (their "...", or a right click) add, rename and delete a module's files, delete a mod, and make a script a module (its file becomes `<id>/main.lua`, keeping its id, storage and on/off state). A delete asks first and moves what it deletes to `trash/`. A mod's menu also renames it (its file or folder takes the new id in place, with its on/off state and its saved data in `storage/<id>`; its `-- name:` follows when it was the old id's, and mods that import the old id fail until they import the new one) and duplicates it (the copy starts turned off, with its own `-- name:`). In the Library each mod has the same menu (its "...", a right click on its row, the . key or the Menu key), with a module's files to open, which is how the executor styles, which have no script list, reach them; F there makes a new file of a module and M makes a script a module. When the open script is made a module elsewhere (an agent's `write_mod`), the editor follows it to its main.lua, unsaved edits and all; when the open file is removed, its module's main.lua opens, or with unsaved edits the file stays open, marked as removed (a save writes it back, Close lets it go).
 - Dropping a `.lua` file, a mod folder or a `.zip` of either on the game window installs it; a mod of the same id and kind is replaced (at most 256 files and 8 MiB).
 - On its first start the studio writes the welcome mod `hello.lua`, and it installs the bundled libraries `uikit` and `viahorizon` once (deleting one keeps it deleted).
 - In chat, `/studio` opens the studio, `/studio reload` reloads every mod, `/lua <code>` runs Lua in the console.
@@ -868,7 +868,7 @@ The studio reads the table again every frame: change a field (or a widget's `tex
 | `canvas` | boolean | true: no panel and no widgets; `draw` draws everything with `gfx.*`, and every coordinate is in dp |
 | `backdrop` | boolean | false: no dimmed backdrop over the game |
 | `draw(w, h)` | function | every frame, after the widgets: `w`, `h` are the screen's size in GUI pixels (dp on a canvas); `hud.*` and `gfx.*` draw here |
-| `click(x, y, button)` | function | a press that is not on a widget (and right presses on widgets); `button` is `"left"` or `"right"` |
+| `click(x, y, button)` | function | a press that is not on a widget (and right and middle presses on widgets); `button` is `"left"`, `"right"` or `"middle"` |
 | `release(x, y, button)` | function | a mouse button released, anywhere |
 | `move(x, y)` | function | the pointer moved |
 | `wheel(steps)` | function | the wheel turned (positive is up), unless over a slider |
@@ -880,7 +880,7 @@ The studio reads the table again every frame: change a field (or a widget's `tex
 
 ## Keys on a screen
 
-`key(key, down)` gets short names, not the `key.keyboard.*` names of `on("key")`: `"enter"`, `"backspace"`, `"delete"`, `"tab"`, `"left"`, `"right"`, `"up"`, `"down"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, a lowercase letter `"a"`..`"z"` or digit `"0"`..`"9"`, `"/"`, and `"other"` for the rest. Escape and the studio's key (F8) close the screen when pressed, so `key` only sees them released (`"escape"`, `"toggle"`). `text(t)` gets typed characters (not while Control is held). Function keys stay with the game.
+`key(key, down)` gets short names, not the `key.keyboard.*` names of `on("key")`: `"enter"`, `"backspace"`, `"delete"`, `"tab"`, `"left"`, `"right"`, `"up"`, `"down"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, a lowercase letter `"a"`..`"z"` or digit `"0"`..`"9"`, `"/"`, `" "` (Space), `"`"` (the backquote), and `"other"` for the rest (the Menu key too). Escape and the studio's key (F8) close the screen when pressed, so `key` only sees them released (`"escape"`, `"toggle"`). `text(t)` gets typed characters (not while Control is held). Function keys stay with the game.
 
 ## Focus
 
@@ -3605,11 +3605,11 @@ Shows a screen: a centred panel of widgets, or a canvas the mod draws itself. It
 - `canvas` (boolean): true draws no panel and no widgets; `draw` and every coordinate are in dp.
 - `backdrop` (boolean): false draws no dimmed backdrop over the game.
 - `draw(w, h)`: every frame, after the widgets; `w`, `h` in GUI pixels (dp on a canvas). `hud.*` and `gfx.*` draw here; `world.particle` and `draw.*` do not.
-- `click(x, y, button)`: a press not on a widget (and any right press); `button` is `"left"` or `"right"`.
+- `click(x, y, button)`: a press not on a widget (and any right or middle press); `button` is `"left"`, `"right"` or `"middle"`.
 - `release(x, y, button)`: a button released.
 - `move(x, y)`: the pointer moved.
 - `wheel(steps)`: the wheel turned (positive up), unless over a slider.
-- `key(key, down)`: a key, while no input has focus: `"enter"`, `"backspace"`, `"delete"`, `"tab"`, `"left"`, `"right"`, `"up"`, `"down"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, `"a"`..`"z"`, `"0"`..`"9"`, `"/"`, `"other"`; `"escape"` and `"toggle"` only on release (pressing them closes the screen).
+- `key(key, down)`: a key, while no input has focus: `"enter"`, `"backspace"`, `"delete"`, `"tab"`, `"left"`, `"right"`, `"up"`, `"down"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, `"a"`..`"z"`, `"0"`..`"9"`, `"/"`, `" "`, `"`"`, `"other"`; `"escape"` and `"toggle"` only on release (pressing them closes the screen).
 - `text(t)`: typed text, while no input has focus.
 - `close()`: the player closed the screen (Escape or F8); not called by `ui.close()`.
 

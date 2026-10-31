@@ -2155,6 +2155,28 @@ fn menus_read_and_fit_in_every_style() {
                 assert_ne!(bg, plate, "{what}: {label} is lit");
                 assert!(contrast(c, bg) >= 4.5, "{what}: {label} {c:06x} on {bg:06x}");
             }
+            // The code's menu too: on the screen, readable, and its items do what they say.
+            handle(&mut st, &mut game, key(Key::Escape, NONE));
+            st.s.ui.tab = Tab::Editor;
+            st.s.ui.agent.agents = Some(Vec::new());
+            let scratch = st.scratch_path();
+            st.open_file(&scratch);
+            st.s.editor.set_text("local a = 1\nprint(a)");
+            redraw(&mut st, &mut game);
+            let code = last_text_at(&game, "print");
+            right_click(&mut st, &mut game, code);
+            redraw(&mut st, &mut game);
+            let rect = st.s.ui.menu.as_ref().and_then(|m| m.rect).expect("the code's menu");
+            assert!(within(rect, screen), "{what}: {rect:?}");
+            let (c, bg) = text_on(&game, "Cut");
+            assert!(contrast(c, bg) >= 4.5, "{what}: Cut {c:06x} on {bg:06x}");
+            let at = last_text_at(&game, "Select all");
+            click(&mut st, &mut game, at);
+            assert_eq!(
+                st.s.editor.selected_text().as_deref(),
+                Some("local a = 1\nprint(a)"),
+                "{what}"
+            );
         }
     }
 }
@@ -2379,7 +2401,7 @@ fn a_click_outside_closes_the_menu_and_goes_no_further() {
     click(&mut st, &mut game, (library.0 + 2.0, library.1 + 2.0));
     assert!(st.s.ui.menu.is_none());
     assert_eq!(st.s.ui.tab, Tab::Editor);
-    // Under the naming prompt, a right press opens nothing.
+    // Under the naming prompt, a right press opens nothing, and the wheel scrolls nothing.
     handle(&mut st, &mut game, key(Key::Char('3'), CTRL));
     handle(&mut st, &mut game, Input::Text("n".into()));
     redraw(&mut st, &mut game);
@@ -2387,6 +2409,9 @@ fn a_click_outside_closes_the_menu_and_goes_no_further() {
     right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
     assert!(st.s.ui.menu.is_none());
     assert!(st.s.ui.naming.is_some());
+    let sel = st.s.ui.library_sel;
+    handle(&mut st, &mut game, Input::Wheel(-3.0));
+    assert_eq!(st.s.ui.library_sel, sel, "the Library under it stays");
 }
 
 /// The open menu's items that can be chosen, by label.
@@ -3481,4 +3506,24 @@ fn the_middle_button_reaches_script_screens_only() {
         .map(|(_, t)| t)
         .collect();
     assert_eq!(said, ["\"middle middle\""]);
+}
+
+#[test]
+fn the_footer_and_the_docs_say_how_menus_work() {
+    use horizon_studio::game::hstudio_look::docs_markdown;
+    let (mut game, mut st) = editing("ui-menu-footer", "print(1)");
+    assert!(!drawn_text(&game, "do it"));
+    let code = text_at(&game, "print");
+    right_click(&mut st, &mut game, (code.0 + 2.0, code.1 + 4.0));
+    redraw(&mut st, &mut game);
+    assert!(
+        drawn_text(&game, "choose") && drawn_text(&game, "do it"),
+        "the menu's keys"
+    );
+    let docs = docs_markdown();
+    assert!(docs.contains("Right-click a script or a module"), "Script mods");
+    assert!(
+        docs.contains("Right-click the title bar for the window and the theme."),
+        "Looks"
+    );
 }

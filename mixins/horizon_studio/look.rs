@@ -1047,7 +1047,10 @@ fn header(st: &mut Studio, p: &mut P, x: f32, y: f32, w: f32, dt: f32, windowed:
 }
 
 fn footer(st: &mut Studio, p: &mut P, x: f32, cy: f32, w: f32) {
+    let menu: &[(&str, &str)] = &[("↑ ↓", "choose"), ("⏎", "do it"), ("Esc", "close")];
     let hints: &[(&str, &str)] = match st.s.ui.tab {
+        // An open menu has the keys.
+        _ if st.s.ui.menu.is_some() => menu,
         Tab::Console => &[
             ("⏎", "run"),
             ("↑ ↓", "history"),
@@ -3302,7 +3305,7 @@ fn docs() -> Vec<Doc> {
     let mut out = vec![
         Doc::Heading("Script mods".into()),
         Doc::Para("Script mods live in horizon-mods/.horizon-mod-data/horizon_studio/mods/. A script is one file, name.lua. A module is a folder, name/, whose main.lua loads its other files with require(\"lib\") for lib.lua: each file runs once, however its name is written, and the files share the mod's globals. The New prompt (the Library's New mod, or + in the Editor's script list) makes either; a new module has main.lua, shared.lua and lib.lua. The main file runs when the mod loads; what it registers with on(), command() and every() then runs in the game. Save any of its files, in the Editor or any other editor, and the mod reloads at once. A mod that fails stops alone: the Library shows the error, and the Editor marks its line in the file it is in.".into()),
-        Doc::Para("In the Editor's script list a module is a folder that folds open to its files. A row's ... (or a right click) adds, renames and deletes a module's files, deletes a mod and makes a script a module; what is deleted goes to the trash folder beside mods. In the Library each mod's ... (or the . key) has the same, with a module's files to open. Ctrl+Enter on a module's file saves it and reloads the module.".into()),
+        Doc::Para("In the Editor's script list a module is a folder that folds open to its files. A row's ... (or a right click) adds, renames and deletes a module's files, deletes a mod and makes a script a module; what is deleted goes to the trash folder beside mods. In the Library each mod's ... (or the . key) has the same, with a module's files to open. Right-click a script or a module, in the Editor's list or the Library, to rename, duplicate or delete it: a copy starts turned off, and a rename keeps its saved data and its on/off state. Ctrl+Enter on a module's file saves it and reloads the module.".into()),
         Doc::Para("Drop a .lua file, a mod folder or a .zip on the game window to install it. Lines -- name:, -- version:, -- author: and -- description: at the top name it in the Library.".into()),
         Doc::Heading("Libraries".into()),
         Doc::Para("A mod can be a library for others: it calls export(table), or its main file returns a table, and other mods take it with local kit = import(\"uikit\"). Libraries load first; when one reloads, the mods that use it reload too. A library's functions run as the mod that calls them, so what they draw, register or store belongs to that mod. Mods talk to each other with emit(\"name:event\", ...) and on(\"name:event\", fn), and json.encode and json.decode turn tables into text and back.".into()),
@@ -3329,7 +3332,7 @@ fn docs() -> Vec<Doc> {
         }
     }
     out.push(Doc::Heading("Looks".into()));
-    out.push(Doc::Para("Settings, the last tab, changes how the studio looks: the theme (Horizon, Horizon Light, Midnight, Nord, Rose, Forest, Solar, or one of four styles after the script executors of old Roblox days), full screen or a window, the accent colour, the size of everything, how much of the game shows behind it, the code's size and whether things move. A window is dragged by its title bar and sized from its bottom right corner; its buttons roll it up, fill the screen and close it.".into()));
+    out.push(Doc::Para("Settings, the last tab, changes how the studio looks: the theme (Horizon, Horizon Light, Midnight, Nord, Rose, Forest, Solar, or one of four styles after the script executors of old Roblox days), full screen or a window, the accent colour, the size of everything, how much of the game shows behind it, the code's size and whether things move. A window is dragged by its title bar and sized from its bottom right corner; its buttons roll it up, fill the screen and close it. Right-click the title bar for the window and the theme.".into()));
     out.push(Doc::Para("The executor styles are always a window. Their buttons do the studio's work: Execute runs the editor's code, Clear empties it, Execute File saves the file and reloads its mod, Open File shows the Library, Attach and Inject reload every mod, and Options shows Settings, where the console, the Library and the docs are a click away too.".into()));
     out.push(Doc::Heading("AI agents".into()));
     out.push(Doc::Para("horizon-studio-mcp lets AI agents (Claude Code, omp, Codex, Cursor...) make mods here: they write and test them, headless and in this game, run Lua in the console and read what happened. Copy AI setup prompt, at the top right, copies a prompt for your agent that sets it all up; once one is connected, its name shows there. Options > Mods > Horizon Studio turns the AI link off.".into()));
