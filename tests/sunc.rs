@@ -5,7 +5,7 @@
 mod common;
 
 use common::{FakeGame, log, mod_index, run_for, studio};
-use horizon_studio::game::hstudio::{ModState, Studio};
+use horizon_studio::game::hstudio::{ModState, Studio, VERSION};
 
 /// Runs `src` as a mod for `seconds`; what it printed.
 fn run_mod(src: &str, seconds: f64) -> (Studio, FakeGame, Vec<String>) {
@@ -328,7 +328,7 @@ fn environments() {
     assert_eq!(p[10], "true\ttrue");
     assert_eq!(p[11], "true");
     assert_eq!(p[12], "true");
-    assert_eq!(p[13], "Horizon Studio\t0.4.0");
+    assert_eq!(p[13], format!("Horizon Studio\t{VERSION}"));
 }
 
 #[test]
@@ -732,7 +732,7 @@ fn cache_and_input_and_console() {
     assert_eq!(p[1], "boolean\tfunction\tfunction\tfunction");
     assert_eq!(p[2], "input ok");
     assert_eq!(p[3], "string\tfunction");
-    assert_eq!(p[4], "Horizon Studio\t0.4.0");
+    assert_eq!(p[4], format!("Horizon Studio\t{VERSION}"));
     assert_eq!(p[5], "1\tnil\ttrue");
     // rconsoleprint reached the studio console.
     assert!(log_has(&run_mod(r#"rconsoleprint("mark-xyz")"#, 0.6).0, "mark-xyz"));
