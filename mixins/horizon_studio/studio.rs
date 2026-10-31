@@ -16,13 +16,15 @@ use super::hstudio_lua::{
 };
 use super::hstudio_lualib::{inspect, new_env, quote, text_of};
 use super::hstudio_modfiles::{TEMPLATE, file_name, lua_files, path_in, prune_empty, rel_in, require_path, to_trash};
-pub use super::hstudio_quads::Shade;
 use super::hstudio_ui::{Editor, ScriptScreen, Ui};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 use std::time::{Instant, SystemTime};
+
+/// The gradients the GUI is coloured with (GameApi::dp_shade).
+pub use super::hstudio_quads::Shade;
 
 pub const ID: &str = "horizon_studio";
 pub const NAME: &str = "Horizon Studio";
