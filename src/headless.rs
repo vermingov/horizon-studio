@@ -663,8 +663,10 @@ impl Run {
         let (id, from) = match source {
             Source::Installed { mods_dir, id } => {
                 write_mod(&mods, id, &read_mod(mods_dir, id)?)?;
-                // What read_mod leaves out: assets, and files not text or too big.
-                copy_folder(&mods_dir.join(id), &mods.join(id));
+                // What read_mod leaves out: assets, and files not text or
+                // too big, from the folder read_mod read.
+                let folder = find_mod(mods_dir, id).and_then(|(_, f)| f);
+                copy_folder(&folder.unwrap_or_else(|| mods_dir.join(id)), &mods.join(id));
                 (id.clone(), Some(mods_dir.clone()))
             }
             Source::Files {

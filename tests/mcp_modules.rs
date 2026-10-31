@@ -465,6 +465,16 @@ fn an_id_another_file_of_the_mods_folder_holds_is_refused() {
         );
         assert!(!mods.join("night_light").exists() && !mods.join("night_light.lua").exists());
     }
+    // A module whose folder's name gives its id: checked by that id, with
+    // its assets (one over 1 MiB, which isn't read as text).
+    let folder = mods.join("Desk Lamp");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("main.lua"), "local box = mesh.load('box.obj')\n").unwrap();
+    let obj = format!("# {}\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", "x".repeat(1_100_000));
+    std::fs::write(folder.join("box.obj"), obj).unwrap();
+    let (r, error) = call(&mut s, "check_mod", json!({ "id": "desk_lamp", "mods_dir": d }));
+    assert!(!error, "{r:#}");
+    assert_eq!(r["mod"]["state"], "running", "{r:#}");
     // A mod's own file is written as before.
     for text in ["print('lamp')\n", "print('lamp, again')\n"] {
         let (r, error) = call(
