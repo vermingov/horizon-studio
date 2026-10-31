@@ -126,10 +126,10 @@ Ctrl+1 to Ctrl+5 switch tabs. In chat: `/studio` opens it, `/studio reload` relo
   the one before saved first. The **+** at its top makes a new script or module, or a new file of the module open.
   Each row's **...** (or a right click on it) has its menu (see [Right-click menus](#right-click-menus)): a mod's
   Reload, Turn off or on, Rename, Duplicate, Make it a module and Delete, a module's New file, a file's Rename and
-  Delete. A delete asks first and moves the file or mod to `trash/` beside the mods folder, and the editor follows a
-  file that is renamed or made a module. Ctrl+Enter on a module's file saves it and reloads the module, since the
-  console can't `require` its files; when a module fails in another of its files, a chip by the title says where
-  (*Failed in lib.lua:5*) and opens it there.
+  Delete. A delete asks first and moves the file or mod to `trash/` beside the mods folder (an older copy of the
+  same name there stays, as `test (2).lua`), and the editor follows a file that is renamed or made a module.
+  Ctrl+Enter on a module's file saves it and reloads the module, since the console can't `require` its files; when
+  a module fails in another of its files, a chip by the title says where (*Failed in lib.lua:5*) and opens it there.
 - **Suggestions** open as you type a name: after `player.` the player's functions, after `on("` the events, and
   otherwise the libraries, the standard library, keywords and the names in your file, best matches first. Each shows
   its kind, its signature, and beside the list what it does. Up and Down choose, Tab takes one (Enter too, once you
@@ -182,8 +182,9 @@ each shows its shortcut.
   until they import the new id (the prompt says which), and mods that were waiting for the new id start. An id that
   another mod has is refused, whatever its file is called (`My Mod.lua` has the id `my_mod`). A duplicate starts
   turned off, as it would register the same commands twice. Delete asks first and moves the mod to `trash/` in the
-  studio's folder. The lists' empty space offers New script, New module, New file in the module open, Reload all and
-  the mods folder; an example offers Install and Copy its code.
+  studio's folder, where an older copy of the same name stays, numbered. The lists' empty space offers New script,
+  New module, New file in the module open, Reload all and the mods folder; an example offers Install and Copy its
+  code.
 - **The console's lines** and **the agent's conversation**: Copy what is selected, Copy all, Clear (or Stop and New
   conversation). **Their input lines**: the console's Paste, Copy, Cut and Clear the line, Run and Clear the console;
   the agent's Paste, Clear the line, Send and Stop.

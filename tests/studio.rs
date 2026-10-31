@@ -822,12 +822,15 @@ fn files_are_added_renamed_and_deleted_to_the_trash() {
     assert_eq!(st.s.mods[i].reloads, reloads + 1);
     assert_eq!(st.s.editor.title, "kit/main.lua");
     assert!(!st.s.editor.dirty);
-    // A newer copy replaces the older one in the trash.
+    // A newer copy takes its name in the trash; the older one stays beside it, numbered.
     std::fs::create_dir_all(dir.join("lib")).unwrap();
     std::fs::write(dir.join("lib").join("helpers.lua"), "return 2\n").unwrap();
     run_for(&mut st, &mut game, 0.6);
-    st.delete_path(&mut game, &dir.join("lib").join("helpers.lua")).unwrap();
+    let again = st.delete_path(&mut game, &dir.join("lib").join("helpers.lua")).unwrap();
+    assert_eq!(again, moved);
     assert_eq!(std::fs::read_to_string(&moved).unwrap(), "return 2\n");
+    let kept = moved.with_file_name("helpers (2).lua");
+    assert!(std::fs::read_to_string(&kept).unwrap().starts_with("-- mine"));
     // main.lua alone can't go; the whole module can.
     let e = st.delete_path(&mut game, &dir.join("main.lua")).unwrap_err();
     assert!(e.contains("delete the module instead"), "{e}");
@@ -839,11 +842,22 @@ fn files_are_added_renamed_and_deleted_to_the_trash() {
     let moved = st.delete_path(&mut game, &dir).unwrap();
     assert_eq!(moved, game.dir.join("trash").join("kit"));
     assert!(!dir.exists() && moved.join("main.lua").is_file());
-    // It joins what was deleted from it before: the newest copy of each file.
+    // It joins what was deleted from it before: the newest copy of each file
+    // at its name, and every older one still there.
     assert!(moved.join("old.lua").is_file(), "deleted before, it stays");
+    let lib = moved.join("lib");
     assert_eq!(
-        std::fs::read_to_string(moved.join("lib").join("helpers.lua")).unwrap(),
+        std::fs::read_to_string(lib.join("helpers.lua")).unwrap(),
         "return 3, newer\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(lib.join("helpers (3).lua")).unwrap(),
+        "return 2\n"
+    );
+    assert!(
+        std::fs::read_to_string(lib.join("helpers (2).lua"))
+            .unwrap()
+            .starts_with("-- mine")
     );
     assert!(log(&st).contains(&"Removed kit".to_owned()), "{:?}", log(&st));
     assert_eq!(st.s.editor.title, "scratch.lua");
@@ -852,6 +866,50 @@ fn files_are_added_renamed_and_deleted_to_the_trash() {
     st.delete_path(&mut game, &hello).unwrap();
     assert!(!hello.exists() && game.dir.join("trash").join("hello.lua").is_file());
     assert!(!st.s.mods.iter().any(|m| m.id == "hello"));
+}
+
+#[test]
+fn a_mod_made_again_and_deleted_again_keeps_both_copies_in_the_trash() {
+    let mut game = FakeGame::new("trash-twice");
+    let mut st = studio(&mut game);
+    let trash = game.dir.join("trash");
+    // A script deleted, then a new one of its name from the New prompt, deleted too.
+    game.write_mod("test.lua", "-- the first test, a day of work\n");
+    run_for(&mut st, &mut game, 0.6);
+    let first = game.mods_dir().join("test.lua");
+    assert_eq!(st.delete_path(&mut game, &first).unwrap(), trash.join("test.lua"));
+    let made = st.create_mod(&mut game, "test", None).unwrap();
+    assert_eq!(st.delete_path(&mut game, &made).unwrap(), trash.join("test.lua"));
+    assert!(
+        std::fs::read_to_string(trash.join("test.lua"))
+            .unwrap()
+            .contains("Hello from test"),
+        "the newest at its name"
+    );
+    assert_eq!(
+        std::fs::read_to_string(trash.join("test (2).lua")).unwrap(),
+        "-- the first test, a day of work\n"
+    );
+    // A module, the same: every module has a main.lua.
+    let main = st.create_module(&mut game, "Kit").unwrap();
+    std::fs::write(&main, "-- kit v1, the real code\n").unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    let kit = game.mods_dir().join("kit");
+    assert_eq!(st.delete_path(&mut game, &kit).unwrap(), trash.join("kit"));
+    st.create_module(&mut game, "Kit").unwrap();
+    st.delete_path(&mut game, &kit).unwrap();
+    assert!(
+        std::fs::read_to_string(trash.join("kit").join("main.lua"))
+            .unwrap()
+            .contains("main.lua starts the module")
+    );
+    assert_eq!(
+        std::fs::read_to_string(trash.join("kit").join("main (2).lua")).unwrap(),
+        "-- kit v1, the real code\n"
+    );
+    for f in ["lib (2).lua", "shared (2).lua"] {
+        assert!(trash.join("kit").join(f).is_file(), "{f}");
+    }
 }
 
 #[test]

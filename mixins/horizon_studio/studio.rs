@@ -1641,7 +1641,8 @@ impl Studio {
     }
 
     /// The trash: what the studio deletes goes there, as
-    /// `<studio>/trash/<its path in mods/>`, the newest copy of each.
+    /// `<studio>/trash/<its path in mods/>`, the newest copy of each, and
+    /// older ones beside it under a number (`to_trash`).
     pub fn trash_dir(&self) -> PathBuf {
         self.s.dir.join("trash")
     }

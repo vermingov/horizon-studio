@@ -2953,8 +2953,23 @@ pub(crate) fn naming_plan(st: &Studio) -> Result<String, String> {
                 let parts: Option<Vec<&str>> = r.components().map(|c| c.as_os_str().to_str()).collect();
                 parts.map(|p| p.join("/"))
             });
+            // What the trash has at that name already stays, beside it.
+            let there = path.strip_prefix(&mods).ok().map(|r| st.trash_dir().join(r));
+            let kept = match there.filter(|t| std::fs::symlink_metadata(t).is_ok()) {
+                Some(t) if t.is_dir() && path.is_dir() => {
+                    "\nIt joins the folder there; a file both have keeps the older copy, numbered.".to_owned()
+                }
+                Some(t) => {
+                    let name = super::hstudio_modfiles::numbered(&t);
+                    let name = name
+                        .file_name()
+                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                    format!("\nThe older copy there stays, as {name}.")
+                }
+                None => String::new(),
+            };
             Ok(format!(
-                "It moves to trash/{} beside the mods folder.",
+                "It moves to trash/{} beside the mods folder.{kept}",
                 rel.unwrap_or_else(|| prompt_name(st, path))
             ))
         }

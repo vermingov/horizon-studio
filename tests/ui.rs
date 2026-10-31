@@ -2957,6 +2957,29 @@ fn delete_asks_first_and_moves_the_mod_to_the_trash() {
             .unwrap()
             .contains("off:hello")
     );
+    // A hello made again and deleted again: the prompt says the copy in the
+    // trash stays, and both are there after.
+    game.write_mod("hello.lua", "print('hello again')\n");
+    run_for(&mut st, &mut game, 0.6);
+    let i = mod_index(&st, "hello");
+    st.edit_mod(i);
+    redraw(&mut st, &mut game);
+    let row = last_text_at(&game, "hello.lua");
+    right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
+    choose(&mut st, &mut game, "Delete...");
+    redraw(&mut st, &mut game);
+    assert!(drawn_contains(
+        &game,
+        "It moves to trash/hello.lua beside the mods folder."
+    ));
+    assert!(drawn_contains(&game, "The older copy there stays, as hello (2).lua."));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    let trash = st.s.dir.join("trash");
+    assert_eq!(
+        std::fs::read_to_string(trash.join("hello.lua")).unwrap(),
+        "print('hello again')\n"
+    );
+    assert!(trash.join("hello (2).lua").is_file());
 }
 
 #[test]
