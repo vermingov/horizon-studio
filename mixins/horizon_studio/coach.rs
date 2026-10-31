@@ -98,12 +98,29 @@ pub struct Coach {
     events: VecDeque<Event>,
     last_event: u64,
     given: u64,
+    /// This run of the game, a number new each time it starts: the events'
+    /// numbers count in it (a game started again numbers them from 1).
+    run: u64,
     /// An agent waits for the player until then (each of its asks keeps
     /// it on): which, and whether it is the game's own, in its run.
     waiting_until: f64,
     waiting_by: Option<(By, bool)>,
     /// The coach saves the editor's file (not the player).
     saving: bool,
+}
+
+/// A number for this run of the game, new each time it starts, from the
+/// clock and the standard library's randomly keyed hasher; at most 2^53, so
+/// that any reader of JSON keeps it exactly.
+fn run_id() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(nanos);
+    h.write_u32(std::process::id());
+    h.finish() >> 11
 }
 
 /// A note over the code: what an agent changed elsewhere, its Agent panel
@@ -141,6 +158,7 @@ impl Default for Coach {
             events: VecDeque::new(),
             last_event: 0,
             given: 0,
+            run: run_id(),
             waiting_until: f64::NEG_INFINITY,
             waiting_by: None,
             saving: false,
@@ -2846,6 +2864,7 @@ pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -
         "steps": n,
         "marks": marks,
         "seq": st.s.ui.coach.last_event,
+        "run": st.s.ui.coach.run,
     }))
 }
 
@@ -3159,10 +3178,12 @@ fn expire_events(st: &mut Studio) {
 }
 
 /// The link's `player_event`: the oldest thing the player did that the
-/// agent hasn't had (`after`: the number of the last it had; without it,
-/// the newest any agent had), or `none`. Asking keeps the agent waiting for
-/// the player a moment: the Agent panel says so, and Enter there sends it
-/// what they write.
+/// agent hasn't had (`after`: the number of the last it had, in `run`;
+/// without it, the newest any agent had), or `none`. Each answer gives this
+/// run of the game: an `after` from another run (the game started again
+/// since) gets this run's events from its first. Asking keeps the agent
+/// waiting for the player a moment: the Agent panel says so, and Enter
+/// there sends it what they write.
 pub fn player_event(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let after = match params.get("after") {
         None | Some(Json::Null) => None,
@@ -3176,12 +3197,20 @@ pub fn player_event(st: &mut Studio, by: &By, params: &Json) -> Result<Json, Str
     let c = &mut st.s.ui.coach;
     c.waiting_until = now + WAITING;
     c.waiting_by = Some((by.clone(), in_run));
-    let after = after.unwrap_or(c.given);
+    // Counted in another run (the game started again since): all of this
+    // run's events are new to the agent.
+    let earlier = params.get("run").and_then(Json::as_u64).is_some_and(|r| r != c.run);
+    let after = match after {
+        Some(_) if earlier => 0,
+        Some(n) => n,
+        None => c.given,
+    };
     let Some(e) = c.events.iter().find(|e| e.seq > after) else {
-        return Ok(json!({ "event": "none", "seq": after }));
+        return Ok(json!({ "event": "none", "seq": after, "run": c.run }));
     };
     let mut out = e.data.clone();
     out["seq"] = json!(e.seq);
+    out["run"] = json!(c.run);
     out["age_s"] = json!(((now - e.at) * 10.0).round() / 10.0);
     c.given = c.given.max(e.seq);
     Ok(out)

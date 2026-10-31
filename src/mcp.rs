@@ -674,9 +674,11 @@ pub struct Server {
     /// The published reference, once fetched or read from the cache (None:
     /// the built-in one).
     docs: Arc<Mutex<Option<Arc<Reference>>>>,
-    /// The number of the last of the player's events wait_for_player gave
-    /// (or of the newest when start_lesson began): it goes on from there.
-    events_after: Option<u64>,
+    /// The last of the player's events wait_for_player gave (or the newest
+    /// when start_lesson began): the run of the game it is of, and its
+    /// number. It goes on from there; a game started again since (another
+    /// run, which numbers its events from 1) gives all of its own.
+    events_after: Option<(u64, u64)>,
 }
 
 impl Server {
@@ -810,6 +812,20 @@ impl Server {
         self.live("status", json!({})).is_ok()
     }
 
+    /// The link protocol the game speaks, from its auth reply (connecting
+    /// first if needed).
+    fn link_protocol(&mut self) -> Result<u64, String> {
+        let name = self.client_name();
+        let mut slot = self.link.lock().map_err(|_| "the link broke".to_owned())?;
+        if let Some(link) = slot.as_ref() {
+            return Ok(link.protocol);
+        }
+        let link = LinkClient::connect(name.as_deref())?;
+        let protocol = link.protocol;
+        *slot = Some(link);
+        Ok(protocol)
+    }
+
     /// When the player's editor in the running game has unsaved edits to a
     /// file of mod `id`, a note that says so: the files on disk, which the
     /// other tools use, don't have them yet.
@@ -840,8 +856,16 @@ impl Server {
              (Horizon Studio's newest release)"
                 .to_owned()
         };
-        let protocol = self.link.lock().ok().and_then(|l| l.as_ref().map(|c| c.protocol));
-        if protocol.is_some_and(|p| p < 2) {
+        let not_live = |e: String| {
+            if e.starts_with("the game isn't") {
+                format!("{e} (the editor tools work in the running game; game_status says)")
+            } else {
+                e
+            }
+        };
+        // The game's link speaks protocol 2 or newer (connected first, if
+        // it isn't yet): an older game's has no editor.
+        if self.link_protocol().map_err(not_live)? < 2 {
             return Err(old());
         }
         let until = Instant::now() + Duration::from_secs_f64(wait);
@@ -853,12 +877,7 @@ impl Server {
             let answer = match self.live(method, params) {
                 Ok(v) => v,
                 Err(e) if e.starts_with("unknown method") => return Err(old()),
-                Err(e) if e.starts_with("the game isn't") => {
-                    return Err(format!(
-                        "{e} (the editor tools work in the running game; game_status says)"
-                    ));
-                }
-                Err(e) => return Err(e),
+                Err(e) => return Err(not_live(e)),
             };
             if answer["busy"] != true {
                 return Ok(answer);
@@ -881,12 +900,16 @@ impl Server {
         let start = Instant::now();
         loop {
             let mut ask = json!({});
-            if let Some(after) = self.events_after {
+            if let Some((run, after)) = self.events_after {
                 ask["after"] = json!(after);
+                ask["run"] = json!(run);
             }
-            let event = self.editor_live("player_event", &ask, true, 0.0)?;
+            let mut event = self.editor_live("player_event", &ask, true, 0.0)?;
+            let run = game_run(&mut event);
             if event["event"] != "none" {
-                self.events_after = event["seq"].as_u64().or(self.events_after);
+                if let (Some(run), Some(seq)) = (run, event["seq"].as_u64()) {
+                    self.events_after = Some((run, seq));
+                }
                 return Ok(event);
             }
             if start.elapsed() >= Duration::from_secs(secs) {
@@ -1198,10 +1221,10 @@ impl Server {
             "mark_lines" => self.editor_live("mark", args, true, 0.0),
             "clear_marks" => self.editor_live("unmark", args, true, 0.0),
             "start_lesson" => {
-                let r = self.editor_live("lesson", args, true, 10.0)?;
+                let mut r = self.editor_live("lesson", args, true, 10.0)?;
                 // What the player does from now on is the lesson's.
-                if let Some(seq) = r["seq"].as_u64() {
-                    self.events_after = Some(seq);
+                if let (Some(run), Some(seq)) = (game_run(&mut r), r["seq"].as_u64()) {
+                    self.events_after = Some((run, seq));
                 }
                 Ok(r)
             }
@@ -1424,6 +1447,13 @@ fn fresh_key() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     format!("{}-{nanos}-{n}", std::process::id())
+}
+
+/// The run of the game an answer about the player's events is of, taken out
+/// of it: the server keeps it with the last event it gave, and the agent has
+/// no use for it.
+fn game_run(answer: &mut Json) -> Option<u64> {
+    answer.as_object_mut()?.remove("run")?.as_u64()
 }
 
 /// Lines numbered as `cat -n` numbers them ("     12\tcode"), the first

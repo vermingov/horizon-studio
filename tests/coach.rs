@@ -2550,6 +2550,20 @@ fn the_players_lesson_events_reach_a_waiting_agent() {
     // after gives them again from there (an answer lost on the way is asked for again).
     let again = ask(&mut st, &mut game, "player_event", json!({ "after": 2 })).unwrap();
     assert_eq!(again["event"], "check");
+    // Each answer names this run of the game: an after counted in another
+    // (the game started again since) gets this run's events from the first.
+    let run = got[0]["run"].as_u64().expect("its run");
+    assert!(got.iter().all(|e| e["run"] == run) && r["run"] == run);
+    let e = ask(
+        &mut st,
+        &mut game,
+        "player_event",
+        json!({ "after": 4, "run": run + 1 }),
+    )
+    .unwrap();
+    assert_eq!((&e["event"], &e["seq"]), (&json!("next"), &json!(1)), "{e}");
+    let e = ask(&mut st, &mut game, "player_event", json!({ "after": 4, "run": run })).unwrap();
+    assert_eq!(e["event"], "closed", "{e}");
     // Check went to the agent: the panel says so.
     assert!(
         st.s.ui

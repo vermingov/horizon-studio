@@ -369,5 +369,74 @@ fn an_agent_opens_and_reads_the_players_scripts() {
             .contains("the editor tools work in the running game"),
         "{r}"
     );
+    // The game started again numbers the player's events from 1: waiting
+    // for the player hears them, not only those past the last this server
+    // had from the game before.
+    let game = Game::start();
+    let start = Instant::now();
+    while !file.exists() {
+        assert!(start.elapsed() < Duration::from_secs(5), "the link file never came");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    game.with(|st, _| horizon_studio::game::hstudio_coach::reply(st, "back again"));
+    let (r, error) = call_json(&mut s, "wait_for_player", json!({ "timeout_s": 5 }));
+    assert!(!error, "{r:#}");
+    assert_eq!(
+        (&r["event"], &r["text"]),
+        (&json!("message"), &json!("back again")),
+        "{r:#}"
+    );
+    assert!(r.get("run").is_none(), "the server's own: {r:#}");
+    game.end();
+    // An older game, whose link speaks protocol 1 or knows no editor
+    // methods, is one to update.
+    for (hello, answer) in [
+        (
+            json!({ "ok": true, "studio": "0.5.1", "protocol": 1 }),
+            json!({ "result": { "ok": true } }),
+        ),
+        (
+            json!({ "ok": true, "studio": "0.5.9", "protocol": 2 }),
+            json!({ "error": "unknown method 'editor' (status, ping, mods)" }),
+        ),
+    ] {
+        let older = fake_link(&file, hello, answer);
+        let mut fresh = Server::new();
+        for tool in ["read_script", "mark_lines"] {
+            let (r, error) = call_json(&mut fresh, tool, json!({ "start_line": 1, "note": "Here." }));
+            assert!(error, "{tool}: {r}");
+            assert!(
+                r.as_str().unwrap().contains("older than this server")
+                    && r.as_str().unwrap().contains("update the game"),
+                "{tool}: {r}"
+            );
+        }
+        drop(fresh);
+        older.join().unwrap();
+    }
     let _ = std::fs::remove_dir_all(&home);
+}
+
+/// A game other than this one, on its own thread: a link (its file at
+/// `file`) that answers its auth with `hello` and every request with
+/// `answer`, until its one connection closes.
+fn fake_link(file: &std::path::Path, hello: Json, answer: Json) -> std::thread::JoinHandle<()> {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let info = json!({ "protocol": hello["protocol"], "port": port, "token": "older" });
+    std::fs::write(file, info.to_string()).unwrap();
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let mut lines = BufReader::new(stream).lines();
+        let _auth = lines.next();
+        writeln!(writer, "{hello}").unwrap();
+        for line in lines.map_while(Result::ok) {
+            let request: Json = serde_json::from_str(&line).unwrap();
+            let mut reply = answer.clone();
+            reply["id"] = request["id"].clone();
+            writeln!(writer, "{reply}").unwrap();
+        }
+    })
 }
