@@ -20,7 +20,7 @@ use super::hstudio_look::{
     set_pal, state_dot, top,
 };
 use super::hstudio_theme::{Layout, Palette, Theme};
-use super::hstudio_ui::{Action, ScriptRow, Tab, open_row, row_label, script_rows, scripts_first};
+use super::hstudio_ui::{Action, ScriptRow, Spot, Tab, open_row, row_label, script_rows, scripts_first};
 
 /// A flat button's look.
 #[derive(Clone, Copy)]
@@ -316,6 +316,7 @@ fn script_list(st: &mut Studio, p: &mut P, x: f32, y: f32, w: f32, h: f32, dt: f
         let name = p.fit(&label, room.max(12.0), 12.0, Font::Regular);
         p.text(&name, tx, top(cy, 12.0), 12.0, Font::Regular, fg);
         st.s.ui.hits.push((r, Action::ScriptRow(k.min(65535) as u16)));
+        st.s.ui.hits.push((r, Action::Spot(Spot::Row(k.min(65535) as u16))));
         if menu {
             let b = [r[0] + r[2] - 20.0, r[1] + 1.0, 18.0, r[3] - 2.0];
             let ui = &mut st.s.ui;

@@ -26,6 +26,8 @@ pub mod game {
     pub mod hstudio_lua;
     #[path = "../../mixins/horizon_studio/lualib.rs"]
     pub mod hstudio_lualib;
+    #[path = "../../mixins/horizon_studio/menus.rs"]
+    pub mod hstudio_menus;
     #[path = "../../mixins/horizon_studio/meshes.rs"]
     pub mod hstudio_meshes;
     #[path = "../../mixins/horizon_studio/models.rs"]

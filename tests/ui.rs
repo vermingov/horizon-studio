@@ -2137,3 +2137,177 @@ fn a_menu_taller_than_the_screen_scrolls() {
     handle(&mut st, &mut game, Input::Wheel(-1.0));
     assert!(st.s.ui.menu.is_none(), "the wheel elsewhere closes it");
 }
+
+fn right_press(st: &mut horizon_studio::game::hstudio::Studio, game: &mut FakeGame) {
+    handle(
+        st,
+        game,
+        Input::Button {
+            left: false,
+            down: true,
+        },
+    );
+}
+
+fn right_release(st: &mut horizon_studio::game::hstudio::Studio, game: &mut FakeGame) {
+    handle(
+        st,
+        game,
+        Input::Button {
+            left: false,
+            down: false,
+        },
+    );
+}
+
+#[test]
+fn the_wheel_closes_the_menu_and_right_clicks_leave_drags_alone() {
+    let mut game = FakeGame::new("ui-menu-wheel");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    let text: Vec<String> = (1..=300).map(|i| format!("local v{i} = {i}")).collect();
+    st.s.editor.set_text(&text.join("\n"));
+    redraw(&mut st, &mut game);
+    // A row's menu, and the wheel over the code: the menu closes, nothing scrolls.
+    let hello = text_at(&game, "hello.lua");
+    right_click(&mut st, &mut game, (hello.0 + 2.0, hello.1 + 2.0));
+    assert!(st.s.ui.menu.is_some());
+    redraw(&mut st, &mut game);
+    let code = text_at(&game, "v5");
+    handle(&mut st, &mut game, Input::Mouse(code.0, code.1));
+    handle(&mut st, &mut game, Input::Wheel(-2.0));
+    assert!(st.s.ui.menu.is_none());
+    assert_eq!(st.s.editor.scroll, 0, "the wheel went no further");
+    // The scroll bar dragged: a right press and release on the way open
+    // nothing, and the drag goes on until the left button lets go.
+    redraw(&mut st, &mut game);
+    let sb = st.s.ui.scrollbar.expect("a scroll bar");
+    let (x, top) = (sb.x, sb.top + sb.bar / 2.0);
+    handle(&mut st, &mut game, Input::Mouse(x, top));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    handle(&mut st, &mut game, Input::Mouse(x, top + 40.0));
+    right_press(&mut st, &mut game);
+    right_release(&mut st, &mut game);
+    assert!(st.s.ui.menu.is_none());
+    let scrolled = st.s.editor.scroll;
+    assert!(scrolled > 0);
+    handle(&mut st, &mut game, Input::Mouse(x, top + 120.0));
+    assert!(st.s.editor.scroll > scrolled, "still dragging");
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    let at = st.s.editor.scroll;
+    handle(&mut st, &mut game, Input::Mouse(x, top + 200.0));
+    assert_eq!(st.s.editor.scroll, at, "let go");
+}
+
+#[test]
+fn typing_while_a_menu_is_open_goes_to_the_menu() {
+    use horizon_studio::game::hstudio_agent::AgentSpec;
+    use horizon_studio::game::hstudio_ui::Panel;
+    let mut game = FakeGame::new("ui-menu-text");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.s.ui.agent.agents = Some(vec![AgentSpec::claude(std::path::PathBuf::from("claude"))]);
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    st.s.editor.set_text("");
+    st.s.ui.panel = Panel::Agent;
+    redraw(&mut st, &mut game);
+    let chip = text_at(&game, "Model: Default");
+    click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 2.0));
+    // A letter lights the next item that starts with it, and types nothing.
+    type_text(&mut st, &mut game, "h");
+    let menu = st.s.ui.menu.clone().expect("still open");
+    assert_eq!(menu.items[menu.sel.unwrap()].label, "Haiku");
+    assert_eq!(st.s.editor.text(), "");
+    assert_eq!(st.s.ui.agent_input.text, "");
+    // A space chooses it.
+    handle(&mut st, &mut game, Input::Text(" ".into()));
+    assert!(st.s.ui.menu.is_none());
+    let kept = std::fs::read_to_string(st.s.dir.join("agent-models.txt")).unwrap();
+    assert_eq!(kept, "claude=haiku\n");
+    assert_eq!(st.s.editor.text(), "");
+    // Home and End go to the first and the last; the studio's key closes
+    // the menu with the studio, Escape the menu alone.
+    redraw(&mut st, &mut game);
+    let chip = text_at(&game, "Model: Haiku");
+    click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 2.0));
+    handle(&mut st, &mut game, key(Key::End, NONE));
+    let menu = st.s.ui.menu.clone().unwrap();
+    assert_eq!(menu.items[menu.sel.unwrap()].label, "Other model...");
+    handle(&mut st, &mut game, key(Key::Home, NONE));
+    let menu = st.s.ui.menu.clone().unwrap();
+    assert_eq!(menu.items[menu.sel.unwrap()].label, "Default");
+    assert_eq!(handle(&mut st, &mut game, key(Key::Escape, NONE)), UiResult::Used);
+    assert!(st.s.ui.menu.is_none() && st.s.ui.open);
+    click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 2.0));
+    assert_eq!(handle(&mut st, &mut game, key(Key::Toggle, NONE)), UiResult::Close);
+    assert!(st.s.ui.menu.is_none());
+}
+
+#[test]
+fn a_menu_left_open_is_dropped_when_the_studio_opens_again() {
+    let mut game = FakeGame::new("ui-menu-stale");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.s.now = 5.0;
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    redraw(&mut st, &mut game);
+    let hello = text_at(&game, "hello.lua");
+    right_click(&mut st, &mut game, (hello.0 + 2.0, hello.1 + 2.0));
+    redraw(&mut st, &mut game);
+    assert!(st.s.ui.menu.is_some(), "it stays while the studio is open");
+    st.s.now = 9.0;
+    st.s.ui.opened_at = st.s.now;
+    redraw(&mut st, &mut game);
+    assert!(st.s.ui.menu.is_none());
+}
+
+#[test]
+fn a_click_outside_closes_the_menu_and_goes_no_further() {
+    let mut game = FakeGame::new("ui-menu-outside");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.create_module(&mut game, "Kit").unwrap();
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    redraw(&mut st, &mut game);
+    let hello = text_at(&game, "hello.lua");
+    right_click(&mut st, &mut game, (hello.0 + 2.0, hello.1 + 2.0));
+    assert!(menu_items(&st).contains(&"Make it a module".to_owned()));
+    redraw(&mut st, &mut game);
+    let target =
+        st.s.ui
+            .menu
+            .as_ref()
+            .and_then(|m| m.target)
+            .expect("its row is outlined");
+    assert!(target[1] <= hello.1 && hello.1 < target[1] + target[3], "{target:?}");
+    // A right press on another row puts that row's menu in its place.
+    let kit = text_at(&game, "kit/");
+    right_click(&mut st, &mut game, (kit.0 + 2.0, kit.1 + 2.0));
+    assert_eq!(menu_items(&st)[0], "New file...");
+    // A left click outside closes it, and the tab under it stays as it was.
+    redraw(&mut st, &mut game);
+    let library = text_at(&game, "Library");
+    click(&mut st, &mut game, (library.0 + 2.0, library.1 + 2.0));
+    assert!(st.s.ui.menu.is_none());
+    assert_eq!(st.s.ui.tab, Tab::Editor);
+    // Under the naming prompt, a right press opens nothing.
+    handle(&mut st, &mut game, key(Key::Char('3'), CTRL));
+    handle(&mut st, &mut game, Input::Text("n".into()));
+    redraw(&mut st, &mut game);
+    let row = text_at(&game, "UI Kit");
+    right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
+    assert!(st.s.ui.menu.is_none());
+    assert!(st.s.ui.naming.is_some());
+}

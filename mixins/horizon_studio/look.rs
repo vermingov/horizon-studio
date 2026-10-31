@@ -9,7 +9,7 @@ use super::hstudio::{API, CONSOLE_API, Font, GameApi, LogKind, ModState, Studio}
 use super::hstudio_examples::EXAMPLES;
 use super::hstudio_theme::{ACCENTS, Layout, Look, Palette, THEMES};
 use super::hstudio_ui::{
-    Action, EditorView, LineEdit, Long, Panel, Tab, Tint, Ui, field, field_num, field_text, highlight, kind,
+    Action, EditorView, LineEdit, Long, Panel, Spot, Tab, Tint, Ui, field, field_num, field_text, highlight, kind,
     slider_text, widgets,
 };
 
@@ -488,6 +488,11 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
     let fresh = now - st.s.ui.last_draw > 0.25;
     let dt = {
         let ui = &mut st.s.ui;
+        // A menu left open goes when the studio opens again (or comes back
+        // from a script's screen).
+        if ui.menu.as_ref().is_some_and(|m| m.opened_at < ui.opened_at) {
+            ui.menu = None;
+        }
         ui.dp = k;
         ui.screen = (w, h);
         ui.hits.clear();
@@ -1592,6 +1597,7 @@ fn draw_scripts(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         p.text(&name, tx, top(cy, 12.5), 12.5, Font::Regular, fg);
         let ui = &mut st.s.ui;
         ui.hits.push((r, Action::ScriptRow(k.min(65535) as u16)));
+        ui.hits.push((r, Action::Spot(Spot::Row(k.min(65535) as u16))));
         for (b, glyph, action) in buttons {
             let bh = hover(ui, id(glyph, k), inside(b, ui.mouse), dt);
             p.rect(b, 6.0, fade(pal().ink, 0.10 * bh));
@@ -2819,6 +2825,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             );
         }
         st.s.ui.hits.push((r, Action::Select(i)));
+        st.s.ui.hits.push((r, Action::Spot(Spot::Mod(i))));
         if buttons {
             let enabled = st.s.mods[i].enabled;
             let toggle = if enabled { "Turn off" } else { "Turn on" };

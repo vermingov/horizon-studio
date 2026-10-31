@@ -104,6 +104,12 @@ name = "hstudio_ui"
 source = "ui.rs"
 
 [[module]]
+id = "menus"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_menus"
+source = "menus.rs"
+
+[[module]]
 id = "look"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_look"
