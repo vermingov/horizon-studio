@@ -496,8 +496,9 @@ pub fn prompt(request: &str, ctx: &AgentContext) -> String {
           - For the script open in the editor: read_script, then edit_script, then save_script when the change \
           is complete (edits you leave unsaved are saved when you finish, if nobody changed the file since). \
           Line numbers count from 1 in read_script's text. Save before test_mod or reload_mod: they use the \
-          file on disk. Use write_mod for a new mod or files that aren't open, after reading them with \
-          read_mod.\n\
+          file on disk. To change another script as the player watches, open_script it first (it waits while \
+          they are busy, and refuses over their unsaved edits), then edit_script. Use write_mod for a new mod \
+          or many files at once, after reading them with read_mod.\n\
           - When the player asks what is wrong, mark the lines with mark_lines and a note of one or two \
           sentences, and explain in your answer.\n\
           - When they want to learn, start_lesson, then wait_for_player (it answers within 30 s; call it again \

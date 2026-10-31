@@ -900,11 +900,17 @@ fn footer(st: &mut Studio, p: &mut P, x: f32, cy: f32, w: f32) {
             Panel::Problems => &[("↑ ↓", "choose"), ("⏎", "go to it"), ("Esc", "back to the code")],
             Panel::Agent => &[("⏎", "ask"), ("Esc", "back to the code"), ("Ctrl `", "hide the panel")],
         },
-        // An agent's lesson: its keys first.
-        Tab::Editor if st.s.ui.coach.lesson.is_some() => &[
+        // An agent's lesson: its keys first, and Esc while its note shows.
+        Tab::Editor if st.s.ui.coach.lesson.is_some() && st.s.ui.coach.bubble_at.is_some() => &[
             ("Alt →", "next step"),
             ("Alt ←", "back"),
             ("Esc", "close the note"),
+            ("Ctrl S", "save and reload"),
+            ("Ctrl Z", "undo"),
+        ],
+        Tab::Editor if st.s.ui.coach.lesson.is_some() => &[
+            ("Alt →", "next step"),
+            ("Alt ←", "back"),
             ("Ctrl S", "save and reload"),
             ("Ctrl Z", "undo"),
         ],

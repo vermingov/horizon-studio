@@ -808,6 +808,9 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
             let mut host = Host::new(game);
             host.event_loop = Some(event_loop);
             st.frame(&mut host, dt);
+            // The player's input of this frame comes after the link's
+            // requests: one that would open another file sees it coming.
+            super::hstudio_coach::input_coming(st, &inputs);
             // The AI link's requests (horizon-studio-mcp), after the scripts' frame.
             super::hstudio_link::poll(st, &mut host);
             for path in dropped {

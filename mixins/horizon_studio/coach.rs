@@ -288,12 +288,33 @@ pub fn before_input(st: &mut Studio, input: &Input) -> Before {
     if let Some(why) = why {
         finish_typing(st, why);
     }
-    if why.is_some() || matches!(input, Input::Wheel(_)) {
+    if used(input) {
         st.s.ui.coach.input_at = st.s.now;
     }
     Before {
         revision: st.s.editor.revision,
         path: st.s.editor.path.clone(),
+    }
+}
+
+/// Whether an input is the player using the studio: a key, a typed
+/// character, a press or the wheel (not the pointer moving).
+fn used(input: &Input) -> bool {
+    matches!(
+        input,
+        Input::Key { down: true, .. } | Input::Text(_) | Input::Button { down: true, .. } | Input::Wheel(_)
+    )
+}
+
+/// The player's input of this frame, before the AI link's requests are
+/// handled (the game handles them first, then the input): what of it
+/// reaches the studio counts as the player using it now, so a request that
+/// would open another file waits rather than have their keys, aimed at the
+/// file they see, land in another.
+pub fn input_coming(st: &mut Studio, inputs: &[Input]) {
+    let reaches = st.s.ui.open && st.s.screen.is_none() && st.s.ui.closing_at.is_none();
+    if reaches && inputs.iter().any(used) {
+        st.s.ui.coach.input_at = st.s.now;
     }
 }
 
@@ -1888,10 +1909,9 @@ pub fn save(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
 /// saves, `mark` points at lines and `unmark` clears marks, `lesson`
 /// starts a lesson and `player_event` gives what the player did since (an
 /// agent waiting for them). A request that changes something and carries a
-/// `key` is done
-/// once: sent again with the same key (its client trying again after a
-/// timeout), it gets the same answer. One that has to wait for the player
-/// isn't kept, so asking again tries again.
+/// `key` is done once: sent again with the same key (its client trying
+/// again after a timeout), it gets the same answer. One that has to wait
+/// for the player isn't kept, so asking again tries again.
 pub fn call(st: &mut Studio, game: &mut dyn GameApi, by: &By, method: &str, params: &Json) -> Result<Json, String> {
     let key = text(params, "key")
         .filter(|_| !matches!(method, "editor" | "typed"))
@@ -2141,6 +2161,10 @@ pub fn mark(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let Place { first, last, span } = mark_place(&lines, &t.file, params)?;
     let note = clean(raw(params, "note").unwrap_or(""), NOTE_CHARS);
     let tone = Tone::parse(text(params, "tone"))?;
+    // Its note is what the player reads, and holds the × that clears it.
+    if note.is_empty() {
+        return Err("note is missing: say in a sentence or two what the lines do, or what is wrong there".into());
+    }
     let reveal = flag(params, "reveal").unwrap_or(true);
     let in_run = in_run(st, by);
     let c = &mut st.s.ui.coach;

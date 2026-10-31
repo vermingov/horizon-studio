@@ -32,7 +32,8 @@ the files that change, and `remove` deletes files); a library calls export(table
 then `test_mod` with steps, headless first (no game needed) and live once `game_status` says the game is linked. \
 `run_lua`, `send_chat` and `game_log` work in the running game; `horizon_ctl` plays it and takes screenshots when the \
 game runs with --control. In the player's own editor, live: `read_script` reads a script as they have it (unsaved edits \
-too), `edit_script` types a change into it as they watch, `save_script` saves it, `open_script` opens one, \
+too), `edit_script` types a change into it as they watch, `save_script` saves it, `open_script` opens one (open a \
+script first to type into it: `edit_script` writes one the editor doesn't have open to disk at once), \
 `mark_lines` points at lines with a note (`clear_marks` clears them), and `start_lesson` teaches with numbered steps \
 they go through, `wait_for_player` telling you when they press Check or write to you. Mods are sandboxed Lua: no \
 files, no network, a step budget per call.";
@@ -514,7 +515,7 @@ pub fn tools() -> Json {
             script_props(json!({
                 "start_line": { "type": "integer", "description": "The first line to mark, from 1 (as read_script numbers them)." },
                 "end_line": { "type": "integer", "description": "The last (default start_line)." },
-                "note": { "type": "string", "description": "What to say about the lines (500 characters at most)." },
+                "note": { "type": "string", "description": "What to say about the lines, one or two sentences (500 characters at most)." },
                 "tone": { "type": "string", "enum": ["note", "error", "warning", "good"],
                           "description": "Its colour: note (default), error, warning or good." },
                 "columns": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2,
@@ -522,7 +523,7 @@ pub fn tools() -> Json {
                 "reveal": { "type": "boolean", "description": "Open its note and scroll to it (default true)." },
                 "replace": { "type": "boolean", "description": "Clear your other marks first (default false)." },
             })),
-            &["start_line"]
+            &["start_line", "note"]
         ),
         tool(
             "clear_marks",

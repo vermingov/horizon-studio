@@ -470,6 +470,27 @@ fn opening_waits_for_the_player_and_never_puts_their_edits_aside() {
 }
 
 #[test]
+fn input_that_comes_in_a_requests_frame_is_the_player_using_the_studio() {
+    let (mut game, mut st) = with_module("coach-input-coming");
+    st.s.ui.open = true;
+    st.s.now = 10.0;
+    // (The game handles the link's requests before the frame's input.) A
+    // key pressed this frame, not handled yet: opening another file waits.
+    coach::input_coming(&mut st, &[Input::Mouse(5.0, 5.0), key(Key::Char('x'), NONE)]);
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "hello" })).unwrap();
+    assert_eq!(r["busy"], true, "{r}");
+    assert_eq!(st.s.editor.title, "scratch.lua");
+    // The pointer moving isn't using it, and nothing reaches it while it is closed.
+    st.s.now = 13.0;
+    coach::input_coming(&mut st, &[Input::Mouse(6.0, 6.0)]);
+    st.s.ui.open = false;
+    coach::input_coming(&mut st, &[Input::Text("x".into())]);
+    st.s.ui.open = true;
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "hello" })).unwrap();
+    assert_eq!(r["did"], "Opened hello.lua", "{r}");
+}
+
+#[test]
 fn a_file_the_editor_couldnt_read_is_never_read_changed_or_saved_through_it() {
     let mut game = FakeGame::new("coach-unreadable");
     let mut st = studio(&mut game);
@@ -1451,18 +1472,62 @@ fn the_agent_types_with_its_own_caret_and_name() {
     assert_eq!(st.s.ui.coach.typing.as_ref().unwrap().at.0, 2);
     // The player's cursor is where it was.
     assert_eq!((st.s.editor.row, st.s.editor.col), (0, 0));
-    // Every theme draws an edit coming in.
+    // Every theme draws an edit coming in, the agent's name on it and a
+    // note of a change elsewhere inside the code, however small the window.
+    let notice = "Claude Code changed hello.lua";
+    st.s.ui.coach.notice = Some(coach::Notice {
+        text: notice.into(),
+        seq: 1,
+        at: st.s.now - 1.0,
+    });
+    let mut names = 0;
     for i in 0..THEMES.len() {
-        st.s.ui.look = Look {
-            theme: i,
-            rect: Some([10.0, 10.0, 330.0, 230.0]),
-            ..Look::default()
-        };
-        st.s.ui.tab = Tab::Editor;
-        redraw(&mut st, &mut game);
-        assert!(game.drawn.len() > 10, "theme {i}");
+        for rect in [Some([10.0, 10.0, 330.0, 230.0]), None] {
+            st.s.ui.look = Look {
+                theme: i,
+                rect,
+                ..Look::default()
+            };
+            st.s.ui.tab = Tab::Editor;
+            st.s.ui.coach.code_at = None;
+            redraw(&mut st, &mut game);
+            assert!(game.drawn.len() > 10, "theme {i}");
+            let Some(code) = st.s.ui.coach.code_at else {
+                continue;
+            };
+            for at in texts_at(&game, "Claude Code") {
+                assert!(
+                    inside(code, at),
+                    "theme {i} {rect:?}: the name at {at:?}, the code in {code:?}"
+                );
+                names += 1;
+            }
+            for at in texts_at(&game, &format!("{notice} · Show")) {
+                assert!(
+                    inside(code, at),
+                    "theme {i} {rect:?}: the note at {at:?}, the code in {code:?}"
+                );
+            }
+        }
     }
+    assert!(names >= THEMES.len(), "the name is drawn: {names}");
     typed_in(&mut st, &mut game, r["typing"].as_u64().unwrap());
+}
+
+#[test]
+fn typed_says_when_it_knows_no_such_edit() {
+    let (mut game, mut st) = editing("coach-typed-id", "greet", GREET);
+    let e = ask(&mut st, &mut game, "typed", json!({ "id": 999 })).unwrap_err();
+    assert!(e.contains("no edit 999"), "{e}");
+    let e = ask(&mut st, &mut game, "typed", json!({ "id": "one" })).unwrap_err();
+    assert!(e.contains("needs the id"), "{e}");
+    // A finished edit's result is kept 30 s, then it is no edit it knows.
+    let r = ask(&mut st, &mut game, "edit", json!({ "old_text": "0", "new_text": "1" })).unwrap();
+    let id = r["typing"].as_u64().unwrap();
+    assert_eq!(typed_in(&mut st, &mut game, id)["ok"], true);
+    run_for(&mut st, &mut game, 31.0);
+    let e = ask(&mut st, &mut game, "typed", json!({ "id": id })).unwrap_err();
+    assert!(e.contains(&format!("no edit {id}")), "{e}");
 }
 
 // ----------------------------------------------------------------- the Agent panel
@@ -2026,7 +2091,7 @@ fn marks_are_cleared_by_number_by_file_or_all() {
             &mut st,
             &mut game,
             "mark",
-            json!({ "start_line": 1 + n % 10, "reveal": false }),
+            json!({ "start_line": 1 + n % 10, "note": format!("Note {n}."), "reveal": false }),
         )
         .unwrap();
     }
@@ -2038,11 +2103,25 @@ fn marks_are_cleared_by_number_by_file_or_all() {
         name: "Cursor".into(),
         conn: 2,
     };
-    coach::call(&mut st, &mut game, &cursor, "mark", &json!({ "start_line": 5 })).unwrap();
-    ask(&mut st, &mut game, "mark", json!({ "start_line": 6, "replace": true })).unwrap();
+    coach::call(
+        &mut st,
+        &mut game,
+        &cursor,
+        "mark",
+        &json!({ "start_line": 5, "note": "Mine." }),
+    )
+    .unwrap();
+    ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "start_line": 6, "note": "Only this.", "replace": true }),
+    )
+    .unwrap();
     let by: Vec<&str> = st.s.ui.coach.marks.iter().map(|m| m.by.name.as_str()).collect();
     assert_eq!(by, ["Cursor", "Claude Code"]);
-    // What isn't a place to mark says so.
+    // What isn't a place to mark says so, and so does a mark with nothing to
+    // say (the player could never close it: its × is on its note).
     for (params, says) in [
         (json!({ "start_line": 11 }), "has 10 lines"),
         (json!({ "start_line": 4, "end_line": 3 }), "before start_line"),
@@ -2053,6 +2132,8 @@ fn marks_are_cleared_by_number_by_file_or_all() {
             "note, error, warning or good",
         ),
         (json!({ "note": "where?" }), "start_line"),
+        (json!({ "start_line": 4 }), "note is missing"),
+        (json!({ "start_line": 4, "note": " \u{7} " }), "note is missing"),
     ] {
         let e = ask(&mut st, &mut game, "mark", params.clone()).unwrap_err();
         assert!(e.contains(says), "{params}: {e}");
@@ -2462,11 +2543,18 @@ fn a_lesson_is_stepped_with_its_buttons_and_its_chip() {
         .expect("step 3's number in the gutter");
     click(&mut st, &mut game, (three.0 + 1.0, three.1 + 4.0));
     assert_eq!(st.s.ui.coach.lesson.as_ref().unwrap().at, 2);
-    // Esc closes the note; the header's chip opens it again.
+    // Esc closes the note (the footer says so while one shows); the
+    // header's chip opens it again.
     still(&mut st, &mut game);
+    text_at(&game, "close the note");
     handle(&mut st, &mut game, key(Key::Escape, NONE));
     assert_eq!(st.s.ui.coach.open_mark, None);
     still(&mut st, &mut game);
+    assert!(
+        texts_at(&game, "close the note").is_empty(),
+        "no note shows: Esc closes the studio"
+    );
+    text_at(&game, "next step");
     let chip = text_at(&game, "Lesson 3/3");
     click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 4.0));
     assert_eq!(

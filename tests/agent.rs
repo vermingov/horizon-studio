@@ -372,6 +372,7 @@ fn the_prompt_teaches_the_live_editor() {
         "start_line one past the end appends",
         "Line numbers count from 1",
         "Save before test_mod",
+        "To change another script as the player watches, open_script it first",
         "write_mod for a new mod",
         "mark_lines, clear_marks: point at code",
         "When the player asks what is wrong, mark the lines",
