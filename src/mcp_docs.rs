@@ -7227,6 +7227,21 @@ local r = Ray.new(Vector3.zero, Vector3.new(0, 0, -10))
 "##
     ),
     e!(
+        "Region3.new",
+        "roblox",
+        r##"
+`Region3.new(min, max)`
+
+A box in the world by its corners, not turned (the least and the most of the two given): `CFrame` (its centre), `Size`, and `ExpandToGrid(resolution)`, the box grown out to a grid of cells that many blocks a side. `workspace.Terrain:ReadVoxels(region, resolution)` reads one.
+
+```lua
+local region = Region3.new(Vector3.new(0, 60, 0), Vector3.new(4, 64, 4))
+local materials, occupancies = workspace.Terrain:ReadVoxels(region, 1)
+print(materials.Size, materials[1][4][1], occupancies[1][4][1])
+```
+"##
+    ),
+    e!(
         "RaycastParams.new",
         "roblox",
         r##"

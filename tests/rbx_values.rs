@@ -141,3 +141,22 @@ fn values_cannot_change_and_errors_name_the_types() {
     assert!(error_of("print(CFrame.lookAt(1))").contains("Vector3 expected, got number"));
     assert!(error_of("Vector3.new = nil").contains("readonly"));
 }
+
+#[test]
+fn region3s() {
+    let src = r#"
+        local r = Region3.new(Vector3.new(4, 64, 3), Vector3.new(0, 60, 0))
+        print(r.CFrame.Position, r.Size, typeof(r), r == Region3.new(Vector3.new(0, 60, 0), Vector3.new(4, 64, 3)))
+        local g = r:ExpandToGrid(4)
+        print(g.Size, g.CFrame.Position, Region3.new(Vector3.zero, Vector3.one * 2))
+    "#;
+    assert_eq!(
+        run(src),
+        [
+            "2, 62, 1.5\t4, 4, 3\tRegion3\ttrue",
+            "4, 4, 4\t2, 62, 2\t1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1; 2, 2, 2",
+        ]
+    );
+    assert!(error_of("local r = Region3.new() r.Size = Vector3.one").contains("Size cannot be assigned to"));
+    assert!(error_of("Region3.new():ExpandToGrid(0)").contains("a resolution above 0"));
+}

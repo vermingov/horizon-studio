@@ -1,7 +1,7 @@
 // Roblox's data types for scripts (hstudio_rbx_values): Vector2, Vector3,
 // CFrame, Color3, UDim, UDim2, Rect, NumberRange, NumberSequence,
 // ColorSequence and their keypoints, TweenInfo, BrickColor, Font, Random,
-// Ray, and the Enum tree, as userdata over hstudio_rbx_types. Each has
+// Ray, Region3, and the Enum tree, as userdata over hstudio_rbx_types. Each has
 // Roblox's constructors (`Vector3.new`), properties (`v.Magnitude`), methods
 // (`a:Lerp(b, t)`), operators and `tostring`, and `typeof` names it. Like
 // Roblox's they can't be changed: a new value comes back instead.
@@ -12,7 +12,7 @@ use super::hstudio_lua::{
 use super::hstudio_rbx_types::{
     Axis, BrickColor, CFrame, Color3, ColorSequence, ColorSequenceKeypoint, EasingDirection, EasingStyle, Font,
     FontEnum, FontStyle, FontWeight, NormalId, NumberRange, NumberSequence, NumberSequenceKeypoint, Random, Rect,
-    RotationOrder, TweenInfo, UDim, UDim2, Vector2, Vector3,
+    Region3, RotationOrder, TweenInfo, UDim, UDim2, Vector2, Vector3,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -48,6 +48,7 @@ pub enum Data {
     Font(Font),
     Rng(Random),
     Ray(Vector3, Vector3),
+    Region3(Region3),
     Item(EnumItem),
     /// `Enum.KeyCode`.
     EnumType(&'static str),
@@ -76,6 +77,7 @@ impl Data {
             Data::Font(_) => "Font",
             Data::Rng(_) => "Random",
             Data::Ray(..) => "Ray",
+            Data::Region3(_) => "Region3",
             Data::Item(_) => "EnumItem",
             Data::EnumType(_) => "Enum",
             Data::Enums => "Enums",
@@ -420,6 +422,7 @@ pub fn globals() -> Vec<(&'static str, Value)> {
         ),
         ("Random", lib(&[("new", random_new)], vec![])),
         ("Ray", lib(&[("new", ray_new)], vec![])),
+        ("Region3", lib(&[("new", region3_new)], vec![])),
         ("RaycastParams", lib(&[("new", raycast_params_new)], vec![])),
         ("OverlapParams", lib(&[("new", raycast_params_new)], vec![])),
         ("Enum", wrap(Data::Enums)),
@@ -806,6 +809,14 @@ fn ray_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res
     one(wrap(Data::Ray(o, d)))
 }
 
+fn region3_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let corner = |i: usize| match args.get(i) {
+        None | Some(Value::Nil) => Ok(Vector3::ZERO),
+        Some(_) => arg_v3(lua, &args, i, "new"),
+    };
+    one(wrap(Data::Region3(Region3::new(corner(0)?, corner(1)?))))
+}
+
 /// RaycastParams.new(): a table of its fields, which scripts set.
 fn raycast_params_new(_: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {
     let mut t = Table::new();
@@ -831,6 +842,7 @@ fn method(type_name: &'static str, name: &str) -> Option<Value> {
         "UDim2" => udim2_method,
         "Random" => random_method,
         "Ray" => ray_method,
+        "Region3" => region3_method,
         "EnumItem" => item_method,
         "Enum" => enum_method,
         "Enums" => enums_method,
@@ -881,6 +893,7 @@ fn method(type_name: &'static str, name: &str) -> Option<Value> {
         "UDim2" => &["Lerp"],
         "Random" => &["NextInteger", "NextNumber", "NextUnitVector", "Shuffle", "Clone"],
         "Ray" => &["ClosestPoint", "Distance"],
+        "Region3" => &["ExpandToGrid"],
         "EnumItem" => &["IsA"],
         "Enum" => &["GetEnumItems", "FromName", "FromValue"],
         "Enums" => &["GetEnums"],
@@ -974,6 +987,8 @@ fn index(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
         (Data::Ray(o, _), "Origin") => Some(v3(*o)),
         (Data::Ray(_, d), "Direction") => Some(v3(*d)),
         (Data::Ray(o, d), "Unit") => Some(wrap(Data::Ray(*o, d.unit()))),
+        (Data::Region3(r), "CFrame") => Some(cf(r.cframe())),
+        (Data::Region3(r), "Size") => Some(v3(r.size())),
         (Data::Item(i), "Name") => Some(Value::str(i.name)),
         (Data::Item(i), "Value") => return num(f64::from(i.value)),
         (Data::Item(i), "EnumType") => Some(wrap(Data::EnumType(i.enum_name))),
@@ -1025,6 +1040,7 @@ pub fn text(d: &Data) -> String {
         Data::Font(f) => f.to_string(),
         Data::Rng(_) => "Random".into(),
         Data::Ray(o, d) => format!("{{{o}}}, {{{d}}}"),
+        Data::Region3(r) => r.to_string(),
         Data::Item(i) => format!("Enum.{}.{}", i.enum_name, i.name),
         Data::EnumType(e) => (*e).to_owned(),
         Data::Enums => "Enums".into(),
@@ -1055,6 +1071,7 @@ pub fn same(a: &Data, b: &Data) -> bool {
         (Data::Item(x), Data::Item(y)) => x == y,
         (Data::EnumType(x), Data::EnumType(y)) => x == y,
         (Data::Ray(a, b), Data::Ray(c, d)) => a == c && b == d,
+        (Data::Region3(a), Data::Region3(b)) => a == b,
         (Data::Enums, Data::Enums) => true,
         _ => false,
     }
@@ -1361,6 +1378,17 @@ fn ray_method(lua: &mut Lua, _: &mut dyn Host, me: &Native, args: Vec<Value>) ->
     } else {
         one(Value::Num((p - closest).magnitude()))
     }
+}
+
+fn region3_method(lua: &mut Lua, _: &mut dyn Host, me: &Native, args: Vec<Value>) -> Res {
+    let Some(Data::Region3(r)) = args.first().and_then(get) else {
+        return Err(want(lua, &args, 0, &me.name, "Region3"));
+    };
+    let resolution = check_num(lua, &args, 1, &me.name)?;
+    if resolution <= 0.0 || !resolution.is_finite() {
+        return Err(bad_arg(lua, 1, &me.name, "a resolution above 0 expected"));
+    }
+    one(wrap(Data::Region3(r.expand_to_grid(resolution))))
 }
 
 fn item_method(lua: &mut Lua, _: &mut dyn Host, me: &Native, args: Vec<Value>) -> Res {

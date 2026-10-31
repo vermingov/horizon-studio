@@ -1194,3 +1194,46 @@ fn bounds_queries_find_entities() {
     assert_eq!(p[6], "1");
     assert_eq!(p[7], "true    Head");
 }
+
+#[test]
+fn terrain_reads_the_map() {
+    let mut game = FakeGame::new("rbxw-terrain");
+    game.blocks.insert((10, 63, -5), "minecraft:grass_block".into());
+    game.blocks.insert((10, 62, -5), "minecraft:stone".into());
+    game.blocks.insert((11, 62, -5), "minecraft:stone".into());
+    let mut st = studio(&mut game);
+    let src = r#"
+        local terrain = workspace.Terrain
+        local m, o = terrain:ReadVoxels(Region3.new(Vector3.new(10, 62, -5), Vector3.new(11, 65, -4)), 1)
+        print(m.Size, m[1][1][1], m[1][2][1], m[1][3][1], o[1][1][1], o[1][2][1], o[1][3][1], o.Size)
+        -- Roblox's cells of 4: one, around these blocks.
+        local m4, o4 = terrain:ReadVoxels(Region3.new(Vector3.new(9, 61, -6), Vector3.new(10, 62, -5)), 4)
+        print(m4.Size, m4[1][1][1], o4[1][1][1])
+        print(terrain:GetBlock(Vector3.new(10.5, 62.5, -4.5)), terrain:GetBlock(Vector3.new(10.5, 70, -4.5)))
+        print(terrain:WorldToCell(Vector3.new(1.5, 64.2, -0.5)) == Vector3.new(1, 64, -1), terrain:CellCenterToWorld(1, 64, -1), terrain:CellCornerToWorld(1, 64, -1))
+        print(pcall(function() terrain:FillBlock(CFrame.new(), Vector3.one, Enum.Material.Grass) end))
+        print(pcall(function() terrain:ReadVoxels(Region3.new(Vector3.zero, Vector3.new(100, 100, 100)), 1) end))
+    "#;
+    load(&mut game, &mut st, "terrain", src, 0.6);
+    let p = printed(&st, "terrain");
+    assert_eq!(
+        p[0],
+        "1, 3, 1    Enum.Material.Slate    Enum.Material.Grass    Enum.Material.Air    1    1    0    1, 3, 1"
+    );
+    // Two stone blocks and a grass one of the cell's 64.
+    assert_eq!(p[1], "1, 1, 1    Enum.Material.Slate    0.046875");
+    assert_eq!(p[2], "minecraft:stone    minecraft:air");
+    assert_eq!(p[3], "true    1.5, 64.5, -0.5    1, 64, -1");
+    assert!(
+        p[4].starts_with("false") && p[4].contains("can't change the terrain"),
+        "{}",
+        p[4]
+    );
+    assert!(
+        p[5].starts_with("false") && p[5].contains("at most 4096 cells"),
+        "{}",
+        p[5]
+    );
+    // Reading the map doesn't mirror the world's entities.
+    assert_eq!(game.entity_asks, 0);
+}

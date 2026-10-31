@@ -4,16 +4,20 @@
 // Hit and Target), and the bounds queries (GetPartBoundsInRadius,
 // GetPartBoundsInBox, GetPartsInPart). A stud is a block. The local
 // character is left out of rays, which start at its eyes, unless an Include
-// filter names it.
+// filter names it. And the map, read through workspace.Terrain: a cell is a
+// block (GetBlock, ReadVoxels).
 
 use super::hstudio_lua::{Lua, Res, Table, TableRef, Value, bad_arg, check_num};
 use super::hstudio_rbx::{Env, Id, Rbx, is_a};
-use super::hstudio_rbx_draw::{block_material, first_block};
+use super::hstudio_rbx_draw::{block_material, first_block, passable};
 use super::hstudio_rbx_types::{CFrame, Vector3};
 use super::hstudio_rbx_values::{Data, as_cf, as_item, as_v3, enum_item, enum_value, get, v3};
 
 /// The farthest a ray goes, in blocks.
 const MAX_RAY: f64 = 5000.0;
+/// The most cells, and blocks in them, one Terrain:ReadVoxels reads.
+pub const MAX_CELLS: usize = 4096;
+pub const MAX_BLOCKS: usize = 65536;
 
 // ---------------------------------------------------------------- filters
 
@@ -379,4 +383,132 @@ fn overlap(a: Vector3, b: Vector3, lo: Vector3, hi: Vector3) -> bool {
 /// From `p` to the nearest point of a box.
 fn nearest(p: Vector3, lo: Vector3, hi: Vector3) -> Vector3 {
     p.max(lo).min(hi) - p
+}
+
+// ---------------------------------------------------------------- the Terrain
+
+/// workspace.Terrain's methods: the terrain is the map, Minecraft's blocks,
+/// and a cell is a block. GetBlock(pos) is Horizon's own: the id of the
+/// block there, or nil where nothing is loaded. ReadVoxels(region,
+/// resolution) reads its cells (`read_voxels`). WorldToCell (and its
+/// PreferSolid and PreferEmpty) give a position's cell, CellCenterToWorld
+/// and CellCornerToWorld a cell's centre and least corner. The rest would
+/// change the world, which a command does here: they raise an error saying
+/// so.
+pub fn terrain_method(env: &mut dyn Env, lua: &mut Lua, name: &str, args: &[Value]) -> Res {
+    match name {
+        "GetBlock" => {
+            let p = vector_arg(lua, args, 1, name)?.floor();
+            let b = env.game().block(p.x as i32, p.y as i32, p.z as i32);
+            Ok(vec![b.map_or(Value::Nil, |b| Value::str(&b))])
+        }
+        "ReadVoxels" => read_voxels(env, lua, args),
+        "WorldToCell" | "WorldToCellPreferSolid" | "WorldToCellPreferEmpty" => {
+            Ok(vec![v3(vector_arg(lua, args, 1, name)?.floor())])
+        }
+        "CellCenterToWorld" | "CellCornerToWorld" => {
+            let n = |i| check_num(lua, args, i, name).map(f64::floor);
+            let half = if name == "CellCenterToWorld" { 0.5 } else { 0.0 };
+            Ok(vec![v3(Vector3::new(n(1)? + half, n(2)? + half, n(3)? + half))])
+        }
+        _ => Err(lua.rt_error(format!(
+            "Terrain:{name} can't change the terrain here: it is Minecraft's blocks, which a command changes (game.run(\"fill ...\"))"
+        ))),
+    }
+}
+
+/// Terrain:ReadVoxels(region, resolution): the materials and occupancies of
+/// the region's cells, `resolution` blocks a side (Roblox's are 4; 1 reads
+/// block by block), as [x][y][z] arrays with a Size field (the number of
+/// cells each way). The region is first grown out to the grid of the cells.
+/// A cell's material is its most common solid block's (Air when it has
+/// none; water is Water) and its occupancy how much of it is solid. At most
+/// 4096 cells and 65536 blocks are read at once, charged to the script.
+fn read_voxels(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
+    let name = "ReadVoxels";
+    let Some(Data::Region3(region)) = args.get(1).and_then(get) else {
+        return Err(bad_arg(lua, 1, name, "Region3 expected"));
+    };
+    let res = check_num(lua, args, 2, name)?.floor();
+    if !(1.0..=64.0).contains(&res) {
+        return Err(bad_arg(lua, 2, name, "a resolution of 1 to 64 blocks expected"));
+    }
+    let r = region.expand_to_grid(res);
+    let count = |a: f64, b: f64| ((b - a) / res).round().max(0.0) as usize;
+    let (nx, ny, nz) = (
+        count(r.min.x, r.max.x),
+        count(r.min.y, r.max.y),
+        count(r.min.z, r.max.z),
+    );
+    let cells = nx.saturating_mul(ny).saturating_mul(nz);
+    let side = res as usize;
+    let blocks = cells.saturating_mul(side * side * side);
+    if cells > MAX_CELLS || blocks > MAX_BLOCKS {
+        return Err(lua.rt_error(format!(
+            "Terrain:ReadVoxels reads at most {MAX_CELLS} cells and {MAX_BLOCKS} blocks at once: this region has {cells} cells of {blocks} blocks"
+        )));
+    }
+    lua.charge(blocks * 16)?;
+    let game = env.game();
+    let mut materials = Vec::with_capacity(nx);
+    let mut occupancies = Vec::with_capacity(nx);
+    for cx in 0..nx {
+        let (mut mys, mut oys) = (Vec::with_capacity(ny), Vec::with_capacity(ny));
+        for cy in 0..ny {
+            let (mut mzs, mut ozs) = (Vec::with_capacity(nz), Vec::with_capacity(nz));
+            for cz in 0..nz {
+                let corner = r.min + Vector3::new(cx as f64, cy as f64, cz as f64) * res;
+                let (material, solid) = cell(game, corner, side);
+                mzs.push(enum_value(enum_item("Material", material)));
+                ozs.push(Value::Num(solid as f64 / blocks_per(side)));
+            }
+            mys.push(Value::table(Table::from_list(mzs)));
+            oys.push(Value::table(Table::from_list(ozs)));
+        }
+        materials.push(Value::table(Table::from_list(mys)));
+        occupancies.push(Value::table(Table::from_list(oys)));
+    }
+    let size = v3(Vector3::new(nx as f64, ny as f64, nz as f64));
+    let mut m = Table::from_list(materials);
+    m.set_str("Size", size.clone());
+    let mut o = Table::from_list(occupancies);
+    o.set_str("Size", size);
+    Ok(vec![Value::table(m), Value::table(o)])
+}
+
+/// A cell `side` blocks a side from `corner`: its most common solid block's
+/// material (the first met of those as common), and how many are solid.
+fn cell(game: &mut dyn super::hstudio::GameApi, corner: Vector3, side: usize) -> (&'static str, usize) {
+    let mut tally: Vec<(&'static str, usize)> = Vec::new();
+    let mut solid = 0;
+    let (x0, y0, z0) = (corner.x as i32, corner.y as i32, corner.z as i32);
+    for dx in 0..side as i32 {
+        for dy in 0..side as i32 {
+            for dz in 0..side as i32 {
+                let Some(b) = game.block(x0 + dx, y0 + dy, z0 + dz) else {
+                    continue;
+                };
+                if passable(&b) {
+                    continue;
+                }
+                solid += 1;
+                let m = block_material(&b);
+                match tally.iter_mut().find(|t| t.0 == m) {
+                    Some(t) => t.1 += 1,
+                    None => tally.push((m, 1)),
+                }
+            }
+        }
+    }
+    let most = tally
+        .iter()
+        .fold(None, |best: Option<(&'static str, usize)>, &t| match best {
+            Some(b) if b.1 >= t.1 => Some(b),
+            _ => Some(t),
+        });
+    (most.map_or("Air", |m| m.0), solid)
+}
+
+fn blocks_per(side: usize) -> f64 {
+    (side * side * side) as f64
 }

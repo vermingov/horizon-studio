@@ -691,6 +691,7 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             | "FindPartOnRayWithIgnoreList"
             | "FindPartOnRayWithWhitelist",
         ) => super::hstudio_rbx_query::workspace_method(env, lua, name, args),
+        ("Terrain", _) => super::hstudio_rbx_query::terrain_method(env, lua, name, args),
         ("Workspace", "GetServerTimeNow") => one(Value::Num(now)),
         ("Camera", "WorldToViewportPoint" | "WorldToScreenPoint") => {
             let p = args

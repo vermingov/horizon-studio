@@ -1709,6 +1709,11 @@
       "doc": "`Ray.new(origin, direction)`\n\nA ray: `Origin`, `Direction`, `Unit`, `ClosestPoint(p)`, `Distance(p)`.\n\n```lua\nlocal r = Ray.new(Vector3.zero, Vector3.new(0, 0, -10))\n```"
     },
     {
+      "name": "Region3.new",
+      "topic": "roblox",
+      "doc": "`Region3.new(min, max)`\n\nA box in the world by its corners, not turned (the least and the most of the two given): `CFrame` (its centre), `Size`, and `ExpandToGrid(resolution)`, the box grown out to a grid of cells that many blocks a side. `workspace.Terrain:ReadVoxels(region, resolution)` reads one.\n\n```lua\nlocal region = Region3.new(Vector3.new(0, 60, 0), Vector3.new(4, 64, 4))\nlocal materials, occupancies = workspace.Terrain:ReadVoxels(region, 1)\nprint(materials.Size, materials[1][4][1], occupancies[1][4][1])\n```"
+    },
+    {
       "name": "RaycastParams.new",
       "topic": "roblox",
       "doc": "`RaycastParams.new()`\n\nA table of `workspace:Raycast`'s options to set: `FilterType` (`Enum.RaycastFilterType.Exclude` or `Include`), `FilterDescendantsInstances` (a list), `IgnoreWater`.\n\n```lua\nlocal params = RaycastParams.new()\nparams.FilterDescendantsInstances = { game.Players.LocalPlayer.Character }\n```"
