@@ -140,8 +140,10 @@ Ctrl+1 to Ctrl+5 switch tabs. In chat: `/studio` opens it, `/studio reload` relo
   stopped, and in amber a name nothing defines (*nothing defines 'plyer' (did you mean player?)*) or a library
   function that doesn't exist (*player has no 'poss'*). Each line with one has a dot in the gutter and its message at
   the end, the scrollbar marks where they are, and the count by the file's name opens the Problems panel. A runtime
-  error still marks its line in red. In a module's file, what the other files define is known, and a
-  `require("nope")` of a file the module lacks is marked (*no nope.lua in this module*).
+  error still marks its line in red. In a module's file, what the other files define for all of it is known: their
+  globals, and a member they add to a table as that member alone (their `function chat.shout` leaves `chat.sya` a
+  typo; their parameters and loop names are their own). A `require("nope")` of a file the module lacks is marked
+  (*no nope.lua in this module*).
 - **Typing** keeps your indent, and Enter after `then`, `do`, `function(` or `repeat` indents the next line and
   closes the block below with its `end` (`end)` for a function passed to a call, `until` for `repeat`), unless it is
   already closed. Brackets and quotes close themselves, typing the closing one steps over it, and Backspace between

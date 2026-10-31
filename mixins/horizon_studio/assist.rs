@@ -1331,15 +1331,11 @@ fn syntax_problem(e: &str, lines: &[String], chunk: &str, at: Option<usize>) -> 
     }
 }
 
-/// The names a file defines: what follows `local`, `function` and `for`,
-/// every word before an `=` (assignments), and parameters and loop names.
-/// With `globals_only`, lines that start with `local` are left out: what
-/// another file of a module defines for the rest of it.
-fn defined_names(lines: &[String], globals_only: bool, d: &mut std::collections::HashSet<String>) {
+/// The names a file defines for itself: what follows `local`, `function`
+/// and `for`, every word before an `=` (assignments), and parameters and
+/// loop names.
+fn defined_names(lines: &[String], d: &mut std::collections::HashSet<String>) {
     for line in lines {
-        if globals_only && line.trim_start().starts_with("local") {
-            continue;
-        }
         let code = strip_strings(line);
         let words: Vec<&str> = code.split(|c: char| !is_word(c)).filter(|w| !w.is_empty()).collect();
         for w in words.windows(2) {
@@ -1366,11 +1362,84 @@ fn defined_names(lines: &[String], globals_only: bool, d: &mut std::collections:
     }
 }
 
+/// What another file of a module defines for all of it, on the lines that
+/// don't start with `local`: the bare names it makes functions of or sets
+/// (`function f(`, `x = `, `a, b = `), into `globals`, and the members it
+/// puts in tables, as full names (`function chat.shout(`, `function
+/// obj:m(` as `obj.m`, `cfg.x = `; `a.b.c` is `a.b` and `a.b.c`), into
+/// `fields`. Its parameters and loop names are its own, and so is a
+/// `local`.
+fn module_names(
+    lines: &[String],
+    globals: &mut std::collections::HashSet<String>,
+    fields: &mut std::collections::HashSet<String>,
+) {
+    for line in lines {
+        if line.trim_start().starts_with("local") {
+            continue;
+        }
+        for name in global_definitions(&strip_strings(line)) {
+            let parts: Vec<&str> = name.split('.').collect();
+            if parts.len() == 1 {
+                globals.insert(name);
+            } else {
+                fields.extend((2..=parts.len()).map(|k| parts[..k].join(".")));
+            }
+        }
+    }
+}
+
+/// The names a line of code (its strings blanked) defines for whatever
+/// sees its globals, dotted as written (`t:m` as `t.m`): after `function`
+/// (not `local function`), and what a statement assigns, at the line's
+/// start or after `then`, `do`, `else`, `end`, `;` or `)` (`x = 1`, `a, t.b
+/// = 1, 2`). A table constructor's fields, comparisons and indexing
+/// (`t[k] =`) are none.
+fn global_definitions(code: &str) -> Vec<String> {
+    let toks = tokens(code);
+    let is_name = |t: &str| t.starts_with(|c: char| is_word(c) && !c.is_ascii_digit()) && !KEYWORDS.contains(&t);
+    let mut out = Vec::new();
+    for (k, t) in toks.iter().enumerate() {
+        match t.2.as_str() {
+            "function" if k == 0 || toks[k - 1].2 != "local" => {
+                out.extend(toks.get(k + 1).filter(|n| is_name(&n.2)).map(|n| n.2.clone()));
+            }
+            "=" if k > 0
+                && !matches!(toks[k - 1].2.as_str(), "=" | "<" | ">" | "~")
+                && toks.get(k + 1).is_none_or(|n| n.2 != "=") =>
+            {
+                // The names before it, `a, b.c`, from the last back.
+                let mut names = Vec::new();
+                let mut j = k;
+                while j > 0 && is_name(&toks[j - 1].2) {
+                    names.push(toks[j - 1].2.clone());
+                    j -= 1;
+                    if j > 0 && toks[j - 1].2 == "," {
+                        j -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                let begins = j == 0
+                    || matches!(
+                        toks[j - 1].2.as_str(),
+                        "then" | "do" | "else" | "end" | "repeat" | ";" | ")"
+                    );
+                if !names.is_empty() && toks[j].2 != "," && begins {
+                    out.extend(names);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The names another file of the module defines for all of it (its
 /// globals), as suggestions: long enough to be worth one, no keywords.
 fn sibling_words(lines: &[String]) -> Vec<String> {
-    let mut d = std::collections::HashSet::new();
-    defined_names(lines, true, &mut d);
+    let (mut d, mut fields) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    module_names(lines, &mut d, &mut fields);
     let mut words: Vec<String> = d
         .into_iter()
         .filter(|w| w.len() >= 3 && !w.starts_with(|c: char| c.is_ascii_digit()) && !KEYWORDS.contains(&w.as_str()))
@@ -1381,18 +1450,20 @@ fn sibling_words(lines: &[String]) -> Vec<String> {
 
 /// Uses of a library's member it doesn't have (`player.poss`), and of a
 /// table name nothing defines (`plyer.pos`), outside strings and comments.
-/// What a module's other files define for all of it counts as defined.
+/// What a module's other files define for all of it counts as defined: a
+/// global by its name, and a member they put in a table (`function
+/// chat.shout`) as that member alone, so `chat.sya` is still a typo.
 fn unknown_names(lines: &[String], module: Option<&Siblings>) -> Vec<Problem> {
     let ns = namespaces();
     let all = names(true);
-    let defined: std::collections::HashSet<String> = {
-        let mut d = std::collections::HashSet::new();
-        defined_names(lines, false, &mut d);
-        for (_, other) in module.map_or(&[][..], |m| m.others.as_slice()) {
-            defined_names(other, true, &mut d);
-        }
-        d
-    };
+    let mut defined = std::collections::HashSet::new();
+    let mut fields = std::collections::HashSet::new();
+    defined_names(lines, &mut defined);
+    for (_, other) in module.map_or(&[][..], |m| m.others.as_slice()) {
+        module_names(other, &mut defined, &mut fields);
+    }
+    // The tables those members are put in are there, for `plyer.pos`.
+    let filled: std::collections::HashSet<&str> = fields.iter().filter_map(|f| f.split('.').next()).collect();
     let mut out = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         let code = strip_strings(line);
@@ -1413,7 +1484,7 @@ fn unknown_names(lines: &[String], module: Option<&Siblings>) -> Vec<Problem> {
                 let member = &code[end + 1..m_end];
                 let full = format!("{root}.{member}");
                 if ns.iter().any(|n| n == root) && !defined.contains(root) {
-                    if !member.is_empty() && !all.iter().any(|(n, ..)| n == &full) {
+                    if !member.is_empty() && !all.iter().any(|(n, ..)| n == &full) && !fields.contains(&full) {
                         out.push(Problem {
                             line: i + 1,
                             span: Some((end + 1, m_end)),
@@ -1422,6 +1493,7 @@ fn unknown_names(lines: &[String], module: Option<&Siblings>) -> Vec<Problem> {
                         });
                     }
                 } else if !defined.contains(root)
+                    && !filled.contains(root)
                     && !KEYWORDS.contains(&root)
                     && root != "self"
                     && !all.iter().any(|(n, ..)| n == root)
@@ -1571,12 +1643,10 @@ pub fn module_at(line: &str, col: usize) -> Option<(bool, String)> {
     None
 }
 
-/// The names a line of code defines, with their bytes from and to: after
-/// `local function` and `function` (a dotted name too, `t:m` as `t.m`),
-/// the names a `local` or a `for` declares, a function's parameters, and
-/// what is assigned at the line's start (`n = 1`, `t.n = f`).
-fn definitions_on(code: &str) -> Vec<(usize, usize, String)> {
-    // The line as names (dotted, `:` read as `.`) and other characters.
+/// A line of code (its strings blanked) as names, dotted (`:` read as
+/// `.`), and its other characters one by one, each with its bytes from and
+/// to; spaces left out.
+fn tokens(code: &str) -> Vec<(usize, usize, String)> {
     let b = code.as_bytes();
     let mut toks: Vec<(usize, usize, String)> = Vec::new();
     let mut i = 0;
@@ -1600,6 +1670,15 @@ fn definitions_on(code: &str) -> Vec<(usize, usize, String)> {
             i += 1;
         }
     }
+    toks
+}
+
+/// The names a line of code defines, with their bytes from and to: after
+/// `local function` and `function` (a dotted name too, `t:m` as `t.m`),
+/// the names a `local` or a `for` declares, a function's parameters, and
+/// what is assigned at the line's start (`n = 1`, `t.n = f`).
+fn definitions_on(code: &str) -> Vec<(usize, usize, String)> {
+    let toks = tokens(code);
     let is_name = |t: &str| t.starts_with(|c: char| is_word(c)) && !KEYWORDS.contains(&t);
     let mut out = Vec::new();
     // A list of names, `a, b, c`, from token `k`: the names and where it ends.

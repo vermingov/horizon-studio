@@ -172,6 +172,46 @@ fn names_from_sibling_files_are_not_unknown() {
 }
 
 #[test]
+fn a_siblings_members_and_parameters_hide_no_typos() {
+    let main = "chat.sya('hi')\nplayer.poss()\nchat.shout('hi')\n";
+    let warned = |p: &[Found], m: &str| p.iter().any(|f| f.2 == m);
+    // A sibling's `function chat.shout`: chat.shout is known, chat.sya still a typo.
+    let m = module(
+        "main.lua",
+        &[("lib.lua", "function chat.shout(s) chat.say(s) end\nreturn true\n")],
+    );
+    let p = problems_in(main, Some(&m));
+    assert!(warned(&p, "chat has no 'sya'"), "{p:?}");
+    assert!(!p.iter().any(|f| f.2.contains("'shout'")), "{p:?}");
+    assert!(warned(&problems_in(main, None), "chat has no 'shout'"));
+    // Its parameters and loop names are its own, though named like a library.
+    for lib in [
+        "local M = {}\nfunction M.describe(player) return player.name end\nreturn M\n",
+        "M = {}\nM.find = function(chat, player) return chat end\n",
+        "for chat, player in pairs({}) do end\nreturn true\n",
+    ] {
+        let p = problems_in(main, Some(&module("main.lua", &[("lib.lua", lib)])));
+        assert!(warned(&p, "player has no 'poss'"), "{lib}: {p:?}");
+        assert!(warned(&p, "chat has no 'sya'"), "{lib}: {p:?}");
+    }
+    // `chat.x = ...` and `obj:m` defined there are known as those members.
+    let m = module(
+        "main.lua",
+        &[(
+            "lib.lua",
+            "chat.loud = function(s) end\nfunction tbl:go() end\nif x then chat.n = 1 end\n",
+        )],
+    );
+    let p = problems_in("chat.loud('x')\nprint(chat.n, tbl.go)\nchat.lod('x')\n", Some(&m));
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert_eq!(p[0].2, "chat has no 'lod'");
+    // A sibling that sets the library's name to a table of its own: the
+    // file's uses of it are that table's, as when the file sets it.
+    let m = module("main.lua", &[("lib.lua", "chat = { sya = print }\n")]);
+    assert!(problems_in(main, Some(&m)).iter().all(|f| !f.2.starts_with("chat")));
+}
+
+#[test]
 fn requires_of_missing_files_are_problems() {
     let m = module(
         "main.lua",
