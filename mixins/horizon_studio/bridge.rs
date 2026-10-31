@@ -1108,7 +1108,7 @@ pub(super) fn command(game: &mut Game<'_>, command: &str) -> bool {
 
 // ----------------------------------------------------------------- the chat's command tree
 
-use super::hstudio_chatcmd::ArgKind;
+use super::hstudio_chatcmd::{ArgKind, split_line};
 use super::hstudio_cmdtree::{ChatSync, NewNode, Tree};
 use horizon_client::command::{ArgType, Dispatcher, MOD_COMMAND, Node, NodeKind, Registries, Suggests};
 
@@ -1270,6 +1270,37 @@ fn chat_commands(st: &mut Studio, host: &mut Host<'_, '_>) {
     if let Some(game) = host.g_mut() {
         game.chat_server_suggestions(asked.id, range, list);
     }
+}
+
+/// The chat's completion request, before the game sends it to the server
+/// (remote.rs, send_suggestion_request): one for a command the studio takes
+/// stays in the game and is answered at the frame, so nothing typed for it
+/// reaches the server; any other is sent as the game sends it. False when
+/// the chat has no request: the game then sends a command block's, as before.
+pub(super) fn suggestion_request(game: &mut Game<'_>) -> bool {
+    if game.remote.is_none() || !game.native_window() || !game.native_on(ID) {
+        return false;
+    }
+    let Some((id, line)) = game.ui.chat_screen.as_mut().and_then(|s| s.take_request()) else {
+        return false;
+    };
+    let name = split_line(&line).map_or("", |(name, _)| name);
+    let takes = with(|st| st.takes(name)).unwrap_or(false);
+    let kept = CHAT.with(|c| {
+        let tree = chat_tree(game);
+        c.borrow_mut().request(tree.as_ref().map(|t| t as &dyn Tree), id, &line, takes)
+    });
+    if !kept {
+        // What send_suggestion_request does with it (remote.rs).
+        let mut w = horizon_protocol::buf::Writer::new();
+        w.varint(id);
+        w.string(&line);
+        game.send(horizon_protocol::packets::play::Serverbound::Unknown(
+            horizon_protocol::ids::play::serverbound::COMMAND_SUGGESTION,
+            w.data,
+        ));
+    }
+    true
 }
 
 /// With the studio off: the chat's tree goes back to the server's commands.

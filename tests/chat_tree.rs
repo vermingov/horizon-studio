@@ -447,3 +447,34 @@ fn the_studios_list_goes_into_the_tree() {
     assert_eq!(c.list, vec![("add".to_owned(), None)]);
     assert_eq!((c.start, c.len), (4, 1));
 }
+
+/// The bundle declares the modules and the hook the game side needs (only
+/// CI's `python3 tools/studio.py check` compiles them against Horizon).
+#[test]
+fn the_game_side_is_declared() {
+    let manifest = include_str!("../mixins/horizon_studio/horizon-mixin.toml");
+    for source in ["chatcmd.rs", "cmdtree.rs"] {
+        assert!(
+            manifest.contains(&format!("source = \"{source}\"")),
+            "{source} is not mounted"
+        );
+    }
+    // The chat's completion requests reach the bridge before the game sends them.
+    let at = manifest.find("id = \"suggest\"").expect("the suggest injection");
+    let end = manifest[at..].find("\n\n").map_or(manifest.len(), |e| at + e);
+    let block = &manifest[at..end];
+    for line in [
+        "kind = \"HEAD\"",
+        "cancellable = true",
+        "target = \"horizon_client::game::remote::Game<'_>::send_suggestion_request\"",
+        "helper = \"suggest.rs\"",
+        "{ name = \"game\", ty = \"&mut crate::game::Game<'_>\", value = \"&mut *self\" }",
+    ] {
+        assert!(block.contains(line), "{line} is missing from {block}");
+    }
+    let helper = include_str!("../mixins/horizon_studio/suggest.rs");
+    assert!(helper.contains("-> core::ops::ControlFlow<()>"));
+    assert!(helper.contains("crate::game::hstudio_bridge::suggestion_request(game)"));
+    let bridge = include_str!("../mixins/horizon_studio/bridge.rs");
+    assert!(bridge.contains("pub(super) fn suggestion_request(game: &mut Game<'_>) -> bool"));
+}
