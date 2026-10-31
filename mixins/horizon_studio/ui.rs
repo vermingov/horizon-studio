@@ -174,6 +174,9 @@ pub(crate) enum Action {
     MenuPick(u8),
     /// The agent's model chip: its menu of models.
     ModelMenu,
+    /// The code an Agent panel line is about (by the line's number), shown:
+    /// what an agent did in the editor.
+    AgentJump(u64),
 }
 
 /// What a menu item does when chosen.
@@ -3226,6 +3229,7 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
         Action::Block | Action::ScrollBar => {}
         Action::MenuPick(i) => menu_pick(st, game, i as usize),
         Action::ModelMenu => open_model_menu(st),
+        Action::AgentJump(seq) => super::hstudio_coach::go(st, game, seq),
         Action::ClearLog => {
             st.s.log.clear();
             st.s.ui.log_scroll = 0;
@@ -3457,6 +3461,9 @@ pub struct AgentPane {
     pub(crate) seq: u64,
     /// The model chosen for each agent, by its id (`agent-models.txt`).
     pub(crate) models: Option<std::collections::HashMap<String, String>>,
+    /// Calls of the editor's tools whose lines aren't shown (what they did
+    /// has a line of its own), by call id, with the line each would have had.
+    pub(crate) hidden: std::collections::HashMap<String, String>,
 }
 
 /// Lines kept of the conversation.
@@ -3588,11 +3595,24 @@ pub fn agent_poll(st: &mut Studio) {
                 }
             }
             AgentEvent::Text(t) => pane.say(AgentLineKind::Said, t, now),
-            AgentEvent::Tool { name, summary } => {
-                let text = if summary.is_empty() { name } else { summary };
-                pane.say(AgentLineKind::Tool, text, now);
+            AgentEvent::Tool { id, name, summary } => {
+                let text = if summary.is_empty() { name.clone() } else { summary };
+                // An editor tool says what it did in a line of its own.
+                match id.filter(|_| super::hstudio_agent::EDITOR_TOOLS.contains(&name.as_str())) {
+                    Some(id) => {
+                        pane.hidden.insert(id, text);
+                    }
+                    None => pane.say(AgentLineKind::Tool, text, now),
+                }
             }
-            AgentEvent::ToolResult { ok, summary } => {
+            AgentEvent::ToolResult { id, ok, summary } => {
+                let hidden = id.and_then(|id| pane.hidden.remove(&id));
+                if let Some(call) = hidden {
+                    if ok {
+                        continue;
+                    }
+                    pane.say(AgentLineKind::Tool, call, now);
+                }
                 let kind = if ok {
                     AgentLineKind::ToolOk
                 } else {
@@ -3620,6 +3640,9 @@ pub fn agent_poll(st: &mut Studio) {
                     None if ok => pane.say(AgentLineKind::Done, "Done.", now),
                     None => pane.say(AgentLineKind::Error, "It stopped.", now),
                 }
+                pane.hidden.clear();
+                // Its edits in the editor are saved now, or it says they aren't.
+                st.s.ui.coach.turn_ended(ok);
                 over = true;
             }
             AgentEvent::Error(e) => pane.say(AgentLineKind::Error, e, now),

@@ -37,6 +37,8 @@
 //   server ("mcp__puppeteer matches any tool provided by the puppeteer
 //   server"); its tools then appear as `mcp__horizon-studio__<tool>`. The flag
 //   takes several values (`<tools...>`), so it goes last, after the prompt.
+//   New tools of the server (the player's editor: open_script, read_script,
+//   edit_script, save_script) are approved with the rest, nothing to add.
 // - `--permission-mode default` (Manual mode) is passed too: in it a `-p` run
 //   denies every call that needs approval (Bash, Edit, Write...) since nobody
 //   can answer, whatever the user's settings make their default mode; reads
@@ -434,6 +436,11 @@ pub fn prompt(request: &str, ctx: &AgentContext) -> String {
          shows the new text.\n\
          - test_mod: tests a mod with steps (headless, or live: true in the running game).\n\
          - run_lua: runs Lua in the running game's console.\n\
+         - read_script, edit_script, save_script: the script in the player's editor, live. read_script gives its \
+         text as they have it (unsaved edits too); edit_script types a change into it while they watch \
+         (old_text and new_text, one function or block per call; start_line one past the end appends); \
+         save_script saves it and the game reloads the mod.\n\
+         - open_script: opens any script (any mod, any file of a module) in the editor.\n\
          - game_status, game_log: the game, the mods' states and errors, the console.\n\
          - screenshot: a picture of the game as the player sees it (studio: true shows the editor too); \
          look with it to check what a mod draws.\n\n",
@@ -474,8 +481,11 @@ pub fn prompt(request: &str, ctx: &AgentContext) -> String {
         }
     }
     p += "\nHow to work:\n\
-          - Change mods only with write_mod: after changing a mod, save it with write_mod (the game reloads \
-          it and the editor shows the new text). Read a mod with read_mod before changing it.\n\
+          - For the script open in the editor: read_script, then edit_script, then save_script when the change \
+          is complete (edits you leave unsaved are saved when you finish, if nobody changed the file since). \
+          Line numbers count from 1 in read_script's text. Save before test_mod or reload_mod: they use the \
+          file on disk. Use write_mod for a new mod or files that aren't open, after reading them with \
+          read_mod.\n\
           - Answer briefly, in plain text without Markdown: your answer is shown in a small panel in the game.\n\n\
           The player's request:\n";
     p += request.trim();
@@ -492,11 +502,19 @@ pub enum AgentEvent {
     Started { session: Option<String> },
     /// What it says (a text block, or lines of a plain-text agent).
     Text(String),
-    /// A tool it calls: its short name ("write_mod") and a line for the panel
-    /// ("write_mod statue").
-    Tool { name: String, summary: String },
-    /// A tool's result, in a line.
-    ToolResult { ok: bool, summary: String },
+    /// A tool it calls: the call's id (which its result names), its short
+    /// name ("write_mod") and a line for the panel ("write_mod statue").
+    Tool {
+        id: Option<String>,
+        name: String,
+        summary: String,
+    },
+    /// A tool's result, in a line, with the id of the call it answers.
+    ToolResult {
+        id: Option<String>,
+        ok: bool,
+        summary: String,
+    },
     /// The run is over (always the last event). `summary`: when ok, the final
     /// answer (Claude Code's `result`, which repeats the last Text; omp's last
     /// text; none for plain-text agents); when not, why. `session` resumes it.
@@ -509,6 +527,12 @@ pub enum AgentEvent {
     /// missing MCP server); the run goes on until Done.
     Error(String),
 }
+
+/// The horizon-studio tools that act in the player's editor: each says what
+/// it did there as a line of its own in the Agent panel (one that jumps to
+/// the code), so their calls and results show no line besides, unless one
+/// fails.
+pub const EDITOR_TOOLS: &[&str] = &["open_script", "edit_script", "save_script"];
 
 /// A tool's name without the horizon-studio MCP prefix (Claude Code's
 /// `mcp__horizon-studio__`, omp's `mcp__horizon_studio_`).
@@ -523,6 +547,7 @@ pub fn tool_name(full: &str) -> &str {
 /// The arguments that say what a call is about, by preference.
 const KEY_ARGS: &[&str] = &[
     "id",
+    "file",
     "code",
     "command",
     "line",
@@ -576,16 +601,26 @@ fn content_text(content: &Json) -> String {
     }
 }
 
-/// A tool result on one line: for horizon-studio's JSON results, their error
-/// or "ok"; else the start of the text.
+/// A tool result on one line: for horizon-studio's JSON results, their error,
+/// what they say they did (`did`), or "ok"; else the start of the text. A
+/// result of several text blocks (read_script's state, then its lines) is
+/// summed up by its first.
 pub fn result_summary(content: &Json) -> String {
     let text = content_text(content);
-    if let Ok(Json::Object(o)) = serde_json::from_str::<Json>(text.trim()) {
+    let first = content
+        .as_array()
+        .and_then(|blocks| blocks.iter().find_map(|b| b["text"].as_str()))
+        .unwrap_or(&text);
+    let json = serde_json::from_str::<Json>(text.trim()).or_else(|_| serde_json::from_str::<Json>(first.trim()));
+    if let Ok(Json::Object(o)) = json {
         let error =
             |o: &serde_json::Map<String, Json>| ["error", "why"].iter().find_map(|k| o.get(*k)?.as_str().map(one_line));
         let nested = o.values().filter_map(Json::as_object).find_map(error);
         if let Some(e) = error(&o).or(nested) {
             return cut(&e, 80);
+        }
+        if let Some(did) = o.get("did").and_then(Json::as_str) {
+            return cut(&one_line(did), 80);
         }
         if o.get("ok") == Some(&Json::Bool(true)) {
             return "ok".into();
@@ -653,6 +688,7 @@ pub fn parse_claude_line(line: &str) -> Vec<AgentEvent> {
                 "tool_use" => {
                     let name = b["name"].as_str().unwrap_or("tool");
                     Some(AgentEvent::Tool {
+                        id: some_text(&b["id"]),
                         name: tool_name(name).to_owned(),
                         summary: tool_summary(name, &b["input"]),
                     })
@@ -663,6 +699,7 @@ pub fn parse_claude_line(line: &str) -> Vec<AgentEvent> {
         "user" => blocks()
             .filter(|b| b["type"] == "tool_result")
             .map(|b| AgentEvent::ToolResult {
+                id: some_text(&b["tool_use_id"]),
                 ok: b["is_error"] != true,
                 summary: result_summary(&b["content"]),
             })
@@ -716,11 +753,13 @@ pub fn parse_omp_line(line: &str) -> Vec<AgentEvent> {
         "tool_execution_start" => {
             let name = j["toolName"].as_str().unwrap_or("tool");
             vec![AgentEvent::Tool {
+                id: some_text(&j["toolCallId"]),
                 name: tool_name(name).to_owned(),
                 summary: tool_summary(name, &j["args"]),
             }]
         }
         "tool_execution_end" => vec![AgentEvent::ToolResult {
+            id: some_text(&j["toolCallId"]),
             ok: j["isError"] != true,
             summary: result_summary(&j["result"]),
         }],

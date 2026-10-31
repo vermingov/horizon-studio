@@ -69,7 +69,24 @@ pub struct Coach {
     /// Finished edits' results by their id, with when they finished.
     results: Vec<(u64, f64, Json)>,
     next_edit: u64,
+    /// An agent changed a file the editor doesn't show: a note over the
+    /// code, which shows it.
+    pub notice: Option<Notice>,
+    /// The game's own agent's turn just ended (well or not): its unsaved
+    /// edits are saved, or a line says they aren't.
+    turn_over: Option<bool>,
 }
+
+/// A note over the code: what an agent changed elsewhere, its Agent panel
+/// line (whose jump shows it), and when.
+pub struct Notice {
+    pub text: String,
+    pub seq: u64,
+    pub at: f64,
+}
+
+/// How long the note over the code shows, in seconds.
+pub const NOTICE_SECS: f64 = 6.0;
 
 impl Default for Coach {
     fn default() -> Self {
@@ -82,6 +99,8 @@ impl Default for Coach {
             unsaved: None,
             results: Vec::new(),
             next_edit: 1,
+            notice: None,
+            turn_over: None,
         }
     }
 }
@@ -176,6 +195,11 @@ impl Coach {
     /// Whether the player used the studio in the last moment.
     pub fn player_busy(&self, now: f64) -> bool {
         now - self.input_at < HANDS_OFF
+    }
+    /// The game's own agent's turn is over (`ok`: it ended well): at the
+    /// next step its edits nobody saved are saved, or a line says why not.
+    pub fn turn_ended(&mut self, ok: bool) {
+        self.turn_over = Some(ok);
     }
 }
 
@@ -537,7 +561,7 @@ pub fn summary(st: &Studio) -> Json {
         "dirty": ed.dirty,
         "line_count": line_count(&ed.lines),
         "typing": typing_state(st),
-        "unsaved": unsaved.map(|u| json!({ "file": u.file, "by": u.by.name })),
+        "unsaved": unsaved.map(|u| json!({ "file": u.file, "by": u.by.name, "conn": u.by.conn })),
     })
 }
 
@@ -644,7 +668,8 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
         } else {
             format!("Opened {}, a new file", t.file)
         };
-        say(st, by, text, Some(jump));
+        let in_run = in_run(st, by);
+        say(st, by, in_run, text, Some(jump));
     }
     let ed = &st.s.editor;
     Ok(json!({
@@ -889,14 +914,10 @@ fn in_run(st: &mut Studio, by: &By) -> bool {
 
 /// A line in the Agent panel for what an agent did in the editor, which
 /// jumps to the code; named after the agent unless it is the game's own,
-/// in its run.
-fn say(st: &mut Studio, by: &By, text: impl Into<String>, jump: Option<Jump>) {
+/// in its run (`in_run`).
+fn say(st: &mut Studio, by: &By, in_run: bool, text: impl Into<String>, jump: Option<Jump>) {
     let text = text.into();
-    let text = if in_run(st, by) {
-        text
-    } else {
-        format!("{}: {text}", by.name)
-    };
+    let text = if in_run { text } else { format!("{}: {text}", by.name) };
     let now = st.s.now;
     st.s.ui.agent.say_jump(AgentLineKind::Action, text, jump, now);
 }
@@ -1004,7 +1025,7 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     let change = change_of(&lines, &t.file, params)?;
     let in_run = in_run(st, by);
     if !open {
-        return edit_on_disk(st, game, by, &t, &lines, change);
+        return edit_on_disk(st, game, (by, in_run), &t, &lines, change);
     }
     let now = st.s.now;
     let ui = &st.s.ui;
@@ -1104,11 +1125,11 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
 }
 
 /// An edit to a file the editor doesn't have open: written to disk at
-/// once, and its mod reloads.
+/// once, and its mod reloads; a note over the code says so, and shows it.
 fn edit_on_disk(
     st: &mut Studio,
     game: &mut dyn GameApi,
-    by: &By,
+    (by, in_run): (&By, bool),
     t: &Target,
     lines: &[String],
     change: Change,
@@ -1132,7 +1153,14 @@ fn edit_on_disk(
         first: span.0 - 1,
         last: span.1 - 1,
     };
-    say(st, by, what, Some(jump));
+    say(st, by, in_run, what, Some(jump));
+    if st.s.ui.open {
+        st.s.ui.coach.notice = Some(Notice {
+            text: format!("{} changed {}", by.name, t.file),
+            seq: st.s.ui.agent.seq,
+            at: st.s.now,
+        });
+    }
     let mut out = json!({
         "ok": true,
         "did": did,
@@ -1161,7 +1189,13 @@ pub fn step(st: &mut Studio, game: &mut dyn GameApi) {
     if c.flash.as_ref().is_some_and(|f| now - f.at >= FLASH) {
         c.flash = None;
     }
-    let Some(mut t) = c.typing.take() else {
+    if c.notice.as_ref().is_some_and(|n| now - n.at >= NOTICE_SECS) {
+        c.notice = None;
+    }
+    if let Some(ok) = c.turn_over.take() {
+        end_turn(st, game, ok);
+    }
+    let Some(mut t) = st.s.ui.coach.typing.take() else {
         return;
     };
     if !still_there(st, &mut t) {
@@ -1377,7 +1411,7 @@ fn land(st: &mut Studio, t: &Typing, cut_short: Option<&str>) -> Json {
         first: t.lines.0 - 1,
         last: t.lines.1.max(t.lines.0) - 1,
     };
-    say(st, &t.by, did, Some(jump));
+    say(st, &t.by, t.in_run, did, Some(jump));
     out
 }
 
@@ -1390,7 +1424,7 @@ fn keep_result(st: &mut Studio, id: u64, result: &Json) {
 /// or the file on disk changed since the editor read it (the player
 /// chooses then); a line in the Agent panel says how its mod is. Returns
 /// the mod's state.
-fn save_now(st: &mut Studio, game: &mut dyn GameApi, by: &By) -> Result<Json, String> {
+fn save_now(st: &mut Studio, game: &mut dyn GameApi, by: &By, in_run: bool) -> Result<Json, String> {
     let ed = &st.s.editor;
     let file = ed.title.clone();
     let path = ed.path.clone().ok_or("the editor has no file open")?;
@@ -1416,20 +1450,98 @@ fn save_now(st: &mut Studio, game: &mut dyn GameApi, by: &By) -> Result<Json, St
         first: n as usize - 1,
         last: n as usize - 1,
     });
-    say(st, by, saved_text(&file, &m), jump);
+    say(st, by, in_run, saved_text(&file, &m), jump);
     Ok(m)
 }
 
 /// An edit's save, as it asked: its result says whether it was saved, and
 /// how the mod is, or why not.
 fn save_into(st: &mut Studio, game: &mut dyn GameApi, t: &Typing, result: &mut Json) {
-    match save_now(st, game, &t.by) {
+    match save_now(st, game, &t.by, t.in_run) {
         Ok(m) => {
             result["saved"] = json!(true);
             result["mod"] = m;
         }
         Err(why) => result["why"] = json!(format!("not saved: {why}")),
     }
+}
+
+/// After the game's own agent's turn: its edits nobody saved are saved when
+/// the turn ended well and nothing changed the file since (the player's
+/// edits, a change on disk); otherwise a line says they aren't, and how
+/// to keep them or take them back. Other agents' edits are theirs to save.
+fn end_turn(st: &mut Studio, game: &mut dyn GameApi, ok: bool) {
+    finish_typing(st, "the agent's turn ended");
+    let Some(u) = st.s.ui.coach.unsaved.take() else {
+        return;
+    };
+    let ed = &st.s.editor;
+    if !u.in_run || ed.path.as_ref() != Some(&u.path) || !ed.dirty {
+        // Another agent's, or saved since (switching files saves them).
+        st.s.ui.coach.unsaved = Some(u).filter(|u| !u.in_run);
+        return;
+    }
+    let why = if !ok {
+        None
+    } else if ed.revision != u.rev || u.player_edits || st.s.ui.coach.player_editing(st.s.now) {
+        Some("you changed the file since")
+    } else if ed.disk_changed() {
+        Some("the file changed on disk since")
+    } else {
+        match save_now(st, game, &u.by, true) {
+            Ok(_) => return,
+            Err(_) => Some("it couldn't be saved"),
+        }
+    };
+    let text = match why {
+        Some(why) => format!(
+            "{}'s edits to {} aren't saved ({why}): Ctrl+S saves them, Ctrl+Z takes them back",
+            u.by.name, u.file
+        ),
+        None => format!(
+            "{}'s edits to {} aren't saved: Ctrl+S saves them, Ctrl+Z takes them back",
+            u.by.name, u.file
+        ),
+    };
+    let now = st.s.now;
+    st.s.ui.agent.say(AgentLineKind::Done, text, now);
+}
+
+/// The code Agent panel line number `seq` is about, shown: its file opens
+/// (the one open saved first, as the script list does: it is the player's
+/// own click), its first line a third of the way down with the cursor on
+/// it, its lines lit a moment, and the keys go back to the code.
+pub fn go(st: &mut Studio, game: &mut dyn GameApi, seq: u64) {
+    let pane = &st.s.ui.agent;
+    let jump = pane
+        .seq
+        .checked_sub(seq)
+        .and_then(|back| pane.lines.len().checked_sub(back as usize + 1))
+        .and_then(|i| pane.lines[i].jump.clone());
+    let Some(jump) = jump else {
+        return;
+    };
+    let open = st.s.editor.path.as_ref() == Some(&jump.path);
+    if !open && !jump.path.is_file() {
+        st.s.toast(format!("{} isn't there any more", jump.file));
+        return;
+    }
+    if !open {
+        st.save_before_switch(game, Some(&jump.path));
+        st.open_file(&jump.path);
+    }
+    show_line(st, jump.first + 1, true);
+    let now = st.s.now;
+    let ui = &mut st.s.ui;
+    ui.tab = Tab::Editor;
+    ui.panel_focus = false;
+    ui.coach.notice = None;
+    ui.coach.flash = Some(Flash {
+        path: jump.path,
+        first: jump.first,
+        last: jump.last,
+        at: now,
+    });
 }
 
 /// The link's `typed`: whether edit `id` is all in yet, and then its result.
@@ -1474,7 +1586,8 @@ pub fn save(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     if st.s.ui.coach.player_editing(st.s.now) {
         return Ok(busy(format!("the player is typing in {}", t.file)));
     }
-    let m = save_now(st, game, by)?;
+    let in_run = in_run(st, by);
+    let m = save_now(st, game, by, in_run)?;
     let siblings = super::hstudio_ui::editor_siblings(st);
     let ed = &st.s.editor;
     let problems = super::hstudio_assist::check(&ed.lines, &ed.title, siblings.as_deref());

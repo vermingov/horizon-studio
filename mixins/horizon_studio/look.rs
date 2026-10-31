@@ -1806,6 +1806,9 @@ struct Said {
     /// Its line's number and place, for selecting (None: a gap).
     key: Option<(u64, usize)>,
     after: &'static str,
+    /// On the first row of a line about some code (what an agent did in
+    /// the editor): the line's number, for its Show link.
+    jump: Option<u64>,
 }
 
 /// The agent: the conversation (newest at the bottom), and what to ask it.
@@ -1836,7 +1839,13 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
             K::Done => (Font::Regular, 11.5, pal().muted, 0.0, None, false),
             K::Action => (Font::Regular, 12.5, pal().ink_soft, 14.0, Some(pal().accent), false),
         };
-        let pieces = p.wrap_sep(&line.text, w - indent - 8.0, size, font);
+        // A line about some code keeps room for its Show link.
+        let show = if line.jump.is_some() {
+            p.measure("Show", 12.0, Font::Medium) + 16.0
+        } else {
+            0.0
+        };
+        let pieces = p.wrap_sep(&line.text, w - indent - 8.0 - show, size, font);
         let n = pieces.len();
         for (i, (piece, after)) in pieces.into_iter().enumerate().rev() {
             rows.push(Said {
@@ -1850,6 +1859,7 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
                 at: line.at,
                 key: Some((seq, i)),
                 after,
+                jump: line.jump.as_ref().filter(|_| i == 0).map(|_| seq),
             });
         }
         if line.kind == K::You || line.kind == K::Done {
@@ -1865,6 +1875,7 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
                 at: line.at,
                 key: None,
                 after: "",
+                jump: None,
             });
         }
         if rows.len() >= want {
@@ -1884,7 +1895,7 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
     if rows.is_empty() && !busy {
         let msg = match name {
             Some(n) => format!(
-                "Ask {n} to write or change this script. It sees the open file, what you selected and its problems, and works through Horizon Studio's MCP: its edits show here as they land."
+                "Ask {n} to write or change this script. It sees the open file, what you selected and its problems, and works through Horizon Studio's MCP: it types its changes into the editor as you watch, and Show on its lines here goes to what it changed."
             ),
             None => "No agent found on this computer. Install Claude Code (claude) or omp, set up the MCP (Copy AI setup prompt), then press Look for an agent.".to_owned(),
         };
@@ -1931,6 +1942,18 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
             row.font,
             row.c,
         );
+        // What an agent did in the editor: Show goes to that code (the
+        // line's text stays for selecting).
+        if let Some(seq) = row.jump {
+            let lw = p.measure("Show", 12.0, Font::Medium);
+            let r = [x + w - lw - 8.0, ly + 1.0, lw + 8.0, ROW - 2.0];
+            let ui = &mut st.s.ui;
+            let hv = hover(ui, id("agent-show", seq as usize), inside(r, ui.mouse), dt);
+            let c = mix(pal().accent, pal().accent_hover, hv);
+            p.text("Show", r[0] + 4.0, top(ly + ROW / 2.0, 12.0), 12.0, Font::Medium, c);
+            p.rect([r[0] + 4.0, ly + ROW - 4.0, lw, 1.0], 0.0, fade(c, hv));
+            ui.hits.push((r, Action::AgentJump(seq)));
+        }
     }
     p.alpha = base;
     p.dy = dy;
@@ -2483,6 +2506,7 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
         rows,
     });
     file_changed(st, p, panel, dt);
+    agent_notice(st, p, panel, dt);
     // The suggestions, at the word being typed.
     if st.s.ui.suggest.as_ref().is_some_and(|sg| !sg.console) {
         let ed = &st.s.editor;
@@ -2593,6 +2617,40 @@ fn agent_caret(
         Font::Medium,
         on_accent(),
     );
+}
+
+/// At the bottom right of the code, a moment: an agent changed a file the
+/// editor doesn't show ("Claude Code changed lib/util.lua"); a click shows it.
+fn agent_notice(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
+    use super::hstudio_coach::NOTICE_SECS;
+    let now = st.s.now;
+    let Some((text, seq, at)) = st.s.ui.coach.notice.as_ref().map(|n| (n.text.clone(), n.seq, n.at)) else {
+        return;
+    };
+    let label = format!("{text} · Show");
+    let lw = p.measure(&label, 12.0, Font::Medium) + 30.0;
+    let r = [panel[0] + panel[2] - lw - 14.0, panel[1] + panel[3] - 36.0, lw, 24.0];
+    if panel[3] < 72.0 || r[0] < panel[0] + 10.0 {
+        return;
+    }
+    let age = now - at;
+    let base = p.alpha;
+    p.alpha = base * progress(now, at, QUICK) * (1.0 - ((age - (NOTICE_SECS - 0.6)) / 0.6).clamp(0.0, 1.0) as f32);
+    let ui = &mut st.s.ui;
+    let hv = hover(ui, id("agent-notice", 0), inside(r, ui.mouse), dt);
+    p.rect(r, 12.0, mix(pal().surface, pal().accent, 0.16 + 0.08 * hv));
+    p.border(r, 12.0, fade(pal().accent, 0.4));
+    p.rect([r[0] + 10.0, r[1] + 8.5, 7.0, 7.0], 3.5, pal().accent);
+    p.text(
+        &label,
+        r[0] + 22.0,
+        top(r[1] + 12.0, 12.0),
+        12.0,
+        Font::Medium,
+        pal().ink,
+    );
+    ui.hits.push((r, Action::AgentJump(seq)));
+    p.alpha = base;
 }
 
 /// Over the code: the file changed on disk while it had edits here (take
@@ -3240,6 +3298,7 @@ fn docs() -> Vec<Doc> {
     out.push(Doc::Para("The executor styles are always a window. Their buttons do the studio's work: Execute runs the editor's code, Clear empties it, Execute File saves the file and reloads its mod, Open File shows the Library, Attach and Inject reload every mod, and Options shows Settings, where the console, the Library and the docs are a click away too.".into()));
     out.push(Doc::Heading("AI agents".into()));
     out.push(Doc::Para("horizon-studio-mcp lets AI agents (Claude Code, omp, Codex, Cursor...) make mods here: they write and test them, headless and in this game, run Lua in the console and read what happened. Copy AI setup prompt, at the top right, copies a prompt for your agent that sets it all up; once one is connected, its name shows there. Options > Mods > Horizon Studio turns the AI link off.".into()));
+    out.push(Doc::Para("An agent can work in this editor as you watch: it opens any script, reads it as you have it (unsaved edits too), and types its changes in at a caret of its own with its name on it. Your cursor stays where it is, the view follows the agent until you scroll, and any key or click puts the rest of its change in at once. Ctrl+Z takes a whole change back. Its changes stay unsaved until it saves them (or you do); nothing you are typing is saved for you. A file you don't have open is changed on disk instead, and a note over the code shows it. The Agent panel says what it did, and Show there goes to that code.".into()));
     out.push(Doc::Heading("Commands in chat".into()));
     out.push(Doc::Para(
         "/studio opens this screen, /studio reload reloads every script mod, /lua <code> runs code.".into(),

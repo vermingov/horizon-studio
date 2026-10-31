@@ -48,18 +48,22 @@ fn claude_events() -> Vec<AgentEvent> {
         },
         Text("I'll look up how to place blocks first.".into()),
         Tool {
+            id: Some("toolu_01VnJ8kq3XQ2mZp5bR7tY9Lc".into()),
             name: "docs".into(),
             summary: "docs world.set_block".into(),
         },
         ToolResult {
+            id: Some("toolu_01VnJ8kq3XQ2mZp5bR7tY9Lc".into()),
             ok: true,
             summary: "world.set_block(x, y, z, id) Places a block in the world (in single player).".into(),
         },
         Tool {
+            id: Some("toolu_01Kp2Xz7Mq4Rn9Sw3Tv6Yb8A".into()),
             name: "write_mod".into(),
             summary: "write_mod statue".into(),
         },
         ToolResult {
+            id: Some("toolu_01Kp2Xz7Mq4Rn9Sw3Tv6Yb8A".into()),
             ok: true,
             summary: "ok".into(),
         },
@@ -133,6 +137,7 @@ fn claude_odd_lines_and_failures() {
     assert_eq!(
         parse_claude_line(denied),
         vec![ToolResult {
+            id: Some("toolu_01A".into()),
             ok: false,
             summary: "Claude requested permissions to use Bash, but you haven't granted it yet.".into()
         }]
@@ -181,18 +186,22 @@ fn omp_json_becomes_events() {
             },
             Text("Let me check the docs.".into()),
             Tool {
+                id: Some("call_1".into()),
                 name: "docs".into(),
                 summary: "docs set block".into()
             },
             ToolResult {
+                id: Some("call_1".into()),
                 ok: true,
                 summary: "world.set_block(x, y, z, id): places a block".into()
             },
             Tool {
+                id: Some("call_2".into()),
                 name: "run_lua".into(),
                 summary: "run_lua print(world.block(0, 64, 0))".into()
             },
             ToolResult {
+                id: Some("call_2".into()),
                 ok: false,
                 summary: "not linked: the game isn't running".into()
             },
@@ -341,6 +350,67 @@ fn the_prompt_names_the_modules_files() {
         },
     );
     assert!(!one.contains("is a file of the module"), "{one}");
+}
+
+#[test]
+fn the_prompt_teaches_the_live_editor() {
+    let p = prompt(
+        "fix it",
+        &AgentContext {
+            file: Some("timer.lua".into()),
+            mods_dir: PathBuf::from("/m"),
+            ..Default::default()
+        },
+    );
+    for part in [
+        "read_script",
+        "edit_script",
+        "save_script",
+        "open_script",
+        "one function or block",
+        "start_line one past the end appends",
+        "Line numbers count from 1",
+        "Save before test_mod",
+        "write_mod for a new mod",
+    ] {
+        assert!(p.contains(part), "{part:?} missing in:\n{p}");
+    }
+    assert!(!p.contains("Change mods only with write_mod"), "{p}");
+}
+
+#[test]
+fn editor_tools_are_summed_up_by_what_they_did() {
+    let r = |text: &str| result_summary(&json!([{ "type": "text", "text": text }]));
+    assert_eq!(
+        r("{\"ok\": true, \"did\": \"Read greeter.lua, lines 1-40 of 120\"}"),
+        "Read greeter.lua, lines 1-40 of 120"
+    );
+    // An error still wins over what it says it did.
+    assert_eq!(
+        r("{\"ok\": false, \"did\": \"Typing\", \"error\": \"old_text isn't in a.lua\"}"),
+        "old_text isn't in a.lua"
+    );
+    // read_script's two blocks (the state, then the numbered lines): the first.
+    let two = json!([
+        { "type": "text", "text": "{\"did\": \"Read timer.lua (12 lines)\", \"open\": true}" },
+        { "type": "text", "text": "     1\tlocal t = 0" },
+    ]);
+    assert_eq!(result_summary(&two), "Read timer.lua (12 lines)");
+    // A file of a module names the call when there is no id.
+    assert_eq!(
+        tool_summary(
+            "mcp__horizon-studio__edit_script",
+            &json!({ "file": "lib/util.lua", "old_text": "x" })
+        ),
+        "edit_script lib/util.lua"
+    );
+    assert_eq!(
+        tool_summary(
+            "mcp__horizon-studio__open_script",
+            &json!({ "id": "kit", "file": "lib.lua" })
+        ),
+        "open_script kit"
+    );
 }
 
 #[test]

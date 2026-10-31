@@ -911,6 +911,75 @@ fn an_edit_sent_again_with_its_key_is_done_once() {
     assert_eq!(st.s.editor.text(), "local n = 0\nprint('hi')\nreturn n * 2\n");
 }
 
+#[test]
+fn edits_work_in_a_modules_files_and_the_scratch_file() {
+    let (mut game, mut st) = with_module("coach-module-edit");
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    st.s.now = 10.0;
+    // A module's file open in the editor: typed in, checked with its other files.
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "kit" })).unwrap();
+    assert_eq!(r["file"], "kit/main.lua");
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "print(util.two())", "new_text": "print(util.two() + util.two())" }),
+    )
+    .unwrap();
+    let r = typed_in(&mut st, &mut game, r["typing"].as_u64().unwrap());
+    assert_eq!(
+        (&r["file"], &r["problems"]),
+        (&json!("kit/main.lua"), &json!([])),
+        "{r}"
+    );
+    assert_eq!(r["did"], "Typed line 2 into kit/main.lua");
+    // Another file of it, by its path alone: on disk, and the module reloads with it.
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "file": "lib/util.lua", "old_text": "return 2", "new_text": "return 21" }),
+    )
+    .unwrap();
+    assert_eq!(
+        (&r["file"], &r["mod"]["id"]),
+        (&json!("kit/lib/util.lua"), &json!("kit")),
+        "{r}"
+    );
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    let r = ask(&mut st, &mut game, "save", json!({})).unwrap();
+    assert_eq!(r["mod"]["state"], "running", "{r}");
+    assert!(log(&st).iter().any(|l| l.ends_with("42")), "{:?}", log(&st));
+    // The scratch file: on disk while another file is open, typed in once it is.
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "scratch": true, "start_line": 1, "end_line": 0, "new_text": "-- noted" }),
+    )
+    .unwrap();
+    assert_eq!(
+        (&r["written"], &r["mod"]),
+        (&json!(st.scratch_path()), &Json::Null),
+        "{r}"
+    );
+    assert!(
+        std::fs::read_to_string(st.scratch_path())
+            .unwrap()
+            .starts_with("-- noted\n")
+    );
+    ask(&mut st, &mut game, "open", json!({ "scratch": true })).unwrap();
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "-- noted", "new_text": "-- noted twice", "typing": false }),
+    )
+    .unwrap();
+    assert_eq!((&r["file"], &r["dirty"]), (&json!("scratch.lua"), &json!(true)), "{r}");
+}
+
 // ----------------------------------------------------------------- what else changes the buffer mid edit
 
 /// An edit of greet.lua's print line being typed in, part of it in.
@@ -1077,4 +1146,235 @@ fn the_agent_types_with_its_own_caret_and_name() {
         assert!(game.drawn.len() > 10, "theme {i}");
     }
     typed_in(&mut st, &mut game, r["typing"].as_u64().unwrap());
+}
+
+// ----------------------------------------------------------------- the Agent panel
+
+#[test]
+fn the_agent_panel_shows_what_the_agent_did_and_goes_there() {
+    use horizon_studio::game::hstudio_ui::Panel;
+    let (mut game, mut st) = editing("coach-jump", "greet", GREET);
+    st.s.ui.look.motion = false;
+    let long: Vec<String> = (1..=60).map(|i| format!("print({i})")).collect();
+    game.write_mod("long.lua", &(long.join("\n") + "\n"));
+    st.scan(&mut game);
+    // An agent outside the game changes a file the editor doesn't show: on disk.
+    ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "id": "long", "old_text": "print(40)", "new_text": "print('forty')" }),
+    )
+    .unwrap();
+    assert_eq!(st.s.editor.title, "greet.lua", "the player's file stays");
+    // A note over the code says so, and shows it.
+    redraw(&mut st, &mut game);
+    let note = text_at(&game, "Claude Code changed long.lua · Show");
+    click(&mut st, &mut game, (note.0 + 4.0, note.1 + 4.0));
+    assert_eq!(st.s.editor.title, "long.lua");
+    assert_eq!(st.s.editor.row, 39);
+    assert!(st.s.ui.coach.notice.is_none());
+    // Its line in the Agent panel goes there too, from another file.
+    let scratch = st.scratch_path();
+    st.s.editor.open(&scratch, "scratch.lua");
+    st.s.ui.panel = Panel::Agent;
+    st.s.ui.panel_focus = true;
+    redraw(&mut st, &mut game);
+    let line = text_at(&game, "Claude Code: Changed line 40 in long.lua");
+    let show = text_at(&game, "Show");
+    assert!((show.1 - line.1).abs() < 4.0, "Show is on the line's row");
+    click(&mut st, &mut game, (show.0 + 4.0, show.1 + 4.0));
+    assert_eq!(st.s.editor.title, "long.lua");
+    assert_eq!((st.s.editor.row, st.s.editor.col), (39, 0));
+    let scroll = st.s.editor.scroll;
+    assert!(scroll > 20 && scroll < 39, "line 40 a third of the way down: {scroll}");
+    assert!(!st.s.ui.panel_focus, "the keys go back to the code");
+    let lit = st.s.ui.coach.flash.as_ref().map(|f| (f.first, f.last));
+    assert_eq!(lit, Some((39, 39)), "the line it changed is lit a moment");
+    // The line's text stays for selecting and copying.
+    redraw(&mut st, &mut game);
+    let line = text_at(&game, "Claude Code: Changed line 40 in long.lua");
+    handle(&mut st, &mut game, Input::Mouse(line.0 - 1.0, line.1 + 4.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    redraw(&mut st, &mut game);
+    handle(&mut st, &mut game, Input::Mouse(line.0 + 100.0, line.1 + 4.0));
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    redraw(&mut st, &mut game);
+    handle(&mut st, &mut game, key(Key::Char('c'), CTRL));
+    assert!(game.clipboard.starts_with("Claude Code"), "{:?}", game.clipboard);
+    assert_eq!(st.s.editor.title, "long.lua", "selecting went nowhere");
+}
+
+/// A fake Claude Code for the game's own agent: it prints `lines` (its
+/// stream), waits a moment (its turn going on), then prints `end`.
+#[cfg(unix)]
+fn fake_claude(st: &mut Studio, name: &str, lines: &[&str], end: &str) {
+    use horizon_studio::game::hstudio_agent::AgentSpec;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = st.s.dir.join(format!("fake-{name}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("claude");
+    let script = format!(
+        "#!/bin/sh\ncat <<'EOF'\n{}\nEOF\nsleep 0.6\ncat <<'EOF'\n{end}\nEOF\n",
+        lines.join("\n")
+    );
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    st.s.ui.agent.agents = Some(vec![AgentSpec::claude(path)]);
+}
+
+#[cfg(unix)]
+const INIT: &str = r#"{"type":"system","subtype":"init","session_id":"s1","mcp_servers":[{"name":"horizon-studio","status":"connected"}]}"#;
+#[cfg(unix)]
+const GOOD: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"Fixed it.","session_id":"s1"}"#;
+#[cfg(unix)]
+const FAILED: &str =
+    r#"{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["it broke"],"session_id":"s1"}"#;
+
+/// Frames until the game's own agent is done.
+#[cfg(unix)]
+fn until_done(st: &mut Studio, game: &mut FakeGame) {
+    for _ in 0..400 {
+        run_for(st, game, 0.05);
+        if !horizon_studio::game::hstudio_ui::agent_busy(st) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("the agent never finished");
+}
+
+#[cfg(unix)]
+#[test]
+fn editor_tool_lines_are_not_doubled_and_a_good_turn_saves_the_edits() {
+    use horizon_studio::game::hstudio_ui::agent_ask;
+    let (mut game, mut st) = editing("coach-turn-good", "greet", GREET);
+    let path = st.s.editor.path.clone().unwrap();
+    let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__horizon-studio__edit_script","input":{"id":"greet","old_text":"print('hi')"}}]},"session_id":"s1"}"#;
+    let ok = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"{\"ok\": true, \"did\": \"Changed line 2 in greet.lua\"}"}]}]},"session_id":"s1"}"#;
+    let bad_call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"mcp__horizon-studio__edit_script","input":{"file":"lib/util.lua","old_text":"x"}}]},"session_id":"s1"}"#;
+    let bad = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":[{"type":"text","text":"old_text isn't in greet.lua as the editor has it"}]}]},"session_id":"s1"}"#;
+    fake_claude(&mut st, "good", &[INIT, call, ok, bad_call, bad], GOOD);
+    agent_ask(&mut st, "fix it");
+    // What it does in the editor meanwhile, through the link.
+    ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "print('hi')", "new_text": "print('fixed')", "typing": false }),
+    )
+    .unwrap();
+    until_done(&mut st, &mut game);
+    let lines: Vec<(AgentLineKind, String)> = st.s.ui.agent.lines.iter().map(|l| (l.kind, l.text.clone())).collect();
+    // Its own line, not named (it is the game's own agent, in its run)...
+    assert!(
+        lines.contains(&(AgentLineKind::Action, "Changed line 2 in greet.lua".into())),
+        "{lines:#?}"
+    );
+    // ...and no tool line or "ok" for that call besides; a failed call shows as usual.
+    assert!(
+        !lines.iter().any(|(_, t)| t.starts_with("edit_script greet")),
+        "{lines:#?}"
+    );
+    assert!(!lines.iter().any(|(k, _)| *k == AgentLineKind::ToolOk), "{lines:#?}");
+    assert!(
+        lines.contains(&(AgentLineKind::Tool, "edit_script lib/util.lua".into())),
+        "{lines:#?}"
+    );
+    assert!(
+        lines.contains(&(
+            AgentLineKind::ToolFailed,
+            "old_text isn't in greet.lua as the editor has it".into()
+        )),
+        "{lines:#?}"
+    );
+    // The turn ended well: its edits are saved, and the mod runs them.
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "local n = 0\nprint('fixed')\nreturn n\n"
+    );
+    assert!(!st.s.editor.dirty);
+    assert_eq!(
+        lines.last().unwrap(),
+        &(AgentLineKind::Action, "Saved greet.lua: running".into())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_turn_that_failed_or_found_the_file_changed_leaves_the_edits_unsaved() {
+    use horizon_studio::game::hstudio_ui::agent_ask;
+    let edit = json!({ "old_text": "print('hi')", "new_text": "print('half done')", "typing": false });
+    let last = |st: &Studio| st.s.ui.agent.lines.last().unwrap().text.clone();
+    // The turn stopped or failed.
+    let (mut game, mut st) = editing("coach-turn-failed", "greet", GREET);
+    let path = st.s.editor.path.clone().unwrap();
+    fake_claude(&mut st, "failed", &[INIT], FAILED);
+    agent_ask(&mut st, "fix it");
+    ask(&mut st, &mut game, "edit", edit.clone()).unwrap();
+    until_done(&mut st, &mut game);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), GREET);
+    assert!(st.s.editor.dirty);
+    assert_eq!(
+        last(&st),
+        "Claude Code's edits to greet.lua aren't saved: Ctrl+S saves them, Ctrl+Z takes them back"
+    );
+    // The player changed the file after the agent's edit.
+    let (mut game, mut st) = editing("coach-turn-player", "greet", GREET);
+    let path = st.s.editor.path.clone().unwrap();
+    fake_claude(&mut st, "player", &[INIT], GOOD);
+    agent_ask(&mut st, "fix it");
+    ask(&mut st, &mut game, "edit", edit.clone()).unwrap();
+    handle(&mut st, &mut game, Input::Text("-".into()));
+    until_done(&mut st, &mut game);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), GREET);
+    assert!(
+        last(&st).contains("aren't saved (you changed the file since)"),
+        "{}",
+        last(&st)
+    );
+    // The file changed on disk meanwhile: it isn't written over.
+    let (mut game, mut st) = editing("coach-turn-disk", "greet", GREET);
+    let path = st.s.editor.path.clone().unwrap();
+    fake_claude(&mut st, "disk", &[INIT], GOOD);
+    agent_ask(&mut st, "fix it");
+    ask(&mut st, &mut game, "edit", edit.clone()).unwrap();
+    std::fs::write(&path, "print('written elsewhere, and longer')\n").unwrap();
+    until_done(&mut st, &mut game);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "print('written elsewhere, and longer')\n"
+    );
+    assert!(
+        last(&st).contains("aren't saved (the file changed on disk since)"),
+        "{}",
+        last(&st)
+    );
+    // Another agent's edits are its own to save.
+    let (mut game, mut st) = editing("coach-turn-other", "greet", GREET);
+    let path = st.s.editor.path.clone().unwrap();
+    fake_claude(&mut st, "other", &[INIT], GOOD);
+    agent_ask(&mut st, "fix it");
+    let cursor = By {
+        name: "Cursor".into(),
+        conn: 2,
+    };
+    coach::call(&mut st, &mut game, &cursor, "edit", &edit).unwrap();
+    until_done(&mut st, &mut game);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), GREET);
+    assert!(st.s.editor.dirty);
+    assert_eq!(actions(&st), ["Cursor: Changed line 2 in greet.lua"]);
+    let unsaved = &coach::summary(&st)["unsaved"];
+    assert_eq!(
+        (&unsaved["by"], &unsaved["conn"]),
+        (&json!("Cursor"), &json!(2)),
+        "who made them"
+    );
 }
