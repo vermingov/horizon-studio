@@ -1708,3 +1708,131 @@ fn page_layout_shows_one_page_and_jumps() {
     wheel(&mut st.s.rbx, -1.0);
     assert_eq!(say(&mut st, &mut game, "where"), "200 Page3");
 }
+
+#[test]
+fn table_layouts_from_a_script() {
+    let mut game = FakeGame::new("rbx-table");
+    let mut st = studio(&mut game);
+    // A read of a cell lays out the other rows too: its column is as wide
+    // as the widest cell in it.
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local box = Instance.new("Frame", gui)
+        box.Size = UDim2.fromOffset(300, 200)
+        local tbl = Instance.new("UITableLayout", box)
+        tbl.Padding = UDim2.fromOffset(5, 4)
+        local function row(order, widths)
+            local r = Instance.new("Frame", box)
+            r.LayoutOrder = order
+            local cells = {}
+            for i, w in widths do
+                local c = Instance.new("TextLabel", r)
+                c.LayoutOrder = i
+                c.Size = UDim2.fromOffset(w, 20)
+                cells[i] = c
+            end
+            return r, cells
+        end
+        local _, first = row(1, { 40, 60 })
+        local second, cells = row(2, { 90, 20 })
+        print(cells[2].AbsolutePosition, first[2].AbsolutePosition, first[1].AbsoluteSize, second.AbsoluteSize)
+        print(tbl.AbsoluteContentSize, tbl.MajorAxis, tbl.FillEmptySpaceColumns)
+    "#;
+    load(&mut game, &mut st, "table", src, 0.6);
+    assert_eq!(
+        printed(&st, "table"),
+        [
+            "95, 24    95, 0    90, 20    155, 20",
+            "155, 44    Enum.TableMajorAxis.RowMajor    false"
+        ]
+    );
+}
+
+#[test]
+fn reads_in_the_new_layouts_lay_out_as_the_whole_gui_does() {
+    // Flex, pages, tables, rich text and billboards: every output a read
+    // works out on its own is what laying out the whole GUI gives.
+    let mut game = FakeGame::new("rbx-partial-new");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local row = Instance.new("Frame", gui)
+        row.Size = UDim2.fromOffset(300, 40)
+        local list = Instance.new("UIListLayout", row)
+        list.FillDirection = Enum.FillDirection.Horizontal
+        list.HorizontalFlex = Enum.UIFlexAlignment.SpaceEvenly
+        list.ItemLineAlignment = Enum.ItemLineAlignment.Center
+        for i = 1, 3 do
+            local b = Instance.new("TextButton", row)
+            b.Size = UDim2.fromOffset(40 * i, 20)
+            if i == 2 then
+                local f = Instance.new("UIFlexItem", b)
+                f.FlexMode = Enum.UIFlexMode.Custom
+                f.GrowRatio = 2
+            end
+        end
+        local book = Instance.new("Frame", gui)
+        book.Position = UDim2.fromOffset(0, 50)
+        book.Size = UDim2.fromOffset(200, 100)
+        local pages = Instance.new("UIPageLayout", book)
+        pages.Animated = false
+        pages.Padding = UDim.new(0, 10)
+        for i = 1, 3 do
+            local p = Instance.new("Frame", book)
+            p.LayoutOrder = i
+            p.Size = UDim2.new(1, -20 * i, 1, 0)
+        end
+        pages:JumpToIndex(1)
+        local box = Instance.new("Frame", gui)
+        box.Position = UDim2.fromOffset(0, 200)
+        box.Size = UDim2.fromOffset(300, 200)
+        local tbl = Instance.new("UITableLayout", box)
+        tbl.Padding = UDim2.fromOffset(3, 2)
+        tbl.FillEmptySpaceRows = true
+        for r = 1, 3 do
+            local line = Instance.new("Frame", box)
+            line.LayoutOrder = r
+            for c = 1, 3 do
+                local cell = Instance.new("TextLabel", line)
+                cell.LayoutOrder = c
+                cell.Size = UDim2.fromOffset(10 * ((r + c) % 3 + 1), 8 * r)
+            end
+        end
+        local rich = Instance.new("TextLabel", gui)
+        rich.Position = UDim2.fromOffset(400, 0)
+        rich.AutomaticSize = Enum.AutomaticSize.XY
+        rich.RichText = true
+        rich.Text = 'small <font size="30">big</font><br/><b>bold</b> line'
+        local part = Instance.new("Part", workspace)
+        part.CFrame = CFrame.new(10.5, 65.62, -13.25)
+        local board = Instance.new("BillboardGui", part)
+        board.Size = UDim2.new(2, 0, 0, 30)
+        local inner = Instance.new("Frame", board)
+        inner.Position = UDim2.fromScale(0.25, 0)
+        inner.Size = UDim2.fromScale(0.5, 1)
+        Instance.new("UIListLayout", inner)
+        Instance.new("TextLabel", inner).Size = UDim2.new(1, 0, 0, 10)
+    "#;
+    load(&mut game, &mut st, "partialnew", src, 0.6);
+    let rbx = &mut st.s.rbx;
+    let mut ids: Vec<_> = rbx.descendants(rbx.player_gui);
+    ids.extend(rbx.descendants(rbx.workspace));
+    ids.retain(|&i| rbx.inst(i).gui);
+    let outputs = |rbx: &horizon_studio::game::hstudio_rbx::Rbx, id| -> Vec<String> {
+        OUTPUTS
+            .iter()
+            .map(|k| format!("{k} {:?}", get(&rbx.raw_get(id, k))))
+            .collect()
+    };
+    let mut alone = Vec::new();
+    for &id in &ids {
+        rbx.gui_epoch += 1;
+        fresh_layout(rbx, &mut game, id);
+        alone.push(outputs(rbx, id));
+    }
+    rbx.gui_epoch += 1;
+    lay_out(rbx, &mut game);
+    for (i, &id) in ids.iter().enumerate() {
+        assert_eq!(alone[i], outputs(rbx, id), "{}", rbx.full_name(id));
+    }
+}

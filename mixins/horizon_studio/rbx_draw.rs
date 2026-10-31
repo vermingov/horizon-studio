@@ -169,7 +169,7 @@ fn fill(node: &mut layout::Node, inst: &super::hstudio_rbx::Inst, focused: bool)
                 _ => ZIndexBehavior::Sibling,
             };
         }
-        "UIListLayout" | "UIGridLayout" | "UIPageLayout" => {
+        "UIListLayout" | "UIGridLayout" | "UIPageLayout" | "UITableLayout" => {
             node.fill_direction = match enum_name(&inst.get("FillDirection")) {
                 "Vertical" => FillDirection::Vertical,
                 _ => FillDirection::Horizontal,
@@ -194,6 +194,14 @@ fn fill(node: &mut layout::Node, inst: &super::hstudio_rbx::Inst, focused: bool)
                 node.horizontal_flex = flex_alignment(&inst.get("HorizontalFlex"));
                 node.vertical_flex = flex_alignment(&inst.get("VerticalFlex"));
                 node.item_line_alignment = line_alignment(&inst.get("ItemLineAlignment"));
+            } else if c.name == "UITableLayout" {
+                node.cell_padding = as_udim2(&inst.get("Padding")).unwrap_or_default();
+                node.fill_empty_space_columns = flag(inst, "FillEmptySpaceColumns");
+                node.fill_empty_space_rows = flag(inst, "FillEmptySpaceRows");
+                node.major_axis = match enum_name(&inst.get("MajorAxis")) {
+                    "ColumnMajor" => layout::TableMajorAxis::ColumnMajor,
+                    _ => layout::TableMajorAxis::RowMajor,
+                };
             } else if c.name == "UIPageLayout" {
                 // Its pages, and how far it has turned, are linked once the
                 // tree is built (`link_pages`).
@@ -718,6 +726,7 @@ pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
         tree: Tree::new(),
         node_inst: Vec::new(),
         path: &path,
+        rows: std::collections::HashSet::new(),
     };
     part.add(path[0], None, true);
     let (mut tree, node_inst) = (part.tree, part.node_inst);
@@ -736,7 +745,7 @@ pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
         path.contains(&node_inst[n])
             || matches!(
                 tree[n].class,
-                Class::UIListLayout | Class::UIGridLayout | Class::UIPageLayout
+                Class::UIListLayout | Class::UIGridLayout | Class::UIPageLayout | Class::UITableLayout
             ) && tree.parent(n).is_some_and(|p| path.contains(&node_inst[p]))
     };
     let mut writes = Vec::new();
@@ -789,6 +798,9 @@ struct Partial<'a> {
     node_inst: Vec<Id>,
     /// From the ScreenGui down to the instance read.
     path: &'a [Id],
+    /// A table's rows (or columns) on the way: all their cells are sized,
+    /// since each column is as wide as its widest.
+    rows: std::collections::HashSet<Id>,
 }
 
 impl Partial<'_> {
@@ -820,10 +832,16 @@ impl Partial<'_> {
             .filter(|_| on_path);
         let folder = class == Class::Folder;
         let canvas = inst.class.name == "ScrollingFrame" && enum_name(&inst.get("AutomaticCanvasSize")) != "None";
-        let arranged = inst
-            .children
-            .iter()
-            .any(|&c| matches!(rbx.inst(c).class.name, "UIListLayout" | "UIGridLayout" | "UIPageLayout"));
+        let arranged = inst.children.iter().any(|&c| {
+            matches!(
+                rbx.inst(c).class.name,
+                "UIListLayout" | "UIGridLayout" | "UIPageLayout" | "UITableLayout"
+            )
+        });
+        if on_path && inst.children.iter().any(|&c| rbx.inst(c).class.name == "UITableLayout") {
+            self.rows.extend(inst.children.iter().copied());
+        }
+        let row = self.rows.contains(&id);
         for &c in &inst.children {
             if Some(c) == next {
                 self.add(c, Some(n), true);
@@ -850,9 +868,9 @@ impl Partial<'_> {
             let needed = if folder {
                 !on_path
             } else if on_path {
-                auto || canvas || arranged && cc.is_gui_object() && next.is_some()
+                auto || canvas || arranged && cc.is_gui_object() && next.is_some() || row && cc.is_gui_object()
             } else {
-                auto
+                auto || row && cc.is_gui_object()
             };
             if needed {
                 self.add(c, Some(n), false);

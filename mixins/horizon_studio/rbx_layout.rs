@@ -49,6 +49,7 @@ pub enum Class {
     UIListLayout,
     UIGridLayout,
     UIPageLayout,
+    UITableLayout,
     UIPadding,
     UIAspectRatioConstraint,
     UISizeConstraint,
@@ -61,7 +62,7 @@ pub enum Class {
 }
 
 impl Class {
-    pub const ALL: [Class; 21] = [
+    pub const ALL: [Class; 22] = [
         Class::ScreenGui,
         Class::BillboardGui,
         Class::Frame,
@@ -74,6 +75,7 @@ impl Class {
         Class::UIListLayout,
         Class::UIGridLayout,
         Class::UIPageLayout,
+        Class::UITableLayout,
         Class::UIPadding,
         Class::UIAspectRatioConstraint,
         Class::UISizeConstraint,
@@ -100,6 +102,7 @@ impl Class {
             Class::UIListLayout => "UIListLayout",
             Class::UIGridLayout => "UIGridLayout",
             Class::UIPageLayout => "UIPageLayout",
+            Class::UITableLayout => "UITableLayout",
             Class::UIPadding => "UIPadding",
             Class::UIAspectRatioConstraint => "UIAspectRatioConstraint",
             Class::UISizeConstraint => "UISizeConstraint",
@@ -345,6 +348,16 @@ pub enum FlexMode {
     Custom,
 }
 
+/// Enum.TableMajorAxis: what a UITableLayout's container holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TableMajorAxis {
+    /// Rows, whose objects are the cells across.
+    #[default]
+    RowMajor,
+    /// Columns, whose objects are the cells down.
+    ColumnMajor,
+}
+
 /// Enum.TextTruncate: how text that doesn't fit ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TextTruncate {
@@ -465,9 +478,14 @@ pub struct Node {
     pub page_forward: bool,
     pub circular: bool,
     pub cell_size: UDim2,
+    /// UIGridLayout's CellPadding, and UITableLayout's Padding.
     pub cell_padding: UDim2,
     /// 0 is no limit.
     pub fill_direction_max_cells: u32,
+    // UITableLayout
+    pub fill_empty_space_columns: bool,
+    pub fill_empty_space_rows: bool,
+    pub major_axis: TableMajorAxis,
     pub start_corner: StartCorner,
 
     // UIPadding
@@ -576,8 +594,15 @@ impl Node {
             page_forward: true,
             circular: false,
             cell_size: UDim2::from_offset(100.0, 100.0),
-            cell_padding: UDim2::from_offset(5.0, 5.0),
+            cell_padding: if class == Class::UITableLayout {
+                UDim2::default()
+            } else {
+                UDim2::from_offset(5.0, 5.0)
+            },
             fill_direction_max_cells: 0,
+            fill_empty_space_columns: false,
+            fill_empty_space_rows: false,
+            major_axis: TableMajorAxis::RowMajor,
             start_corner: StartCorner::TopLeft,
             padding_top: UDim::default(),
             padding_bottom: UDim::default(),
@@ -739,6 +764,7 @@ impl Tree {
             tree: self,
             measure,
             placed: vec![None; self.slots.len()],
+            forced: vec![None; self.slots.len()],
         };
         for &root in &self.roots {
             match self[root].class {
@@ -1521,6 +1547,8 @@ struct Pass<'a> {
     tree: &'a Tree,
     measure: &'a mut dyn FnMut(&str, f64, &Font) -> f64,
     placed: Vec<Option<Placed>>,
+    /// Where a UITableLayout put its cells, in their row's content area.
+    forced: Vec<Option<Area>>,
 }
 
 impl<'a> Pass<'a> {
@@ -1537,7 +1565,12 @@ impl<'a> Pass<'a> {
 
     /// The UIListLayout or UIGridLayout that arranges this container's children.
     fn arranger(&self, id: NodeId) -> Option<NodeId> {
-        let layouts = [Class::UIListLayout, Class::UIGridLayout, Class::UIPageLayout];
+        let layouts = [
+            Class::UIListLayout,
+            Class::UIGridLayout,
+            Class::UIPageLayout,
+            Class::UITableLayout,
+        ];
         self.node(id)
             .children
             .iter()
@@ -1761,6 +1794,9 @@ impl<'a> Pass<'a> {
         }
         if self.node(layout).class == Class::UIPageLayout {
             return self.arrange_pages(layout, &items, area);
+        }
+        if self.node(layout).class == Class::UITableLayout {
+            return self.arrange_table(layout, &items, area);
         }
         let mut sizes: Vec<Vector2> = items.iter().map(|&c| self.size_of(c, area.size())).collect();
         let l = self.node(layout);
@@ -2073,6 +2109,109 @@ impl<'a> Pass<'a> {
         }
     }
 
+    /// UITableLayout: the container's items are its rows (RowMajor) or its
+    /// columns (ColumnMajor), and their GuiObjects the cells, in SortOrder.
+    /// Each column is as wide as its widest cell and each row as tall as its
+    /// tallest, with Padding between; FillEmptySpaceColumns and
+    /// FillEmptySpaceRows share the room left among them. Each cell takes
+    /// its cell's size, each row (or column) runs the table's length, and
+    /// the table aligns in the area.
+    fn arrange_table(&mut self, layout: NodeId, items: &[NodeId], area: Area) -> Arranged {
+        let cells: Vec<Vec<NodeId>> = items.iter().map(|&m| self.layout_items(m, layout)).collect();
+        let sizes: Vec<Vec<Vector2>> = cells
+            .iter()
+            .map(|line| line.iter().map(|&c| self.size_of(c, area.size())).collect())
+            .collect();
+        let l = self.node(layout);
+        let by_rows = l.major_axis == TableMajorAxis::RowMajor;
+        let pad = l.cell_padding.resolve(area.size());
+        // In a table of rows, the minor axis runs across (the columns) and
+        // the major one down (the rows); in one of columns, the other way.
+        let minor = |v: Vector2| if by_rows { v.x } else { v.y };
+        let major = |v: Vector2| if by_rows { v.y } else { v.x };
+        let (pad_minor, pad_major) = (minor(pad), major(pad));
+        let (room_minor, room_major) = (minor(area.size()), major(area.size()));
+        let (fill_minor, fill_major) = if by_rows {
+            (l.fill_empty_space_columns, l.fill_empty_space_rows)
+        } else {
+            (l.fill_empty_space_rows, l.fill_empty_space_columns)
+        };
+        let n_minor = cells.iter().map(Vec::len).max().unwrap_or(0);
+        let mut minor_len = vec![0.0f64; n_minor];
+        let mut major_len = vec![0.0f64; items.len()];
+        for (r, line) in sizes.iter().enumerate() {
+            for (c, &s) in line.iter().enumerate() {
+                minor_len[c] = minor_len[c].max(minor(s));
+                major_len[r] = major_len[r].max(major(s));
+            }
+        }
+        let span = |lens: &[f64], gap: f64| lens.iter().sum::<f64>() + gap * lens.len().saturating_sub(1) as f64;
+        let share = |lens: &mut [f64], gap: f64, room: f64| {
+            let free = room - span(lens, gap);
+            if free > 0.0 && !lens.is_empty() {
+                let each = free / lens.len() as f64;
+                lens.iter_mut().for_each(|x| *x += each);
+            }
+        };
+        if fill_minor {
+            share(&mut minor_len, pad_minor, room_minor);
+        }
+        if fill_major {
+            share(&mut major_len, pad_major, room_major);
+        }
+        let (long_minor, long_major) = (span(&minor_len, pad_minor), span(&major_len, pad_major));
+        let block = if by_rows {
+            Vector2::new(long_minor, long_major)
+        } else {
+            Vector2::new(long_major, long_minor)
+        };
+        let left = area.x + (area.w - block.x) * h_fraction(l.horizontal_alignment);
+        let top = area.y + (area.h - block.y) * v_fraction(l.vertical_alignment);
+        let at = |minor_at: f64, major_at: f64, minor_size: f64, major_size: f64| {
+            if by_rows {
+                Area {
+                    x: minor_at,
+                    y: major_at,
+                    w: minor_size,
+                    h: major_size,
+                }
+            } else {
+                Area {
+                    x: major_at,
+                    y: minor_at,
+                    w: major_size,
+                    h: minor_size,
+                }
+            }
+        };
+        let mut placed = Vec::with_capacity(items.len());
+        let mut major_at = 0.0;
+        for (r, &item) in items.iter().enumerate() {
+            let line = at(0.0, major_at, long_minor, major_len[r]);
+            placed.push((
+                item,
+                Area {
+                    x: left + line.x,
+                    y: top + line.y,
+                    ..line
+                },
+            ));
+            let mut minor_at = 0.0;
+            for (c, &cell) in cells[r].iter().enumerate() {
+                self.forced[cell] = Some(at(minor_at, 0.0, minor_len[c], major_len[r]));
+                minor_at += minor_len[c] + pad_minor;
+            }
+            major_at += major_len[r] + pad_major;
+        }
+        Arranged {
+            items: placed,
+            content_size: block,
+            cell_size: Vector2::ZERO,
+            cell_count: Vector2::ZERO,
+            page: None,
+        }
+    }
+
     /// A root ScreenGui: the viewport under the top bar (or all of it), its
     /// children placed in it.
     fn screen_gui(&mut self, id: NodeId, view: &Viewport) {
@@ -2164,6 +2303,18 @@ impl<'a> Pass<'a> {
         }
         for (child, _) in self.gui_children(id) {
             if arranged.contains(&child) {
+                continue;
+            }
+            // A table's cell goes where the table put it.
+            if let Some(a) = self.forced.get(child).copied().flatten() {
+                areas.push((
+                    child,
+                    Area {
+                        x: content.x + a.x,
+                        y: content.y + a.y,
+                        ..a
+                    },
+                ));
                 continue;
             }
             let size = self.size_of(child, content.size());

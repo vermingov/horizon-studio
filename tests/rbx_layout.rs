@@ -12,7 +12,7 @@ use horizon_studio::game::hstudio_rbx_layout::{
     Tree, VerticalAlignment, Viewport, ZIndexBehavior,
 };
 use horizon_studio::game::hstudio_rbx_layout::{
-    FlexAlignment, FlexMode, ItemLineAlignment, RichStyle, RichText, parse_rich,
+    FlexAlignment, FlexMode, ItemLineAlignment, RichStyle, RichText, TableMajorAxis, parse_rich,
 };
 use horizon_studio::game::hstudio_rbx_types::{Color3, Font, FontWeight, UDim, UDim2, Vector2};
 
@@ -605,6 +605,65 @@ fn page_layout_lays_pages_side_by_side() {
     let l = run(&tree);
     assert_rect(&l, pages[1], (50.0, 25.0, 100.0, 50.0));
     assert_rect(&l, pages[2], (50.0, 75.0, 100.0, 50.0));
+}
+
+/// A 300 x 200 frame with a UITableLayout of two rows of two cells:
+/// 40 x 20 and 60 x 10, then 50 x 30 and 20 x 25.
+fn table() -> (Tree, NodeId, [NodeId; 2], [NodeId; 4]) {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    let f = frame(&mut tree, gui, px(0.0, 0.0), px(300.0, 200.0));
+    let layout = tree.add(Class::UITableLayout, Some(f));
+    tree[layout].sort_order = SortOrder::LayoutOrder;
+    tree[layout].cell_padding = px(5.0, 4.0);
+    let a = frame(&mut tree, f, px(0.0, 0.0), px(0.0, 0.0));
+    let b = frame(&mut tree, f, px(0.0, 0.0), px(0.0, 0.0));
+    tree[b].layout_order = 1;
+    let cells = [
+        frame(&mut tree, a, px(0.0, 0.0), px(40.0, 20.0)),
+        frame(&mut tree, a, px(0.0, 0.0), px(60.0, 10.0)),
+        frame(&mut tree, b, px(0.0, 0.0), px(50.0, 30.0)),
+        frame(&mut tree, b, px(0.0, 0.0), px(20.0, 25.0)),
+    ];
+    (tree, layout, [a, b], cells)
+}
+
+#[test]
+fn table_layout_rows_and_columns() {
+    let (mut tree, layout, [a, b], [a0, a1, b0, b1]) = table();
+    // Columns 50 and 60 wide (their widest cells), rows 20 and 30 tall,
+    // with 5 between the columns and 4 between the rows.
+    let l = run(&tree);
+    assert_rect(&l, a, (0.0, 0.0, 115.0, 20.0));
+    assert_rect(&l, a0, (0.0, 0.0, 50.0, 20.0));
+    assert_rect(&l, a1, (55.0, 0.0, 60.0, 20.0));
+    assert_rect(&l, b, (0.0, 24.0, 115.0, 30.0));
+    assert_rect(&l, b0, (0.0, 24.0, 50.0, 30.0));
+    assert_rect(&l, b1, (55.0, 24.0, 60.0, 30.0));
+    assert_eq!(l.get(layout).unwrap().content_size, v(115.0, 54.0));
+    // ColumnMajor: the two are columns, their cells rows down them.
+    tree[layout].major_axis = TableMajorAxis::ColumnMajor;
+    let l = run(&tree);
+    assert_rect(&l, a, (0.0, 0.0, 60.0, 59.0));
+    assert_rect(&l, a0, (0.0, 0.0, 60.0, 30.0));
+    assert_rect(&l, a1, (0.0, 34.0, 60.0, 25.0));
+    assert_rect(&l, b, (65.0, 0.0, 50.0, 59.0));
+    assert_rect(&l, b1, (65.0, 34.0, 50.0, 25.0));
+    // FillEmptySpaceColumns and FillEmptySpaceRows share the room left.
+    tree[layout].major_axis = TableMajorAxis::RowMajor;
+    tree[layout].fill_empty_space_columns = true;
+    tree[layout].fill_empty_space_rows = true;
+    let l = run(&tree);
+    assert_rect(&l, a0, (0.0, 0.0, 142.5, 93.0));
+    assert_rect(&l, b1, (147.5, 97.0, 152.5, 103.0));
+    // The table aligns in the frame.
+    tree[layout].fill_empty_space_columns = false;
+    tree[layout].fill_empty_space_rows = false;
+    tree[layout].horizontal_alignment = HorizontalAlignment::Right;
+    tree[layout].vertical_alignment = VerticalAlignment::Bottom;
+    let l = run(&tree);
+    assert_rect(&l, a, (185.0, 146.0, 115.0, 20.0));
+    assert_rect(&l, b1, (240.0, 170.0, 60.0, 30.0));
 }
 
 fn grid() -> (Tree, NodeId, Vec<NodeId>) {

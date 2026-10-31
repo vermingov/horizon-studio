@@ -977,7 +977,21 @@ pub static CLASSES: &[C] = &[
             &["PageEnter", "PageLeave", "Stopped"],
         )
     },
-    kept("UITableLayout", "UIGridStyleLayout"),
+    C {
+        lenient: true,
+        ..class(
+            "UITableLayout",
+            "UIGridStyleLayout",
+            &[
+                p("FillDirection", K::Enum("FillDirection"), D::E("Vertical")),
+                p("FillEmptySpaceColumns", Bool, B(false)),
+                p("FillEmptySpaceRows", Bool, B(false)),
+                p("MajorAxis", K::Enum("TableMajorAxis"), D::E("RowMajor")),
+                p("Padding", K::UD2, D::UD2(0.0, 0.0, 0.0, 0.0)),
+            ],
+            &[],
+        )
+    },
     kept("Decal", "Instance"),
     kept("Texture", "Instance"),
     kept("SpecialMesh", "Instance"),
