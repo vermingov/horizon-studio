@@ -296,6 +296,90 @@ fn a_path_refused_changes_nothing_on_disk() {
 }
 
 #[test]
+fn removing_a_file_the_module_loads_fails_the_check() {
+    let mut s = server();
+    let studio = Folder::new("removed");
+    let mods = studio.mods();
+    let d = mods.to_str().unwrap();
+    let kit = mods.join("kit");
+    std::fs::create_dir_all(kit.join("models")).unwrap();
+    std::fs::write(
+        kit.join("main.lua"),
+        "local lib = require('lib')\nlocal box = mesh.load('models/box.obj')\n",
+    )
+    .unwrap();
+    std::fs::write(kit.join("lib.lua"), "return {}\n").unwrap();
+    std::fs::write(kit.join("models/box.obj"), "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").unwrap();
+    let (r, error) = call(&mut s, "check_mod", json!({ "id": "kit", "mods_dir": d }));
+    assert!(!error, "{r:#}");
+    // An asset main.lua loads: the check runs without it, and fails as the game will.
+    let (r, error) = call(
+        &mut s,
+        "write_mod",
+        json!({ "id": "kit", "mods_dir": d, "remove": ["models/box.obj"] }),
+    );
+    assert!(error, "{r:#}");
+    assert_eq!(r["removed"], json!(["models/box.obj"]));
+    let why = r["check"]["mod"]["error"].as_str().unwrap_or("");
+    assert!(why.contains("mesh.load: no file 'models/box.obj'"), "{r:#}");
+    assert!(!kit.join("models").exists(), "removed, and its emptied folder");
+    // A file it requires, removed beside a main.lua given: the same.
+    let (r, error) = call(
+        &mut s,
+        "write_mod",
+        json!({ "id": "kit", "mods_dir": d, "files": { "main.lua": "local lib = require('lib')\n" }, "remove": ["lib.lua"] }),
+    );
+    assert!(error, "{r:#}");
+    let why = r["check"]["mod"]["error"].as_str().unwrap_or("");
+    assert!(why.contains("lib.lua") && why.contains("not found"), "{r:#}");
+}
+
+#[test]
+fn files_given_are_checked_over_the_others_as_they_are() {
+    let mut s = server();
+    let studio = Folder::new("as-they-are");
+    let mods = studio.mods();
+    let d = mods.to_str().unwrap();
+    let kit = mods.join("kit");
+    std::fs::create_dir_all(&kit).unwrap();
+    std::fs::write(
+        kit.join("main.lua"),
+        "local lib = require('lib')\nlocal data = require('data')\nprint(lib.name, #data)\n",
+    )
+    .unwrap();
+    // A file saved in Latin-1 (not UTF-8), and one over 1 MiB: the game runs both.
+    std::fs::write(kit.join("lib.lua"), b"-- caf\xe9 au lait\nreturn { name = 'lib' }\n").unwrap();
+    let big = format!("-- {}\nreturn {{ 1, 2, 3 }}\n", "x".repeat(1_200_000));
+    std::fs::write(kit.join("data.lua"), big).unwrap();
+    let (r, error) = call(&mut s, "check_mod", json!({ "id": "kit", "mods_dir": d }));
+    assert!(!error, "as it is on disk: {r:#}");
+    let main = "local lib = require('lib')\nlocal data = require('data')\ncommand('kit', function() return 'changed ' .. lib.name .. ' ' .. #data end)\n";
+    let (r, error) = call(
+        &mut s,
+        "check_mod",
+        json!({ "id": "kit", "mods_dir": d, "files": { "main.lua": main } }),
+    );
+    assert!(!error, "{r:#}");
+    assert_eq!(r["mod"]["state"], "running", "{r:#}");
+    assert_eq!(r["mod"]["files"], json!(["main.lua", "data.lua", "lib.lua"]));
+    let (r, error) = call(
+        &mut s,
+        "test_mod",
+        json!({ "id": "kit", "mods_dir": d, "files": { "main.lua": main },
+                "steps": [{ "command": "/kit", "expect_chat": "changed lib 3" }] }),
+    );
+    assert!(!error && r["ok"] == true, "{r:#}");
+    let (r, error) = call(
+        &mut s,
+        "write_mod",
+        json!({ "id": "kit", "mods_dir": d, "files": { "main.lua": main } }),
+    );
+    assert!(!error, "{r:#}");
+    assert_eq!(r["check"]["mod"]["state"], "running", "{r:#}");
+    assert_eq!(std::fs::read(kit.join("lib.lua")).unwrap()[..8], *b"-- caf\xe9 ");
+}
+
+#[test]
 fn only_main_lua_for_a_script_moves_a_file_to_the_trash() {
     let mut s = server();
     let studio = Folder::new("stray");

@@ -356,11 +356,14 @@ pub enum Source {
     Installed { mods_dir: PathBuf, id: String },
     /// Files given as text: `main.lua` (and others) for a folder mod, or one
     /// file named `<id>.lua`; the libraries it imports come from `libraries`
-    /// (a mods folder), else the bundled ones.
+    /// (a mods folder), else the bundled ones. For a module that folder has,
+    /// the files given go over its own and `remove` (paths in it) are taken
+    /// away, as writing them would leave it on disk.
     Files {
         id: String,
         files: Vec<(String, String)>,
         libraries: Option<PathBuf>,
+        remove: Vec<String>,
     },
 }
 
@@ -488,7 +491,7 @@ fn module_paths(dir: &Path, files: &[(String, String)]) -> Result<Vec<PathBuf>, 
 /// Files of a module to delete, by their paths in it, as given: each must
 /// be there, and main.lua, which starts the module, can't go (delete the
 /// mod instead).
-fn removable(mods_dir: &Path, id: &str, paths: &[String]) -> Result<Vec<(String, PathBuf)>, String> {
+pub fn removable(mods_dir: &Path, id: &str, paths: &[String]) -> Result<Vec<(String, PathBuf)>, String> {
     let dir = mods_dir.join(id);
     if !paths.is_empty() && !dir.join("main.lua").is_file() {
         return Err(format!(
@@ -521,33 +524,6 @@ pub fn remove_files(mods_dir: &Path, id: &str, paths: &[String]) -> Result<Vec<S
         crate::game::hstudio_modfiles::prune_empty(&dir, path.parent());
     }
     Ok(found.into_iter().map(|(rel, _)| rel).collect())
-}
-
-/// A mod's files as they will be once `files` are written and `remove`
-/// deleted: an existing module's files with those given over them, else
-/// just those given (a new mod, a script, or a script made a module).
-pub fn merged_files(
-    mods_dir: &Path,
-    id: &str,
-    files: &[(String, String)],
-    remove: &[String],
-) -> Result<Vec<(String, String)>, String> {
-    removable(mods_dir, id, remove)?;
-    let mut out = if mods_dir.join(id).join("main.lua").is_file() {
-        read_mod(mods_dir, id)?
-    } else {
-        Vec::new()
-    };
-    for (path, text) in files {
-        match out.iter_mut().find(|(p, _)| p == path) {
-            Some(f) => f.1 = text.clone(),
-            None => out.push((path.clone(), text.clone())),
-        }
-    }
-    let gone: Vec<String> = remove.iter().map(|r| r.replace('\\', "/")).collect();
-    out.retain(|(p, _)| !gone.contains(p));
-    out.sort();
-    Ok(out)
 }
 
 /// A mod id as the studio makes them: lowercase letters, digits, `_` and `-`.
@@ -592,6 +568,24 @@ fn imports_of(files: &[(String, String)]) -> Vec<String> {
     out
 }
 
+/// The code of mod `id` in a mods folder, as the game reads it: a script's
+/// file, or every `.lua` file of a module, whatever its encoding or size.
+fn code_of(mods: &Path, id: &str) -> Vec<(String, String)> {
+    let folder = mods.join(id);
+    let files = if folder.join("main.lua").is_file() {
+        crate::game::hstudio_modfiles::lua_files(&folder)
+            .into_iter()
+            .map(|rel| (crate::game::hstudio_modfiles::path_in(&folder, &rel), rel))
+            .collect()
+    } else {
+        vec![(mods.join(format!("{id}.lua")), format!("{id}.lua"))]
+    };
+    files
+        .into_iter()
+        .filter_map(|(path, rel)| Some((rel, String::from_utf8_lossy(&std::fs::read(path).ok()?).into_owned())))
+        .collect()
+}
+
 impl Run {
     /// A run of `source` and the libraries it imports (from the same mods
     /// folder, else the bundled ones), loaded by the first frame.
@@ -607,17 +601,37 @@ impl Run {
             .map(|id| format!("seen:{id}\n"))
             .collect();
         std::fs::write(dir.join("studio.txt"), seen).map_err(|e| e.to_string())?;
-        let (id, files, from) = match source {
-            Source::Installed { mods_dir, id } => (id.clone(), read_mod(mods_dir, id)?, Some(mods_dir.clone())),
-            Source::Files { id, files, libraries } => (id.clone(), files.clone(), libraries.clone()),
+        let (id, from) = match source {
+            Source::Installed { mods_dir, id } => {
+                write_mod(&mods, id, &read_mod(mods_dir, id)?)?;
+                // What read_mod leaves out: assets, and files not text or too big.
+                copy_folder(&mods_dir.join(id), &mods.join(id));
+                (id.clone(), Some(mods_dir.clone()))
+            }
+            Source::Files {
+                id,
+                files,
+                libraries,
+                remove,
+            } => {
+                // A module on disk: its files as they are there, every byte,
+                // with those given over them (a script's one file is all of it).
+                let script = matches!(files.as_slice(), [(name, _)] if *name == format!("{id}.lua"));
+                if let Some(from) = libraries.as_ref().filter(|_| !script) {
+                    copy_folder(&from.join(id), &mods.join(id));
+                }
+                if !files.is_empty() {
+                    write_mod(&mods, id, files)?;
+                }
+                for rel in remove {
+                    if let Ok(rel) = safe_path(&rel.replace('\\', "/")) {
+                        let _ = std::fs::remove_file(mods.join(id).join(rel));
+                    }
+                }
+                (id.clone(), libraries.clone())
+            }
         };
-        write_mod(&mods, &id, &files)?;
-        if let Some(from) = &from {
-            // Files given as text are all its code: what is on disk adds only assets.
-            let code = matches!(source, Source::Installed { .. });
-            copy_assets(&from.join(&id), &mods.join(&id), code);
-        }
-        let mut queue = imports_of(&files);
+        let mut queue = imports_of(&code_of(&mods, &id));
         let mut done: BTreeSet<String> = BTreeSet::from([id.clone()]);
         while let Some(lib) = queue.pop() {
             if !done.insert(lib.clone()) || check_id(&lib).is_err() {
@@ -633,7 +647,7 @@ impl Run {
                 queue.extend(imports_of(&lib_files));
                 write_mod(&mods, &lib, &lib_files)?;
                 if let Some(from) = &from {
-                    copy_assets(&from.join(&lib), &mods.join(&lib), true);
+                    copy_folder(&from.join(&lib), &mods.join(&lib));
                 }
             }
         }
@@ -1055,11 +1069,10 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
     })
 }
 
-/// A folder mod's other files (images, models: what `read_mod` leaves out
-/// as not text), copied beside the text written for a run: three folders
-/// deep, 16 MB a file, 64 MB in all. Without `code`, `.lua` files are left
-/// out: the run's code is what was given.
-fn copy_assets(from: &Path, to: &Path, code: bool) {
+/// A module's files on disk, copied as they are (code and assets alike,
+/// whatever their encoding) into a run's mods folder: three folders deep,
+/// 16 MB a file, 64 MB in all. A file there already is kept.
+fn copy_folder(from: &Path, to: &Path) {
     if !from.join("main.lua").is_file() {
         return;
     }
@@ -1076,8 +1089,7 @@ fn copy_assets(from: &Path, to: &Path, code: bool) {
             let len = p.metadata().map_or(u64::MAX, |m| m.len());
             let Ok(rel) = p.strip_prefix(from) else { continue };
             let dest = to.join(rel);
-            let lua = p.extension().is_some_and(|x| x == "lua");
-            if !p.is_file() || dest.exists() || (lua && !code) || len > 16 << 20 || total + len > 64 << 20 {
+            if !p.is_file() || dest.exists() || len > 16 << 20 || total + len > 64 << 20 {
                 continue;
             }
             total += len;

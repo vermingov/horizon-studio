@@ -180,6 +180,7 @@ fn headless_tests_run_commands_keys_lua_and_screens() {
         id: "greeter".into(),
         files: vec![("greeter.lua".into(), GREETER.into())],
         libraries: None,
+        remove: Vec::new(),
     };
     let mut run = Run::new(&source).unwrap();
     let report = run_steps(
@@ -223,6 +224,7 @@ fn headless_tests_run_commands_keys_lua_and_screens() {
         id: "playground".into(),
         files: vec![("playground.lua".into(), playground.source.into())],
         libraries: None,
+        remove: Vec::new(),
     };
     let mut run = Run::new(&source).unwrap();
     let report = run_steps(
@@ -243,6 +245,7 @@ fn headless_tests_run_commands_keys_lua_and_screens() {
                 .into(),
         )],
         libraries: None,
+        remove: Vec::new(),
     };
     let mut run = Run::new(&source).unwrap();
     let report = run_steps(

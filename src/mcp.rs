@@ -9,7 +9,7 @@
 
 use crate::game::hstudio::VERSION;
 use crate::game::hstudio_examples::EXAMPLES;
-use crate::headless::{Run, STEPS_HELP, Source, check_id, merged_files, read_mod, remove_files, run_steps, write_mod};
+use crate::headless::{Run, STEPS_HELP, Source, check_id, read_mod, removable, remove_files, run_steps, write_mod};
 use crate::mcp_docs::{self, Reference};
 use serde_json::{Value as Json, json};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -737,12 +737,13 @@ impl Server {
                     return Err("give 'files' to write, or 'remove': files of a module to delete".into());
                 }
                 let dir = dir()?;
-                // Checked as it will be on disk: a module's other files too.
-                let merged = merged_files(&dir, id, &files, &remove)?;
+                removable(&dir, id, &remove)?;
+                // Checked as it will be on disk: over a module's other files.
                 let check = check(&Source::Files {
                     id: id.to_owned(),
-                    files: merged,
+                    files: files.clone(),
                     libraries: Some(dir.clone()),
+                    remove: remove.clone(),
                 })
                 .map(|(r, _)| r)
                 .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
@@ -836,6 +837,7 @@ impl Server {
                         id: "scratch".into(),
                         files: vec![("scratch.lua".into(), "-- headless console\n".into())],
                         libraries: dir().ok(),
+                        remove: Vec::new(),
                     })?,
                 };
                 let lines = run.studio.run_chunk(&mut run.game, code, false);
@@ -1106,14 +1108,11 @@ impl Server {
 /// folder, the files given over its other files, as writing them would
 /// leave it.
 fn given_files(id: &str, files: Vec<(String, String)>, mods_dir: Option<PathBuf>) -> Source {
-    let files = mods_dir
-        .as_deref()
-        .and_then(|d| merged_files(d, id, &files, &[]).ok())
-        .unwrap_or(files);
     Source::Files {
         id: id.to_owned(),
         files,
         libraries: mods_dir,
+        remove: Vec::new(),
     }
 }
 
