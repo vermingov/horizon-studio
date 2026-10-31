@@ -85,6 +85,8 @@ pub struct LinkClient {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
     next_id: u64,
+    /// The link protocol the game speaks, from its auth reply (2 has the editor).
+    pub protocol: u64,
 }
 
 impl LinkClient {
@@ -109,12 +111,14 @@ impl LinkClient {
             reader: BufReader::new(stream),
             writer,
             next_id: 1,
+            protocol: 1,
         };
         c.write(&json!({ "auth": token, "client": client.unwrap_or("An AI agent") }))?;
         let reply = c.read_line()?;
         if reply.get("ok") != Some(&Json::Bool(true)) {
             return Err(format!("the game refused the link: {}", reply["error"]));
         }
+        c.protocol = reply["protocol"].as_u64().unwrap_or(1);
         Ok(c)
     }
 
@@ -298,6 +302,22 @@ fn steps_schema() -> Json {
     json!({ "type": "array", "items": { "type": "object" }, "description": STEPS_HELP })
 }
 
+/// The properties every tool of the player's editor takes (which file),
+/// with `more` of its own.
+fn script_props(more: Json) -> Json {
+    let mut props = json!({
+        "id": { "type": "string",
+                "description": "The mod's id. Without it (and without scratch): the script open in the player's editor, or with file, a file of its mod." },
+        "file": { "type": "string",
+                  "description": "A file of the mod by its path in it: a module's main.lua (the default), lib.lua, lib/util.lua; a script's one file is <id>.lua." },
+        "scratch": { "type": "boolean", "description": "The editor's scratch file (scratch.lua) instead of a mod's." },
+    });
+    if let (Some(p), Json::Object(m)) = (props.as_object_mut(), more) {
+        p.extend(m);
+    }
+    props
+}
+
 pub fn tools() -> Json {
     let id = json!({ "type": "string", "description": "The mod's id: its file or folder name (lowercase, digits, _ and -)." });
     let mods_dir = json!({ "type": "string", "description": "The mods folder, if not the game's (found by itself)." });
@@ -417,6 +437,32 @@ pub fn tools() -> Json {
               (then you see the editor and the console too). Use it to check what a mod draws: HUD panels, \
               screens, 3D shapes, particles.",
             json!({ "studio": { "type": "boolean", "description": "Show the studio's window too, if open (default false)." } }),
+            &[]
+        ),
+        tool(
+            "open_script",
+            "Opens a script in the player's editor in the running game, as the player would from its script list: \
+              any mod's file (a module's other files too) or the scratch file, the Editor tab brought forward. It \
+              waits while the player is using the studio, and refuses while the file open has unsaved edits. \
+              create: true opens a file that isn't there yet (a new script <id>.lua, a new module's main.lua, a new \
+              file of a module) empty, for edit_script to type into; it is written when saved. line shows that \
+              line. Live only.",
+            script_props(json!({
+                "line": { "type": "integer", "description": "A line to show, from 1." },
+                "create": { "type": "boolean", "description": "Open a file that doesn't exist yet, empty (default false)." },
+            })),
+            &[]
+        ),
+        tool(
+            "read_script",
+            "A script's text as the player's editor has it, unsaved edits included (a file the editor doesn't \
+              have open: as on disk), 400 lines at a time (from, to). Returns the editor's state as JSON (the file, \
+              unsaved edits, the line count, the player's cursor and selection), then the lines numbered from 1 as \
+              edit_script counts them. Live only.",
+            script_props(json!({
+                "from": { "type": "integer", "description": "The first line, from 1 (default 1)." },
+                "to": { "type": "integer", "description": "The last line (default: 399 lines after from)." },
+            })),
             &[]
         ),
         tool(
@@ -643,6 +689,50 @@ impl Server {
 
     fn linked(&mut self) -> bool {
         self.live("status", json!({})).is_ok()
+    }
+
+    /// A request to the player's editor in the game (`hstudio_coach`), with
+    /// its errors made plain: an older game has no editor, and the editor
+    /// tools work in the running game only. One that changes something
+    /// (`keyed`) carries a fresh key, so the game does it once though `live`
+    /// sends it again after the link drops. While the player is using the
+    /// studio the game answers that it waits: it is asked again, for up to
+    /// `wait` seconds.
+    fn editor_live(&mut self, method: &str, args: &Json, keyed: bool, wait: f64) -> Result<Json, String> {
+        let old = || {
+            "this game's Horizon Studio is older than this server and has no live editor: update the game \
+             (Horizon Studio's newest release)"
+                .to_owned()
+        };
+        let protocol = self.link.lock().ok().and_then(|l| l.as_ref().map(|c| c.protocol));
+        if protocol.is_some_and(|p| p < 2) {
+            return Err(old());
+        }
+        let until = Instant::now() + Duration::from_secs_f64(wait);
+        loop {
+            let mut params = if args.is_object() { args.clone() } else { json!({}) };
+            if keyed {
+                params["key"] = json!(fresh_key());
+            }
+            let answer = match self.live(method, params) {
+                Ok(v) => v,
+                Err(e) if e.starts_with("unknown method") => return Err(old()),
+                Err(e) if e.starts_with("the game isn't") => {
+                    return Err(format!(
+                        "{e} (the editor tools work in the running game; game_status says)"
+                    ));
+                }
+                Err(e) => return Err(e),
+            };
+            if answer["busy"] != true {
+                return Ok(answer);
+            }
+            if Instant::now() >= until {
+                let why = answer["error"].as_str().unwrap_or("the player is busy");
+                return Err(format!("{why}: try again in a moment"));
+            }
+            self.live("wait", json!({ "frames": 15 }))?;
+        }
     }
 
     pub fn call_tool(&mut self, name: &str, args: &Json) -> Json {
@@ -903,6 +993,17 @@ impl Server {
                     { "type": "text", "text": json!({ "ok": true, "bytes": png.len(), "studio_shown": reply["studio_shown"] }).to_string() },
                 ] }))
             }
+            "open_script" => self.editor_live("open", args, true, 10.0),
+            "read_script" => {
+                let mut state = self.editor_live("editor", args, false, 0.0)?;
+                let lines = state.as_object_mut().and_then(|o| o.remove("lines"));
+                let from = state["from"].as_u64().unwrap_or(1);
+                let numbered = numbered_lines(lines.as_ref(), from);
+                Ok(json!({ "content": [
+                    { "type": "text", "text": serde_json::to_string_pretty(&state).unwrap_or_default() },
+                    { "type": "text", "text": numbered },
+                ] }))
+            }
             "horizon_ctl" => {
                 let command = str_arg(args, "command")?.trim();
                 if command == "screenshot"
@@ -1100,6 +1201,35 @@ impl Server {
             "mod": mods.as_array().and_then(|a| a.iter().find(|m| m["id"] == id)).cloned(),
         }))
     }
+}
+
+/// A key no other request has: the game does what a request with a key
+/// asks once, however often it is sent.
+fn fresh_key() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!("{}-{nanos}-{n}", std::process::id())
+}
+
+/// Lines numbered as `cat -n` numbers them ("     12\tcode"), the first
+/// being line `from`; as Claude Code's own Read shows files.
+fn numbered_lines(lines: Option<&Json>, from: u64) -> String {
+    let lines: Vec<&str> = lines
+        .and_then(Json::as_array)
+        .map(|a| a.iter().filter_map(Json::as_str).collect())
+        .unwrap_or_default();
+    if lines.is_empty() {
+        return "(no lines)".into();
+    }
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| format!("{:>6}\t{l}", from + i as u64))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A mod given as text to check or test headless: for a module in the mods

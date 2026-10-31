@@ -4,7 +4,57 @@
 mod common;
 
 use common::{FakeGame, mod_index, studio};
+use horizon_studio::game::hstudio::Studio;
+use horizon_studio::game::hstudio_coach::{self as coach, By};
 use horizon_studio::game::hstudio_ui::{Editor, Input, Key, Mods, Tab, handle};
+use serde_json::{Value as Json, json};
+
+const NONE: Mods = Mods {
+    ctrl: false,
+    shift: false,
+    alt: false,
+};
+
+fn key(k: Key, mods: Mods) -> Input {
+    Input::Key {
+        key: k,
+        down: true,
+        repeat: false,
+        mods,
+    }
+}
+
+/// An agent outside the game, as the link names it.
+fn agent() -> By {
+    By {
+        name: "Claude Code".into(),
+        conn: 1,
+    }
+}
+
+/// One of the link's editor methods, as an agent's request.
+fn ask(st: &mut Studio, game: &mut FakeGame, method: &str, params: Json) -> Result<Json, String> {
+    coach::call(st, game, &agent(), method, &params)
+}
+
+/// A studio with a module, kit/ (main.lua and lib/util.lua), besides hello.lua.
+fn with_module(name: &str) -> (FakeGame, Studio) {
+    let mut game = FakeGame::new(name);
+    let mut st = studio(&mut game);
+    std::fs::create_dir_all(game.mods_dir().join("kit/lib")).unwrap();
+    std::fs::write(
+        game.mods_dir().join("kit/main.lua"),
+        "local util = require('lib.util')\nprint(util.two())\n",
+    )
+    .unwrap();
+    std::fs::write(
+        game.mods_dir().join("kit/lib/util.lua"),
+        "return { two = function() return 2 end }\n",
+    )
+    .unwrap();
+    st.scan(&mut game);
+    (game, st)
+}
 
 fn editor(text: &str) -> Editor {
     let mut e = Editor::default();
@@ -106,11 +156,6 @@ fn opening_a_file_keeps_the_revision_rising() {
 
 #[test]
 fn the_player_editing_is_told_from_the_player_opening_files() {
-    const NONE: Mods = Mods {
-        ctrl: false,
-        shift: false,
-        alt: false,
-    };
     let mut game = FakeGame::new("coach-player");
     let mut st = studio(&mut game);
     st.s.ui.open = true;
@@ -124,16 +169,7 @@ fn the_player_editing_is_told_from_the_player_opening_files() {
     assert!(!st.s.ui.coach.player_editing(12.1));
     // Moving the cursor uses the studio; it doesn't change the code.
     st.s.now = 20.0;
-    handle(
-        &mut st,
-        &mut game,
-        Input::Key {
-            key: Key::Left,
-            down: true,
-            repeat: false,
-            mods: NONE,
-        },
-    );
+    handle(&mut st, &mut game, key(Key::Left, NONE));
     assert_eq!(st.s.ui.coach.input_at, 20.0);
     assert_eq!(st.s.ui.coach.player_at, 10.0);
     // Another file opened (the console's edit()) changes the buffer, but not as an edit.
@@ -142,16 +178,207 @@ fn the_player_editing_is_told_from_the_player_opening_files() {
     for c in "edit('hello')".chars() {
         handle(&mut st, &mut game, Input::Text(c.to_string()));
     }
-    handle(
-        &mut st,
-        &mut game,
-        Input::Key {
-            key: Key::Enter,
-            down: true,
-            repeat: false,
-            mods: NONE,
-        },
-    );
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
     assert!(st.s.editor.title.starts_with("hello"), "{}", st.s.editor.title);
     assert_eq!(st.s.ui.coach.player_at, 10.0);
+}
+
+#[test]
+fn targets_stay_inside_the_mods_folder() {
+    let (_game, st) = with_module("coach-targets");
+    let t = |params: Json, create: bool| coach::target(&st, &params, create);
+    // A module's files by their paths in it, main.lua by default.
+    let main = t(json!({ "id": "kit" }), false).unwrap();
+    assert_eq!(main.file, "kit/main.lua");
+    assert_eq!(main.path, st.s.mods_dir().join("kit").join("main.lua"));
+    let util = t(json!({ "id": "kit", "file": "lib/util.lua" }), false).unwrap();
+    assert_eq!((util.file.as_str(), util.exists), ("kit/lib/util.lua", true));
+    assert_eq!(t(json!({ "id": "kit", "file": "lib\\util" }), false).unwrap(), util);
+    // Nothing outside it, nothing but .lua files, and only mod ids.
+    for (file, why) in [
+        ("../x.lua", "outside"),
+        ("/etc/passwd", "starts with a name"),
+        ("a/b/c/d/e.lua", "three folders deep"),
+        ("notes.txt", "isn't a .lua file"),
+    ] {
+        for create in [false, true] {
+            let e = t(json!({ "id": "kit", "file": file }), create).unwrap_err();
+            assert!(e.contains(why), "{file}: {e}");
+        }
+    }
+    let e = t(json!({ "id": "Bad Id" }), true).unwrap_err();
+    assert!(e.contains("not a mod id"), "{e}");
+    let e = t(json!({ "id": "../kit" }), true).unwrap_err();
+    assert!(e.contains("not a mod id"), "{e}");
+    // A file that isn't there: its module's files are listed, and create names it.
+    let e = t(json!({ "id": "kit", "file": "nope.lua" }), false).unwrap_err();
+    assert!(e.contains("main.lua, lib/util.lua") && e.contains("create"), "{e}");
+    let new = t(json!({ "id": "kit", "file": "lib/more" }), true).unwrap();
+    assert_eq!((new.file.as_str(), new.exists), ("kit/lib/more.lua", false));
+    // A script is one file.
+    let hello = t(json!({ "id": "hello" }), false).unwrap();
+    assert_eq!(hello.file, "hello.lua");
+    assert_eq!(t(json!({ "id": "hello", "file": "hello.lua" }), false).unwrap(), hello);
+    let e = t(json!({ "id": "hello", "file": "lib.lua" }), true).unwrap_err();
+    assert!(e.contains("is a script"), "{e}");
+    // A mod that isn't there: named only with create, as a script or a module.
+    let e = t(json!({ "id": "glow" }), false).unwrap_err();
+    assert!(e.contains("no script mod 'glow'") && e.contains("hello"), "{e}");
+    let glow = t(json!({ "id": "glow" }), true).unwrap();
+    assert_eq!((glow.file.as_str(), glow.exists), ("glow.lua", false));
+    assert_eq!(glow.path, st.s.mods_dir().join("glow.lua"));
+    let lamp = t(json!({ "id": "lamp", "file": "main.lua" }), true).unwrap();
+    assert_eq!(lamp.file, "lamp/main.lua");
+    let e = t(json!({ "id": "hello", "file": "x.lua", "scratch": true }), false).unwrap_err();
+    assert!(e.contains("without id or file"), "{e}");
+    // The scratch file, the file open, and a file of the mod open.
+    let scratch = t(json!({ "scratch": true }), false).unwrap();
+    assert_eq!(
+        (scratch.file.as_str(), &scratch.path),
+        ("scratch.lua", &st.scratch_path())
+    );
+    assert_eq!(t(json!({}), false).unwrap(), scratch, "the scratch file is open");
+    let e = t(json!({ "file": "lib.lua" }), false).unwrap_err();
+    assert!(e.contains("give id"), "{e}");
+}
+
+#[test]
+fn a_file_of_the_mod_open_is_named_by_its_path_alone() {
+    let (mut game, mut st) = with_module("coach-target-open");
+    let path = st.s.mods_dir().join("kit").join("main.lua");
+    st.open_file(&path);
+    let util = coach::target(&st, &json!({ "file": "lib/util.lua" }), false).unwrap();
+    assert_eq!(util.file, "kit/lib/util.lua");
+    // A new file opened with create is found while the editor has it open, not saved yet.
+    st.s.ui.open = true;
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "glow", "create": true })).unwrap();
+    assert_eq!(r["created"], true, "{r}");
+    assert_eq!(st.s.editor.title, "glow.lua");
+    assert_eq!(st.s.editor.text(), "");
+    assert!(!st.s.mods_dir().join("glow.lua").exists(), "written only when saved");
+    let glow = coach::target(&st, &json!({ "id": "glow" }), false).unwrap();
+    assert!(glow.exists);
+}
+
+#[test]
+fn reading_gives_the_text_as_the_player_has_it_a_page_at_a_time() {
+    let (mut game, mut st) = with_module("coach-read");
+    let i = mod_index(&st, "hello");
+    st.edit_mod(i);
+    // An unsaved edit of the player's, and their selection.
+    st.s.editor.click(0, 0, false);
+    st.s.editor.insert("-- mine\n");
+    st.s.editor.click(0, 3, false);
+    st.s.editor.move_h(true, true, true);
+    let r = ask(&mut st, &mut game, "editor", json!({})).unwrap();
+    assert_eq!(r["file"], "hello.lua");
+    assert_eq!((&r["open"], &r["dirty"]), (&json!(true), &json!(true)));
+    assert_eq!(r["lines"][0], "-- mine");
+    assert_eq!(r["cursor"], json!({ "line": 1, "column": 8 }));
+    assert_eq!(r["selection"]["text"], "mine");
+    assert_eq!(r["selection"]["from"], json!({ "line": 1, "column": 4 }));
+    let count = r["line_count"].as_u64().unwrap() as usize;
+    assert_eq!(
+        r["lines"].as_array().unwrap().len(),
+        count,
+        "the empty line after the last line break isn't one"
+    );
+    assert!(r["did"].as_str().unwrap().starts_with("Read hello.lua"), "{r}");
+    // A file the editor hasn't open: as on disk.
+    let r = ask(
+        &mut st,
+        &mut game,
+        "editor",
+        json!({ "id": "kit", "file": "lib/util.lua" }),
+    )
+    .unwrap();
+    assert_eq!((&r["open"], &r["dirty"]), (&json!(false), &json!(false)));
+    assert_eq!(r["lines"], json!(["return { two = function() return 2 end }"]));
+    assert!(r.get("cursor").is_none());
+    // A long file comes a page at a time.
+    let long: Vec<String> = (1..=1000).map(|n| format!("print({n})")).collect();
+    std::fs::write(st.s.mods_dir().join("long.lua"), long.join("\n") + "\n").unwrap();
+    st.scan(&mut game);
+    let r = ask(&mut st, &mut game, "editor", json!({ "id": "long" })).unwrap();
+    assert_eq!(
+        (&r["from"], &r["to"], &r["more"]),
+        (&json!(1), &json!(400), &json!(true))
+    );
+    assert_eq!(r["line_count"], 1000);
+    assert_eq!(r["lines"].as_array().unwrap().len(), 400);
+    let r = ask(
+        &mut st,
+        &mut game,
+        "editor",
+        json!({ "id": "long", "from": 991, "to": 2000 }),
+    )
+    .unwrap();
+    assert_eq!(r["lines"][0], "print(991)");
+    assert_eq!((&r["to"], &r["more"]), (&json!(1000), &json!(false)));
+    assert_eq!(r["did"], "Read long.lua, lines 991-1000 of 1000");
+    let r = ask(&mut st, &mut game, "editor", json!({ "id": "long", "from": 5000 })).unwrap();
+    assert_eq!(r["lines"], json!([]));
+    let e = ask(&mut st, &mut game, "editor", json!({ "id": "long", "from": 0 })).unwrap_err();
+    assert!(e.contains("counted from 1"), "{e}");
+}
+
+#[test]
+fn opening_waits_for_the_player_and_never_puts_their_edits_aside() {
+    let (mut game, mut st) = with_module("coach-open");
+    st.s.ui.open = true;
+    st.s.now = 10.0;
+    st.s.ui.tab = Tab::Console;
+    // The player just pressed a key: it waits.
+    handle(&mut st, &mut game, key(Key::Left, NONE));
+    let r = ask(
+        &mut st,
+        &mut game,
+        "open",
+        json!({ "id": "kit", "file": "lib/util.lua" }),
+    )
+    .unwrap();
+    assert_eq!((&r["ok"], &r["busy"]), (&json!(false), &json!(true)), "{r}");
+    assert_eq!(st.s.editor.title, "scratch.lua");
+    assert_eq!(st.s.ui.tab, Tab::Console);
+    // A moment later it opens, the Editor tab forward, at the line asked.
+    st.s.now = 12.5;
+    let r = ask(
+        &mut st,
+        &mut game,
+        "open",
+        json!({ "id": "kit", "file": "lib/util.lua", "line": 1 }),
+    )
+    .unwrap();
+    assert_eq!(r["did"], "Opened kit/lib/util.lua at line 1", "{r}");
+    assert_eq!(st.s.editor.title, "kit/lib/util.lua");
+    assert_eq!(st.s.ui.tab, Tab::Editor);
+    assert!(st.s.ui.expanded.contains("kit"), "the script list shows the file");
+    // The player's unsaved edits stay where they are: nothing else opens.
+    st.s.editor.insert("-- mine");
+    let e = ask(&mut st, &mut game, "open", json!({ "id": "hello" })).unwrap_err();
+    assert!(e.contains("unsaved edits in kit/lib/util.lua"), "{e}");
+    assert_eq!(st.s.editor.title, "kit/lib/util.lua");
+    assert!(st.s.editor.dirty);
+    // The file open is open already, whatever its edits; line moves the view, not their cursor.
+    let (row, col) = (st.s.editor.row, st.s.editor.col);
+    let r = ask(&mut st, &mut game, "open", json!({ "file": "lib/util.lua", "line": 1 })).unwrap();
+    assert_eq!(r["did"], "Showed line 1 of kit/lib/util.lua");
+    assert_eq!((st.s.editor.row, st.s.editor.col), (row, col));
+    st.save_editor(&mut game);
+    // A prompt open in the studio: it waits.
+    st.s.ui.naming = Some(Default::default());
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "hello" })).unwrap();
+    assert_eq!(r["busy"], true, "{r}");
+    st.s.ui.naming = None;
+    // A request sent again with its key is answered as it was, and not done again.
+    let first = ask(&mut st, &mut game, "open", json!({ "id": "hello", "key": "k1" })).unwrap();
+    assert_eq!(first["did"], "Opened hello.lua");
+    let scratch = st.scratch_path();
+    st.s.editor.open(&scratch, "scratch.lua");
+    let again = ask(&mut st, &mut game, "open", json!({ "id": "hello", "key": "k1" })).unwrap();
+    assert_eq!(again, first);
+    assert_eq!(st.s.editor.title, "scratch.lua", "not opened a second time");
+    // The editor in the link's status.
+    let s = coach::summary(&st);
+    assert_eq!((&s["file"], &s["dirty"]), (&json!("scratch.lua"), &json!(false)));
 }
