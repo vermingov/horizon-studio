@@ -1618,6 +1618,99 @@ fn images_without_textures_draw_in_blocks() {
 }
 
 #[test]
+fn an_image_is_found_once_however_it_is_cut() {
+    // A file is read and hashed once: a frame finds its image by its name,
+    // once an object however many pieces it is cut into, and the HUD
+    // shares the cache IsLoaded reads.
+    let mut game = FakeGame::new("rbx-pieces");
+    let mut st = studio(&mut game);
+    let ws = st.s.rbx.workspace_dir.clone();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(ws.join("tile.png"), png(4, 4, &[[0, 200, 0, 255]; 16])).unwrap();
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local tiles = Instance.new("ImageLabel", gui)
+        tiles.Size = UDim2.fromOffset(200, 200)
+        tiles.Image = getcustomasset("tile.png")
+        tiles.ScaleType = Enum.ScaleType.Tile
+        tiles.TileSize = UDim2.fromOffset(8, 8)
+        local panel = Instance.new("ImageLabel", gui)
+        panel.Position = UDim2.fromOffset(250, 0)
+        panel.Size = UDim2.fromOffset(100, 60)
+        panel.Image = getcustomasset("tile.png")
+        panel.ScaleType = Enum.ScaleType.Slice
+        panel.SliceCenter = Rect.new(1, 1, 3, 3)
+        print(tiles.IsLoaded)
+    "#;
+    load(&mut game, &mut st, "pieces", src, 0.6);
+    assert_eq!(printed(&st, "pieces"), ["true"]);
+    for _ in 0..3 {
+        run_for(&mut st, &mut game, 0.05);
+        let drawn = hud(&mut st, &mut game);
+        assert_eq!(images(&drawn).len(), 25 * 25 + 9);
+    }
+    assert_eq!(st.s.rbx.screen_images.hashed, 1);
+}
+
+#[test]
+fn large_images_go_to_the_atlas_smaller_and_within_a_share() {
+    // The game's atlas is shared with the interface's glyphs: an image
+    // goes there at most 256 pixels a side, and a frame's images take at
+    // most 256K of its pixels; the rest draw in blocks.
+    let mut game = FakeGame::new("rbx-atlas");
+    let mut st = studio(&mut game);
+    let ws = st.s.rbx.workspace_dir.clone();
+    std::fs::create_dir_all(&ws).unwrap();
+    // Red on the left every other column, clear between; blue on the right.
+    let halves: Vec<[u8; 4]> = (0..512 * 384)
+        .map(|i| match i % 512 {
+            x if x >= 256 => [0, 0, 255, 255],
+            x if x % 2 == 0 => [255, 0, 0, 255],
+            _ => [0, 0, 0, 0],
+        })
+        .collect();
+    std::fs::write(ws.join("big.png"), png(512, 384, &halves)).unwrap();
+    for i in 1..=5u8 {
+        std::fs::write(
+            ws.join(format!("n{i}.png")),
+            png(256, 256, &vec![[i, i, i, 255]; 256 * 256]),
+        )
+        .unwrap();
+    }
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local big = Instance.new("ImageLabel", gui)
+        big.Size = UDim2.fromOffset(200, 150)
+        big.BackgroundTransparency = 1
+        big.Image = getcustomasset("big.png")
+        for i = 1, 5 do
+            local n = Instance.new("ImageLabel", gui)
+            n.Position = UDim2.fromOffset(200 + 40 * i, 0)
+            n.Size = UDim2.fromOffset(40, 40)
+            n.BackgroundTransparency = 1
+            n.Image = getcustomasset("n" .. i .. ".png")
+        end
+    "#;
+    load(&mut game, &mut st, "atlas", src, 0.6);
+    for _ in 0..2 {
+        run_for(&mut st, &mut game, 0.05);
+        let drawn = hud(&mut st, &mut game);
+        let shown: Vec<&String> = drawn.iter().filter(|d| d.starts_with("image ")).collect();
+        // 256 x 192 of big.png, half clear red where red and clear were
+        // (no darker), and three of the others: 245,760 pixels.
+        assert_eq!(
+            shown[0],
+            "image 256x192 #ff00007f [0.0, 0.0, 200.0, 150.0] from [0.0, 0.0, 256.0, 192.0] ffffffff"
+        );
+        assert_eq!(shown.len(), 4, "{shown:#?}");
+        assert!(shown[1..].iter().all(|d| d.starts_with("image 256x256 ")));
+        // The last two are drawn in blocks of 4 dp: ten across, ten down.
+        let blocks = drawn.iter().filter(|d| d.starts_with("rect [")).count();
+        assert_eq!(blocks, 2 * 10 * 10, "{drawn:#?}");
+    }
+}
+
+#[test]
 fn rich_text_draws_its_runs() {
     let mut game = FakeGame::new("rbx-rich");
     let mut st = studio(&mut game);

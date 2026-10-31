@@ -1362,7 +1362,7 @@ pub struct Rbx {
     /// ModuleScripts `require` ran, and what they returned.
     pub loaded_modules: Vec<(Id, Value)>,
     /// The studio's workspace folder (getcustomasset's files), and the images
-    /// the GUI's own screen draws.
+    /// the GUI and the Drawings draw, on the HUD or on the GUI's own screen.
     pub workspace_dir: std::path::PathBuf,
     pub screen_images: super::hstudio_sunc::ImageCache,
     /// Counts the changes that move the GUI's layout (a GUI instance's

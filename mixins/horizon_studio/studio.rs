@@ -883,8 +883,6 @@ pub struct State {
     /// The executor's globals (`getgenv`) and Roblox's (`getrenv`), shared by every mod.
     pub genv: Option<TableRef>,
     pub renv: Option<TableRef>,
-    /// Images decoded for Drawing and ImageLabels.
-    pub images: super::hstudio_sunc::ImageCache,
     /// The table of the screen the Roblox GUI takes the pointer with.
     rbx_screen: Option<TableRef>,
 
@@ -1005,7 +1003,6 @@ impl Studio {
                 rbx: super::hstudio_rbx::Rbx::new(),
                 genv: None,
                 renv: None,
-                images: super::hstudio_sunc::ImageCache::default(),
                 rbx_screen: None,
                 thread_errors: Vec::new(),
                 world_quads: 0,
@@ -2433,14 +2430,17 @@ impl Studio {
             &[Value::Num(f64::from(w)), Value::Num(f64::from(h))],
             Phase::Hud,
         );
-        // Roblox ScreenGuis, unless their own screen draws them.
+        // Roblox ScreenGuis, unless their own screen draws them, with the
+        // images that screen draws too.
+        let mut images = std::mem::take(&mut self.s.rbx.screen_images);
         if !self.rbx_screen_open() && self.s.rbx.active {
             let now = self.s.now;
             let ws = self.s.dir.join("workspace");
             super::hstudio_rbx_draw::lay_out(&mut self.s.rbx, game);
-            super::hstudio_rbx_draw::draw(&self.s.rbx, game, now, &mut self.s.images, &ws);
+            super::hstudio_rbx_draw::draw(&self.s.rbx, game, now, &mut images, &ws);
         }
-        super::hstudio_sunc::draw_drawings(&self.s.rbx, game, &mut self.s.images);
+        super::hstudio_sunc::draw_drawings(&self.s.rbx, game, &mut images);
+        self.s.rbx.screen_images = images;
         let panels: Vec<(Corner, Vec<String>)> = self
             .s
             .mods

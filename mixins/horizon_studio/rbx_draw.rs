@@ -1232,6 +1232,7 @@ pub fn draw(
     workspace: &std::path::Path,
 ) {
     let Some(frame) = &rbx.layout else { return };
+    images.begin(now);
     // ScrollingFrames' bars, each drawn over what its frame holds: once the
     // drawing has gone past that.
     let mut bars_over: Vec<(Id, Vec<[f32; 4]>, f32, u32)> = Vec::new();
@@ -1298,12 +1299,13 @@ pub fn draw(
             // getcustomasset's images draw; Roblox's asset ids don't load here.
             let file = img
                 .strip_prefix("rbxasset://horizon-studio/")
-                .and_then(|p| images.file(workspace, p));
+                .and_then(|p| images.file_image(workspace, p));
             match file {
-                Some(bytes) if ia > 0.0 => {
-                    draw_image(inst, p, game, images, &bytes, gc, ia, mark.is_none().then_some(vis))
+                Some(Some(t)) if ia > 0.0 => {
+                    draw_image(inst, p, game, images, &t, gc, ia, mark.is_none().then_some(vis))
                 }
-                _ if !img.is_empty() && ia > 0.0 => {
+                Some(_) => {}
+                None if !img.is_empty() && ia > 0.0 => {
                     game.dp_rect(r, radius, argb(times(color(inst, "ImageColor3"), gc), ia * 0.18))
                 }
                 _ => {}
@@ -1617,14 +1619,12 @@ fn draw_image(
     p: &layout::Placed,
     game: &mut dyn GameApi,
     images: &mut super::hstudio_sunc::ImageCache,
-    bytes: &[u8],
+    t: &Rc<super::hstudio_meshes::Texture>,
     gc: Color3,
     alpha: f64,
     clip: Option<Rect>,
 ) {
-    let Some((w, h)) = images.size(bytes) else {
-        return;
-    };
+    let (w, h) = (t.w, t.h);
     let fit = layout::ImageFit {
         scale_type: match enum_name(&inst.get("ScaleType")) {
             "Slice" => layout::ScaleType::Slice,
@@ -1645,7 +1645,7 @@ fn draw_image(
     let rgb = argb(times(color(inst, "ImageColor3"), gc), 1.0) & 0xFF_FFFF;
     let size = Vector2::new(f64::from(w), f64::from(h));
     for (place, part) in layout::image_pieces(size, p.rect(), p.scale, &fit, clip) {
-        images.draw_part(game, bytes, rect4(place), rect4(part), rgb, alpha);
+        images.draw_part(game, t, rect4(place), rect4(part), rgb, alpha);
     }
 }
 
