@@ -23,8 +23,8 @@ pub struct Entry {
 pub const TOPICS: &[Topic] = &[
     Topic {
         id: "start",
-        title: "Script mods: files, loading, hot reload, errors",
-        summary: "What a mod is, its files and header, how it loads, reloads and stops, and where the mods folder is.",
+        title: "Script mods: scripts and modules, loading, hot reload, errors",
+        summary: "What a mod is (a script, or a module of files), its files and header, how it loads, reloads and stops, and where the mods folder is.",
     },
     Topic {
         id: "api",
@@ -84,7 +84,7 @@ pub const TOPICS: &[Topic] = &[
     Topic {
         id: "libraries",
         title: "Libraries and mods talking to each other",
-        summary: "export, import, emit and require; load order and reloads of users; the bundled uikit library's whole API.",
+        summary: "export, import and emit between mods; modules, whose files require each other; load order and reloads of users; the bundled uikit library's whole API.",
     },
     Topic {
         id: "console",
@@ -504,17 +504,18 @@ macro_rules! e {
 // ------------------------------------------------------------------ topics
 
 const START: &str = r##"
-A script mod is Lua that Horizon Studio runs inside Horizon (Minecraft Java 26.3 in Rust). It is either one file, `<id>.lua`, or a folder `<id>/` with `main.lua` and other `.lua` files that `main.lua` loads with `require`. Both live in the mods folder:
+A script mod is Lua that Horizon Studio runs inside Horizon (Minecraft Java 26.3 in Rust). It is either a **script**, one file `<id>.lua`, or a **module** (a folder mod), a folder `<id>/` whose `main.lua` loads its other `.lua` files with `require` (see `libraries`). Both live in the mods folder:
 
 `<game folder>/horizon-mods/.horizon-mod-data/horizon_studio/mods/`
 
-On Linux, Horizon's default game folder is `~/.local/share/horizon` (`$HORIZON_HOME` changes it). The MCP server finds the folder by itself (see `mcp`). Beside `mods/`, the studio keeps `storage/` (what `storage.set` writes), `studio.txt` (mods turned off in the Library), `history.txt` and `scratch.lua` (the console's).
+On Linux, Horizon's default game folder is `~/.local/share/horizon` (`$HORIZON_HOME` changes it). The MCP server finds the folder by itself (see `mcp`). Beside `mods/`, the studio keeps `storage/` (what `storage.set` writes), `studio.txt` (mods turned off in the Library), `history.txt` and `scratch.lua` (the console's), and `trash/`, where the studio's Delete moves a file or a whole mod (as `trash/<its path in mods/>`, the newest copy of each; the studio never empties it).
 
 ## Ids and files
 
 - The id comes from the file or folder name: lowercased, every character but `a-z`, `0-9`, `_` and `-` becomes `_`, at most 48 characters (`My Mod.lua` is `my_mod`).
 - Names that start with `.` are skipped, and so is a folder without `main.lua`. When a folder and a file give the same id, the first in sorted order wins (`x` sorts before `x.lua`).
-- Errors in a single-file mod name the file `<id>.lua`; in a folder mod `<id>/main.lua` and `<id>/lib/util.lua`.
+- A module's files are its `.lua` files up to three folders deep (`lib/util.lua`), names that start with `.` left out; other files (textures, models) are its assets.
+- Errors in a script name the file `<id>.lua`; in a module, the id and the file's path in it: `<id>/main.lua`, `<id>/lib/util.lua`. The editor titles files the same way.
 
 ## Header
 
@@ -531,7 +532,7 @@ Comment lines at the top of the main file name the mod in the Library. Blank lin
 
 1. **Load.** The main file runs once, top to bottom, with a budget of 10,000,000 steps. This is where a mod registers what it does: `on(event, fn)`, `command(name, fn)`, `after` and `every`, `hud.panel`, `model.attach`, `export`. A main file that returns a table exports it, unless it called `export`.
 2. **Running.** The game then calls what the mod registered, each call with a budget of 2,000,000 steps: ticks (20 a second in a world), frames, the HUD, the world as it draws, keys, chat lines, commands, timers, agent replies, screen callbacks.
-3. **Hot reload.** Every 0.5 s the studio looks at the mods folder. When a mod's files change (the size or modification time of a single-file mod, or of any `.lua` file up to 3 folders deep in a folder mod, names that start with `.` left out), it reloads that mod: its `unload` handlers run, everything it registered is dropped (handlers, commands, timers, its HUD panel and zoom, its models, its screen, its `require`d modules), and its main file runs again in a fresh environment. Then the mods that `import` it reload too. New mods load; mods whose files are deleted unload. Saving in the in-game Editor, in any editor, or with the MCP tool `write_mod` all work the same way.
+3. **Hot reload.** Every 0.5 s the studio looks at the mods folder. When a mod's files change (the size or modification time of a script, or of any `.lua` file up to 3 folders deep in a module, names that start with `.` left out), it reloads that mod, a module as a whole whichever of its files changed: its `unload` handlers run, everything it registered is dropped (handlers, commands, timers, its HUD panel and zoom, its models, its screen, its `require`d modules), and its main file runs again in a fresh environment. Then the mods that `import` it reload too. New mods load; mods whose files are deleted unload. Saving in the in-game Editor, in any editor, or with the MCP tool `write_mod` all work the same way.
 4. **Unload.** `on("unload", fn)` runs before a reload, when the mod is turned off in the Library, and when its file is deleted. It does not run when the mod fails.
 
 Each mod has its own global environment (`_G`), with the standard library and the API in it. A mod's globals are invisible to other mods and to the console: share values with `export` and `import`, or `emit` events.
@@ -548,7 +549,8 @@ Use `pcall` around code that may fail. Running out of steps (an endless loop), a
 
 ## Making and installing mods
 
-- In a world, F8 (rebindable in Options > Mods) opens the studio: Console, Editor, Library, Docs and Settings. The Library's New button makes `<id>.lua` from a template; in the Editor, Ctrl+S saves (the mod reloads) and Ctrl+Enter runs the file in the console.
+- In a world, F8 (rebindable in Options > Mods) opens the studio: Console, Editor, Library, Docs and Settings. The Library's New button (or N) and the + at the top of the Editor's script list open the New prompt: a name, and a Script | Module switch (Tab turns it). A script is `<id>.lua` from a template; a module is `<id>/` with `main.lua`, `shared.lua` and `lib.lua`, wired together with `require`. In the Editor, Ctrl+S saves (the mod reloads) and Ctrl+Enter runs the file in the console (on a module's file, it saves it and reloads the module).
+- The Editor's script list shows a module as a folder that folds open to its files. The menus of its rows (their "...", or a right click) add, rename and delete a module's files, delete a mod, and make a script a module (its file becomes `<id>/main.lua`, keeping its id, storage and on/off state). A delete asks first and moves what it deletes to `trash/`.
 - Dropping a `.lua` file, a mod folder or a `.zip` of either on the game window installs it; a mod of the same id and kind is replaced (at most 256 files and 8 MiB).
 - On its first start the studio writes the welcome mod `hello.lua`, and it installs the bundled libraries `uikit` and `viahorizon` once (deleting one keeps it deleted).
 - In chat, `/studio` opens the studio, `/studio reload` reloads every mod, `/lua <code>` runs Lua in the console.
@@ -804,7 +806,7 @@ Every statement, loop round and call costs one step; string and table functions 
 
 ## Not there
 
-No `goto`, no `<close>`, no `_ENV`, no `io`, no `debug`, no `os` beyond `clock`, `time`, `date` and `difftime`, no `string.pack`/`unpack`/`packsize`/`dump`, no `dofile`, `loadfile` or `loadstring` (`load` takes text only), no binary chunks, no weak tables or finalizers; `collectgarbage` does nothing. `require` is the studio's own: it loads files of a folder mod (see `require`).
+No `goto`, no `<close>`, no `_ENV`, no `io`, no `debug`, no `os` beyond `clock`, `time`, `date` and `difftime`, no `string.pack`/`unpack`/`packsize`/`dump`, no `dofile`, `loadfile` or `loadstring` (`load` takes text only), no binary chunks, no weak tables or finalizers; `collectgarbage` does nothing. `require` is the studio's own: it loads the files of a module, each once (see `require`).
 "##;
 
 const STDLIB: &str = r##"
@@ -1207,9 +1209,39 @@ end)
 
 `emit("mymod:event", ...)` calls every mod's `on("mymod:event", fn)` handlers on the next frame (see `events`). Use it to tell other mods something happened without importing them.
 
-## require: files of a folder mod
+## Modules: files that require each other
 
-A folder mod (`<id>/main.lua`) loads its other files with `require("lib.util")` (`lib/util.lua`): the file runs in the mod's own globals with the module name as `...`, and its first result (or `true`) is kept, so every later `require` of that file returns it without running the file again, however the name is written. Any change to a `.lua` file of the folder reloads the whole mod.
+A module (also called a folder mod) is a folder `<id>/` whose `main.lua` loads the module's other files with `require("lib")` (`lib.lua`) or `require("lib.util")` (`lib/util.lua`). The New prompt's Module makes one with three files, main.lua, shared.lua and lib.lua, as below.
+
+- Each file runs once, the first time it is required, however the name is written (`"lib.util"`, `"lib/util"` and `"lib/util.lua"` are one file), with the name as its `...`; every later `require` gets the value it returned (`true` when it returned nothing). Return a table of functions from a file, and keep state several files share in one file's table (shared.lua below): every file that requires it gets the same table.
+- The files share the mod's globals: a global one file sets, the others see. Their locals stay their own.
+- Two files can't require each other while they load: `require: 'lib' is already loading (main.lua -> lib.lua -> shared.lua -> lib.lua): ...`. Move what both need into a third file, or `require` inside a function that runs later (a handler or a command).
+- A required file's top level runs inside the `require` call, so it can't wait (`task.wait`): wait in main.lua or in a handler.
+- In Roblox's style each file is also a ModuleScript under `script` (see `roblox`): `require(script.lib)` in main.lua and `require(script.Parent.shared)` in lib.lua are `require("lib")` and `require("shared")`.
+- Any change to a `.lua` file of the module (up to three folders deep) reloads the whole module, main.lua first. For code shared between mods, use a library (`export` and `import`).
+
+```lua
+-- mymod/main.lua: starts the module
+local shared = require("shared")
+local lib = require("lib")
+command("mymod", function(args) return lib.greet(args ~= "" and args or "you") end)
+on("tick", function() shared.ticks = shared.ticks + 1 end)
+```
+
+```lua
+-- mymod/shared.lua: one table every file gets
+return { greeting = "Hello", ticks = 0 }
+```
+
+```lua
+-- mymod/lib.lua: functions for the other files
+local shared = require("shared")
+local lib = {}
+function lib.greet(name)
+  return shared.greeting .. ", " .. name .. "! (" .. shared.ticks .. " ticks so far)"
+end
+return lib
+```
 
 ## The bundled uikit library
 
