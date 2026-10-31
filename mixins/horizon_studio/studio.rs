@@ -2270,8 +2270,10 @@ impl Studio {
             }
         }
         // A script's teleport is the game's /tp command, never chat; it waits
-        // for a send rather than being dropped.
-        if self.s.send_tokens >= 1.0
+        // for a send rather than being dropped. It goes only while half the
+        // burst is left, so a script that moves the player every frame
+        // leaves the mods' chat.say and game.run their sends.
+        if self.s.send_tokens >= SEND_BURST / 2.0
             && let Some(line) = super::hstudio_rbx_world::take_teleport(rbx)
         {
             self.s.send_tokens -= 1.0;

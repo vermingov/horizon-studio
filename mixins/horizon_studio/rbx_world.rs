@@ -45,6 +45,11 @@ const LIMBS: [(&str, f64, f64, bool); 5] = [
 pub const EYES_Y: f64 = 1.62;
 /// The player's box, standing.
 pub const HEIGHT: f64 = 1.8;
+/// The width of the player's box.
+const WIDTH: f64 = 0.6;
+/// The most blocks Model:MoveTo raises the player's character, one at a
+/// time, looking for room: the world's height.
+const MAX_RAISE: usize = 384;
 /// Health in the layer is the game's times this (the game's 20 is 100).
 pub const HEALTH_SCALE: f64 = 5.0;
 /// Blocks a second for a movement_speed of 1: the game's 0.1 walks 4.3178
@@ -1322,6 +1327,42 @@ pub fn root_moved(rbx: &mut Rbx) {
         .unwrap_or_default()
         .position();
     rbx.world.teleport = Some(at - Vector3::new(0.0, rbx.world.root_y, 0.0));
+}
+
+/// Where Model:MoveTo puts the player's root part, asked for `at`: Roblox
+/// moves a model up out of what is in its way, so the player's box (its
+/// width and height over their feet, `root_y` under the root part's centre)
+/// goes onto the top of the highest solid block it meets, again until it
+/// meets none. A point on a block's top puts their feet on the block.
+pub fn room_for_player(game: &mut dyn GameApi, root_y: f64, at: Vector3) -> Vector3 {
+    let up = Vector3::new(0.0, root_y, 0.0);
+    let mut feet = at - up;
+    for _ in 0..MAX_RAISE {
+        match top_in_the_way(game, feet) {
+            Some(top) => feet.y = top,
+            None => break,
+        }
+    }
+    feet + up
+}
+
+/// The top of the highest solid block the player's box meets, standing at
+/// `feet`.
+fn top_in_the_way(game: &mut dyn GameApi, feet: Vector3) -> Option<f64> {
+    use super::hstudio_rbx_draw::passable;
+    // The blocks a span of the box reaches into (one it only touches isn't).
+    let blocks = |lo: f64, hi: f64| lo.floor() as i32..=(hi.ceil() as i32).saturating_sub(1);
+    let half = WIDTH / 2.0;
+    for y in blocks(feet.y, feet.y + HEIGHT).rev() {
+        for x in blocks(feet.x - half, feet.x + half) {
+            for z in blocks(feet.z - half, feet.z + half) {
+                if game.block(x, y, z).is_some_and(|b| !passable(&b)) {
+                    return Some(f64::from(y) + 1.0);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// The teleport to send, as the game's command: never as a chat line.

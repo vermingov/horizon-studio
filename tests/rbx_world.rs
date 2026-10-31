@@ -179,11 +179,12 @@ fn a_headless_test_names_the_player() {
     assert_eq!(report["ok"], true, "{report:#}");
 }
 
-/// Runs a mod's command and a frame or two after: what the game was sent.
+/// Runs a mod's command and a few frames after (as the sends refill): what
+/// the game was sent.
 fn sent_by(st: &mut Studio, game: &mut FakeGame, cmd: &str) -> Vec<String> {
     let mark = game.sent.len();
     assert!(st.command(cmd), "no command {cmd}");
-    run_for(st, game, 0.1);
+    run_for(st, game, 0.3);
     game.sent[mark..].to_vec()
 }
 
@@ -199,6 +200,9 @@ fn moving_the_root_part_teleports_with_tp() {
         command("pivot", function() char:PivotTo(CFrame.new(5, 72, 6)) end)
         command("primary", function() char:SetPrimaryPartCFrame(CFrame.new(7, 73, 8)) end)
         command("moveto", function() char:MoveTo(Vector3.new(9, 74, 10)) end)
+        command("onto", function() char:MoveTo(Vector3.new(9.5, 64, 10.5)) end)
+        command("pillar", function() char:MoveTo(Vector3.new(20.5, 64.5, 20.5)) end)
+        command("into", function() char:PivotTo(CFrame.new(9.5, 64, 10.5)) end)
         command("partpivot", function() root:PivotTo(CFrame.new(11, 75, 12)) end)
         command("twice", function()
             root.CFrame = CFrame.new(0, 80, 0)
@@ -222,6 +226,16 @@ fn moving_the_root_part_teleports_with_tp() {
     assert_eq!(sent_by(&mut st, &mut game, "pivot"), ["/tp @s 5.000 70.945 6.000"]);
     assert_eq!(sent_by(&mut st, &mut game, "primary"), ["/tp @s 7.000 71.945 8.000"]);
     assert_eq!(sent_by(&mut st, &mut game, "moveto"), ["/tp @s 9.000 72.945 10.000"]);
+    // MoveTo moves the character up out of the blocks in its way, as
+    // Roblox's does: a point on a stone block's top (the mouse's Hit there)
+    // puts the feet on the block, and one by a pillar on its top. PivotTo
+    // puts it exactly where it is asked, in the block.
+    game.blocks.insert((9, 63, 10), "minecraft:stone".into());
+    game.blocks.insert((20, 64, 20), "minecraft:stone".into());
+    game.blocks.insert((20, 65, 20), "minecraft:stone".into());
+    assert_eq!(sent_by(&mut st, &mut game, "onto"), ["/tp @s 9.500 64.000 10.500"]);
+    assert_eq!(sent_by(&mut st, &mut game, "pillar"), ["/tp @s 20.500 66.000 20.500"]);
+    assert_eq!(sent_by(&mut st, &mut game, "into"), ["/tp @s 9.500 62.945 10.500"]);
     assert_eq!(
         sent_by(&mut st, &mut game, "partpivot"),
         ["/tp @s 11.000 73.945 12.000"]
@@ -269,14 +283,15 @@ fn a_tween_of_the_root_part_teleports_and_a_teleport_waits_for_a_send() {
     assert!(tps.len() >= 2, "{tps:?}");
     assert!(tps.iter().all(|l| l.starts_with("/tp @s ")), "{tps:?}");
     assert_eq!(tps.last().unwrap(), "/tp @s 20.000 68.945 20.000");
-    // With every send used by chat, the teleport waits for the next one.
+    // With every send used by chat, the teleport waits until half the burst
+    // is back (a second).
     run_for(&mut st, &mut game, 3.0);
     let mark = game.sent.len();
     assert!(st.command("busy"));
-    run_for(&mut st, &mut game, 0.05);
+    run_for(&mut st, &mut game, 0.5);
     let now: Vec<&String> = game.sent[mark..].iter().filter(|l| l.starts_with('/')).collect();
     assert!(now.is_empty(), "{now:?}");
-    run_for(&mut st, &mut game, 0.5);
+    run_for(&mut st, &mut game, 0.7);
     let later: Vec<&String> = game.sent[mark..].iter().filter(|l| l.starts_with('/')).collect();
     assert_eq!(later, ["/tp @s 1.000 68.945 2.000"]);
 }
@@ -1520,4 +1535,39 @@ fn removing_a_mod_leaves_the_later_ones_looks_and_handlers_theirs() {
     assert_eq!(game.entity_asks, asks, "the world stays mirrored for no one");
     let ws = st.s.rbx.workspace;
     assert!(st.s.rbx.child_named(ws, "Zombie").is_none());
+}
+
+#[test]
+fn a_script_moving_the_player_every_frame_leaves_the_mods_their_sends() {
+    let mut game = FakeGame::new("rbxw-mover");
+    let mut st = studio(&mut game);
+    // A fly script's way: the root part a little higher each frame.
+    let mover = r#"
+        local root = game.Players.LocalPlayer.Character.HumanoidRootPart
+        game:GetService("RunService").Heartbeat:Connect(function()
+            root.CFrame = root.CFrame + Vector3.new(0, 0.05, 0)
+        end)
+    "#;
+    load(&mut game, &mut st, "mover", mover, 1.0);
+    let sender = r#"
+        command("send", function()
+            local ok = 0
+            for i = 1, 5 do if pcall(game.run, "time set day") then ok += 1 end end
+            print(ok)
+        end)
+    "#;
+    load(&mut game, &mut st, "sender", sender, 2.0);
+    // The player moves a few times a second: never more than the sends refill.
+    let mark = game.sent.len();
+    run_for(&mut st, &mut game, 3.0);
+    let tps = game.sent[mark..].iter().filter(|l| l.starts_with("/tp @s ")).count();
+    assert!((8..=13).contains(&tps), "{tps} teleports in 3 seconds");
+    // And another mod's game.run keeps working, again and again.
+    for _ in 0..3 {
+        assert!(st.command("send"));
+        run_for(&mut st, &mut game, 2.0);
+    }
+    let p = printed(&st, "sender");
+    assert_eq!(p.len(), 3, "{p:?}");
+    assert!(p.iter().all(|n| n.parse::<u32>().unwrap() >= 3), "{p:?}");
 }

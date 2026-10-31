@@ -737,6 +737,14 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
                 .get(1)
                 .and_then(as_v3)
                 .ok_or_else(|| bad_arg(lua, 1, name, "Vector3 expected"))?;
+            // The player's character is moved up out of the blocks in its way,
+            // as Roblox moves a model up out of what is in its way.
+            let p = if id == env.rbx().character {
+                let (rbx, game) = env.rbx_and_game();
+                super::hstudio_rbx_world::room_for_player(game, rbx.world.root_y, p)
+            } else {
+                p
+            };
             let rbx = env.rbx();
             let now_at = pivot(rbx, id);
             move_to(rbx, id, CFrame::from_position(p) * now_at.rotation());
