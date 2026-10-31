@@ -987,7 +987,7 @@ impl Studio {
         if fresh {
             self.save_settings();
         }
-        let scratch = self.s.dir.join("scratch.lua");
+        let scratch = self.scratch_path();
         if !scratch.exists() {
             let _ = std::fs::write(&scratch, SCRATCH);
         }
@@ -1480,14 +1480,19 @@ impl Studio {
     }
 
     /// A new mod from the template: `<mods>/<id>.lua`, unless it exists.
-    pub fn create_mod(&mut self, game: &mut dyn GameApi, name: &str) -> Result<PathBuf, String> {
+    /// A new script mod called `name`: the template, or `code` when given (Save File).
+    pub fn create_mod(&mut self, game: &mut dyn GameApi, name: &str, code: Option<&str>) -> Result<PathBuf, String> {
         let id = mod_id(name.trim());
         let path = self.s.mods_dir().join(format!("{id}.lua"));
         if path.exists() || self.s.mods_dir().join(&id).exists() {
             return Err(format!("{id} already exists"));
         }
         let _ = std::fs::create_dir_all(self.s.mods_dir());
-        let src = TEMPLATE.replace("{id}", &id).replace("{name}", name.trim());
+        let src = match code {
+            Some(code) if code.ends_with('\n') => code.to_owned(),
+            Some(code) => format!("{code}\n"),
+            None => TEMPLATE.replace("{id}", &id).replace("{name}", name.trim()),
+        };
         std::fs::write(&path, src).map_err(|e| e.to_string())?;
         self.scan(game);
         self.s.log(LogKind::Info, format!("Created {}", path.display()));
@@ -2402,7 +2407,7 @@ impl Studio {
                         self.s.ui.tab = super::hstudio_ui::Tab::Editor;
                     }
                 }
-                Request::New(name) => match self.create_mod(game, &name) {
+                Request::New(name) => match self.create_mod(game, &name, None) {
                     Ok(path) => {
                         let title = path
                             .file_name()
@@ -2454,6 +2459,11 @@ impl Studio {
             }
             Err(e) => self.s.log(LogKind::Error, format!("Could not save: {e}")),
         }
+    }
+
+    /// The editor's scratch file, a place to try code (not a mod).
+    pub fn scratch_path(&self) -> PathBuf {
+        self.s.dir.join("scratch.lua")
     }
 
     /// Opens mod `i`'s main file in the editor.

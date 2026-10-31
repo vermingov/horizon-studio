@@ -1001,3 +1001,60 @@ fn the_wheel_scrolls_without_moving_the_selection() {
     assert_eq!(st.s.editor.row, row + 3, "the drag's end moved with the view");
     assert!(st.s.editor.selection().is_some());
 }
+
+#[test]
+fn the_script_list_switches_files_and_keeps_their_edits() {
+    let mut game = FakeGame::new("ui-scripts");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.editor.title, "scratch.lua");
+    type_text(&mut st, &mut game, "-- kept\n");
+    assert!(st.s.editor.dirty);
+    // A mod from the list opens; the scratch file's edit was saved first.
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "hello.lua");
+    click(&mut st, &mut game, (at.0 + 2.0, at.1 + 2.0));
+    assert!(st.s.editor.title.starts_with("hello"), "{}", st.s.editor.title);
+    let scratch = std::fs::read_to_string(st.s.dir.join("scratch.lua")).unwrap();
+    assert!(scratch.contains("-- kept"), "{scratch}");
+    // And back to the scratch file.
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "scratch.lua");
+    click(&mut st, &mut game, (at.0 + 2.0, at.1 + 2.0));
+    assert_eq!(st.s.editor.title, "scratch.lua");
+    assert!(st.s.editor.text().contains("-- kept"));
+}
+
+#[test]
+fn save_file_saves_scratch_code_as_a_new_script() {
+    use horizon_studio::game::hstudio_theme::THEMES;
+    let mut game = FakeGame::new("ui-savefile");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.s.ui.look.theme = THEMES.iter().position(|t| t.id == "synapse").unwrap();
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    st.s.editor.set_text("print('my script')");
+    redraw(&mut st, &mut game);
+    // On the scratch file it asks for a name, and saves the code as a script mod.
+    let at = text_at(&game, "Save File");
+    click(&mut st, &mut game, at);
+    assert!(st.s.ui.naming.is_some());
+    type_text(&mut st, &mut game, "My Script");
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    let path = st.s.dir.join("mods").join("my_script.lua");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "print('my script')\n");
+    assert_eq!(st.s.editor.path.as_ref(), Some(&path));
+    assert!(st.s.mods.iter().any(|m| m.main == path), "in the script list");
+    // On a script mod it saves it in place.
+    type_text(&mut st, &mut game, "-- more ");
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "Save File");
+    click(&mut st, &mut game, at);
+    assert!(st.s.ui.naming.is_none());
+    assert!(!st.s.editor.dirty);
+    assert!(std::fs::read_to_string(&path).unwrap().contains("-- more"));
+}

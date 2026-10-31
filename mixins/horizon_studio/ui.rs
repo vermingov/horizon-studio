@@ -100,6 +100,11 @@ pub(crate) enum Action {
     Install(usize),
     Close,
     Save,
+    /// The executor styles' Save File: the script mod open saved, else the
+    /// code saved as a new script mod (its name asked).
+    SaveFile,
+    /// The scratch file opened in the editor (the script list's first row).
+    EditScratch,
     Run,
     OpenFolder,
     /// Copies the prompt that sets an AI agent up (`hstudio_link::SETUP_PROMPT`).
@@ -200,6 +205,8 @@ pub struct Ui {
     pub docs_scroll: usize,
     /// The New mod prompt, while it is open.
     pub naming: Option<LineEdit>,
+    /// The prompt saves the editor's code as the new mod (Save File), not a template.
+    pub naming_save: bool,
     /// When the AI setup prompt was copied (its button says so a moment).
     pub copied_at: Option<f64>,
     /// The looks chosen in Settings (`look.txt`).
@@ -1831,6 +1838,15 @@ fn column_at(game: &mut dyn GameApi, line: &str, skip: usize, dx: f32, scale: f3
     line[from..].chars().count()
 }
 
+/// Before another file opens in the editor (`to`), the one open is saved
+/// if it has unsaved edits, so switching scripts never loses them.
+fn save_before_switch(st: &mut Studio, game: &mut dyn GameApi, to: Option<&PathBuf>) {
+    let ed = &st.s.editor;
+    if ed.dirty && ed.path.is_some() && ed.path.as_ref() != to {
+        st.save_editor(game);
+    }
+}
+
 fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
     // A row drawn last frame may be gone (the folder changed since).
     if let Action::Select(i) | Action::Toggle(i) | Action::Edit(i) | Action::Reload(i) = action
@@ -1847,8 +1863,28 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
             st.set_enabled(game, i, on);
         }
         Action::Edit(i) => {
+            save_before_switch(st, game, Some(&st.s.mods[i].main.clone()));
             st.edit_mod(i);
             st.s.ui.tab = Tab::Editor;
+        }
+        Action::EditScratch => {
+            let path = st.scratch_path();
+            save_before_switch(st, game, Some(&path));
+            if st.s.editor.path.as_ref() != Some(&path) {
+                st.s.editor.open(&path, "scratch.lua");
+                st.s.editor.error_line = None;
+            }
+            st.s.ui.tab = Tab::Editor;
+        }
+        Action::SaveFile => {
+            let path = st.s.editor.path.clone();
+            if path.is_some() && st.s.mods.iter().any(|m| Some(&m.main) == path.as_ref()) {
+                st.save_editor(game);
+            } else {
+                st.s.ui.naming = Some(LineEdit::default());
+                st.s.ui.naming_save = true;
+                st.s.ui.naming_at = st.s.now;
+            }
         }
         Action::Reload(i) => {
             st.s.mods[i].enabled = true;
@@ -1856,6 +1892,7 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
         }
         Action::NewMod => {
             st.s.ui.naming = Some(LineEdit::default());
+            st.s.ui.naming_save = false;
             st.s.ui.naming_at = st.s.now;
         }
         Action::ReloadAll => st.reload_all(game),
@@ -2001,12 +2038,16 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
 fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> UiResult {
     if let Some(name) = &mut st.s.ui.naming {
         match key {
-            Key::Escape => st.s.ui.naming = None,
+            Key::Escape => {
+                st.s.ui.naming = None;
+                st.s.ui.naming_save = false;
+            }
             Key::Enter => {
                 let wanted = name.text.trim().to_owned();
                 st.s.ui.naming = None;
                 if !wanted.is_empty() {
-                    match st.create_mod(game, &wanted) {
+                    let code = std::mem::take(&mut st.s.ui.naming_save).then(|| st.s.editor.text());
+                    match st.create_mod(game, &wanted, code.as_deref()) {
                         Ok(path) => {
                             let title = path
                                 .file_name()

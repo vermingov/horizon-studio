@@ -1062,6 +1062,14 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     }
     let by = y + 46.0;
     let bh = h - 46.0;
+    // The scripts at the left, as VS Code's explorer, when there is room.
+    let (x, w) = if w >= 640.0 {
+        let sw = (w * 0.18).clamp(150.0, 210.0).floor();
+        draw_scripts(st, p, [x, by, sw, bh], dt);
+        (x + sw + 10.0, w - sw - 10.0)
+    } else {
+        (x, w)
+    };
     // The panel's height glides to its share of the page (none while
     // hidden); sizing it, and the window, follow the pointer at once.
     let ui = &mut st.s.ui;
@@ -1102,6 +1110,103 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     } else {
         ui.panel_at = None;
         draw_code(st, p, [x, by, w, bh], dt);
+    }
+}
+
+/// The script list beside the code: the scratch file, then every script mod
+/// (its state's dot); a click opens one, + starts a new one.
+fn draw_scripts(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
+    p.rect([x, y, w, h], 14.0, pal().plate_soft);
+    p.text(
+        "Scripts",
+        x + 14.0,
+        top(y + 18.0, 11.0),
+        11.0,
+        Font::Medium,
+        pal().muted,
+    );
+    let plus = [x + w - 32.0, y + 6.0, 24.0, 24.0];
+    {
+        let ui = &mut st.s.ui;
+        let hv = hover(ui, id("scripts-new", 0), inside(plus, ui.mouse), dt);
+        p.rect(plus, 8.0, fade(pal().ink, 0.08 * hv));
+        let pw = p.measure("+", 15.0, Font::Medium);
+        p.text(
+            "+",
+            plus[0] + (plus[2] - pw) / 2.0,
+            top(y + 18.0, 15.0),
+            15.0,
+            Font::Medium,
+            mix(pal().muted, pal().ink, hv),
+        );
+        ui.hits.push((plus, Action::NewMod));
+    }
+    let row_h = 26.0;
+    let list_y = y + 36.0;
+    let rows = (((h - 44.0) / row_h).floor() as usize).max(1);
+    let open_path = st.s.editor.path.clone();
+    let scratch = st.scratch_path();
+    // Row 0 is the scratch file, row k + 1 is mod k.
+    let total = st.s.mods.len() + 1;
+    let open_row = if open_path.as_ref() == Some(&scratch) {
+        Some(0)
+    } else {
+        st.s.mods
+            .iter()
+            .position(|m| Some(&m.main) == open_path.as_ref())
+            .map(|i| i + 1)
+    };
+    let first = open_row
+        .unwrap_or(0)
+        .saturating_sub(rows - 1)
+        .min(total.saturating_sub(rows));
+    for (k, row) in (first..total).take(rows).enumerate() {
+        let r = [x + 6.0, list_y + row_h * k as f32, w - 12.0, row_h - 2.0];
+        let ui = &mut st.s.ui;
+        let hv = hover(ui, id("scripts-row", row), inside(r, ui.mouse), dt);
+        let on = open_row == Some(row);
+        let bg = if on {
+            fade(pal().accent, 0.16)
+        } else {
+            fade(pal().ink, 0.06 * hv)
+        };
+        p.rect(r, 8.0, bg);
+        let (name, dot, fg, action) = if row == 0 {
+            (
+                "scratch.lua".to_owned(),
+                pal().muted,
+                pal().ink_soft,
+                Action::EditScratch,
+            )
+        } else {
+            let m = &st.s.mods[row - 1];
+            let dot = match m.state {
+                ModState::Running => pal().success,
+                ModState::Failed(..) => pal().danger,
+                ModState::Off => pal().muted,
+            };
+            let fg = if m.enabled { pal().ink_soft } else { pal().muted };
+            (m.chunk(), dot, fg, Action::Edit(row - 1))
+        };
+        p.rect([r[0] + 10.0, r[1] + r[3] / 2.0 - 3.0, 6.0, 6.0], 3.0, dot);
+        let name = p.fit(&name, r[2] - 32.0, 12.5, Font::Regular);
+        let fg = if on { pal().ink } else { mix(fg, pal().ink, hv) };
+        p.text(
+            &name,
+            r[0] + 24.0,
+            top(r[1] + r[3] / 2.0, 12.5),
+            12.5,
+            Font::Regular,
+            fg,
+        );
+        if on && st.s.editor.dirty {
+            p.rect(
+                [r[0] + r[2] - 14.0, r[1] + r[3] / 2.0 - 3.0, 6.0, 6.0],
+                3.0,
+                pal().accent,
+            );
+        }
+        st.s.ui.hits.push((r, action));
     }
 }
 
@@ -2871,7 +2976,9 @@ fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32) {
     let r = [((w - cw) / 2.0).floor(), (h / 2.0 - 84.0).floor(), cw, 168.0];
     p.rect(r, 16.0, pal().surface);
     p.border(r, 16.0, pal().rule);
-    p.text("New mod", r[0] + 22.0, r[1] + 18.0, 16.0, Font::Medium, pal().ink);
+    let save = st.s.ui.naming_save;
+    let heading = if save { "Save as a script mod" } else { "New mod" };
+    p.text(heading, r[0] + 22.0, r[1] + 18.0, 16.0, Font::Medium, pal().ink);
     p.text(
         "What is it called?",
         r[0] + 22.0,
@@ -2895,7 +3002,11 @@ fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32) {
         pal().ink,
     );
     p.text(
-        "Enter to create  ·  Esc to cancel",
+        if save {
+            "Enter to save  ·  Esc to cancel"
+        } else {
+            "Enter to create  ·  Esc to cancel"
+        },
         r[0] + 22.0,
         r[1] + 130.0,
         12.0,

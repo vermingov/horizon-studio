@@ -5,7 +5,8 @@
 // its tabs down the side and big letters. The shapes and colours are
 // theirs; the names and the letters are the studio's. Their buttons do the
 // studio's work: Execute runs the editor's code, Clear empties it, Execute
-// File reloads the mod open in the editor, Save File saves it, Open File is
+// File reloads the mod open in the editor, Save File saves it (scratch code
+// as a new script mod, named first), the script list opens one, Open File is
 // the Library, Attach and Inject reload every mod, Options is Settings. The
 // other pages show in the editor's place, with the studio's tabs above.
 
@@ -263,7 +264,7 @@ fn synapse(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         ("Clear", Action::ClearEditor),
         ("Open File", Action::Tab(Tab::Library)),
         ("Execute File", execute_file(st)),
-        ("Save File", Action::Save),
+        ("Save File", Action::SaveFile),
     ];
     let right = [
         ("Console", Action::Tab(Tab::Console)),
