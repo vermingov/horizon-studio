@@ -1383,6 +1383,7 @@ The step format, as the MCP server describes it:
 | `{"chat": "<Alex> hi"}` | a chat line arrives from the server (`on("chat")` handlers), then one frame |
 | `{"key": "key.keyboard.r"}` | presses the key for a frame and releases it for a frame; with `"down": true` or `false` only presses or releases. `on("key")` gets exactly this name, so use the game's names (`key.keyboard.r`); a mapping name such as `key.jump` makes `keys.mapping("key.jump")` held headless |
 | `{"lua": "code"}` | runs Lua in the console: its prints and returned values are the step's output; a failed `assert` fails the step. Mods' globals are not visible there: use `import("id")` on a mod that exports |
+| `{"suggest": "/name words"}` | the completions the chat would show for that line, with the cursor at its end (`"/wp "` completes the first argument, `"/wp re"` the word `re`): each is a line of the step's output, its text and then its tooltip in brackets (`remove (Forgets one)`); runs no frame. It fails when no command the studio takes has that name, or the line has no space after the name. Headless only |
 | `{"player": {...}}` | changes the player: `x`, `y`, `z`, `yaw`, `pitch`, `health`, `food`, `level`, `mode`, `dimension`, `held` (an item id, or null for an empty hand); `"player": null` leaves the world (no ticks, player functions return nil). Then one frame. Headless only |
 | `{"block": [x, y, z], "id": "minecraft:stone"}` | sets a block (default air); runs no frame. Headless only |
 | `{"time": 13000}` | sets the day time; runs no frame. Headless only |
@@ -1398,7 +1399,7 @@ The step format, as the MCP server describes it:
 Strings, or lists of strings, matched as substrings of what the step caused:
 
 - `expect_chat` / `expect_no_chat`: lines shown in the player's chat (`chat.show`, command results, the studio's messages).
-- `expect_output`: a `lua` step's printed lines and returned values, as the console shows them (strings in quotes: returning `"hi"` gives `"hi"` with the quotes).
+- `expect_output`: a `lua` step's printed lines and returned values, as the console shows them (strings in quotes: returning `"hi"` gives `"hi"` with the quotes), or a `suggest` step's completions.
 - `expect_log`: console lines (prints of mods as `[id] text`, errors, tracebacks, info).
 - `expect_sent`: what was sent as the player (`chat.say` text, `game.run` commands with their `/`).
 - `expect_drawn`: text drawn on the HUD or a screen during the step (`hud.text`, `gfx.text`, panels, widget labels, `draw.text` labels). Headless only.
@@ -1425,7 +1426,7 @@ Strings, or lists of strings, matched as substrings of what the step caused:
 
 ## Live tests
 
-`live: true` writes the files (when given), reloads the mod in the game and runs the steps there. `player`, `block`, `time`, `click`, `type`, `camera` and `pose` steps are headless only: live, use a command step (`/tp`, `/setblock`, `/time set`) or the `horizon_ctl` tool. `expect_drawn`, `expect_sound`, `expect_particle` and `expect_screen` are only noted live (look with `horizon_ctl screenshot`). Live, a `command` step waits 10 frames, a `chat` step 2, a `key` step a frame between press and release and 2 after.
+`live: true` writes the files (when given), reloads the mod in the game and runs the steps there. `player`, `block`, `time`, `click`, `type`, `camera`, `pose` and `suggest` steps are headless only: live, use a command step (`/tp`, `/setblock`, `/time set`) or the `horizon_ctl` tool. `expect_drawn`, `expect_sound`, `expect_particle` and `expect_screen` are only noted live (look with `horizon_ctl screenshot`). Live, a `command` step waits 10 frames, a `chat` step 2, a `key` step a frame between press and release and 2 after.
 
 ## Examples
 

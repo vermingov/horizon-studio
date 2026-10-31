@@ -8,6 +8,7 @@
 use crate::game::hstudio::{
     Camera, Corner, Font, GameApi, LogKind, PartFrame, PlayerInfo, PlayerPose, Reply, Studio, ViaInfo,
 };
+use crate::game::hstudio_chatcmd::split_line;
 use crate::game::hstudio_examples::EXAMPLES;
 use crate::game::hstudio_link::mods as mods_json;
 use crate::game::hstudio_ui::{Input, handle_screen};
@@ -847,6 +848,11 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
         } else if let Some(code) = step.get("lua").and_then(Json::as_str) {
             let lines = run.studio.run_chunk(&mut run.game, code, false);
             output = lines.iter().map(|(_, t)| t.clone()).collect();
+        } else if let Some(line) = step.get("suggest").and_then(Json::as_str) {
+            match suggest_step(run, line) {
+                Ok(list) => output = list,
+                Err(e) => failures.push(e),
+            }
         } else if let Some(patch) = step.get("player") {
             match (patch, run.game.player.as_mut()) {
                 (Json::Null, _) => run.game.player = None,
@@ -902,7 +908,7 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
             // Expectations only: about the state as it is.
         } else {
             failures.push(format!(
-                "unknown step {}: use frames, seconds, command, chat, key, lua, player, block, time, camera, pose, click, type or reload",
+                "unknown step {}: use frames, seconds, command, chat, key, lua, suggest, player, block, time, camera, pose, click, type or reload",
                 describe(step)
             ));
         }
@@ -949,7 +955,7 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
         }
         for want in texts(step.get("expect_output")) {
             if !all_text(&output).contains(&want) {
-                failures.push(format!("the Lua output has no '{want}' (output: {output:?})"));
+                failures.push(format!("the output has no '{want}' (output: {output:?})"));
             }
         }
         for want in texts(step.get("expect_log")) {
@@ -1055,6 +1061,28 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
     })
 }
 
+/// A `suggest` step: the completions the chat would get for `line` (a
+/// command up to the cursor), each as its text and its tooltip in brackets.
+fn suggest_step(run: &mut Run, line: &str) -> Result<Vec<String>, String> {
+    let line = format!("/{}", line.trim_start().trim_start_matches('/'));
+    match run.studio.suggest(&mut run.game, &line) {
+        Some(c) => Ok(c
+            .list
+            .into_iter()
+            .map(|(text, tooltip)| match tooltip {
+                Some(tip) => format!("{text} ({tip})"),
+                None => text,
+            })
+            .collect()),
+        None => Err(match split_line(&line) {
+            Some((name, None)) => {
+                format!("completions start after a command's name and a space: \"/{name} \", not \"/{name}\"")
+            }
+            _ => format!("no mod completes {}", line.split(' ').next().unwrap_or(&line)),
+        }),
+    }
+}
+
 /// A folder mod's other files (images, models: what `read_mod` leaves out
 /// as not text), copied beside the text written for a run: three folders
 /// deep, 16 MB a file, 64 MB in all. Without `code`, `.lua` files are left
@@ -1099,14 +1127,16 @@ pub const STEPS_HELP: &str = "Each step is an object with one action and any exp
 (a mod's own, or the studio's); {\"chat\": \"<Alex> hi\"} is a chat line arriving (on(\"chat\")); {\"key\": \"key.keyboard.j\"} \
 presses and releases a key: on(\"key\") gets that name as for a real press (\"key.keyboard.space\", \"key.mouse.left\"; \
 headless, keys.down sees it held), or with \"down\": true/false; {\"lua\": \"code\"} runs Lua in the console \
-(globals; import(\"id\") gets a library; assert() fails the step); {\"player\": {\"x\":..,\"y\":..,\"z\":..,\"health\":..,\
+(globals; import(\"id\") gets a library; assert() fails the step); {\"suggest\": \"/name words\"} gives the completions \
+the chat would show for that line (the cursor at its end, so \"/wp \" completes the first argument), each as its \
+text and its tooltip in brackets, for expect_output (headless); {\"player\": {\"x\":..,\"y\":..,\"z\":..,\"health\":..,\
 \"mode\":\"creative\",\"held\":\"minecraft:stick\"}} moves or changes the player; {\"block\": [x,y,z], \"id\": \
 \"minecraft:stone\"} sets a block (live: not available); {\"time\": 13000} sets the day time; {\"click\": \"label\"} \
 clicks text on the open script screen; {\"type\": \"text\"} types into it; {\"reload\": \"id\"} (or true) reloads; \
 {\"camera\": \"first\"|\"third_back\"|\"third_front\"} and {\"pose\": \"crouching\"} set the view and the player's pose \
 (headless). \
 Expectations (strings or lists of them, matched as substrings): expect_chat, expect_no_chat, expect_output (the lua \
-step's printed values), expect_log, expect_sent, expect_drawn (text drawn on the HUD or screen during the step), \
+step's printed values, the suggest step's completions), expect_log, expect_sent, expect_drawn (text drawn on the HUD or screen during the step), \
 expect_sound, expect_particle, expect_item (item models drawn: model.attach, draw.item); expect_mesh N \
 (at least N mesh triangles drawn: draw.mesh, model.attach with a mesh; true: any; false: none); expect_state {\"id\": \"running\"|\"failed\"|\"off\"}; expect_screen true/false; \
 expect_error true or \"text\" (otherwise any error logged during a step fails it). A step of expectations alone \

@@ -257,6 +257,48 @@ fn headless_tests_run_commands_keys_lua_and_screens() {
 }
 
 #[test]
+fn a_suggest_step_shows_the_completions() {
+    let source = Source::Files {
+        id: "wp".into(),
+        files: vec![(
+            "wp.lua".into(),
+            "command('wp', function() end, { args = {
+              { name = 'action', options = { 'add', { text = 'remove', tooltip = 'Forgets one' } } },
+              { name = 'name', kind = 'text', optional = true, suggest = function() return { 'home', 'mine' } end },
+            } })"
+                .into(),
+        )],
+        libraries: None,
+    };
+    let mut run = Run::new(&source).unwrap();
+    let report = run_steps(
+        &mut run,
+        &[
+            json!({ "suggest": "/wp re", "expect_output": "remove (Forgets one)" }),
+            json!({ "suggest": "/wp add ", "expect_output": ["home", "mine"] }),
+            json!({ "suggest": "wp ", "expect_output": "add" }),
+        ],
+    );
+    assert_eq!(report["ok"], true, "{report:#}");
+    assert_eq!(report["steps"][0]["output"], json!(["remove (Forgets one)"]));
+    // Failures say what went wrong.
+    let report = run_steps(
+        &mut run,
+        &[
+            json!({ "suggest": "/nothing x" }),
+            json!({ "suggest": "/wp" }),
+            json!({ "suggest": "/wp re", "expect_output": "add" }),
+        ],
+    );
+    let steps = report["steps"].as_array().unwrap();
+    assert!(steps.iter().all(|s| s["ok"] == false), "{report:#}");
+    let failure = |i: usize| steps[i]["failures"][0].as_str().unwrap().to_owned();
+    assert!(failure(0).contains("no mod completes /nothing"), "{}", failure(0));
+    assert!(failure(1).contains("\"/wp \", not \"/wp\""), "{}", failure(1));
+    assert!(failure(2).contains("the output has no 'add'"), "{}", failure(2));
+}
+
+#[test]
 fn an_agent_writes_tests_and_runs_a_mod_in_the_linked_game() {
     let home = std::env::temp_dir().join(format!("hstudio-mcp-link-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
@@ -392,12 +434,19 @@ fn an_agent_writes_tests_and_runs_a_mod_in_the_linked_game() {
             { "key": "key.keyboard.j", "expect_chat": "jumped" },
             { "chat": "<Bo> hi" },
             { "block": [0, 0, 0], "id": "minecraft:stone" },
+            { "suggest": "/greet A" },
         ] }),
     );
     assert!(error, "the block step is headless only");
     let steps = r["steps"].as_array().unwrap();
     assert!(steps[..5].iter().all(|s| s["ok"] == true), "{r:#}");
     assert!(steps[5]["failures"][0].as_str().unwrap().contains("headless only"));
+    assert!(
+        steps[6]["failures"][0]
+            .as_str()
+            .unwrap()
+            .contains("suggest steps are headless only")
+    );
     // A broken edit: the check says where, and so does the game.
     let (r, error) = call(
         &mut s,
