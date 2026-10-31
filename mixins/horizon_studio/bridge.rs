@@ -512,6 +512,34 @@ impl GameApi for Host<'_, '_> {
         b.vertices.truncate(mark);
         push_quads(b, &shaded);
     }
+    fn dp_image(&mut self, image: TexRef<'_>, r: [f32; 4], src: [f32; 4], argb: u32) -> bool {
+        let game = match &self.game {
+            GameRef::Mut(g) => &**g,
+            GameRef::Shared(g) => *g,
+        };
+        let Some(b) = self.batch.as_deref_mut() else {
+            return false;
+        };
+        // In the atlas's run-time region, as the world's meshes' textures are.
+        // The HUD's atlas uploads go before it draws, so it shows this frame.
+        let Some((uv, _)) = paint::image(&game.gui.atlas, image.key, image.version, image.w, image.h, image.rgba)
+        else {
+            return false;
+        };
+        let (_, _, k) = paint::size(&game.gui.atlas, b);
+        let (iw, ih) = (image.w as f32, image.h as f32);
+        // A hundredth of a texel in from the image's edges, so no neighbour shows.
+        let u = |x: f32| uv[0] + (uv[2] - uv[0]) * x.clamp(0.01, iw - 0.01) / iw;
+        let v = |y: f32| uv[1] + (uv[3] - uv[1]) * y.clamp(0.01, ih - 0.01) / ih;
+        let (u0, v0, u1, v1) = (u(src[0]), v(src[1]), u(src[0] + src[2]), v(src[1] + src[3]));
+        let [x, y, w, h] = r.map(|c| c / k);
+        b.quad(
+            [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+            [[u0, v0], [u1, v0], [u1, v1], [u0, v1]],
+            hud_color(argb),
+        );
+        true
+    }
     fn via(&self) -> ViaInfo {
         via_info()
     }

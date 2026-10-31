@@ -731,7 +731,9 @@ pub fn draw(
                 .strip_prefix("rbxasset://horizon-studio/")
                 .and_then(|p| images.file(workspace, p));
             match file {
-                Some(bytes) if ia > 0.0 => images.draw(game, &bytes, r, ia),
+                Some(bytes) if ia > 0.0 => {
+                    draw_image(inst, p, game, images, &bytes, gc, ia, mark.is_none().then_some(vis))
+                }
                 _ if !img.is_empty() && ia > 0.0 => {
                     game.dp_rect(r, radius, argb(times(color(inst, "ImageColor3"), gc), ia * 0.18))
                 }
@@ -929,6 +931,48 @@ fn draw_bars(rbx: &Rbx, game: &mut dyn GameApi, frame: &Frame, bars: Option<(Id,
         && let Some(p) = frame.inst_node.get(&id).and_then(|&n| frame.layout.get(n))
     {
         finish(rbx, game, frame, id, p, m, extent);
+    }
+}
+
+/// An image object's image, placed in its box as its ScaleType,
+/// ImageRectOffset and ImageRectSize, TileSize, SliceCenter and SliceScale
+/// say, tinted by its ImageColor3 (and `gc`, the groups it is in), `alpha`
+/// opaque; cut to `clip` where the game can't cut it once drawn.
+#[allow(clippy::too_many_arguments)]
+fn draw_image(
+    inst: &super::hstudio_rbx::Inst,
+    p: &layout::Placed,
+    game: &mut dyn GameApi,
+    images: &mut super::hstudio_sunc::ImageCache,
+    bytes: &[u8],
+    gc: Color3,
+    alpha: f64,
+    clip: Option<Rect>,
+) {
+    let Some((w, h)) = images.size(bytes) else {
+        return;
+    };
+    let fit = layout::ImageFit {
+        scale_type: match enum_name(&inst.get("ScaleType")) {
+            "Slice" => layout::ScaleType::Slice,
+            "Tile" => layout::ScaleType::Tile,
+            "Fit" => layout::ScaleType::Fit,
+            "Crop" => layout::ScaleType::Crop,
+            _ => layout::ScaleType::Stretch,
+        },
+        rect_offset: as_v2(&inst.get("ImageRectOffset")).unwrap_or_default(),
+        rect_size: as_v2(&inst.get("ImageRectSize")).unwrap_or_default(),
+        tile_size: as_udim2(&inst.get("TileSize")).unwrap_or(UDim2::from_scale(1.0, 1.0)),
+        slice_center: match get(&inst.get("SliceCenter")) {
+            Some(Data::Rect(r)) => r,
+            _ => Rect::default(),
+        },
+        slice_scale: inst.get("SliceScale").to_num().unwrap_or(1.0),
+    };
+    let rgb = argb(times(color(inst, "ImageColor3"), gc), 1.0) & 0xFF_FFFF;
+    let size = Vector2::new(f64::from(w), f64::from(h));
+    for (place, part) in layout::image_pieces(size, p.rect(), p.scale, &fit, clip) {
+        images.draw_part(game, bytes, rect4(place), rect4(part), rgb, alpha);
     }
 }
 

@@ -3,7 +3,6 @@
 #![allow(dead_code)]
 
 use horizon_studio::game::hstudio::{Camera, Corner, Font, GameApi, PlayerInfo, Reply, Studio, ViaInfo};
-use horizon_studio::game::hstudio_quads::Shade;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -32,9 +31,11 @@ pub struct FakeGame {
     pub sounds: Vec<(String, Option<[f64; 3]>, f32, f32)>,
     pub particles: Vec<Particle>,
     /// The gradients the GUI was coloured with (`dp_shade`), with their marks.
-    pub shades: Vec<(usize, Shade)>,
+    pub shades: Vec<(usize, horizon_studio::game::hstudio_quads::Shade)>,
     /// The game can't change what it drew (no `dp_mark`), as the headless one.
     pub no_marks: bool,
+    /// The game can't draw images as such (no `dp_image`).
+    pub no_images: bool,
     /// ViaHorizon, as the bridge reports it (the real one is the game's).
     pub via: ViaInfo,
 }
@@ -93,6 +94,7 @@ impl FakeGame {
             particles: Vec::new(),
             shades: Vec::new(),
             no_marks: false,
+            no_images: false,
             via: ViaInfo {
                 enabled: true,
                 version: "auto".into(),
@@ -241,9 +243,27 @@ impl GameApi for FakeGame {
     fn dp_rotate(&mut self, mark: usize, centre: [f32; 2], degrees: f32) {
         self.drawn.push(format!("rotate {mark} {centre:?} {degrees}"));
     }
-    fn dp_shade(&mut self, mark: usize, shade: &Shade) {
+    fn dp_shade(&mut self, mark: usize, shade: &horizon_studio::game::hstudio_quads::Shade) {
         self.drawn.push(format!("shade {mark}"));
         self.shades.push((mark, shade.clone()));
+    }
+    // An image by its size and its first pixel's RGBA.
+    fn dp_image(
+        &mut self,
+        image: horizon_studio::game::hstudio::TexRef<'_>,
+        r: [f32; 4],
+        src: [f32; 4],
+        argb: u32,
+    ) -> bool {
+        if self.no_images {
+            return false;
+        }
+        let first: String = image.rgba.iter().take(4).map(|b| format!("{b:02x}")).collect();
+        self.drawn.push(format!(
+            "image {}x{} #{first} {r:?} from {src:?} {argb:08x}",
+            image.w, image.h
+        ));
+        true
     }
     fn via(&self) -> ViaInfo {
         self.via.clone()

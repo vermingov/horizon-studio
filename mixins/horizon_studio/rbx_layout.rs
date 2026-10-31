@@ -839,6 +839,161 @@ impl Layout {
     }
 }
 
+// ---------------------------------------------------------------- images
+
+/// Enum.ScaleType: how an image fills its object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ScaleType {
+    /// Stretched over the object's box.
+    #[default]
+    Stretch,
+    /// In nine pieces: the corners keep their size, the edges stretch
+    /// along them and the middle both ways.
+    Slice,
+    /// Repeated at TileSize from the top left.
+    Tile,
+    /// As large as fits, keeping its shape, in the middle.
+    Fit,
+    /// As small as covers the box, keeping its shape, cut to it.
+    Crop,
+}
+
+/// How an image object draws its image: ScaleType, the part of the image
+/// it shows (ImageRectOffset and ImageRectSize, in pixels; a zero size is
+/// all of it), TileSize, and SliceCenter (in the part's pixels) with
+/// SliceScale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageFit {
+    pub scale_type: ScaleType,
+    pub rect_offset: Vector2,
+    pub rect_size: Vector2,
+    pub tile_size: UDim2,
+    pub slice_center: Rect,
+    pub slice_scale: f64,
+}
+
+impl Default for ImageFit {
+    /// Instance.new's: stretched, all of the image.
+    fn default() -> ImageFit {
+        ImageFit {
+            scale_type: ScaleType::Stretch,
+            rect_offset: Vector2::ZERO,
+            rect_size: Vector2::ZERO,
+            tile_size: UDim2::from_scale(1.0, 1.0),
+            slice_center: Rect::default(),
+            slice_scale: 1.0,
+        }
+    }
+}
+
+/// The tiles an image is drawn in at most; past that it is stretched.
+const MAX_TILES: usize = 1024;
+
+/// The pieces an image of `image` pixels is drawn in to fill `area` (on
+/// screen, `scale` the UIScale on it) as `fit` says: each the place it goes
+/// and the part of the image (in pixels) drawn there. With `clip`, each is
+/// cut to it, and its part of the image with it.
+pub fn image_pieces(image: Vector2, area: Rect, scale: f64, fit: &ImageFit, clip: Option<Rect>) -> Vec<(Rect, Rect)> {
+    let v = Vector2::new;
+    let src = if fit.rect_size.x > 0.0 && fit.rect_size.y > 0.0 {
+        let min = fit.rect_offset.max(Vector2::ZERO).min(image);
+        Rect::new(min, (fit.rect_offset + fit.rect_size).min(image).max(min))
+    } else {
+        Rect::new(Vector2::ZERO, image)
+    };
+    let (sw, sh) = (src.width(), src.height());
+    let (aw, ah) = (area.width(), area.height());
+    if !(sw > 0.0 && sh > 0.0 && aw > 0.0 && ah > 0.0) {
+        return Vec::new();
+    }
+    let tile = v(
+        fit.tile_size.x.scale * aw + f64::from(fit.tile_size.x.offset) * scale,
+        fit.tile_size.y.scale * ah + f64::from(fit.tile_size.y.offset) * scale,
+    );
+    let tiles = (tile.x > 0.0 && tile.y > 0.0).then(|| ((aw / tile.x).ceil(), (ah / tile.y).ceil()));
+    let mut pieces = Vec::new();
+    match fit.scale_type {
+        ScaleType::Fit => {
+            let k = (aw / sw).min(ah / sh);
+            let size = v(sw * k, sh * k);
+            let at = area.min + (v(aw, ah) - size) / 2.0;
+            pieces.push((Rect::new(at, at + size), src));
+        }
+        ScaleType::Crop => {
+            let k = (aw / sw).max(ah / sh);
+            let shown = v(aw / k, ah / k);
+            let at = src.min + (v(sw, sh) - shown) / 2.0;
+            pieces.push((area, Rect::new(at, at + shown)));
+        }
+        ScaleType::Tile if tiles.is_none() => {}
+        ScaleType::Tile if tiles.is_some_and(|(nx, ny)| nx * ny <= MAX_TILES as f64) => {
+            let (nx, ny) = tiles.unwrap_or_default();
+            for j in 0..ny as usize {
+                for i in 0..nx as usize {
+                    let at = area.min + v(i as f64 * tile.x, j as f64 * tile.y);
+                    let end = (at + tile).min(area.max);
+                    let shown = v(sw * (end.x - at.x) / tile.x, sh * (end.y - at.y) / tile.y);
+                    pieces.push((Rect::new(at, end), Rect::new(src.min, src.min + shown)));
+                }
+            }
+        }
+        ScaleType::Slice => {
+            let c = fit.slice_center;
+            let (l, t) = (c.min.x.clamp(0.0, sw), c.min.y.clamp(0.0, sh));
+            let (r, b) = (c.max.x.clamp(l, sw), c.max.y.clamp(t, sh));
+            if !(r > l && b > t) {
+                // No middle to stretch: the whole part is.
+                pieces.push((area, src));
+            } else {
+                let k = fit.slice_scale.max(0.0) * scale;
+                let (mut left, mut right, mut top, mut bottom) = (l * k, (sw - r) * k, t * k, (sh - b) * k);
+                // Corners too big for the box share it.
+                if left + right > aw {
+                    let f = aw / (left + right);
+                    (left, right) = (left * f, right * f);
+                }
+                if top + bottom > ah {
+                    let f = ah / (top + bottom);
+                    (top, bottom) = (top * f, bottom * f);
+                }
+                let xs = [area.min.x, area.min.x + left, area.max.x - right, area.max.x];
+                let ys = [area.min.y, area.min.y + top, area.max.y - bottom, area.max.y];
+                let us = [src.min.x, src.min.x + l, src.min.x + r, src.max.x];
+                let vs = [src.min.y, src.min.y + t, src.min.y + b, src.max.y];
+                for j in 0..3 {
+                    for i in 0..3 {
+                        let place = Rect::new(v(xs[i], ys[j]), v(xs[i + 1], ys[j + 1]));
+                        let part = Rect::new(v(us[i], vs[j]), v(us[i + 1], vs[j + 1]));
+                        if place.width() > 0.0 && place.height() > 0.0 && part.width() > 0.0 && part.height() > 0.0 {
+                            pieces.push((place, part));
+                        }
+                    }
+                }
+            }
+        }
+        _ => pieces.push((area, src)),
+    }
+    match clip {
+        Some(c) => pieces.into_iter().filter_map(|(p, s)| cut_piece(p, s, c)).collect(),
+        None => pieces,
+    }
+}
+
+/// A piece of an image cut to `clip`, the part of the image it shows cut alike.
+fn cut_piece(place: Rect, part: Rect, clip: Rect) -> Option<(Rect, Rect)> {
+    let cut = intersect(place, clip);
+    if !(cut.width() > 0.0 && cut.height() > 0.0) {
+        return None;
+    }
+    let map = |p: Vector2| {
+        Vector2::new(
+            part.min.x + (p.x - place.min.x) / place.width() * part.width(),
+            part.min.y + (p.y - place.min.y) / place.height() * part.height(),
+        )
+    };
+    Some((cut, Rect::new(map(cut.min), map(cut.max))))
+}
+
 // ---------------------------------------------------------------- the pass
 
 /// An area in a container's own (unscaled) space.

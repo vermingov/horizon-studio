@@ -310,6 +310,13 @@ pub trait GameApi {
     fn dp_shade(&mut self, mark: usize, shade: &Shade) {
         let _ = (mark, shade);
     }
+    /// Draws the part `src` (in the image's pixels, x y w h) of `image` into
+    /// `r` (dp), its pixels multiplied by `argb`. False where images can't
+    /// be drawn as such (the caller draws them in blocks of colour).
+    fn dp_image(&mut self, image: TexRef<'_>, r: [f32; 4], src: [f32; 4], argb: u32) -> bool {
+        let _ = (image, r, src, argb);
+        false
+    }
     /// ViaHorizon: whether joins go through ViaProxy, as which version, and
     /// what it is doing.
     fn via(&self) -> ViaInfo {

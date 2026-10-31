@@ -719,22 +719,63 @@ impl ImageCache {
         Some(t)
     }
 
-    /// Draws a PNG's pixels into `r` (dp), averaged into blocks.
+    /// An image's size in pixels, if it is a PNG that decodes.
+    pub fn size(&mut self, bytes: &[u8]) -> Option<(u32, u32)> {
+        self.get(bytes).map(|t| (t.w, t.h))
+    }
+
+    /// Draws a PNG's pixels into `r` (dp).
     pub fn draw(&mut self, game: &mut dyn GameApi, bytes: &[u8], r: [f32; 4], alpha: f64) {
         let Some(t) = self.get(bytes) else { return };
-        if t.w == 0 || t.h == 0 || r[2] <= 0.0 || r[3] <= 0.0 {
+        self.draw_part(game, bytes, r, [0.0, 0.0, t.w as f32, t.h as f32], 0xFF_FFFF, alpha);
+    }
+
+    /// Draws the part `src` (x, y, width and height in pixels) of a PNG
+    /// into `r` (dp), its pixels multiplied by `rgb` (0xRRGGBB) and `alpha`:
+    /// as a texture where the game draws images, else averaged into blocks.
+    pub fn draw_part(
+        &mut self,
+        game: &mut dyn GameApi,
+        bytes: &[u8],
+        r: [f32; 4],
+        src: [f32; 4],
+        rgb: u32,
+        alpha: f64,
+    ) {
+        let Some(t) = self.get(bytes) else { return };
+        if t.w == 0 || t.h == 0 || r[2] <= 0.0 || r[3] <= 0.0 || !(src[2] > 0.0 && src[3] > 0.0) {
             return;
         }
-        let (cw, ch) = (t.w.min(CELLS), t.h.min(CELLS));
+        let a = (alpha.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let image = super::hstudio::TexRef {
+            key: t.key,
+            version: t.version,
+            w: t.w,
+            h: t.h,
+            rgba: &t.rgba,
+        };
+        if game.dp_image(image, r, src, a << 24 | (rgb & 0xFF_FFFF)) {
+            return;
+        }
+        // The pixels the part covers, a block of them to each cell.
+        let (px0, py0) = (src[0].floor().max(0.0) as u32, src[1].floor().max(0.0) as u32);
+        let px1 = ((src[0] + src[2]).ceil().max(0.0) as u32).min(t.w);
+        let py1 = ((src[1] + src[3]).ceil().max(0.0) as u32).min(t.h);
+        if px0 >= px1 || py0 >= py1 {
+            return;
+        }
+        let (sw, sh) = (px1 - px0, py1 - py0);
+        let tint = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF];
+        let (cw, ch) = (sw.min(CELLS), sh.min(CELLS));
         let (bw, bh) = (r[2] / cw as f32, r[3] / ch as f32);
         for cy in 0..ch {
             for cx in 0..cw {
-                let (x0, x1) = (cx * t.w / cw, ((cx + 1) * t.w / cw).max(cx * t.w / cw + 1));
-                let (y0, y1) = (cy * t.h / ch, ((cy + 1) * t.h / ch).max(cy * t.h / ch + 1));
+                let (x0, x1) = (cx * sw / cw, ((cx + 1) * sw / cw).max(cx * sw / cw + 1));
+                let (y0, y1) = (cy * sh / ch, ((cy + 1) * sh / ch).max(cy * sh / ch + 1));
                 let mut sum = [0u32; 4];
                 let mut n = 0;
-                for y in y0..y1.min(t.h) {
-                    for x in x0..x1.min(t.w) {
+                for y in py0 + y0..(py0 + y1).min(py1) {
+                    for x in px0 + x0..(px0 + x1).min(px1) {
                         let i = ((y * t.w + x) * 4) as usize;
                         for (c, s) in sum.iter_mut().enumerate() {
                             *s += u32::from(t.rgba[i + c]);
@@ -750,7 +791,8 @@ impl ImageCache {
                 if a == 0 {
                     continue;
                 }
-                let argb = a << 24 | r_ << 16 | g << 8 | b;
+                let tinted = |c: u32, k: u32| (c * k + 127) / 255;
+                let argb = a << 24 | tinted(r_, tint[0]) << 16 | tinted(g, tint[1]) << 8 | tinted(b, tint[2]);
                 game.dp_rect(
                     [r[0] + cx as f32 * bw, r[1] + cy as f32 * bh, bw + 0.3, bh + 0.3],
                     0.0,

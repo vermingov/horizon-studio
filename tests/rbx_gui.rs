@@ -192,21 +192,22 @@ fn image_buttons_show_hover_and_pressed_images() {
         "{}",
         p[3]
     );
-    let cell = |drawn: &[String]| {
+    // The image drawn, by its one pixel's colour.
+    let image = |drawn: &[String]| {
         drawn
             .iter()
-            .find(|d| d.starts_with("rect [0.0, 0.0, 48.3, 48.3]"))
-            .cloned()
-            .unwrap_or_else(|| panic!("no image cell: {drawn:#?}"))
+            .find_map(|d| d.strip_prefix("image 1x1 #"))
+            .map(|d| d[..8].to_owned())
+            .unwrap_or_else(|| panic!("no image: {drawn:#?}"))
     };
-    assert!(cell(&hud(&mut st, &mut game)).ends_with("ffff0000"));
+    assert_eq!(image(&hud(&mut st, &mut game)), "ff0000ff");
     pointer_moved(&mut st.s.rbx, 10.0, 10.0);
-    assert!(cell(&hud(&mut st, &mut game)).ends_with("ff00ff00"), "hovered");
+    assert_eq!(image(&hud(&mut st, &mut game)), "00ff00ff", "hovered");
     pointer_button(&mut st.s.rbx, true, true);
-    assert!(cell(&hud(&mut st, &mut game)).ends_with("ff0000ff"), "pressed");
+    assert_eq!(image(&hud(&mut st, &mut game)), "0000ffff", "pressed");
     pointer_button(&mut st.s.rbx, true, false);
     pointer_moved(&mut st.s.rbx, 300.0, 300.0);
-    assert!(cell(&hud(&mut st, &mut game)).ends_with("ffff0000"), "left alone");
+    assert_eq!(image(&hud(&mut st, &mut game)), "ff0000ff", "left alone");
 }
 
 #[test]
@@ -1161,10 +1162,25 @@ fn without_marks_the_gui_is_drawn_as_best_it_can_be() {
         half.Rotation = 20
         half.BackgroundColor3 = Color3.new(1, 1, 1)
         Instance.new("UIGradient", half).Color = ColorSequence.new(Color3.new(1, 0, 0), Color3.new(0, 0, 1))
+        local image = Instance.new("ImageLabel", window)
+        image.Position = UDim2.fromOffset(150, 60)
+        image.Size = UDim2.fromOffset(100, 20)
+        image.BackgroundTransparency = 1
+        image.Image = getcustomasset("wide.png")
     "#;
+    let ws = st.s.rbx.workspace_dir.clone();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(ws.join("wide.png"), png(2, 1, &[[255, 0, 0, 255], [0, 0, 255, 255]])).unwrap();
     load(&mut game, &mut st, "nomarks", src, 0.6);
     let drawn = hud(&mut st, &mut game);
-    assert_eq!(drawn, ["rect [150.0, 20.0, 50.0, 20.0] r0 ff800080"]);
+    // The image is cut too, the part of it that shows with it.
+    assert_eq!(
+        drawn,
+        [
+            "rect [150.0, 20.0, 50.0, 20.0] r0 ff800080",
+            "image 2x1 #ff0000ff [150.0, 60.0, 50.0, 20.0] from [0.0, 0.0, 1.0, 1.0] ffffffff"
+        ]
+    );
 }
 
 #[test]
@@ -1210,4 +1226,157 @@ fn viewport_frames_draw_as_frames() {
         assert!(drawn.contains(&want.to_owned()), "{want}: {drawn:#?}");
     }
     assert!(drawn.iter().any(|d| d.starts_with("text inside @")));
+}
+
+/// A PNG of `w` x `h` pixels, row by row.
+fn png(w: u32, h: u32, pixels: &[[u8; 4]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header().unwrap().write_image_data(&pixels.concat()).unwrap();
+    out
+}
+
+/// The images drawn: where, from which part of the image, with what tint.
+fn images(drawn: &[String]) -> Vec<String> {
+    drawn
+        .iter()
+        .filter_map(|d| d.strip_prefix("image "))
+        .map(|d| d.splitn(3, ' ').nth(2).unwrap_or(d).to_owned())
+        .collect()
+}
+
+#[test]
+fn images_scale_fit_crop_tile_and_slice() {
+    let mut game = FakeGame::new("rbx-scale");
+    let mut st = studio(&mut game);
+    let ws = st.s.rbx.workspace_dir.clone();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(ws.join("wide.png"), png(2, 1, &[[255, 0, 0, 255], [0, 0, 255, 255]])).unwrap();
+    std::fs::write(ws.join("box.png"), png(4, 4, &[[255, 255, 255, 255]; 16])).unwrap();
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local image = Instance.new("ImageLabel", gui)
+        image.Size = UDim2.fromOffset(100, 100)
+        image.BackgroundTransparency = 1
+        image.Image = getcustomasset("wide.png")
+        local function set(props)
+            return function()
+                for k, v in props do
+                    image[k] = v
+                end
+            end
+        end
+        command("fit", set({ ScaleType = Enum.ScaleType.Fit }))
+        command("crop", set({ ScaleType = Enum.ScaleType.Crop }))
+        command("tile", set({ ScaleType = Enum.ScaleType.Tile, TileSize = UDim2.fromScale(0.5, 0.5) }))
+        command("tile40", set({ TileSize = UDim2.fromOffset(40, 40) }))
+        command("slice", set({
+            Image = getcustomasset("box.png"),
+            Size = UDim2.fromOffset(100, 60),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(1, 1, 3, 3),
+            SliceScale = 10,
+        }))
+        command("part", set({
+            Image = getcustomasset("wide.png"),
+            Size = UDim2.fromOffset(100, 100),
+            ScaleType = Enum.ScaleType.Stretch,
+            ImageRectOffset = Vector2.new(1, 0),
+            ImageRectSize = Vector2.new(1, 1),
+            ImageColor3 = Color3.new(1, 0, 0),
+            ImageTransparency = 0.5,
+        }))
+    "#;
+    load(&mut game, &mut st, "scale", src, 0.6);
+    let mut look = |command: Option<&str>| {
+        if let Some(c) = command {
+            say(&mut st, &mut game, c);
+        }
+        images(&hud(&mut st, &mut game))
+    };
+    assert_eq!(
+        look(None),
+        ["[0.0, 0.0, 100.0, 100.0] from [0.0, 0.0, 2.0, 1.0] ffffffff"]
+    );
+    // Fit: as large as fits, in the middle.
+    assert_eq!(
+        look(Some("fit")),
+        ["[0.0, 25.0, 100.0, 50.0] from [0.0, 0.0, 2.0, 1.0] ffffffff"]
+    );
+    // Crop: covers the box; only the image's middle shows.
+    assert_eq!(
+        look(Some("crop")),
+        ["[0.0, 0.0, 100.0, 100.0] from [0.5, 0.0, 1.0, 1.0] ffffffff"]
+    );
+    // Tile: repeated at TileSize, the last ones cut at the edge.
+    assert_eq!(
+        look(Some("tile")),
+        [
+            "[0.0, 0.0, 50.0, 50.0] from [0.0, 0.0, 2.0, 1.0] ffffffff",
+            "[50.0, 0.0, 50.0, 50.0] from [0.0, 0.0, 2.0, 1.0] ffffffff",
+            "[0.0, 50.0, 50.0, 50.0] from [0.0, 0.0, 2.0, 1.0] ffffffff",
+            "[50.0, 50.0, 50.0, 50.0] from [0.0, 0.0, 2.0, 1.0] ffffffff"
+        ]
+    );
+    let tiles = look(Some("tile40"));
+    assert_eq!(tiles.len(), 9);
+    assert_eq!(tiles[8], "[80.0, 80.0, 20.0, 20.0] from [0.0, 0.0, 1.0, 0.5] ffffffff");
+    // Slice: the corners keep their size (times SliceScale), the edges and
+    // the middle stretch.
+    assert_eq!(
+        look(Some("slice")),
+        [
+            "[0.0, 0.0, 10.0, 10.0] from [0.0, 0.0, 1.0, 1.0] ffffffff",
+            "[10.0, 0.0, 80.0, 10.0] from [1.0, 0.0, 2.0, 1.0] ffffffff",
+            "[90.0, 0.0, 10.0, 10.0] from [3.0, 0.0, 1.0, 1.0] ffffffff",
+            "[0.0, 10.0, 10.0, 40.0] from [0.0, 1.0, 1.0, 2.0] ffffffff",
+            "[10.0, 10.0, 80.0, 40.0] from [1.0, 1.0, 2.0, 2.0] ffffffff",
+            "[90.0, 10.0, 10.0, 40.0] from [3.0, 1.0, 1.0, 2.0] ffffffff",
+            "[0.0, 50.0, 10.0, 10.0] from [0.0, 3.0, 1.0, 1.0] ffffffff",
+            "[10.0, 50.0, 80.0, 10.0] from [1.0, 3.0, 2.0, 1.0] ffffffff",
+            "[90.0, 50.0, 10.0, 10.0] from [3.0, 3.0, 1.0, 1.0] ffffffff"
+        ]
+    );
+    // ImageRectOffset and ImageRectSize show a part; ImageColor3 tints it
+    // and ImageTransparency fades it.
+    assert_eq!(
+        look(Some("part")),
+        ["[0.0, 0.0, 100.0, 100.0] from [1.0, 0.0, 1.0, 1.0] 80ff0000"]
+    );
+}
+
+#[test]
+fn images_without_textures_draw_in_blocks() {
+    // Where the game can't draw an image as such, its part is drawn as
+    // blocks of colour, tinted the same.
+    let mut game = FakeGame::new("rbx-blocks");
+    game.no_images = true;
+    let mut st = studio(&mut game);
+    let ws = st.s.rbx.workspace_dir.clone();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(ws.join("wide.png"), png(2, 1, &[[255, 0, 0, 255], [0, 0, 255, 255]])).unwrap();
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local image = Instance.new("ImageLabel", gui)
+        image.Size = UDim2.fromOffset(100, 100)
+        image.BackgroundTransparency = 1
+        image.Image = getcustomasset("wide.png")
+        command("part", function()
+            image.ImageRectOffset = Vector2.new(1, 0)
+            image.ImageRectSize = Vector2.new(1, 1)
+            image.ImageColor3 = Color3.new(1, 1, 0.5)
+        end)
+    "#;
+    load(&mut game, &mut st, "blocks", src, 0.6);
+    assert_eq!(
+        hud(&mut st, &mut game),
+        [
+            "rect [0.0, 0.0, 50.3, 100.3] r0 ffff0000",
+            "rect [50.0, 0.0, 50.3, 100.3] r0 ff0000ff"
+        ]
+    );
+    say(&mut st, &mut game, "part");
+    assert_eq!(hud(&mut st, &mut game), ["rect [0.0, 0.0, 100.3, 100.3] r0 ff000080"]);
 }
