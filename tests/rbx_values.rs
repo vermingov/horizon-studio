@@ -134,6 +134,50 @@ fn enums() {
 }
 
 #[test]
+fn gui_enums_have_robloxs_items() {
+    let src = r#"
+        for _, e in ipairs({ Enum.ElasticBehavior, Enum.GuiState }) do
+            local items = {}
+            for _, item in ipairs(e:GetEnumItems()) do
+                table.insert(items, item.Name .. "=" .. item.Value)
+            end
+            print(tostring(e), table.concat(items, " "))
+        end
+    "#;
+    assert_eq!(
+        run(src),
+        [
+            "ElasticBehavior\tWhenScrollable=0 Always=1 Never=2",
+            "GuiState\tIdle=0 Hover=1 Press=2 NonInteractable=3",
+        ]
+    );
+}
+
+#[test]
+fn layout_enums_have_robloxs_items() {
+    let src = r#"
+        local all = { Enum.UIFlexMode, Enum.UIFlexAlignment, Enum.ItemLineAlignment, Enum.TableMajorAxis, Enum.SafeAreaCompatibility }
+        for _, e in ipairs(all) do
+            local items = {}
+            for _, item in ipairs(e:GetEnumItems()) do
+                table.insert(items, item.Name .. "=" .. item.Value)
+            end
+            print(tostring(e), table.concat(items, " "))
+        end
+    "#;
+    assert_eq!(
+        run(src),
+        [
+            "UIFlexMode\tNone=0 Grow=1 Shrink=2 Fill=3 Custom=4",
+            "UIFlexAlignment\tNone=0 Fill=1 SpaceAround=2 SpaceBetween=3 SpaceEvenly=4",
+            "ItemLineAlignment\tAutomatic=0 Start=1 Center=2 End=3 Stretch=4",
+            "TableMajorAxis\tRowMajor=0 ColumnMajor=1",
+            "SafeAreaCompatibility\tNone=0 FullscreenExtension=1",
+        ]
+    );
+}
+
+#[test]
 fn values_cannot_change_and_errors_name_the_types() {
     assert!(error_of("local v = Vector3.new() v.X = 1").contains("X cannot be assigned to"));
     assert!(error_of("print(Vector3.new().Nope)").contains("Nope is not a valid member of Vector3"));

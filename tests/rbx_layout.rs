@@ -8,10 +8,13 @@
 
 use horizon_studio::game::hstudio_rbx_layout::{
     AspectType, AutomaticSize, Class, DominantAxis, FillDirection, HorizontalAlignment, Layout, Node, NodeId,
-    ScrollBarInset, SizeConstraint, SortOrder, StartCorner, TOP_BAR, TextXAlignment, TextYAlignment, Tree,
-    VerticalAlignment, Viewport, ZIndexBehavior,
+    ScrollBarInset, SizeConstraint, SortOrder, StartCorner, TOP_BAR, TextTruncate, TextXAlignment, TextYAlignment,
+    Tree, VerticalAlignment, Viewport, ZIndexBehavior,
 };
-use horizon_studio::game::hstudio_rbx_types::{Font, UDim, UDim2, Vector2};
+use horizon_studio::game::hstudio_rbx_layout::{
+    FlexAlignment, FlexMode, ItemLineAlignment, RichStyle, RichText, TableMajorAxis, parse_rich,
+};
+use horizon_studio::game::hstudio_rbx_types::{Color3, Font, FontWeight, UDim, UDim2, Vector2};
 
 /// A monospace font: each character is half the text size wide.
 fn mono(text: &str, size: f64, _font: &Font) -> f64 {
@@ -430,6 +433,239 @@ fn constraints_override_a_list_layout() {
 // ---------------------------------------------------------------- UIGridLayout
 
 /// A 350x300 frame with a default UIGridLayout (100x100 cells, 5 apart) and five items.
+/// A 300 x 100 frame with a horizontal list, and items of these sizes in it.
+fn flex_row(sizes: &[(f64, f64)]) -> (Tree, NodeId, Vec<NodeId>) {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    let f = frame(&mut tree, gui, px(0.0, 0.0), px(300.0, 100.0));
+    let list = tree.add(Class::UIListLayout, Some(f));
+    tree[list].fill_direction = FillDirection::Horizontal;
+    tree[list].sort_order = SortOrder::LayoutOrder;
+    let items = sizes
+        .iter()
+        .map(|&(w, h)| frame(&mut tree, f, px(0.0, 0.0), px(w, h)))
+        .collect();
+    (tree, list, items)
+}
+
+/// Gives `item` a UIFlexItem.
+fn flex_item(tree: &mut Tree, item: NodeId, mode: FlexMode) -> NodeId {
+    let f = tree.add(Class::UIFlexItem, Some(item));
+    tree[f].flex_mode = mode;
+    f
+}
+
+#[test]
+fn flex_items_grow_shrink_and_fill() {
+    // Two 50-wide items that grow share the 200 left: 150 each.
+    let (mut tree, _, items) = flex_row(&[(50.0, 20.0), (50.0, 20.0)]);
+    for &i in &items {
+        flex_item(&mut tree, i, FlexMode::Grow);
+    }
+    let l = run(&tree);
+    assert_rect(&l, items[0], (0.0, 0.0, 150.0, 20.0));
+    assert_rect(&l, items[1], (150.0, 0.0, 150.0, 20.0));
+    // GrowRatio 1 and 3 share it as 50 and 150.
+    let (mut tree, _, items) = flex_row(&[(50.0, 20.0), (50.0, 20.0)]);
+    for (&i, ratio) in items.iter().zip([1.0, 3.0]) {
+        let f = flex_item(&mut tree, i, FlexMode::Custom);
+        tree[f].grow_ratio = ratio;
+    }
+    let l = run(&tree);
+    assert_rect(&l, items[0], (0.0, 0.0, 100.0, 20.0));
+    assert_rect(&l, items[1], (100.0, 0.0, 200.0, 20.0));
+    // Shrink fits oversized items, each by its share of their sizes.
+    let (mut tree, _, items) = flex_row(&[(200.0, 20.0), (200.0, 20.0)]);
+    for &i in &items {
+        flex_item(&mut tree, i, FlexMode::Shrink);
+    }
+    let l = run(&tree);
+    assert_rect(&l, items[0], (0.0, 0.0, 150.0, 20.0));
+    assert_rect(&l, items[1], (150.0, 0.0, 150.0, 20.0));
+    // The layout's HorizontalFlex: gaps, or every item filling the line.
+    let (mut tree, list2, items) = flex_row(&[(50.0, 20.0), (50.0, 20.0), (50.0, 20.0)]);
+    let xs = |tree: &Tree| -> Vec<f64> {
+        let l = run(tree);
+        items.iter().map(|&i| l.get(i).unwrap().position.x).collect()
+    };
+    tree[list2].horizontal_flex = FlexAlignment::SpaceBetween;
+    assert_eq!(xs(&tree), [0.0, 125.0, 250.0]);
+    tree[list2].horizontal_flex = FlexAlignment::SpaceEvenly;
+    assert_eq!(xs(&tree), [37.5, 125.0, 212.5]);
+    tree[list2].horizontal_flex = FlexAlignment::SpaceAround;
+    assert_eq!(xs(&tree), [25.0, 125.0, 225.0]);
+    tree[list2].horizontal_flex = FlexAlignment::Fill;
+    let l = run(&tree);
+    assert_rect(&l, items[2], (200.0, 0.0, 100.0, 20.0));
+    // A UIFlexItem that doesn't flex keeps its size in a filling line.
+    flex_item(&mut tree, items[0], FlexMode::None);
+    let l = run(&tree);
+    assert_rect(&l, items[0], (0.0, 0.0, 50.0, 20.0));
+    assert_rect(&l, items[1], (50.0, 0.0, 125.0, 20.0));
+    // Across: Stretch fills the line; an item's own ItemLineAlignment wins.
+    let (mut tree, list, items) = flex_row(&[(50.0, 20.0), (50.0, 20.0), (50.0, 20.0)]);
+    tree[list].item_line_alignment = ItemLineAlignment::Stretch;
+    let f = flex_item(&mut tree, items[1], FlexMode::None);
+    tree[f].item_line_alignment = ItemLineAlignment::End;
+    let f = flex_item(&mut tree, items[2], FlexMode::None);
+    tree[f].item_line_alignment = ItemLineAlignment::Center;
+    let l = run(&tree);
+    assert_rect(&l, items[0], (0.0, 0.0, 50.0, 100.0));
+    assert_rect(&l, items[1], (50.0, 80.0, 50.0, 20.0));
+    assert_rect(&l, items[2], (100.0, 40.0, 50.0, 20.0));
+}
+
+#[test]
+fn flex_shares_the_room_between_wrapped_lines() {
+    // Items 200 wide wrap one to a line; VerticalFlex shares the 60 left.
+    let (mut tree, list, items) = flex_row(&[(200.0, 20.0), (200.0, 20.0)]);
+    tree[list].wraps = true;
+    let ys = |tree: &Tree| -> Vec<(f64, f64)> {
+        let l = run(tree);
+        items
+            .iter()
+            .map(|&i| (l.get(i).unwrap().position.y, l.get(i).unwrap().size.y))
+            .collect()
+    };
+    assert_eq!(ys(&tree), [(0.0, 20.0), (20.0, 20.0)]);
+    tree[list].vertical_flex = FlexAlignment::Fill;
+    assert_eq!(ys(&tree), [(0.0, 20.0), (50.0, 20.0)]);
+    tree[list].item_line_alignment = ItemLineAlignment::Stretch;
+    assert_eq!(ys(&tree), [(0.0, 50.0), (50.0, 50.0)]);
+    tree[list].item_line_alignment = ItemLineAlignment::Automatic;
+    tree[list].vertical_flex = FlexAlignment::SpaceBetween;
+    assert_eq!(ys(&tree), [(0.0, 20.0), (80.0, 20.0)]);
+    tree[list].vertical_flex = FlexAlignment::SpaceEvenly;
+    assert_eq!(ys(&tree), [(20.0, 20.0), (60.0, 20.0)]);
+}
+
+/// A 200 x 100 frame with a UIPageLayout and three pages as large as it.
+fn book() -> (Tree, NodeId, [NodeId; 3]) {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    let f = frame(&mut tree, gui, px(0.0, 0.0), px(200.0, 100.0));
+    let pages = tree.add(Class::UIPageLayout, Some(f));
+    tree[pages].sort_order = SortOrder::LayoutOrder;
+    tree[pages].horizontal_alignment = HorizontalAlignment::Center;
+    tree[pages].vertical_alignment = VerticalAlignment::Center;
+    let mut list = [0; 3];
+    for (i, p) in list.iter_mut().enumerate() {
+        *p = frame(&mut tree, f, px(0.0, 0.0), UDim2::from_scale(1.0, 1.0));
+        tree[*p].layout_order = i as i32;
+    }
+    (tree, pages, list)
+}
+
+#[test]
+fn page_layout_lays_pages_side_by_side() {
+    let (mut tree, layout, pages) = book();
+    let xs = |tree: &Tree| -> Vec<f64> {
+        let l = run(tree);
+        pages.iter().map(|&p| l.get(p).unwrap().position.x).collect()
+    };
+    // On the first page, with the others after it.
+    assert_eq!(xs(&tree), [0.0, 200.0, 400.0]);
+    let l = run(&tree);
+    assert_eq!(l.get(layout).unwrap().page, Some(pages[0]));
+    assert_eq!(l.get(layout).unwrap().content_size, v(600.0, 100.0));
+    // On the second, and half way there from the first.
+    tree[layout].page = Some(pages[1]);
+    assert_eq!(xs(&tree), [-200.0, 0.0, 200.0]);
+    tree[layout].page_from = Some(pages[0]);
+    tree[layout].page_turn = 0.5;
+    assert_eq!(xs(&tree), [-100.0, 100.0, 300.0]);
+    tree[layout].page_from = None;
+    // Padding between them.
+    tree[layout].padding = UDim::new(0.0, 10.0);
+    assert_eq!(xs(&tree), [-210.0, 0.0, 210.0]);
+    tree[layout].padding = UDim::default();
+    // Circular: each page where it is nearest, and going on from the last
+    // page to the first, half way.
+    tree[layout].circular = true;
+    tree[layout].page = Some(pages[0]);
+    assert_eq!(xs(&tree), [0.0, 200.0, -200.0]);
+    tree[layout].page_from = Some(pages[2]);
+    tree[layout].page_turn = 0.5;
+    tree[layout].page_forward = true;
+    assert_eq!(xs(&tree), [100.0, 300.0, -100.0]);
+    let l = run(&tree);
+    assert!(matches!(l.get(layout).unwrap().page, Some(p) if p == pages[0] || p == pages[2]));
+    // A page smaller than the frame lines up as the alignments say.
+    tree[layout].circular = false;
+    tree[layout].page_from = None;
+    for &p in &pages {
+        tree[p].size = px(100.0, 50.0);
+    }
+    let l = run(&tree);
+    assert_rect(&l, pages[0], (50.0, 25.0, 100.0, 50.0));
+    assert_rect(&l, pages[1], (150.0, 25.0, 100.0, 50.0));
+    // Down, with FillDirection Vertical.
+    tree[layout].fill_direction = FillDirection::Vertical;
+    tree[layout].page = Some(pages[1]);
+    let l = run(&tree);
+    assert_rect(&l, pages[1], (50.0, 25.0, 100.0, 50.0));
+    assert_rect(&l, pages[2], (50.0, 75.0, 100.0, 50.0));
+}
+
+/// A 300 x 200 frame with a UITableLayout of two rows of two cells:
+/// 40 x 20 and 60 x 10, then 50 x 30 and 20 x 25.
+fn table() -> (Tree, NodeId, [NodeId; 2], [NodeId; 4]) {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    let f = frame(&mut tree, gui, px(0.0, 0.0), px(300.0, 200.0));
+    let layout = tree.add(Class::UITableLayout, Some(f));
+    tree[layout].sort_order = SortOrder::LayoutOrder;
+    tree[layout].cell_padding = px(5.0, 4.0);
+    let a = frame(&mut tree, f, px(0.0, 0.0), px(0.0, 0.0));
+    let b = frame(&mut tree, f, px(0.0, 0.0), px(0.0, 0.0));
+    tree[b].layout_order = 1;
+    let cells = [
+        frame(&mut tree, a, px(0.0, 0.0), px(40.0, 20.0)),
+        frame(&mut tree, a, px(0.0, 0.0), px(60.0, 10.0)),
+        frame(&mut tree, b, px(0.0, 0.0), px(50.0, 30.0)),
+        frame(&mut tree, b, px(0.0, 0.0), px(20.0, 25.0)),
+    ];
+    (tree, layout, [a, b], cells)
+}
+
+#[test]
+fn table_layout_rows_and_columns() {
+    let (mut tree, layout, [a, b], [a0, a1, b0, b1]) = table();
+    // Columns 50 and 60 wide (their widest cells), rows 20 and 30 tall,
+    // with 5 between the columns and 4 between the rows.
+    let l = run(&tree);
+    assert_rect(&l, a, (0.0, 0.0, 115.0, 20.0));
+    assert_rect(&l, a0, (0.0, 0.0, 50.0, 20.0));
+    assert_rect(&l, a1, (55.0, 0.0, 60.0, 20.0));
+    assert_rect(&l, b, (0.0, 24.0, 115.0, 30.0));
+    assert_rect(&l, b0, (0.0, 24.0, 50.0, 30.0));
+    assert_rect(&l, b1, (55.0, 24.0, 60.0, 30.0));
+    assert_eq!(l.get(layout).unwrap().content_size, v(115.0, 54.0));
+    // ColumnMajor: the two are columns, their cells rows down them.
+    tree[layout].major_axis = TableMajorAxis::ColumnMajor;
+    let l = run(&tree);
+    assert_rect(&l, a, (0.0, 0.0, 60.0, 59.0));
+    assert_rect(&l, a0, (0.0, 0.0, 60.0, 30.0));
+    assert_rect(&l, a1, (0.0, 34.0, 60.0, 25.0));
+    assert_rect(&l, b, (65.0, 0.0, 50.0, 59.0));
+    assert_rect(&l, b1, (65.0, 34.0, 50.0, 25.0));
+    // FillEmptySpaceColumns and FillEmptySpaceRows share the room left.
+    tree[layout].major_axis = TableMajorAxis::RowMajor;
+    tree[layout].fill_empty_space_columns = true;
+    tree[layout].fill_empty_space_rows = true;
+    let l = run(&tree);
+    assert_rect(&l, a0, (0.0, 0.0, 142.5, 93.0));
+    assert_rect(&l, b1, (147.5, 97.0, 152.5, 103.0));
+    // The table aligns in the frame.
+    tree[layout].fill_empty_space_columns = false;
+    tree[layout].fill_empty_space_rows = false;
+    tree[layout].horizontal_alignment = HorizontalAlignment::Right;
+    tree[layout].vertical_alignment = VerticalAlignment::Bottom;
+    let l = run(&tree);
+    assert_rect(&l, a, (185.0, 146.0, 115.0, 20.0));
+    assert_rect(&l, b1, (240.0, 170.0, 60.0, 30.0));
+}
+
 fn grid() -> (Tree, NodeId, Vec<NodeId>) {
     let mut tree = Tree::new();
     let gui = screen(&mut tree);
@@ -722,6 +958,326 @@ fn wrapped_text_drops_lines_below_its_area() {
     let t = l.get(word).unwrap().text.clone().unwrap();
     let lines: Vec<&str> = t.lines.iter().map(|t| t.text.as_str()).collect();
     assert_eq!(lines, ["abcdef", "ghij"]);
+}
+
+/// A label's lines as drawn: (text, x, y, width, start).
+fn text_lines(l: &Layout, id: NodeId) -> Vec<(String, f64, f64, f64, usize)> {
+    let t = l.get(id).unwrap().text.clone().unwrap();
+    t.lines
+        .into_iter()
+        .map(|l| (l.text, l.position.x, l.position.y, l.width, l.start))
+        .collect()
+}
+
+#[test]
+fn lines_know_where_they_start() {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    // 10 characters a line; the space a line breaks at belongs to neither.
+    let label = add(&mut tree, Class::TextLabel, gui, px(0.0, 0.0), px(50.0, 100.0));
+    tree[label].text = " aaaa bbbb cccc\nabcdefghijkl".into();
+    tree[label].text_size = 10.0;
+    tree[label].text_wrapped = true;
+    tree[label].text_y_alignment = TextYAlignment::Top;
+    let starts: Vec<(String, usize)> = text_lines(&run(&tree), label).into_iter().map(|l| (l.0, l.4)).collect();
+    let want = [("aaaa bbbb", 1), ("cccc", 11), ("abcdefghij", 16), ("kl", 26)];
+    let want: Vec<(String, usize)> = want.iter().map(|(t, s)| (t.to_string(), *s)).collect();
+    assert_eq!(starts, want);
+    // Unwrapped, each line is a paragraph.
+    tree[label].text_wrapped = false;
+    let starts: Vec<usize> = text_lines(&run(&tree), label).iter().map(|l| l.4).collect();
+    assert_eq!(starts, [0, 16]);
+}
+
+#[test]
+fn text_truncate_at_end_and_split_word() {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    // 55 wide: 11 characters of 5.
+    let label = add(&mut tree, Class::TextLabel, gui, px(0.0, 0.0), px(55.0, 20.0));
+    tree[label].text = "Hello world wide".into();
+    tree[label].text_size = 10.0;
+    tree[label].text_x_alignment = TextXAlignment::Left;
+    let drawn = |tree: &Tree| -> Vec<String> { text_lines(&run(tree), label).into_iter().map(|l| l.0).collect() };
+    assert_eq!(drawn(&tree), ["Hello world wide"], "None draws it all");
+    tree[label].text_truncate = TextTruncate::AtEnd;
+    let l = run(&tree);
+    let lines = text_lines(&l, label);
+    assert_eq!((lines[0].0.as_str(), lines[0].3), ("Hello wo...", 55.0));
+    let t = l.get(label).unwrap().text.clone().unwrap();
+    assert!(!t.fits);
+    assert_eq!(t.bounds, v(80.0, 10.0), "the bounds are the whole text's");
+    tree[label].text_truncate = TextTruncate::SplitWord;
+    assert_eq!(drawn(&tree), ["Hello..."]);
+    // A centred line is centred as cut.
+    tree[label].text_x_alignment = TextXAlignment::Center;
+    let lines = text_lines(&run(&tree), label);
+    assert_eq!(lines[0].1, (55.0 - 40.0) / 2.0);
+    // Text that fits is left alone.
+    tree[label].text = "Hello".into();
+    assert_eq!(drawn(&tree), ["Hello"]);
+    // Wrapped text cut off by its height ends its last line with "...".
+    tree[label].text = "aaaa bbbb cccc".into();
+    tree[label].text_wrapped = true;
+    tree[label].size = px(50.0, 15.0);
+    tree[label].text_truncate = TextTruncate::AtEnd;
+    assert_eq!(drawn(&tree), ["aaaa bb..."]);
+    tree[label].text_truncate = TextTruncate::SplitWord;
+    assert_eq!(drawn(&tree), ["aaaa..."]);
+    // A first word too long for the line is cut inside it; too narrow for "..." leaves what dots fit.
+    tree[label].text = "abcdefghijklmnop".into();
+    tree[label].text_wrapped = false;
+    assert_eq!(drawn(&tree), ["abcdefg..."]);
+    tree[label].size = px(12.0, 15.0);
+    assert_eq!(drawn(&tree), [".."]);
+}
+
+#[test]
+fn max_visible_graphemes_shows_the_start() {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    let label = add(&mut tree, Class::TextLabel, gui, px(0.0, 0.0), px(200.0, 50.0));
+    tree[label].text = "Hello\nWorld".into();
+    tree[label].text_size = 10.0;
+    let whole = text_lines(&run(&tree), label);
+    tree[label].max_visible_graphemes = 7;
+    let l = run(&tree);
+    let lines = text_lines(&l, label);
+    // "Hello", the line break, then "W", each where the whole text has it.
+    assert_eq!(lines.len(), 2);
+    assert_eq!(
+        (lines[0].0.as_str(), lines[0].1, lines[0].2),
+        ("Hello", whole[0].1, whole[0].2)
+    );
+    assert_eq!(
+        (lines[1].0.as_str(), lines[1].1, lines[1].2),
+        ("W", whole[1].1, whole[1].2)
+    );
+    assert_eq!(lines[1].3, 5.0);
+    let t = l.get(label).unwrap().text.clone().unwrap();
+    assert_eq!(t.bounds, v(25.0, 20.0), "the bounds are the whole text's");
+    tree[label].max_visible_graphemes = 3;
+    let lines = text_lines(&run(&tree), label);
+    assert_eq!(lines.iter().map(|l| l.0.as_str()).collect::<Vec<_>>(), ["Hel"]);
+    tree[label].max_visible_graphemes = 0;
+    assert!(text_lines(&run(&tree), label).is_empty());
+    tree[label].max_visible_graphemes = -1;
+    assert_eq!(text_lines(&run(&tree), label), whole);
+    // Characters, not bytes.
+    tree[label].text = "héllo".into();
+    tree[label].max_visible_graphemes = 2;
+    assert_eq!(text_lines(&run(&tree), label)[0].0, "hé");
+}
+
+// ---------------------------------------------------------------- rich text
+
+/// The runs of rich text as (text, its style).
+fn spans(rich: &RichText) -> Vec<(&str, RichStyle)> {
+    rich.spans
+        .iter()
+        .map(|sp| (&rich.text[sp.start..sp.end], sp.style.clone()))
+        .collect()
+}
+
+fn red() -> RichStyle {
+    RichStyle {
+        color: Some(Color3::new(1.0, 0.0, 0.0)),
+        ..RichStyle::default()
+    }
+}
+
+fn bold() -> RichStyle {
+    RichStyle {
+        bold: true,
+        ..RichStyle::default()
+    }
+}
+
+#[test]
+fn rich_text_reads_roblox_markup() {
+    let r = parse_rich(r##"<font color="#FF0000">Red</font> plain <b>bold</b><br/>next"##);
+    assert_eq!(r.text, "Red plain bold\nnext");
+    let plain = RichStyle::default();
+    assert_eq!(
+        spans(&r),
+        [
+            ("Red", red()),
+            (" plain ", plain.clone()),
+            ("bold", bold()),
+            ("\nnext", plain.clone())
+        ]
+    );
+    // The runs cover the text, in order.
+    assert_eq!(r.spans.first().unwrap().start, 0);
+    assert!(r.spans.windows(2).all(|w| w[0].end == w[1].start));
+    assert_eq!(r.spans.last().unwrap().end, r.text.len());
+    // Escapes, comments, line breaks; unknown tags go, a lone < stays.
+    let text = |s: &str| parse_rich(s).text;
+    assert_eq!(text("&lt;b&gt; &amp; &quot;q&quot; &apos;"), "<b> & \"q\" '");
+    assert_eq!(text("a<!-- hidden -->b<!-- open"), "ab");
+    assert_eq!(text("a<br>b<br />c<BR/>d"), "a\nb\nc\nd");
+    assert_eq!(text("<blink>x</blink> 1 < 2 and 3 > 2"), "x 1 < 2 and 3 > 2");
+    assert_eq!(text("<uppercase>abc</uppercase> <uc>d</uc>"), "ABC D");
+    // Small capitals: the lowercase letters as capitals 0.8 the size.
+    let r = parse_rich("<sc>Hello</sc>");
+    assert_eq!(r.text, "HELLO");
+    let small: Vec<(&str, bool)> = spans(&r).into_iter().map(|(t, s)| (t, s.small)).collect();
+    assert_eq!(small, [("H", false), ("ELLO", true)]);
+    // Nesting, and a closing tag that closes what it holds too.
+    let r = parse_rich("<b><i>x</i>y</b>z<b>a<i>b</b>c");
+    let styles: Vec<(&str, bool, bool)> = spans(&r).into_iter().map(|(t, s)| (t, s.bold, s.italic)).collect();
+    assert_eq!(
+        styles,
+        [
+            ("x", true, true),
+            ("y", true, false),
+            ("z", false, false),
+            ("a", true, false),
+            ("b", true, true),
+            ("c", false, false)
+        ]
+    );
+    // Font attributes, quoted either way.
+    let r = parse_rich(r#"<font size='30' face="GothamBold" transparency="0.5">x</font>"#);
+    let s = &r.spans[0].style;
+    assert_eq!((s.size, s.transparency), (Some(30.0), Some(0.5)));
+    assert_eq!(s.family.as_deref(), Some("rbxasset://fonts/families/Montserrat.json"));
+    assert_eq!(s.weight, Some(FontWeight::Bold));
+    let style = |m: &str| parse_rich(m).spans[0].style.clone();
+    assert_eq!(
+        style(r#"<font color="rgb(0, 51, 255)">x</font>"#).color,
+        Some(Color3::new(0.0, 0.2, 1.0))
+    );
+    assert_eq!(
+        style(r##"<font color="#f80">x</font>"##).color,
+        Some(Color3::from_rgb(255.0, 136.0, 0.0))
+    );
+    assert_eq!(
+        style(r#"<font weight="heavy">x</font>"#).weight,
+        Some(FontWeight::Heavy)
+    );
+    assert_eq!(style(r#"<font weight="650">x</font>"#).weight, Some(FontWeight::Bold));
+    assert_eq!(
+        style(r#"<font family="rbxasset://fonts/families/Ubuntu.json">x</font>"#)
+            .family
+            .as_deref(),
+        Some("rbxasset://fonts/families/Ubuntu.json")
+    );
+    assert_eq!(
+        style(r##"<stroke color="#00A2FF" thickness="2" transparency="0.25">x</stroke>"##).stroke,
+        Some((Color3::from_rgb(0.0, 162.0, 255.0), 2.0, 0.25))
+    );
+    assert_eq!(
+        style(r##"<mark color="#009966" transparency="0.5">x</mark>"##).mark,
+        Some((Color3::from_rgb(0.0, 153.0, 102.0), 0.5))
+    );
+    let s = style("<u><s>x</s></u>");
+    assert!(s.underline && s.strike);
+}
+
+/// Monospace, half as wide as tall, and half again as wide in a bold weight.
+fn mono_bold(text: &str, size: f64, font: &Font) -> f64 {
+    let w = text.chars().count() as f64 * size / 2.0;
+    if font.bold() { w * 1.5 } else { w }
+}
+
+/// A label's rich lines as (text, x, y, width, height) and their runs as
+/// (text, x, width, size).
+#[allow(clippy::type_complexity)]
+fn rich_lines(l: &Layout, id: NodeId) -> Vec<((String, f64, f64, f64, f64), Vec<(String, f64, f64, f64)>)> {
+    let t = l.get(id).unwrap().text.clone().unwrap();
+    t.lines
+        .into_iter()
+        .map(|l| {
+            let runs = l.runs.iter().map(|r| (r.text.clone(), r.x, r.width, r.size)).collect();
+            ((l.text, l.position.x, l.position.y, l.width, l.height), runs)
+        })
+        .collect()
+}
+
+fn s(t: &str) -> String {
+    t.to_string()
+}
+
+#[test]
+fn rich_text_runs() {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    let label = add(&mut tree, Class::TextLabel, gui, px(0.0, 0.0), px(400.0, 100.0));
+    let rich = parse_rich(r##"<font color="#FF0000">Red</font> plain <b>bold</b><br/>next"##);
+    tree[label].text = rich.text;
+    tree[label].rich = rich.spans;
+    tree[label].text_size = 20.0;
+    tree[label].text_x_alignment = TextXAlignment::Left;
+    tree[label].text_y_alignment = TextYAlignment::Top;
+    let l = tree.layout(&Viewport::new(800.0, 600.0, TOP_BAR), &mut mono_bold);
+    // Two lines: three runs (red, plain, bold, each measured in its own
+    // font: bold is wider here), then "next".
+    assert_eq!(
+        rich_lines(&l, label),
+        [
+            (
+                (s("Red plain bold"), 0.0, 0.0, 160.0, 20.0),
+                vec![
+                    (s("Red"), 0.0, 30.0, 20.0),
+                    (s(" plain "), 30.0, 70.0, 20.0),
+                    (s("bold"), 100.0, 60.0, 20.0)
+                ]
+            ),
+            ((s("next"), 0.0, 20.0, 40.0, 20.0), vec![(s("next"), 0.0, 40.0, 20.0)])
+        ]
+    );
+    let t = l.get(label).unwrap().text.clone().unwrap();
+    assert_eq!(t.bounds, v(160.0, 40.0));
+    let run = &t.lines[0].runs[2];
+    assert_eq!((run.font.weight, run.style.bold), (FontWeight::Bold, true));
+    // A larger run makes its line taller, and the lines below move down.
+    let rich = parse_rich(r#"small <font size="40">big</font><br/>after"#);
+    tree[label].text = rich.text;
+    tree[label].rich = rich.spans;
+    let l = tree.layout(&Viewport::new(800.0, 600.0, TOP_BAR), &mut mono_bold);
+    let lines = rich_lines(&l, label);
+    assert_eq!(lines[0].0, (s("small big"), 0.0, 0.0, 120.0, 40.0));
+    assert_eq!(lines[0].1[1], (s("big"), 60.0, 60.0, 40.0));
+    assert_eq!(lines[1].0, (s("after"), 0.0, 40.0, 50.0, 20.0));
+    assert_eq!(l.get(label).unwrap().text.clone().unwrap().bounds, v(120.0, 60.0));
+    // Wrapping measures run by run too: "small" and "big" don't fit 100.
+    tree[label].size = px(100.0, 100.0);
+    tree[label].text_wrapped = true;
+    let l = tree.layout(&Viewport::new(800.0, 600.0, TOP_BAR), &mut mono_bold);
+    let lines: Vec<String> = rich_lines(&l, label).into_iter().map(|l| l.0.0).collect();
+    assert_eq!(lines, ["small", "big", "after"]);
+}
+
+#[test]
+fn rich_text_truncates_and_types_out_run_by_run() {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    // 55 wide: 11 characters of 5.
+    let label = add(&mut tree, Class::TextLabel, gui, px(0.0, 0.0), px(55.0, 20.0));
+    let set = |tree: &mut Tree, markup: &str| {
+        let rich = parse_rich(markup);
+        tree[label].text = rich.text;
+        tree[label].rich = rich.spans;
+    };
+    set(&mut tree, "<b>Hello</b> world wide");
+    tree[label].text_size = 10.0;
+    tree[label].text_x_alignment = TextXAlignment::Left;
+    tree[label].text_truncate = TextTruncate::AtEnd;
+    let runs = |tree: &Tree| -> Vec<(String, bool)> {
+        let l = run(tree);
+        let t = l.get(label).unwrap().text.clone().unwrap();
+        t.lines[0].runs.iter().map(|r| (r.text.clone(), r.style.bold)).collect()
+    };
+    // The dots take the style of what they follow.
+    assert_eq!(runs(&tree), [(s("Hello"), true), (s(" wo"), false), (s("..."), false)]);
+    set(&mut tree, "<b>Hello world</b> wide");
+    assert_eq!(runs(&tree), [(s("Hello wo"), true), (s("..."), true)]);
+    // MaxVisibleGraphemes cuts the runs.
+    set(&mut tree, "<b>Hel</b>lo");
+    tree[label].text_truncate = TextTruncate::None;
+    tree[label].max_visible_graphemes = 4;
+    assert_eq!(runs(&tree), [(s("Hel"), true), (s("l"), false)]);
 }
 
 // ---------------------------------------------------------------- scrolling and clipping
@@ -1083,4 +1639,26 @@ fn hits_use_gui_coordinates() {
     assert_rect(&l, bar, (0.0, -58.0, 800.0, 58.0));
     assert_eq!(l.button_at(v(400.0, -30.0)), Some(bar));
     assert_eq!(l.button_at(v(400.0, 0.0)), None);
+}
+
+#[test]
+fn rotated_objects_hit_where_drawn() {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    // A 100 x 20 button whose middle is at (150, 110), turned upright.
+    let button = add(&mut tree, Class::TextButton, gui, px(100.0, 100.0), px(100.0, 20.0));
+    tree[button].rotation = 90.0;
+    let l = run(&tree);
+    assert_eq!(l.hit_test(v(150.0, 150.0)), Some(button), "40 below its middle");
+    assert_eq!(l.hit_test(v(190.0, 110.0)), None, "40 to the right of it");
+    // A child turns with it: its top-left corner, turned, lies at the right.
+    let child = add(&mut tree, Class::TextButton, button, px(0.0, 0.0), px(10.0, 10.0));
+    let l = run(&tree);
+    assert_eq!(l.hit_test(v(155.0, 65.0)), Some(child));
+    assert_eq!(l.hit_test(v(105.0, 105.0)), None, "where it would be upright");
+    // Turned back, they are hit where they lie.
+    tree[button].rotation = 0.0;
+    let l = run(&tree);
+    assert_eq!(l.hit_test(v(105.0, 105.0)), Some(child));
+    assert_eq!(l.hit_test(v(190.0, 110.0)), Some(button));
 }

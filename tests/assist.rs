@@ -118,6 +118,14 @@ fn game_has_its_roblox_members_too() {
         assert!(got.contains(&want.to_owned()), "{want} in {got:?}");
     }
     assert!(!got.contains(&"GetService".to_owned()), "methods take ':': {got:?}");
+    // The services that do nothing here come after the others, and still
+    // complete when typed.
+    let at = |n: &str| got.iter().position(|g| g == n);
+    assert!(
+        at("VirtualUser").is_none_or(|v| at("Workspace").is_some_and(|w| w < v)),
+        "{got:?}"
+    );
+    assert_eq!(labels("game.VirtualU", &[], false)[0], "VirtualUser");
     assert_eq!(labels("game.LocalP", &[], false), ["LocalPlayer"]);
     assert!(labels("game.wor", &[], false).contains(&"workspace".to_owned()));
     let (start, s) = suggest("local me = game.Loc", &[], false, None).unwrap();

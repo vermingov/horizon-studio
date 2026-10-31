@@ -182,6 +182,106 @@ fn line_edit() {
 }
 
 #[test]
+fn line_edit_selects_and_keeps_lines() {
+    const SHIFT: Mods = Mods {
+        ctrl: false,
+        shift: true,
+        alt: false,
+    };
+    let mut l = LineEdit::default();
+    l.set("hello world");
+    // Shift extends, an arrow without it drops the selection at its end.
+    assert!(l.edit_key(Key::Left, SHIFT));
+    l.edit_key(Key::Left, SHIFT);
+    assert_eq!((l.selection(), l.selected()), (Some((9, 11)), "ld"));
+    l.edit_key(Key::Left, NONE);
+    assert_eq!((l.cursor, l.selection()), (9, None));
+    l.edit_key(Key::Left, Mods { ctrl: true, ..SHIFT });
+    assert_eq!(l.selected(), "wor");
+    l.insert("W");
+    assert_eq!((l.text.as_str(), l.cursor), ("hello Wld", 7));
+    l.edit_key(Key::Char('a'), CTRL);
+    l.edit_key(Key::Backspace, NONE);
+    assert_eq!((l.text.as_str(), l.cursor, l.anchor), ("", 0, None));
+    // New text drops the selection, however long the old text was.
+    l.set("a longer text");
+    l.edit_key(Key::Char('a'), CTRL);
+    l.set("hi");
+    assert_eq!((l.cursor, l.selection(), l.selected()), (2, None, ""));
+    l.insert("!");
+    assert_eq!(l.text, "hi!");
+    l.set("");
+    // One line turns newlines into spaces; several keep them, and Home,
+    // End, Up and Down keep to the lines.
+    l.insert("a\nb");
+    assert_eq!(l.text, "a b");
+    let mut m = LineEdit {
+        multiline: true,
+        ..LineEdit::default()
+    };
+    m.insert("abc\r\nde\nfghij");
+    assert_eq!((m.text.as_str(), m.cursor), ("abc\nde\nfghij", 12));
+    m.edit_key(Key::Home, NONE);
+    assert_eq!(m.cursor, 7);
+    m.edit_key(Key::End, NONE);
+    m.edit_key(Key::Up, NONE);
+    assert_eq!(m.cursor, 6, "the end of the shorter line");
+    m.edit_key(Key::Up, NONE);
+    assert_eq!(m.cursor, 2, "two characters in, as on the line below");
+    m.edit_key(Key::Up, SHIFT);
+    assert_eq!((m.cursor, m.selected()), (0, "ab"));
+    m.edit_key(Key::End, CTRL);
+    assert_eq!(m.cursor, m.text.len());
+    m.edit_key(Key::Down, NONE);
+    assert_eq!(m.cursor, m.text.len());
+}
+
+#[test]
+fn canvas_screens_get_key_modifiers_and_may_keep_escape() {
+    let mut game = FakeGame::new("ui-canvas-keys");
+    let mut st = studio(&mut game);
+    game.write_mod(
+        "keys.lua",
+        r#"
+        local got, escapes = {}, 0
+        command("open", function()
+            ui.open({
+                canvas = true,
+                key = function(k, down, mods)
+                    if down then table.insert(got, k .. ":" .. tostring(mods.ctrl) .. tostring(mods.shift)) end
+                end,
+                escape = function()
+                    escapes += 1
+                    return escapes == 1
+                end,
+            })
+        end)
+        command("got", function() return table.concat(got, " ") end)
+        "#,
+    );
+    run_for(&mut st, &mut game, 0.6);
+    assert!(st.command("open"));
+    st.frame(&mut game, 0.016);
+    assert!(st.accept_screen());
+    use horizon_studio::game::hstudio_ui::handle_screen;
+    for (k, mods) in [(Key::Char('v'), CTRL), (Key::Char('a'), NONE)] {
+        handle_screen(&mut st, &mut game, key(k, mods));
+    }
+    assert!(st.command("got"));
+    st.frame(&mut game, 0.016);
+    assert_eq!(game.chats.last().map(String::as_str), Some("v:truefalse a:falsefalse"));
+    // The first Escape is the screen's own (its escape() says so); the second closes it.
+    assert_eq!(
+        handle_screen(&mut st, &mut game, key(Key::Escape, NONE)),
+        UiResult::Used
+    );
+    assert_eq!(
+        handle_screen(&mut st, &mut game, key(Key::Escape, NONE)),
+        UiResult::Close
+    );
+}
+
+#[test]
 fn lua_highlighting() {
     let line = "local s = \"hi -- not a comment\" -- a comment";
     let (pieces, after) = highlight(line, Long::None);

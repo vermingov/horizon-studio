@@ -45,9 +45,11 @@ const CONN_INDEX: u32 = 1004;
 const SIGNAL_TOSTRING: u32 = 1005;
 const INSTANCE_NEW: u32 = 1006;
 const INSTANCE_FROM_EXISTING: u32 = 1007;
-/// The GUI's screen: draw, move, click, release, key, text, wheel, close.
+/// The GUI's screen: draw, move, click, release, key, text, wheel, close,
+/// escape.
 const SCREEN_DRAW: u32 = 1010;
 const SCREEN_CLOSE: u32 = 1017;
+const SCREEN_ESCAPE: u32 = 1018;
 const METHOD_BASE: u32 = 1100;
 const SIGNAL_METHOD_BASE: u32 = 1700;
 const CONN_METHOD_BASE: u32 = 1750;
@@ -174,6 +176,14 @@ const fn kept(name: &'static str, base: &'static str) -> C {
         ..class(name, base, &[], &[])
     }
 }
+/// A service with nothing to do here, which scripts ask for anyway: it
+/// takes any property, and a member it hasn't is nil.
+const fn lenient_service(name: &'static str) -> C {
+    C {
+        lenient: true,
+        ..service(name, &[], &[])
+    }
+}
 
 use D::{B, N, Rgb, S};
 use K::{Bool, Int, Num, Obj, Str};
@@ -198,7 +208,6 @@ const GUI_OBJECT: &[P] = &[
     p("AutomaticSize", K::Enum("AutomaticSize"), D::E("None")),
     p("SizeConstraint", K::Enum("SizeConstraint"), D::E("RelativeXY")),
     p("Draggable", Bool, B(false)),
-    p("Transparency", Num, N(0.0)),
 ];
 
 const TEXT: &[P] = &[
@@ -247,7 +256,11 @@ const IMAGE: &[P] = &[
     p("SliceCenter", K::Rect, D::Rect0),
     p("SliceScale", Num, N(1.0)),
     p("ResampleMode", K::Enum("ResamplerMode"), D::E("Default")),
+    p("TileSize", K::UD2, D::UD2(1.0, 0.0, 1.0, 0.0)),
 ];
+
+/// An ImageButton's images while the pointer is over it and while it is pressed.
+const IMAGE_BUTTON: &[P] = &[p("HoverImage", Str, S("")), p("PressedImage", Str, S(""))];
 
 const PART: &[P] = &[
     p("CFrame", K::CF, D::CF0),
@@ -412,6 +425,25 @@ pub static CLASSES: &[C] = &[
     service("TextChatService", &[], &[]),
     service("MarketplaceService", &[], &[]),
     service("LogService", &[], &["MessageOut"]),
+    // Services scripts get at their top, though they can do nothing here.
+    lenient_service("TeleportService"),
+    lenient_service("VirtualUser"),
+    lenient_service("VirtualInputManager"),
+    lenient_service("Stats"),
+    lenient_service("PathfindingService"),
+    lenient_service("PhysicsService"),
+    lenient_service("SocialService"),
+    lenient_service("BadgeService"),
+    lenient_service("GroupService"),
+    lenient_service("LocalizationService"),
+    lenient_service("PolicyService"),
+    lenient_service("ProximityPromptService"),
+    lenient_service("VRService"),
+    lenient_service("HapticService"),
+    lenient_service("GamepadService"),
+    lenient_service("AssetService"),
+    lenient_service("InsertService"),
+    lenient_service("MaterialService"),
     abstract_class(
         "Player",
         "Instance",
@@ -648,6 +680,12 @@ pub static CLASSES: &[C] = &[
             p("IgnoreGuiInset", Bool, B(false)),
             p("ScreenInsets", K::Enum("ScreenInsets"), D::E("CoreUISafeInsets")),
             p("ClipToDeviceSafeArea", Bool, B(true)),
+            p(
+                "SafeAreaCompatibility",
+                K::Enum("SafeAreaCompatibility"),
+                D::E("FullscreenExtension"),
+            ),
+            p("OnTopOfCoreBlur", Bool, B(false)),
         ],
         &[],
     ),
@@ -699,13 +737,17 @@ pub static CLASSES: &[C] = &[
                 p("MultiLine", Bool, B(false)),
                 p("TextEditable", Bool, B(true)),
                 p("CursorPosition", Int, N(1.0)),
+                p("SelectionStart", Int, N(-1.0)),
                 p("ShowNativeInput", Bool, B(true)),
             ],
             &["FocusLost", "Focused", "ReturnPressedFromOnScreenKeyboard"],
         )
     },
     class("ImageLabel", "GuiObject", IMAGE, &[]),
-    class("ImageButton", "GuiButton", IMAGE, &[]),
+    C {
+        more: IMAGE_BUTTON,
+        ..class("ImageButton", "GuiButton", IMAGE, &[])
+    },
     class(
         "ScrollingFrame",
         "GuiObject",
@@ -725,7 +767,9 @@ pub static CLASSES: &[C] = &[
                 K::Enum("VerticalScrollBarPosition"),
                 D::E("Right"),
             ),
-            p("ElasticBehavior", Str, S("WhenScrollable")),
+            p("ElasticBehavior", K::Enum("ElasticBehavior"), D::E("WhenScrollable")),
+            // A ScrollingFrame clips what it holds unless told otherwise.
+            p("ClipsDescendants", Bool, B(true)),
             p("TopImage", Str, S("")),
             p("MidImage", Str, S("")),
             p("BottomImage", Str, S("")),
@@ -821,6 +865,9 @@ pub static CLASSES: &[C] = &[
             p("FillDirection", K::Enum("FillDirection"), D::E("Vertical")),
             p("Padding", K::UD, D::UD(0.0, 0.0)),
             p("Wraps", Bool, B(false)),
+            p("HorizontalFlex", K::Enum("UIFlexAlignment"), D::E("None")),
+            p("VerticalFlex", K::Enum("UIFlexAlignment"), D::E("None")),
+            p("ItemLineAlignment", K::Enum("ItemLineAlignment"), D::E("Automatic")),
         ],
         &[],
     ),
@@ -838,14 +885,149 @@ pub static CLASSES: &[C] = &[
         ],
         &[],
     ),
+    // Drawn over a part, a model or an attachment in the Workspace, and
+    // lenient as it was when only kept.
+    C {
+        lenient: true,
+        ..class(
+            "BillboardGui",
+            "LayerCollector",
+            &[
+                p("Adornee", Obj, D::Nil),
+                p("Size", K::UD2, D::UD2(0.0, 0.0, 0.0, 0.0)),
+                p("SizeOffset", K::V2, D::V2(0.0, 0.0)),
+                p("StudsOffset", K::V3, D::V3(0.0, 0.0, 0.0)),
+                p("StudsOffsetWorldSpace", K::V3, D::V3(0.0, 0.0, 0.0)),
+                p("ExtentsOffset", K::V3, D::V3(0.0, 0.0, 0.0)),
+                p("ExtentsOffsetWorldSpace", K::V3, D::V3(0.0, 0.0, 0.0)),
+                p("AlwaysOnTop", Bool, B(false)),
+                p("MaxDistance", Num, N(f64::INFINITY)),
+                p("DistanceLowerLimit", Num, N(0.0)),
+                p("DistanceUpperLimit", Num, N(-1.0)),
+                p("DistanceStep", Num, N(0.0)),
+                p("LightInfluence", Num, N(1.0)),
+                p("Brightness", Num, N(1.0)),
+                p("ClipsDescendants", Bool, B(false)),
+                p("Active", Bool, B(false)),
+                p("PlayerToHideFrom", Obj, D::Nil),
+            ],
+            &[],
+        )
+    },
+    // TextService:GetTextBoundsAsync's question.
+    class(
+        "GetTextBoundsParams",
+        "Instance",
+        &[
+            p("Text", Str, S("")),
+            p("Font", K::Font, D::Font("SourceSans")),
+            p("Size", Num, N(8.0)),
+            p("Width", Num, N(0.0)),
+            p("RichText", Bool, B(false)),
+        ],
+        &[],
+    ),
     // Kept with whatever properties scripts give them; nothing draws them.
-    kept("BillboardGui", "LayerCollector"),
     kept("SurfaceGui", "LayerCollector"),
-    kept("ViewportFrame", "GuiObject"),
-    kept("VideoFrame", "GuiObject"),
-    kept("UIFlexItem", "UIComponent"),
-    kept("UIPageLayout", "UIGridStyleLayout"),
-    kept("UITableLayout", "UIGridStyleLayout"),
+    // Kept, and inert: nothing drags by it, and its events never fire.
+    C {
+        lenient: true,
+        ..class(
+            "UIDragDetector",
+            "UIComponent",
+            &[p("Enabled", Bool, B(true))],
+            &["DragStart", "DragContinue", "DragEnd"],
+        )
+    },
+    // Laid out and drawn as Frames (what they show, a 3D view or a video,
+    // isn't), and lenient as they were when only kept.
+    C {
+        lenient: true,
+        ..class(
+            "ViewportFrame",
+            "GuiObject",
+            &[
+                p("CurrentCamera", Obj, D::Nil),
+                p("Ambient", K::C3, Rgb(200.0, 200.0, 200.0)),
+                p("LightColor", K::C3, Rgb(140.0, 140.0, 140.0)),
+                p("LightDirection", K::V3, D::V3(-1.0, -1.0, -1.0)),
+                p("ImageColor3", K::C3, Rgb(255.0, 255.0, 255.0)),
+                p("ImageTransparency", Num, N(0.0)),
+            ],
+            &[],
+        )
+    },
+    C {
+        lenient: true,
+        ..class(
+            "VideoFrame",
+            "GuiObject",
+            &[
+                p("Video", Str, S("")),
+                p("Playing", Bool, B(false)),
+                p("Looped", Bool, B(false)),
+                p("Volume", Num, N(1.0)),
+                p("TimePosition", Num, N(0.0)),
+                ro("TimeLength", Num, N(0.0)),
+                ro("IsLoaded", Bool, B(false)),
+                ro("Resolution", K::V2, D::V2(0.0, 0.0)),
+            ],
+            &["DidLoop", "Ended", "Loaded", "Paused", "Played"],
+        )
+    },
+    // Real now, and lenient as they were when only kept.
+    C {
+        lenient: true,
+        ..class(
+            "UIFlexItem",
+            "UIComponent",
+            &[
+                p("FlexMode", K::Enum("UIFlexMode"), D::E("None")),
+                p("GrowRatio", Num, N(1.0)),
+                p("ShrinkRatio", Num, N(1.0)),
+                p("ItemLineAlignment", K::Enum("ItemLineAlignment"), D::E("Automatic")),
+            ],
+            &[],
+        )
+    },
+    C {
+        lenient: true,
+        ..class(
+            "UIPageLayout",
+            "UIGridStyleLayout",
+            &[
+                p("FillDirection", K::Enum("FillDirection"), D::E("Horizontal")),
+                p("HorizontalAlignment", K::Enum("HorizontalAlignment"), D::E("Center")),
+                p("VerticalAlignment", K::Enum("VerticalAlignment"), D::E("Center")),
+                p("Padding", K::UD, D::UD(0.0, 0.0)),
+                p("Animated", Bool, B(true)),
+                p("Circular", Bool, B(false)),
+                p("EasingStyle", K::Enum("EasingStyle"), D::E("Back")),
+                p("EasingDirection", K::Enum("EasingDirection"), D::E("Out")),
+                p("TweenTime", Num, N(1.0)),
+                p("ScrollWheelInputEnabled", Bool, B(true)),
+                p("GamepadInputEnabled", Bool, B(true)),
+                p("TouchInputEnabled", Bool, B(true)),
+                ro("CurrentPage", Obj, D::Nil),
+            ],
+            &["PageEnter", "PageLeave", "Stopped"],
+        )
+    },
+    C {
+        lenient: true,
+        ..class(
+            "UITableLayout",
+            "UIGridStyleLayout",
+            &[
+                p("FillDirection", K::Enum("FillDirection"), D::E("Vertical")),
+                p("FillEmptySpaceColumns", Bool, B(false)),
+                p("FillEmptySpaceRows", Bool, B(false)),
+                p("MajorAxis", K::Enum("TableMajorAxis"), D::E("RowMajor")),
+                p("Padding", K::UD2, D::UD2(0.0, 0.0, 0.0, 0.0)),
+            ],
+            &[],
+        )
+    },
     kept("Decal", "Instance"),
     kept("Texture", "Instance"),
     kept("SpecialMesh", "Instance"),
@@ -1057,6 +1239,14 @@ pub struct Inst {
     /// Properties setscriptable turned off, and hidden ones it turned on.
     pub unscriptable: HashSet<String>,
     pub revealed: HashSet<String>,
+    /// A GuiBase2d or a UI component: a change to it changes the GUI's layout.
+    pub gui: bool,
+    /// The GUI epoch its layout's outputs (AbsoluteSize, TextBounds...) were
+    /// worked out at; 0 before they ever were.
+    pub laid_out: u64,
+    /// The GUI epoch a read beside it worked out where it is at (its
+    /// AbsolutePosition, AbsoluteSize and AbsoluteRotation, not its text).
+    pub placed_at: u64,
 }
 
 impl Inst {
@@ -1114,6 +1304,11 @@ pub struct Pointer {
     pub focus: Option<Id>,
     /// A Draggable object being moved: it, and the pointer's last place.
     pub drag: Option<(Id, f64, f64)>,
+    /// The TextBox whose text the held button is selecting.
+    pub selecting: Option<Id>,
+    /// A ScrollingFrame's bar being dragged: the frame, whether it is the
+    /// vertical bar, and where along the thumb the pointer holds it.
+    pub bar: Option<(Id, bool, f64)>,
     pub held: HashSet<&'static str>,
     pub buttons: [bool; 3],
 }
@@ -1186,9 +1381,24 @@ pub struct Rbx {
     /// ModuleScripts `require` ran, and what they returned.
     pub loaded_modules: Vec<(Id, Value)>,
     /// The studio's workspace folder (getcustomasset's files), and the images
-    /// the GUI's own screen draws.
+    /// the GUI and the Drawings draw, on the HUD or on the GUI's own screen.
     pub workspace_dir: std::path::PathBuf,
     pub screen_images: super::hstudio_sunc::ImageCache,
+    /// Counts the changes that move the GUI's layout (a GUI instance's
+    /// property, the Parent of what holds one, the screen's size, the
+    /// TextBox focus), so that a read of AbsoluteSize, TextBounds and the
+    /// like lays out again only when one came since its value was worked
+    /// out.
+    pub gui_epoch: u64,
+    /// The screen size in dp the GUI was last laid out for.
+    pub gui_view: (f32, f32),
+    /// Layouts a read made, and the nodes they laid out in all.
+    pub fresh_layouts: u64,
+    pub fresh_nodes: u64,
+    /// UIPageLayouts turning to a page.
+    pub page_turns: Vec<super::hstudio_rbx_draw::PageTurn>,
+    /// The GUIs in StarterGui already copied into the PlayerGui.
+    pub starter_copied: HashSet<Id>,
 }
 
 /// An HTTP request a thread waits for.
@@ -1294,6 +1504,12 @@ impl Rbx {
             loaded_modules: Vec::new(),
             workspace_dir: std::path::PathBuf::new(),
             screen_images: super::hstudio_sunc::ImageCache::default(),
+            gui_epoch: 1,
+            gui_view: (0.0, 0.0),
+            fresh_layouts: 0,
+            fresh_nodes: 0,
+            page_turns: Vec::new(),
+            starter_copied: HashSet::new(),
         };
         r.build();
         r
@@ -1405,6 +1621,9 @@ impl Rbx {
                 locked: false,
                 unscriptable: HashSet::new(),
                 revealed: HashSet::new(),
+                gui: is_a(c, "GuiBase2d") || is_a(c, "UIComponent"),
+                laid_out: 0,
+                placed_at: 0,
             },
         );
         id
@@ -1476,6 +1695,22 @@ impl Rbx {
     /// ValueBase's Changed is for its Value only, with the value).
     pub fn changed(&mut self, id: Id, name: &str, v: &Value) {
         super::hstudio_rbx_query::changed(self, id, name);
+        // Every change the layout can see goes through here (properties,
+        // Parent, Name), except the layout's own outputs and what only the
+        // drawing reads. A Parent counts when a GUI instance is in what
+        // moved: a Folder of GuiObjects moves them, and a part a
+        // BillboardGui is in moves it.
+        let gui = self.insts.get(&id).is_some_and(|i| i.gui);
+        let moves = match name {
+            "Parent" => self.holds_gui(id),
+            _ => {
+                gui && !super::hstudio_rbx_draw::OUTPUTS.contains(&name)
+                    && !super::hstudio_rbx_draw::DRAWN.contains(&name)
+            }
+        };
+        if moves {
+            self.gui_epoch += 1;
+        }
         let value_base = self.insts.get(&id).is_some_and(|i| is_a(i.class, "ValueBase"));
         if value_base && name == "Value" {
             self.fire(id, "Changed", vec![v.clone()]);
@@ -1483,6 +1718,21 @@ impl Rbx {
             self.fire(id, "Changed", vec![Value::str(name)]);
         }
         self.fire(id, &format!("prop:{name}"), Vec::new());
+        self.derived_changed(id, name);
+    }
+
+    /// The signals of the read-only properties made of `name`: ContentText
+    /// follows Text and RichText, GuiState follows Interactable.
+    fn derived_changed(&mut self, id: Id, name: &str) {
+        let Some(c) = self.insts.get(&id).map(|i| i.class) else {
+            return;
+        };
+        if matches!(name, "Text" | "RichText") && find_prop(c, "RichText").is_some() {
+            self.fire(id, "prop:ContentText", Vec::new());
+        }
+        if name == "Interactable" && is_a(c, "GuiObject") {
+            self.fire(id, "prop:GuiState", Vec::new());
+        }
     }
 
     // ------------------------------------------------------------- the tree
@@ -1499,6 +1749,19 @@ impl Rbx {
             stack.extend(self.children(n).iter().rev().copied());
         }
         out
+    }
+
+    /// Whether `id` or something under it is a GUI instance.
+    pub fn holds_gui(&self, id: Id) -> bool {
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            let Some(inst) = self.insts.get(&n) else { continue };
+            if inst.gui {
+                return true;
+            }
+            stack.extend(inst.children.iter().copied());
+        }
+        false
     }
 
     pub fn is_descendant_of(&self, id: Id, ancestor: Id) -> bool {
@@ -1663,12 +1926,19 @@ impl Rbx {
         }
         self.sockets.retain(|s| s.owner != owner);
         self.drawings.retain(|d| d.owner != owner);
+        // Its UIPageLayouts stop turning, and its GUIs in StarterGui are
+        // no longer counted as copied.
+        let insts = &self.insts;
+        self.page_turns.retain(|t| insts.contains_key(&t.layout));
+        self.starter_copied.retain(|id| insts.contains_key(id));
         if self.pointer.focus.is_some_and(|f| !self.insts.contains_key(&f)) {
             self.pointer.focus = None;
         }
         self.pointer.hover.retain(|h| self.insts.contains_key(h));
         self.pointer.pressed = None;
         self.pointer.drag = None;
+        self.pointer.bar = None;
+        self.pointer.selecting = None;
         self.layout = None;
         super::hstudio_rbx_world::forget(self, owner);
     }
@@ -1920,6 +2190,7 @@ const METHODS: &[(&str, &str)] = &[
     ("PostAsync", "HttpService"),
     ("RequestAsync", "HttpService"),
     ("GetTextSize", "TextService"),
+    ("GetTextBoundsAsync", "TextService"),
     ("GetGuiInset", "GuiService"),
     ("IsTenFootInterface", "GuiService"),
     ("SetCore", "StarterGui"),
@@ -1977,6 +2248,8 @@ const METHODS: &[(&str, &str)] = &[
     ("Fire", "BindableEvent"),
     ("Invoke", "BindableFunction"),
     ("Play", "Sound"),
+    ("Play", "VideoFrame"),
+    ("Pause", "VideoFrame"),
     ("Stop", "Sound"),
     ("Pause", "Sound"),
     ("Resume", "Sound"),
@@ -1988,6 +2261,10 @@ const METHODS: &[(&str, &str)] = &[
     ("TweenSizeAndPosition", "GuiObject"),
     ("GetGuiObjectsAtPosition", "PlayerGui"),
     ("GetGuiObjectsAtPosition", "LayerCollector"),
+    ("JumpTo", "UIPageLayout"),
+    ("JumpToIndex", "UIPageLayout"),
+    ("Next", "UIPageLayout"),
+    ("Previous", "UIPageLayout"),
 ];
 
 const SIGNAL_METHODS: &[&str] = &["Connect", "Once", "Wait", "ConnectParallel"];
@@ -2212,7 +2489,9 @@ pub fn call(env: &mut dyn Env, lua: &mut Lua, id: u32, args: Vec<Value>) -> Res 
             let id = rbx.clone_tree(src, owner, false);
             Ok(vec![rbx.value(id)])
         }
-        SCREEN_DRAW..=SCREEN_CLOSE => super::hstudio_rbx_draw::screen_call(env, lua, id - SCREEN_DRAW, &args),
+        SCREEN_DRAW..=SCREEN_CLOSE | SCREEN_ESCAPE => {
+            super::hstudio_rbx_draw::screen_call(env, lua, id - SCREEN_DRAW, &args)
+        }
         CONN_METHOD_BASE => {
             if let Some(c) = conn_ref(&args) {
                 let rbx = env.rbx();
@@ -2305,6 +2584,18 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
         let snap = env_snapshot(env);
         env.rbx().refresh(id, &k, snap.as_ref());
     }
+    if k == "IsLoaded"
+        && let Some(loaded) = env.rbx().image_loaded(id)
+    {
+        return Ok(vec![Value::Bool(loaded)]);
+    }
+    // AbsoluteSize and the layout's other outputs are worked out afresh
+    // when the GUI changed since; the nodes laid out count as steps.
+    if super::hstudio_rbx_draw::OUTPUTS.contains(&k.as_str()) && find_prop(env.rbx().inst(id).class, &k).is_some() {
+        let (rbx, game) = env.rbx_and_game();
+        let nodes = super::hstudio_rbx_draw::fresh_output(rbx, game, id, &k);
+        lua.charge(nodes * 16)?;
+    }
     let rbx = env.rbx();
     let inst = rbx.inst(id);
     let c = inst.class;
@@ -2353,6 +2644,21 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
         }
         "Value" if is_a(c, "ValueBase") => Some(inst.get("Value")),
         "Focus" | "CFrame" if c.name == "Camera" => Some(inst.get(&k)),
+        // The text as drawn: Text without rich text's tags.
+        "ContentText" if find_prop(c, "RichText").is_some() => {
+            let text = inst.get("Text").as_text().unwrap_or_default();
+            Some(Value::str(&if inst.get("RichText").truthy() {
+                super::hstudio_rbx_draw::strip_tags(&text)
+            } else {
+                text
+            }))
+        }
+        "GuiState" if is_a(c, "GuiObject") => Some(enum_value(enum_item(
+            "GuiState",
+            super::hstudio_rbx_draw::gui_state(rbx, id),
+        ))),
+        // GuiObject's deprecated Transparency is its BackgroundTransparency.
+        "Transparency" if is_a(c, "GuiObject") => Some(inst.get("BackgroundTransparency")),
         _ => None,
     };
     if let Some(v) = derived {
@@ -2415,6 +2721,20 @@ impl Rbx {
             self.quiet_set(id, "ViewSizeX", Value::Num(snap.view.0));
             self.quiet_set(id, "ViewSizeY", Value::Num(snap.view.1));
         }
+    }
+
+    /// An image object's IsLoaded: whether its Image draws, which only a
+    /// workspace file (getcustomasset's) that is a PNG does. None for an
+    /// instance without an Image.
+    pub fn image_loaded(&mut self, id: Id) -> Option<bool> {
+        let inst = self.insts.get(&id)?;
+        find_prop(inst.class, "Image")?;
+        let image = inst.get("Image").as_text().unwrap_or_default();
+        let Some(file) = image.strip_prefix("rbxasset://horizon-studio/") else {
+            return Some(false);
+        };
+        let dir = self.workspace_dir.clone();
+        Some(self.screen_images.loads(&dir, file))
     }
 }
 
@@ -2510,6 +2830,21 @@ fn newindex(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Result<(), Thro
             rbx.raw_set(id, "FontFace", wrap(Data::Font(face)));
             rbx.fire(id, "prop:Font", Vec::new());
             Ok(())
+        }
+        "Transparency" if is_a(c, "GuiObject") => {
+            let value = coerce(rbx, K::Num, &v).ok_or_else(|| bad("number", &v))?;
+            rbx.raw_set(id, "BackgroundTransparency", value);
+            rbx.fire(id, "prop:Transparency", Vec::new());
+            Ok(())
+        }
+        "ContentText" | "GuiState" | "IsLoaded"
+            if match key.as_str() {
+                "ContentText" => find_prop(c, "RichText").is_some(),
+                "GuiState" => is_a(c, "GuiObject"),
+                _ => find_prop(c, "Image").is_some(),
+            } =>
+        {
+            Err(lua.rt_error(format!("Unable to assign property {key}. Property is read only")))
         }
         _ if c.lenient || rbx.inst(id).revealed.contains(&key) => {
             rbx.inst_mut(id).extra.insert(key, v);
@@ -2646,6 +2981,9 @@ pub fn tween_goal(rbx: &Rbx, id: Id, prop: &str, v: &Value) -> Result<&'static s
                 v.type_name()
             ));
         }
+        // GuiObject's Transparency is its BackgroundTransparency.
+        "Transparency" if is_a(c, "GuiObject") => find_prop(c, "BackgroundTransparency")
+            .ok_or_else(|| format!("{prop} is not a valid member of {}", c.name))?,
         _ => find_prop(c, prop).ok_or_else(|| format!("{prop} is not a valid member of {}", c.name))?,
     };
     if !matches!(
@@ -2757,9 +3095,11 @@ pub fn screen_table(rbx: &mut Rbx) -> TableRef {
     let mut t = Table::new();
     t.set_str("canvas", Value::Bool(true));
     t.set_str("backdrop", Value::Bool(false));
-    for (i, name) in ["draw", "move", "click", "release", "key", "text", "wheel", "close"]
-        .iter()
-        .enumerate()
+    for (i, name) in [
+        "draw", "move", "click", "release", "key", "text", "wheel", "close", "escape",
+    ]
+    .iter()
+    .enumerate()
     {
         t.set_str(name, rbx.native(SCREEN_DRAW + i as u32, name));
     }

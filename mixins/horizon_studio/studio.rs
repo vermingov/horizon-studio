@@ -30,6 +30,9 @@ use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 use std::time::{Instant, SystemTime};
 
+/// The gradients the GUI is coloured with (GameApi::dp_shade).
+pub use super::hstudio_quads::Shade;
+
 pub const ID: &str = "horizon_studio";
 pub const NAME: &str = "Horizon Studio";
 pub const VERSION: &str = "0.5.2";
@@ -304,6 +307,40 @@ pub trait GameApi {
     /// `at`; returns its width.
     fn dp_text(&mut self, text: &str, at: [f32; 2], size: f32, font: Font, argb: u32) -> f32;
     fn dp_measure(&mut self, text: &str, size: f32, font: Font) -> f32;
+    /// A mark in what the frame has drawn so far: `dp_clip`, `dp_rotate` and
+    /// `dp_shade` change what was drawn after it. None where a drawing can't
+    /// be changed once drawn (the Roblox GUI is then drawn as best it can be
+    /// without: cut to whole shapes and lines, upright, one colour for a
+    /// gradient).
+    fn dp_mark(&mut self) -> Option<usize> {
+        None
+    }
+    /// Cuts what was drawn since `mark` to the rectangle `r` (dp): shapes,
+    /// text and images, at its edges exactly.
+    fn dp_clip(&mut self, mark: usize, r: [f32; 4]) {
+        let _ = (mark, r);
+    }
+    /// Turns what was drawn since `mark` by `degrees` clockwise about `centre` (dp).
+    fn dp_rotate(&mut self, mark: usize, centre: [f32; 2], degrees: f32) {
+        let _ = (mark, centre, degrees);
+    }
+    /// Colours what was drawn since `mark` by a gradient over it (dp): the
+    /// gradient's colour multiplies what is drawn at each point.
+    fn dp_shade(&mut self, mark: usize, shade: &Shade) {
+        let _ = (mark, shade);
+    }
+    /// Slants what was drawn since `mark` as italic letters lean: each point
+    /// moves right by `slope` times how far it is above `y` (dp).
+    fn dp_slant(&mut self, mark: usize, y: f32, slope: f32) {
+        let _ = (mark, y, slope);
+    }
+    /// Draws the part `src` (in the image's pixels, x y w h) of `image` into
+    /// `r` (dp), its pixels multiplied by `argb`. False where images can't
+    /// be drawn as such (the caller draws them in blocks of colour).
+    fn dp_image(&mut self, image: TexRef<'_>, r: [f32; 4], src: [f32; 4], argb: u32) -> bool {
+        let _ = (image, r, src, argb);
+        false
+    }
     /// ViaHorizon: whether joins go through ViaProxy, as which version, and
     /// what it is doing.
     fn via(&self) -> ViaInfo {
@@ -977,8 +1014,6 @@ pub struct State {
     /// The executor's globals (`getgenv`) and Roblox's (`getrenv`), shared by every mod.
     pub genv: Option<TableRef>,
     pub renv: Option<TableRef>,
-    /// Images decoded for Drawing and ImageLabels.
-    pub images: super::hstudio_sunc::ImageCache,
     /// The table of the screen the Roblox GUI takes the pointer with.
     rbx_screen: Option<TableRef>,
 
@@ -1099,7 +1134,6 @@ impl Studio {
                 rbx: super::hstudio_rbx::Rbx::new(),
                 genv: None,
                 renv: None,
-                images: super::hstudio_sunc::ImageCache::default(),
                 rbx_screen: None,
                 thread_errors: Vec::new(),
                 world_quads: 0,
@@ -2614,6 +2648,7 @@ impl Studio {
         if !ours && !pending && self.s.rbx.pointer.free {
             // Its screen went (closed by the studio): the pointer is the game's.
             self.s.rbx.pointer.free = false;
+            super::hstudio_rbx_draw::let_go(&mut self.s.rbx);
         }
         let wants = super::hstudio_rbx_draw::wants_pointer(&self.s.rbx);
         if !wants {
@@ -2622,6 +2657,7 @@ impl Studio {
                 self.s.screen = None;
                 self.s.screen_request = None;
                 self.s.rbx.pointer.free = false;
+                super::hstudio_rbx_draw::let_go(&mut self.s.rbx);
             }
         } else if !ours
             && !pending
@@ -2876,14 +2912,17 @@ impl Studio {
             &[Value::Num(f64::from(w)), Value::Num(f64::from(h))],
             Phase::Hud,
         );
-        // Roblox ScreenGuis, unless their own screen draws them.
+        // Roblox ScreenGuis, unless their own screen draws them, with the
+        // images that screen draws too.
+        let mut images = std::mem::take(&mut self.s.rbx.screen_images);
         if !self.rbx_screen_open() && self.s.rbx.active {
             let now = self.s.now;
             let ws = self.s.dir.join("workspace");
             super::hstudio_rbx_draw::lay_out(&mut self.s.rbx, game);
-            super::hstudio_rbx_draw::draw(&self.s.rbx, game, now, &mut self.s.images, &ws);
+            super::hstudio_rbx_draw::draw(&self.s.rbx, game, now, &mut images, &ws);
         }
-        super::hstudio_sunc::draw_drawings(&self.s.rbx, game, &mut self.s.images);
+        super::hstudio_sunc::draw_drawings(&self.s.rbx, game, &mut images);
+        self.s.rbx.screen_images = images;
         let panels: Vec<(Corner, Vec<String>)> = self
             .s
             .mods
@@ -4278,7 +4317,7 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "ui",
         "open",
         130,
-        "ui.open(screen): show a screen: {title, width, widgets = {...}, draw(w, h), click(x, y, button), key(key, down), text(t), close()}; canvas = true draws it all yourself with gfx.* in dp, and adds move(x, y), release(x, y, button) and wheel(steps)",
+        "ui.open(screen): show a screen: {title, width, widgets = {...}, draw(w, h), click(x, y, button), key(key, down, mods), text(t), escape(), close()}; canvas = true draws it all yourself with gfx.* in dp, and adds move(x, y), release(x, y, button) and wheel(steps); mods is {ctrl, shift, alt}, and escape() returning true keeps the screen open on Escape",
     ),
     ("ui", "close", 131, "ui.close(): close this mod's screen"),
     ("ui", "is_open", 132, "ui.is_open(): whether this mod's screen shows"),

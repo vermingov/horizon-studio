@@ -32,6 +32,12 @@ pub struct FakeGame {
     pub quads: Vec<([[f32; 2]; 4], u32)>,
     pub sounds: Vec<(String, Option<[f64; 3]>, f32, f32)>,
     pub particles: Vec<Particle>,
+    /// The gradients the GUI was coloured with (`dp_shade`), with their marks.
+    pub shades: Vec<(usize, horizon_studio::game::hstudio_quads::Shade)>,
+    /// The game can't change what it drew (no `dp_mark`), as the headless one.
+    pub no_marks: bool,
+    /// The game can't draw images as such (no `dp_image`).
+    pub no_images: bool,
     /// ViaHorizon, as the bridge reports it (the real one is the game's).
     pub via: ViaInfo,
     /// The player's pose (`pose`), if the game says.
@@ -100,6 +106,9 @@ impl FakeGame {
             quads: Vec::new(),
             sounds: Vec::new(),
             particles: Vec::new(),
+            shades: Vec::new(),
+            no_marks: false,
+            no_images: false,
             via: ViaInfo {
                 enabled: true,
                 version: "auto".into(),
@@ -241,6 +250,41 @@ impl GameApi for FakeGame {
     }
     fn dp_measure(&mut self, text: &str, _size: f32, _font: Font) -> f32 {
         6.0 * text.chars().count() as f32
+    }
+    // A mark is where the next drawing goes in `drawn`.
+    fn dp_mark(&mut self) -> Option<usize> {
+        (!self.no_marks).then_some(self.drawn.len())
+    }
+    fn dp_clip(&mut self, mark: usize, r: [f32; 4]) {
+        self.drawn.push(format!("clip {mark} {r:?}"));
+    }
+    fn dp_rotate(&mut self, mark: usize, centre: [f32; 2], degrees: f32) {
+        self.drawn.push(format!("rotate {mark} {centre:?} {degrees}"));
+    }
+    fn dp_shade(&mut self, mark: usize, shade: &horizon_studio::game::hstudio_quads::Shade) {
+        self.drawn.push(format!("shade {mark}"));
+        self.shades.push((mark, shade.clone()));
+    }
+    fn dp_slant(&mut self, mark: usize, y: f32, slope: f32) {
+        self.drawn.push(format!("slant {mark} {y} {slope}"));
+    }
+    // An image by its size and its first pixel's RGBA.
+    fn dp_image(
+        &mut self,
+        image: horizon_studio::game::hstudio::TexRef<'_>,
+        r: [f32; 4],
+        src: [f32; 4],
+        argb: u32,
+    ) -> bool {
+        if self.no_images {
+            return false;
+        }
+        let first: String = image.rgba.iter().take(4).map(|b| format!("{b:02x}")).collect();
+        self.drawn.push(format!(
+            "image {}x{} #{first} {r:?} from {src:?} {argb:08x}",
+            image.w, image.h
+        ));
+        true
     }
     fn via(&self) -> ViaInfo {
         self.via.clone()

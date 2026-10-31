@@ -955,6 +955,10 @@ pub fn suggest(
                 let wanted = if sep == ':' { Kind::Function } else { Kind::Value };
                 for (name, doc, kind) in game_members().into_iter().filter(|m| m.2 == wanted) {
                     if let Some(s) = score(name, typed).filter(|_| name != typed) {
+                        // The services that do nothing here come after the
+                        // rest, so the list keeps Workspace and the others.
+                        let idle = super::hstudio_rbx::class_def(name).is_some_and(|c| c.service && c.lenient);
+                        let s = s - u32::from(idle);
                         // From the ':' when the studio's own functions take it as a '.'.
                         let insert = if start == owner_end {
                             format!("{sep}{name}")

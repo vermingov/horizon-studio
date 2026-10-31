@@ -39,6 +39,12 @@ name = "hstudio_rbx_layout"
 source = "rbx_layout.rs"
 
 [[module]]
+id = "quads"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_quads"
+source = "quads.rs"
+
+[[module]]
 id = "rbx_values"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_rbx_values"

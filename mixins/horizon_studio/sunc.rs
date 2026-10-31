@@ -553,6 +553,7 @@ pub fn draw_drawings(rbx: &Rbx, game: &mut dyn GameApi, textures: &mut ImageCach
     if rbx.drawings.is_empty() {
         return;
     }
+    textures.begin(rbx.now);
     let (dw, _, _) = game.dp();
     let (gw, _) = game.gui_size();
     // game.quad takes GUI pixels; Drawings are in dp.
@@ -668,40 +669,89 @@ pub fn draw_drawings(rbx: &Rbx, game: &mut dyn GameApi, textures: &mut ImageCach
     }
 }
 
-/// Decoded images for Drawing's Image (and ImageLabels with custom assets),
-/// drawn as blocks of colour (the HUD has no image quads).
+/// Decoded images for Drawing's Image and the GUI's images (getcustomasset's
+/// files), shared by the HUD and the GUI's screen: drawn as textures where
+/// the game draws images, else as blocks of colour.
 #[derive(Default)]
 pub struct ImageCache {
     items: Vec<(u64, Rc<super::hstudio_meshes::Texture>)>,
-    files: Vec<(PathBuf, Rc<Vec<u8>>)>,
+    /// Workspace files read, with the key in `items` of the image they hold.
+    files: Vec<(PathBuf, Rc<Vec<u8>>, u64)>,
+    /// Large images scaled down for the game's atlas, by the image's key.
+    small: Vec<(u32, Rc<super::hstudio_meshes::Texture>)>,
+    /// This frame (the studio's clock), and the images it put in the
+    /// game's atlas (by key) with their pixels in all.
+    frame: f64,
+    in_atlas: Vec<u32>,
+    texels: usize,
+    /// How many times image bytes were hashed to find their image: once a
+    /// file, and once a frame for each Drawing's image.
+    pub hashed: u64,
 }
 
 /// Image cells a side at most: an image draws as up to 48 x 48 blocks.
 const CELLS: u32 = 48;
+/// A block is at least this many dp a side, so a small or tiled image
+/// draws in few blocks.
+const CELL_DP: f32 = 4.0;
+/// An image's longest side in the game's atlas: a larger one goes there
+/// scaled down.
+const ATLAS_SIDE: u32 = 256;
+/// The pixels a frame's images take in the game's atlas at most, which
+/// they share with the interface's glyphs; an image past them draws in
+/// blocks.
+const ATLAS_TEXELS: usize = 1 << 18;
 
 impl ImageCache {
     /// A workspace file's bytes (getcustomasset's images), read once.
     pub fn file(&mut self, workspace: &Path, rel: &str) -> Option<Rc<Vec<u8>>> {
+        self.read(workspace, rel).map(|(bytes, _)| bytes)
+    }
+
+    /// A workspace file's bytes and their image's key, read and hashed once.
+    fn read(&mut self, workspace: &Path, rel: &str) -> Option<(Rc<Vec<u8>>, u64)> {
         let p = workspace.join(rel);
         if !p.starts_with(workspace) || rel.contains("..") {
             return None;
         }
-        if let Some((_, b)) = self.files.iter().find(|(q, _)| *q == p) {
-            return Some(b.clone());
+        if let Some((_, b, key)) = self.files.iter().find(|(q, _, _)| *q == p) {
+            return Some((b.clone(), *key));
         }
         let bytes = Rc::new(std::fs::read(&p).ok().filter(|b| b.len() <= MAX_FILE)?);
+        let key = self.key(&bytes);
         if self.files.len() >= 32 {
             self.files.remove(0);
         }
-        self.files.push((p, bytes.clone()));
-        Some(bytes)
+        self.files.push((p, bytes.clone(), key));
+        Some((bytes, key))
+    }
+
+    /// A workspace file's image: None when the file can't be read, else the
+    /// PNG it holds if it decodes. A frame finds it by its name.
+    pub fn file_image(&mut self, workspace: &Path, rel: &str) -> Option<Option<Rc<super::hstudio_meshes::Texture>>> {
+        let (bytes, key) = self.read(workspace, rel)?;
+        Some(self.decoded(key, &bytes))
+    }
+
+    /// Whether a workspace file is an image that draws (a PNG it can decode).
+    pub fn loads(&mut self, workspace: &Path, rel: &str) -> bool {
+        self.file_image(workspace, rel).flatten().is_some()
+    }
+
+    /// The key `bytes` are found by.
+    fn key(&mut self, bytes: &[u8]) -> u64 {
+        self.hashed += 1;
+        let h = super::hstudio_crypt::sha256(bytes);
+        u64::from_le_bytes(h[..8].try_into().unwrap_or_default())
     }
 
     fn get(&mut self, bytes: &[u8]) -> Option<Rc<super::hstudio_meshes::Texture>> {
-        let key = {
-            let h = super::hstudio_crypt::sha256(bytes);
-            u64::from_le_bytes(h[..8].try_into().unwrap_or_default())
-        };
+        let key = self.key(bytes);
+        self.decoded(key, bytes)
+    }
+
+    /// The image of `bytes`, found by their `key`, decoded once.
+    fn decoded(&mut self, key: u64, bytes: &[u8]) -> Option<Rc<super::hstudio_meshes::Texture>> {
         if let Some((_, t)) = self.items.iter().find(|(k, _)| *k == key) {
             return Some(t.clone());
         }
@@ -713,22 +763,102 @@ impl ImageCache {
         Some(t)
     }
 
-    /// Draws a PNG's pixels into `r` (dp), averaged into blocks.
+    /// A frame begins drawing at `now` (the studio's clock): its images
+    /// have the atlas's share to themselves. Drawing again in the same
+    /// frame (the HUD's Drawings and the GUI's screen) shares it.
+    pub fn begin(&mut self, now: f64) {
+        if self.frame != now {
+            self.frame = now;
+            self.in_atlas.clear();
+            self.texels = 0;
+        }
+    }
+
+    /// Draws a PNG's pixels into `r` (dp).
     pub fn draw(&mut self, game: &mut dyn GameApi, bytes: &[u8], r: [f32; 4], alpha: f64) {
         let Some(t) = self.get(bytes) else { return };
-        if t.w == 0 || t.h == 0 || r[2] <= 0.0 || r[3] <= 0.0 {
+        self.draw_part(game, &t, r, [0.0, 0.0, t.w as f32, t.h as f32], 0xFF_FFFF, alpha);
+    }
+
+    /// What of `t` goes in the game's atlas this frame: `t`, or a copy at
+    /// most ATLAS_SIDE a side. None once the frame's images fill their
+    /// share of the atlas.
+    fn for_atlas(&mut self, t: &Rc<super::hstudio_meshes::Texture>) -> Option<Rc<super::hstudio_meshes::Texture>> {
+        let (w, h) = atlas_size(t.w, t.h);
+        if !self.in_atlas.contains(&t.key) {
+            let texels = (w * h) as usize;
+            if self.texels + texels > ATLAS_TEXELS {
+                return None;
+            }
+            self.in_atlas.push(t.key);
+            self.texels += texels;
+        }
+        if (w, h) == (t.w, t.h) {
+            return Some(t.clone());
+        }
+        if let Some((_, s)) = self.small.iter().find(|(k, _)| *k == t.key) {
+            return Some(s.clone());
+        }
+        let s = Rc::new(shrink(t, w, h)?);
+        if self.small.len() >= 32 {
+            self.small.remove(0);
+        }
+        self.small.push((t.key, s.clone()));
+        Some(s)
+    }
+
+    /// Draws the part `src` (x, y, width and height in pixels) of an image
+    /// into `r` (dp), its pixels multiplied by `rgb` (0xRRGGBB) and `alpha`:
+    /// as a texture where the game draws images and the frame's share of
+    /// its atlas has room, else averaged into blocks.
+    pub fn draw_part(
+        &mut self,
+        game: &mut dyn GameApi,
+        t: &Rc<super::hstudio_meshes::Texture>,
+        r: [f32; 4],
+        src: [f32; 4],
+        rgb: u32,
+        alpha: f64,
+    ) {
+        if t.w == 0 || t.h == 0 || r[2] <= 0.0 || r[3] <= 0.0 || !(src[2] > 0.0 && src[3] > 0.0) {
             return;
         }
-        let (cw, ch) = (t.w.min(CELLS), t.h.min(CELLS));
+        let a = (alpha.clamp(0.0, 1.0) * 255.0).round() as u32;
+        if let Some(at) = self.for_atlas(t) {
+            // The part, in the pixels of what went in the atlas.
+            let (kx, ky) = (at.w as f32 / t.w as f32, at.h as f32 / t.h as f32);
+            let image = super::hstudio::TexRef {
+                key: at.key,
+                version: at.version,
+                w: at.w,
+                h: at.h,
+                rgba: &at.rgba,
+            };
+            let part = [src[0] * kx, src[1] * ky, src[2] * kx, src[3] * ky];
+            if game.dp_image(image, r, part, a << 24 | (rgb & 0xFF_FFFF)) {
+                return;
+            }
+        }
+        // The pixels the part covers, a block of them to each cell.
+        let (px0, py0) = (src[0].floor().max(0.0) as u32, src[1].floor().max(0.0) as u32);
+        let px1 = ((src[0] + src[2]).ceil().max(0.0) as u32).min(t.w);
+        let py1 = ((src[1] + src[3]).ceil().max(0.0) as u32).min(t.h);
+        if px0 >= px1 || py0 >= py1 {
+            return;
+        }
+        let (sw, sh) = (px1 - px0, py1 - py0);
+        let tint = [(rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF];
+        let most = |dp: f32| ((dp / CELL_DP).ceil() as u32).clamp(1, CELLS);
+        let (cw, ch) = (sw.min(most(r[2])), sh.min(most(r[3])));
         let (bw, bh) = (r[2] / cw as f32, r[3] / ch as f32);
         for cy in 0..ch {
             for cx in 0..cw {
-                let (x0, x1) = (cx * t.w / cw, ((cx + 1) * t.w / cw).max(cx * t.w / cw + 1));
-                let (y0, y1) = (cy * t.h / ch, ((cy + 1) * t.h / ch).max(cy * t.h / ch + 1));
+                let (x0, x1) = (cx * sw / cw, ((cx + 1) * sw / cw).max(cx * sw / cw + 1));
+                let (y0, y1) = (cy * sh / ch, ((cy + 1) * sh / ch).max(cy * sh / ch + 1));
                 let mut sum = [0u32; 4];
                 let mut n = 0;
-                for y in y0..y1.min(t.h) {
-                    for x in x0..x1.min(t.w) {
+                for y in py0 + y0..(py0 + y1).min(py1) {
+                    for x in px0 + x0..(px0 + x1).min(px1) {
                         let i = ((y * t.w + x) * 4) as usize;
                         for (c, s) in sum.iter_mut().enumerate() {
                             *s += u32::from(t.rgba[i + c]);
@@ -744,7 +874,8 @@ impl ImageCache {
                 if a == 0 {
                     continue;
                 }
-                let argb = a << 24 | r_ << 16 | g << 8 | b;
+                let tinted = |c: u32, k: u32| (c * k + 127) / 255;
+                let argb = a << 24 | tinted(r_, tint[0]) << 16 | tinted(g, tint[1]) << 8 | tinted(b, tint[2]);
                 game.dp_rect(
                     [r[0] + cx as f32 * bw, r[1] + cy as f32 * bh, bw + 0.3, bh + 0.3],
                     0.0,
@@ -753,6 +884,51 @@ impl ImageCache {
             }
         }
     }
+}
+
+/// An image's size in the game's atlas: its own, or scaled down to
+/// ATLAS_SIDE on its longer side.
+fn atlas_size(w: u32, h: u32) -> (u32, u32) {
+    let long = w.max(h);
+    if long <= ATLAS_SIDE {
+        return (w, h);
+    }
+    let k = f64::from(ATLAS_SIDE) / f64::from(long);
+    let side = |n: u32| ((f64::from(n) * k).round() as u32).max(1);
+    (side(w), side(h))
+}
+
+/// `t` scaled down to `w` x `h`: each pixel the average of those it
+/// covers, weighted by their alpha so that no dark fringe shows.
+fn shrink(t: &super::hstudio_meshes::Texture, w: u32, h: u32) -> Option<super::hstudio_meshes::Texture> {
+    let mut out = super::hstudio_meshes::Texture::new(w, h, 0).ok()?;
+    for y in 0..h {
+        let (y0, y1) = (y * t.h / h, ((y + 1) * t.h / h).max(y * t.h / h + 1).min(t.h));
+        for x in 0..w {
+            let (x0, x1) = (x * t.w / w, ((x + 1) * t.w / w).max(x * t.w / w + 1).min(t.w));
+            // Each colour weighted by its alpha, and the alpha.
+            let mut sum = [0u64; 4];
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let i = ((sy * t.w + sx) * 4) as usize;
+                    let px = &t.rgba[i..i + 4];
+                    let alpha = u64::from(px[3]);
+                    for (s, &c) in sum.iter_mut().zip(&px[..3]) {
+                        *s += u64::from(c) * alpha;
+                    }
+                    sum[3] += alpha;
+                }
+            }
+            let n = u64::from((y1 - y0) * (x1 - x0)).max(1);
+            let i = ((y * w + x) * 4) as usize;
+            let (colour, weight) = sum.split_at(3);
+            for (o, &c) in out.rgba[i..i + 3].iter_mut().zip(colour) {
+                *o = c.checked_div(weight[0]).unwrap_or(0) as u8;
+            }
+            out.rgba[i + 3] = (weight[0] / n) as u8;
+        }
+    }
+    Some(out)
 }
 
 // ---------------------------------------------------------------- the calls

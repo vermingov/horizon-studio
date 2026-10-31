@@ -894,21 +894,165 @@ pub struct LineEdit {
     pub text: String,
     /// A byte index on a char boundary.
     pub cursor: usize,
+    /// The other end of the selected text (a byte index on a char boundary),
+    /// which runs to the cursor; None when nothing is selected.
+    pub anchor: Option<usize>,
+    /// A field of several lines: newlines stay newlines.
+    pub multiline: bool,
 }
 
 impl LineEdit {
+    /// New text, the cursor at its end and nothing selected.
     pub fn set(&mut self, text: &str) {
         self.text = text.to_owned();
         self.cursor = self.text.len();
+        self.anchor = None;
     }
+    /// Types `s` at the cursor, over the selection if there is one.
     pub fn insert(&mut self, s: &str) {
+        let multiline = self.multiline;
         let clean: String = s
             .chars()
-            .map(|c| if c == '\n' || c == '\t' { ' ' } else { c })
-            .filter(|c| !c.is_control())
+            .map(|c| if (c == '\n' && !multiline) || c == '\t' { ' ' } else { c })
+            .filter(|c| *c == '\n' || !c.is_control())
             .collect();
+        self.delete_selection();
+        self.anchor = None;
         self.text.insert_str(self.cursor, &clean);
         self.cursor += clean.len();
+    }
+    /// The selection's start and end, when something is selected.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        self.anchor
+            .filter(|&a| a != self.cursor)
+            .map(|a| (a.min(self.cursor), a.max(self.cursor)))
+    }
+    /// The selected text ("" without a selection).
+    pub fn selected(&self) -> &str {
+        self.selection().map_or("", |(a, b)| &self.text[a..b])
+    }
+    /// Removes the selected text; false when nothing was selected.
+    pub fn delete_selection(&mut self) -> bool {
+        let Some((a, b)) = self.selection() else {
+            return false;
+        };
+        self.text.replace_range(a..b, "");
+        self.cursor = a;
+        self.anchor = None;
+        true
+    }
+    pub fn select_all(&mut self) {
+        self.anchor = Some(0);
+        self.cursor = self.text.len();
+    }
+    /// Moves the cursor to `to`; `extend` keeps the selection's other end
+    /// where it was (or where the cursor was), else the selection goes.
+    pub fn move_cursor(&mut self, to: usize, extend: bool) {
+        if !extend {
+            self.anchor = None;
+        } else if self.anchor.is_none() {
+            self.anchor = Some(self.cursor);
+        }
+        self.cursor = to;
+    }
+    /// Where the line the cursor is on starts and ends.
+    fn line_bounds(&self) -> (usize, usize) {
+        let start = self.text[..self.cursor].rfind('\n').map_or(0, |i| i + 1);
+        let end = self.text[self.cursor..]
+            .find('\n')
+            .map_or(self.text.len(), |i| self.cursor + i);
+        (start, end)
+    }
+    /// The cursor a line up or down, as many characters in as it is now:
+    /// the start of the text above the first line, its end below the last.
+    pub fn line_move(&self, down: bool) -> usize {
+        let (start, end) = self.line_bounds();
+        let column = self.text[start..self.cursor].chars().count();
+        let (from, to) = if down {
+            if end >= self.text.len() {
+                return self.text.len();
+            }
+            let from = end + 1;
+            (from, self.text[from..].find('\n').map_or(self.text.len(), |i| from + i))
+        } else {
+            if start == 0 {
+                return 0;
+            }
+            let to = start - 1;
+            (self.text[..to].rfind('\n').map_or(0, |i| i + 1), to)
+        };
+        self.text[from..to]
+            .char_indices()
+            .nth(column)
+            .map_or(to, |(i, _)| from + i)
+    }
+    /// Handles an editing key as a text field with a selection does: an
+    /// arrow, Home or End with Shift extends the selection, and without it
+    /// drops the selection (Left at its start, Right at its end); Backspace
+    /// and Delete remove the selection; Control+A selects everything; in a
+    /// field of several lines Home and End keep to the line (with Control,
+    /// the text), and Up and Down move a line. False when it isn't one.
+    pub fn edit_key(&mut self, key: Key, mods: Mods) -> bool {
+        let extend = mods.shift;
+        match key {
+            Key::Left => match self.selection() {
+                Some((a, _)) if !extend => self.move_cursor(a, false),
+                _ => {
+                    let to = if mods.ctrl {
+                        word_left(&self.text, self.cursor)
+                    } else {
+                        prev_char(&self.text, self.cursor)
+                    };
+                    self.move_cursor(to, extend);
+                }
+            },
+            Key::Right => match self.selection() {
+                Some((_, b)) if !extend => self.move_cursor(b, false),
+                _ => {
+                    let to = if mods.ctrl {
+                        word_right(&self.text, self.cursor)
+                    } else {
+                        next_char(&self.text, self.cursor)
+                    };
+                    self.move_cursor(to, extend);
+                }
+            },
+            Key::Home => {
+                let to = if self.multiline && !mods.ctrl {
+                    self.line_bounds().0
+                } else {
+                    0
+                };
+                self.move_cursor(to, extend);
+            }
+            Key::End => {
+                let to = if self.multiline && !mods.ctrl {
+                    self.line_bounds().1
+                } else {
+                    self.text.len()
+                };
+                self.move_cursor(to, extend);
+            }
+            Key::Up | Key::Down if self.multiline => {
+                let to = self.line_move(key == Key::Down);
+                self.move_cursor(to, extend);
+            }
+            Key::Backspace => {
+                if !self.delete_selection() {
+                    self.anchor = None;
+                    self.backspace(mods.ctrl);
+                }
+            }
+            Key::Delete => {
+                if !self.delete_selection() {
+                    self.anchor = None;
+                    self.delete(mods.ctrl);
+                }
+            }
+            Key::Char('a') if mods.ctrl => self.select_all(),
+            _ => return false,
+        }
+        true
     }
     pub fn left(&mut self, word: bool) {
         self.cursor = if word {
@@ -4312,6 +4456,23 @@ fn key_name(key: Key) -> String {
     }
 }
 
+/// The modifier keys as a screen's `key` gets them: {ctrl, shift, alt}.
+fn mods_value(mods: Mods) -> Value {
+    let mut t = super::hstudio_lua::Table::new();
+    t.set_str("ctrl", Value::Bool(mods.ctrl));
+    t.set_str("shift", Value::Bool(mods.shift));
+    t.set_str("alt", Value::Bool(mods.alt));
+    Value::table(t)
+}
+
+/// Escape on a screen: its `escape()` returning true keeps it open (a
+/// field of its own let go of the focus, as a Roblox TextBox does).
+fn escape_kept(st: &mut Studio, game: &mut dyn GameApi, table: &TableRef) -> bool {
+    let f = field(table, "escape");
+    st.screen_call(game, &f, Vec::new(), false)
+        .is_some_and(|r| r.first().is_some_and(Value::truthy))
+}
+
 /// Sets a widget's `value` and calls its `change(value, widget)`.
 fn set_value(st: &mut Studio, game: &mut dyn GameApi, wt: &TableRef, v: Value) {
     wt.borrow_mut().set_str("value", v.clone());
@@ -4498,6 +4659,9 @@ pub fn handle_screen(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> U
                     }
                     return UiResult::Used;
                 }
+                if key == Key::Escape && escape_kept(st, game, &table) {
+                    return UiResult::Used;
+                }
                 return UiResult::Close;
             }
             match focus.and_then(|i| ws.get(i).cloned().map(|w| (i, w))) {
@@ -4545,7 +4709,8 @@ pub fn handle_screen(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> U
                 Some(_) => {}
                 None => {
                     let f = field(&table, "key");
-                    st.screen_call(game, &f, vec![Value::str(&key_name(key)), Value::Bool(down)], false);
+                    let args = vec![Value::str(&key_name(key)), Value::Bool(down), mods_value(mods)];
+                    st.screen_call(game, &f, args, false);
                 }
             }
         }

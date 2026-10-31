@@ -587,6 +587,34 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             let (w, h) = super::hstudio_rbx_draw::text_size(env.game(), &text, size, face, frame.x);
             one(v2(Vector2::new(w, h)))
         }
+        // As GetTextSize, from a GetTextBoundsParams; its Width wraps the
+        // text (0 doesn't), and rich text is measured run by run.
+        ("TextService", "GetTextBoundsAsync") => {
+            let rbx = env.rbx();
+            let p = args
+                .get(1)
+                .and_then(|v| rbx.id_of(v))
+                .filter(|&p| rbx.inst(p).class.name == "GetTextBoundsParams")
+                .ok_or_else(|| bad_arg(lua, 1, name, "GetTextBoundsParams expected"))?;
+            let text = rbx.raw_get(p, "Text").as_text().unwrap_or_default();
+            let size = rbx.raw_get(p, "Size").to_num().unwrap_or(8.0);
+            let font = super::hstudio_rbx_values::as_font(&rbx.raw_get(p, "Font")).unwrap_or_default();
+            let width = rbx.raw_get(p, "Width").to_num().filter(|w| *w > 0.0);
+            let rich = rbx.raw_get(p, "RichText").truthy();
+            let game = env.game();
+            let (w, h) = if rich {
+                let read = super::hstudio_rbx_layout::parse_rich(&text);
+                let mut measure = |t: &str, s: f64, f: &super::hstudio_rbx_types::Font| -> f64 {
+                    f64::from(game.dp_measure(t, s as f32, super::hstudio_rbx_draw::studio_font(f)))
+                };
+                let b =
+                    super::hstudio_rbx_layout::text_bounds(&read.text, &read.spans, size, &font, width, &mut measure);
+                (b.x.ceil(), b.y.ceil())
+            } else {
+                super::hstudio_rbx_draw::text_size(game, &text, size, font, width.unwrap_or(f64::INFINITY))
+            };
+            one(v2(Vector2::new(w, h)))
+        }
         ("GuiService", "GetGuiInset") => Ok(vec![v2(Vector2::ZERO), v2(Vector2::ZERO)]),
         ("GuiService", "IsTenFootInterface") => one(Value::Bool(false)),
         ("StarterGui", "SetCore") => {
@@ -789,6 +817,15 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             let h: &mut dyn Host = env;
             lua.call(h, &f, args[1..].to_vec())
         }
+        // A video doesn't load here: playing it only says so.
+        ("VideoFrame", "Play" | "Pause") => {
+            let play = name == "Play";
+            let rbx = env.rbx();
+            rbx.raw_set(id, "Playing", Value::Bool(play));
+            let video = rbx.raw_get(id, "Video");
+            rbx.fire(id, if play { "Played" } else { "Paused" }, vec![video]);
+            none()
+        }
         ("Sound", "Play" | "Resume") => {
             let rbx = env.rbx();
             rbx.quiet_set(id, "Playing", Value::Bool(true));
@@ -850,6 +887,31 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             let tid = make_tween(rbx, id, info, goals, owner, Some(callback.unwrap_or_default()));
             start_tween(rbx, tid);
             one(Value::Bool(true))
+        }
+        ("UIPageLayout", _) => {
+            let rbx = env.rbx();
+            let pages = super::hstudio_rbx_draw::pages(rbx, id);
+            let page = match name {
+                "JumpTo" => Some(
+                    args.get(1)
+                        .and_then(|v| rbx.id_of(v))
+                        .ok_or_else(|| bad_arg(lua, 1, name, "Instance expected"))?,
+                ),
+                "JumpToIndex" => {
+                    let i = check_num(lua, args, 1, name)?;
+                    (i >= 0.0).then(|| pages.get(i as usize).copied()).flatten()
+                }
+                _ => super::hstudio_rbx_draw::page_beside(rbx, id, &pages, name == "Next"),
+            };
+            if let Some(p) = page {
+                let forward = match name {
+                    "Next" => Some(true),
+                    "Previous" => Some(false),
+                    _ => None,
+                };
+                super::hstudio_rbx_draw::turn_page(rbx, id, p, forward);
+            }
+            none()
         }
         ("PlayerGui" | "LayerCollector", "GetGuiObjectsAtPosition") => {
             let x = check_num(lua, args, 1, name)?;

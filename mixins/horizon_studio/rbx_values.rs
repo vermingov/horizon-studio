@@ -1486,6 +1486,11 @@ const ENUMS: &[(&str, &[(&str, i32)])] = &[
     ("ScrollingDirection", &[("X", 1), ("Y", 2), ("XY", 4)]),
     ("ScrollBarInset", &[("None", 0), ("ScrollBar", 1), ("Always", 2)]),
     ("VerticalScrollBarPosition", &[("Right", 0), ("Left", 1)]),
+    ("ElasticBehavior", &[("WhenScrollable", 0), ("Always", 1), ("Never", 2)]),
+    (
+        "GuiState",
+        &[("Idle", 0), ("Hover", 1), ("Press", 2), ("NonInteractable", 3)],
+    ),
     ("ApplyStrokeMode", &[("Contextual", 0), ("Border", 1)]),
     ("LineJoinMode", &[("Round", 0), ("Bevel", 1), ("Miter", 2)]),
     ("TextTruncate", &[("None", 0), ("AtEnd", 1), ("SplitWord", 2)]),
@@ -1495,6 +1500,32 @@ const ENUMS: &[(&str, &[(&str, i32)])] = &[
         &[("Stretch", 0), ("Slice", 1), ("Tile", 2), ("Fit", 3), ("Crop", 4)],
     ),
     ("ResamplerMode", &[("Default", 0), ("Pixelated", 1)]),
+    (
+        "UIFlexMode",
+        &[("None", 0), ("Grow", 1), ("Shrink", 2), ("Fill", 3), ("Custom", 4)],
+    ),
+    (
+        "UIFlexAlignment",
+        &[
+            ("None", 0),
+            ("Fill", 1),
+            ("SpaceAround", 2),
+            ("SpaceBetween", 3),
+            ("SpaceEvenly", 4),
+        ],
+    ),
+    (
+        "ItemLineAlignment",
+        &[
+            ("Automatic", 0),
+            ("Start", 1),
+            ("Center", 2),
+            ("End", 3),
+            ("Stretch", 4),
+        ],
+    ),
+    ("TableMajorAxis", &[("RowMajor", 0), ("ColumnMajor", 1)]),
+    ("SafeAreaCompatibility", &[("None", 0), ("FullscreenExtension", 1)]),
     (
         "ScreenInsets",
         &[
