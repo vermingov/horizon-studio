@@ -647,6 +647,75 @@ fn pos_takes_three_words() {
 }
 
 #[test]
+fn a_position_is_completed_whole() {
+    let mut game = FakeGame::new("chat-pos-whole");
+    let mut st = studio(&mut game);
+    console(
+        &mut st,
+        &mut game,
+        "command('mark', function() end, { args = { { name = 'at', kind = 'pos',
+          options = { '~ ~ ~', '100 64 100', 'spawn' },
+          suggest = function() return { '1 2 3' } end } } })",
+    );
+    // A position is three words, and so are its completions.
+    assert_eq!(
+        texts(&mut st, &mut game, "/mark "),
+        ["1 2 3", "100 64 100", "spawn", "~ ~ ~"]
+    );
+    let c = st.suggest(&mut game, "/mark 1").unwrap();
+    assert_eq!((c.start, c.len), (6, 1));
+    assert_eq!(texts(&mut st, &mut game, "/mark 1"), ["1 2 3", "100 64 100"]);
+    // Past its first coordinate, it is still completed from there.
+    let c = st.suggest(&mut game, "/mark ~ ").unwrap();
+    assert_eq!((c.start, c.len), (6, 2));
+    assert_eq!(c.list, vec![("~ ~ ~".to_owned(), None)]);
+    assert_eq!(texts(&mut st, &mut game, "/mark 100 64"), ["100 64 100"]);
+}
+
+#[test]
+fn item_and_block_ids_match_as_the_games_do() {
+    let mut game = FakeGame::new("chat-ids");
+    let mut st = studio(&mut game);
+    console(
+        &mut st,
+        &mut game,
+        "command('pick2', function() end, { args = {
+          { name = 'what', kind = 'item', options = { 'minecraft:diamond', 'minecraft:emerald', 'stick' },
+            suggest = function() return { 'minecraft:diamond_sword' } end },
+          { name = 'on', kind = 'block', options = { 'minecraft:oak_stairs[facing=east]', 'mymod:dark_ore' } },
+        } })",
+    );
+    // Without a ':', an id matches at its path too, as the game's own id
+    // completions match: options and what suggest returns alike.
+    assert_eq!(
+        texts(&mut st, &mut game, "/pick2 dia"),
+        ["minecraft:diamond", "minecraft:diamond_sword"]
+    );
+    assert_eq!(
+        texts(&mut st, &mut game, "/pick2 mine"),
+        [
+            "minecraft:diamond",
+            "minecraft:diamond_sword",
+            "minecraft:emerald",
+            "stick"
+        ]
+    );
+    assert_eq!(
+        texts(&mut st, &mut game, "/pick2 x oak"),
+        ["minecraft:oak_stairs[facing=east]"]
+    );
+    assert_eq!(texts(&mut st, &mut game, "/pick2 x dark"), ["mymod:dark_ore"]);
+    // With one, from the start of the id, which is minecraft's when it names
+    // no namespace.
+    assert_eq!(
+        texts(&mut st, &mut game, "/pick2 minecraft:d"),
+        ["minecraft:diamond", "minecraft:diamond_sword"]
+    );
+    assert_eq!(texts(&mut st, &mut game, "/pick2 minecraft:st"), ["stick"]);
+    assert!(texts(&mut st, &mut game, "/pick2 :d").is_empty());
+}
+
+#[test]
 fn completions_are_counted_in_utf16_units() {
     let mut game = FakeGame::new("chat-utf16");
     let mut st = studio(&mut game);

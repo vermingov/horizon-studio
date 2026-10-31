@@ -560,6 +560,23 @@ pub fn sub_match(input: &str, candidate: &str) -> bool {
     }
 }
 
+/// Horizon's `resource_matches` (args.rs, SharedSuggestionProvider's
+/// filterResources), on lower-cased text: how the game's own completions
+/// match an item's or a block's id. With a `:` in `input`, as `sub_match`;
+/// without one, when the id's namespace or its path matches (`dia` matches
+/// `minecraft:diamond`). An id without a namespace is read as the game reads
+/// it, as `minecraft`'s.
+pub fn id_match(input: &str, candidate: &str) -> bool {
+    let Some((namespace, path)) = candidate.split_once(':') else {
+        return id_match(input, &format!("minecraft:{candidate}"));
+    };
+    if input.contains(':') {
+        sub_match(input, candidate)
+    } else {
+        sub_match(input, namespace) || sub_match(input, path)
+    }
+}
+
 /// A tooltip cut to `MAX_COMPLETION_BYTES`, at a character's end.
 fn cut(mut s: String) -> String {
     if s.len() > MAX_COMPLETION_BYTES {
@@ -572,13 +589,20 @@ fn cut(mut s: String) -> String {
     s
 }
 
-/// The completions an answer gives for `typed`: those that match it, as the
-/// game's own providers match (`sub_match`), without the text typed itself,
-/// once each, at most `MAX_COMPLETIONS`. Empty texts, texts over
-/// `MAX_COMPLETION_BYTES` and, except for text (`spaces`), texts with
-/// whitespace are left out; tooltips are cut.
-pub fn finish(typed: &str, spaces: bool, found: Vec<Completion>) -> Vec<Completion> {
+/// The completions an answer gives for `typed`, the text of an argument of
+/// kind `kind` (free text is a text): those that match it, as the game's own
+/// providers match (`sub_match`, and `id_match` for an item or a block),
+/// without the text typed itself, once each, at most `MAX_COMPLETIONS`.
+/// Empty texts, texts over `MAX_COMPLETION_BYTES` and, but for the kinds that
+/// take more than a word (text and pos), texts with whitespace are left out;
+/// tooltips are cut.
+pub fn finish(typed: &str, kind: ArgKind, found: Vec<Completion>) -> Vec<Completion> {
+    let spaces = kind.words() != Some(1);
     let lower = typed.to_lowercase();
+    let matches = |candidate: &str| match kind {
+        ArgKind::Item | ArgKind::Block => id_match(&lower, candidate),
+        _ => sub_match(&lower, candidate),
+    };
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
     for (text, tooltip) in found {
@@ -586,7 +610,7 @@ pub fn finish(typed: &str, spaces: bool, found: Vec<Completion>) -> Vec<Completi
             || text.len() > MAX_COMPLETION_BYTES
             || (!spaces && text.contains(char::is_whitespace))
             || text == typed
-            || !sub_match(&lower, &text.to_lowercase())
+            || !matches(&text.to_lowercase())
             || !seen.insert(text.clone())
         {
             continue;

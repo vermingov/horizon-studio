@@ -2627,9 +2627,10 @@ impl Studio {
     /// chat asks for them: `line` is the command up to the cursor (with its
     /// `/`), and the chat's parse put the cursor in argument `arg` (from 0),
     /// whose text starts at byte `start`. A text argument is completed whole,
-    /// any other kind at the text the parse gave it; a command that declares
-    /// no arguments, at the word typed. None when the studio takes no such
-    /// command, or its name is still being typed.
+    /// any other kind at the text the parse gave it (a position's from its
+    /// first coordinate); a command that declares no arguments, at the word
+    /// typed. None when the studio takes no such command, or its name is
+    /// still being typed.
     pub fn complete(&mut self, game: &mut dyn GameApi, line: &str, arg: usize, start: usize) -> Option<Completions> {
         let (name, rest) = split_line(line)?;
         let rest = rest?;
@@ -2638,39 +2639,41 @@ impl Studio {
         while !line.is_char_boundary(from) {
             from -= 1;
         }
-        let (found, spaces) = match name {
-            "studio" => (studio_actions(), false),
-            "lua" => (Vec::new(), true),
+        // The kind of what is completed, which says how its completions are
+        // matched and whether they may have spaces: free text is a text.
+        let (found, kind) = match name {
+            "studio" => (studio_actions(), ArgKind::Word),
+            "lua" => (Vec::new(), ArgKind::Text),
             _ => {
                 let owner = self.s.command_owner(name)?;
                 let c = self.s.owner_mod(owner).commands.iter().find(|c| c.name == name)?;
-                let (which, options, f, spaces) = match &c.args {
+                let (which, options, f, kind) = match &c.args {
                     None => {
                         from = last_word(line, after);
-                        (None, Vec::new(), c.suggest.as_ref().map(|s| s.f.clone()), true)
+                        (None, Vec::new(), c.suggest.as_ref().map(|s| s.f.clone()), ArgKind::Text)
                     }
                     Some(args) => match args.get(arg) {
                         Some(a) => (
                             Some((arg, a.name.clone())),
                             a.options.clone(),
                             a.suggest.as_ref().map(|s| s.f.clone()),
-                            a.kind == ArgKind::Text,
+                            a.kind,
                         ),
-                        None => (None, Vec::new(), None, false),
+                        None => (None, Vec::new(), None, ArgKind::Word),
                     },
                 };
                 let mut found = options;
                 if let Some(f) = f {
                     found.extend(self.call_suggest(game, owner, name, which, &f, rest));
                 }
-                (found, spaces)
+                (found, kind)
             }
         };
         let typed = &line[from..];
         Some(Completions {
             start: utf16(&line[..from]),
             len: utf16(typed),
-            list: finish(typed, spaces, found),
+            list: finish(typed, kind, found),
         })
     }
 
