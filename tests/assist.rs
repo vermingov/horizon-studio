@@ -98,6 +98,43 @@ fn the_standard_library_matches_the_reference() {
 }
 
 #[test]
+fn game_has_its_roblox_members_too() {
+    // The DataModel's services, LocalPlayer and the rest are no unknown names.
+    let src = "local lp = game.LocalPlayer\nlocal ws = game.workspace\nlocal p = game.Players\nlocal w = game.Workspace\n\
+               print(game.Name, game.PlaceId, game.Lighting.ClockTime)\ngame.DescendantAdded:Connect(print)\n";
+    assert!(problems(src).is_empty(), "{:?}", problems(src));
+    assert_eq!(problems("game.tiks()\n")[0].2, "game has no 'tiks'");
+    assert_eq!(problems("local p = game.Plyers\n")[0].2, "game has no 'Plyers'");
+    // After `game.`, with the studio's own functions.
+    let got = labels("game.", &[], false);
+    for want in [
+        "LocalPlayer",
+        "Players",
+        "Workspace",
+        "ReplicatedStorage",
+        "run",
+        "ticks",
+    ] {
+        assert!(got.contains(&want.to_owned()), "{want} in {got:?}");
+    }
+    assert!(!got.contains(&"GetService".to_owned()), "methods take ':': {got:?}");
+    assert_eq!(labels("game.LocalP", &[], false), ["LocalPlayer"]);
+    assert!(labels("game.wor", &[], false).contains(&"workspace".to_owned()));
+    let (start, s) = suggest("local me = game.Loc", &[], false, None).unwrap();
+    assert_eq!(start, "local me = game.".len());
+    assert_eq!(
+        (s[0].insert.as_str(), s[0].detail.as_str()),
+        ("LocalPlayer", "game.LocalPlayer")
+    );
+    assert!(s[0].doc.contains("game.Players.LocalPlayer"), "{:?}", s[0]);
+    // Its methods after `game:`, from the ':'.
+    let (start, s) = suggest("local rs = game:GetS", &[], false, None).unwrap();
+    assert_eq!(start, "local rs = game".len());
+    let get = s.iter().find(|x| x.label == "GetService").expect("GetService");
+    assert_eq!((get.insert.as_str(), get.kind), (":GetService", Kind::Function));
+}
+
+#[test]
 fn after_a_colon_the_receivers_own_methods() {
     // A library's functions: the ':' becomes the '.' they are called with.
     let (start, s) = suggest("x = player:po", &[], false, None).unwrap();

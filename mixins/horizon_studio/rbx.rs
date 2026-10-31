@@ -309,7 +309,8 @@ pub static CLASSES: &[C] = &[
     service(
         "Workspace",
         &[
-            p("Gravity", Num, N(196.2)),
+            // Minecraft's, in blocks a second each second (0.08 a tick each tick).
+            p("Gravity", Num, N(32.0)),
             p("CurrentCamera", Obj, D::Nil),
             ro("Terrain", Obj, D::Nil),
             ro("DistributedGameTime", Num, N(0.0)),
@@ -423,7 +424,13 @@ pub static CLASSES: &[C] = &[
             p("CameraMaxZoomDistance", Num, N(128.0)),
             p("CameraMinZoomDistance", Num, N(0.5)),
         ],
-        &["Chatted", "CharacterAdded", "CharacterRemoving", "Idled"],
+        &[
+            "Chatted",
+            "CharacterAdded",
+            "CharacterRemoving",
+            "Idled",
+            "CharacterAppearanceLoaded",
+        ],
     ),
     abstract_class(
         "PlayerGui",
@@ -1149,11 +1156,11 @@ pub struct Rbx {
     pub pointer: Pointer,
     /// Warnings for the console (an infinite WaitForChild).
     pub warnings: Vec<String>,
-    /// Chat lines and commands the layer sends (Player:Chat, teleports).
+    /// Chat lines and commands the layer sends (teleports go as Rbx.world's).
     pub sends: Vec<String>,
     /// Sounds to play: id, place, volume, pitch.
     pub sounds: Vec<(String, Option<[f64; 3]>, f32, f32)>,
-    /// Agent commands to run (Humanoid:MoveTo).
+    /// Agent commands to run (Humanoid:MoveTo's walk is Rbx.world's).
     pub agent: Vec<String>,
     /// The studio's clock.
     pub now: f64,
@@ -1161,6 +1168,8 @@ pub struct Rbx {
     pub layout: Option<super::hstudio_rbx_draw::Frame>,
     /// The player as the last frame saw it.
     pub last_health: Option<f32>,
+    /// The world as the layer follows it (hstudio_rbx_world).
+    pub world: super::hstudio_rbx_world::World,
     /// A script has used the layer: until then it costs the game nothing.
     pub active: bool,
     /// gethui's container: a Folder outside the DataModel whose ScreenGuis draw.
@@ -1274,6 +1283,7 @@ impl Rbx {
             now: 0.0,
             layout: None,
             last_health: None,
+            world: super::hstudio_rbx_world::World::default(),
             active: false,
             hui: 0,
             http: Vec::new(),
@@ -1333,40 +1343,22 @@ impl Rbx {
                 self.player_gui = c;
             }
         }
-        // The character: a model with a root part, a head and a humanoid.
-        let character = self.make("Model", None);
-        self.inst_mut(character).name = "Player1".into();
-        self.character = character;
-        for (name, size) in [("HumanoidRootPart", (2.0, 2.0, 1.0)), ("Head", (2.0, 1.0, 1.0))] {
-            let part = self.make("Part", None);
-            self.inst_mut(part).name = name.into();
-            self.raw_set(part, "Size", v3(Vector3::new(size.0, size.1, size.2)));
-            self.raw_set(part, "Transparency", Value::Num(1.0));
-            self.raw_set(part, "Anchored", Value::Bool(true));
-            let _ = self.set_parent(part, Some(character));
-            if name == "HumanoidRootPart" {
-                self.root_part = part;
-            } else {
-                self.head = part;
-            }
-        }
-        let humanoid = self.make("Humanoid", None);
-        self.humanoid = humanoid;
-        let root_v = self.value(self.root_part);
-        self.raw_set(humanoid, "RootPart", root_v);
-        self.raw_set(humanoid, "DisplayName", Value::str("Player1"));
-        let _ = self.set_parent(humanoid, Some(character));
-        let root_v = self.value(self.root_part);
-        self.raw_set(character, "PrimaryPart", root_v);
-        let _ = self.set_parent(character, Some(self.workspace));
-        let cv = self.value(character);
+        // The character: an R6 rig that follows the player (hstudio_rbx_world).
+        let rig = super::hstudio_rbx_world::build_character(self, super::hstudio_rbx_world::NO_NAME);
+        self.character = rig.model;
+        self.root_part = rig.root;
+        self.head = rig.head;
+        self.humanoid = rig.humanoid;
+        self.world.limbs = rig.limbs;
+        let _ = self.set_parent(rig.model, Some(self.workspace));
+        let cv = self.value(rig.model);
         self.raw_set(player, "Character", cv);
-        let sub = self.value(humanoid);
+        let sub = self.value(rig.humanoid);
         self.raw_set(camera, "CameraSubject", sub);
         let mouse = self.make("PlayerMouse", None);
         self.inst_mut(mouse).name = "Instance".into();
         self.mouse = mouse;
-        for id in [character, self.root_part, self.head, humanoid, camera, mouse] {
+        for id in [camera, mouse] {
             self.lock(id);
         }
         let hui = self.make("Folder", None);
@@ -1483,6 +1475,7 @@ impl Rbx {
     /// Changed and the property's own signal, as Roblox fires them (a
     /// ValueBase's Changed is for its Value only, with the value).
     pub fn changed(&mut self, id: Id, name: &str, v: &Value) {
+        super::hstudio_rbx_query::changed(self, id, name);
         let value_base = self.insts.get(&id).is_some_and(|i| is_a(i.class, "ValueBase"));
         if value_base && name == "Value" {
             self.fire(id, "Changed", vec![v.clone()]);
@@ -1677,6 +1670,38 @@ impl Rbx {
         self.pointer.pressed = None;
         self.pointer.drag = None;
         self.layout = None;
+        super::hstudio_rbx_world::forget(self, owner);
+    }
+
+    /// Mod `i` left the studio's list (it stopped, and `forget` dropped what
+    /// it had): the mods after it move down one place, and so does every
+    /// owner the layer keeps of theirs, so that each thing stays its mod's.
+    pub fn owner_removed(&mut self, i: usize) {
+        let shift = |o: &mut Owner| {
+            if let Owner::Mod(j) = o
+                && *j > i
+            {
+                *j -= 1;
+            }
+        };
+        for inst in self.insts.values_mut() {
+            if let Some(o) = &mut inst.owner {
+                shift(o);
+            }
+            for c in &mut inst.conns {
+                shift(&mut c.owner);
+            }
+        }
+        self.deferred.iter_mut().for_each(|d| shift(&mut d.0));
+        self.ready.iter_mut().for_each(|r| shift(&mut r.0));
+        self.waiters.iter_mut().for_each(|w| shift(&mut w.owner));
+        self.tweens.iter_mut().for_each(|t| shift(&mut t.owner));
+        self.actions.iter_mut().for_each(|a| shift(&mut a.1));
+        self.render_steps.iter_mut().for_each(|r| shift(&mut r.2));
+        self.http.iter_mut().for_each(|h| shift(&mut h.owner));
+        self.sockets.iter_mut().for_each(|s| shift(&mut s.owner));
+        self.drawings.iter_mut().for_each(|d| shift(&mut d.owner));
+        self.world.lookers.iter_mut().for_each(shift);
     }
 
     /// A child named `name` of `parent`, the first.
@@ -1687,7 +1712,7 @@ impl Rbx {
             .find(|&c| self.inst(c).name == name)
     }
 
-    fn child_arrived(&mut self, parent: Id, child: Id) {
+    pub fn child_arrived(&mut self, parent: Id, child: Id) {
         let name = self.inst(child).name.clone();
         let cv = self.value(child);
         let mut i = 0;
@@ -1864,6 +1889,7 @@ const METHODS: &[(&str, &str)] = &[
     ("GetRankInGroup", "Player"),
     ("LoadCharacter", "Player"),
     ("DistanceFromCharacter", "Player"),
+    ("GetNetworkPing", "Player"),
     ("IsClient", "RunService"),
     ("IsServer", "RunService"),
     ("IsStudio", "RunService"),
@@ -1909,6 +1935,28 @@ const METHODS: &[(&str, &str)] = &[
     ("UnbindAllActions", "ContextActionService"),
     ("Raycast", "Workspace"),
     ("GetServerTimeNow", "Workspace"),
+    ("GetPartBoundsInRadius", "Workspace"),
+    ("GetPartBoundsInBox", "Workspace"),
+    ("GetPartsInPart", "Workspace"),
+    ("FindPartOnRay", "Workspace"),
+    ("FindPartOnRayWithIgnoreList", "Workspace"),
+    ("FindPartOnRayWithWhitelist", "Workspace"),
+    ("GetBlock", "Terrain"),
+    ("ReadVoxels", "Terrain"),
+    ("WorldToCell", "Terrain"),
+    ("WorldToCellPreferSolid", "Terrain"),
+    ("WorldToCellPreferEmpty", "Terrain"),
+    ("CellCenterToWorld", "Terrain"),
+    ("CellCornerToWorld", "Terrain"),
+    ("FillBlock", "Terrain"),
+    ("FillBall", "Terrain"),
+    ("FillCylinder", "Terrain"),
+    ("FillRegion", "Terrain"),
+    ("FillWedge", "Terrain"),
+    ("WriteVoxels", "Terrain"),
+    ("ReplaceMaterial", "Terrain"),
+    ("Clear", "Terrain"),
+    ("SetMaterialColor", "Terrain"),
     ("WorldToViewportPoint", "Camera"),
     ("WorldToScreenPoint", "Camera"),
     ("ViewportPointToRay", "Camera"),
@@ -1955,6 +2003,31 @@ fn find_method(c: &'static C, name: &str) -> Option<usize> {
         }
         pick(&format!("{}{}", first.to_ascii_uppercase(), chars.as_str()))
     })
+}
+
+/// The names of the methods instances of `class` have, their class's and
+/// those they inherit (for the editor's suggestions).
+pub fn method_names(class: &str) -> Vec<&'static str> {
+    let Some(c) = class_def(class) else {
+        return Vec::new();
+    };
+    let mut names: Vec<&'static str> = METHODS
+        .iter()
+        .filter(|(_, owner)| is_a(c, owner))
+        .map(|(m, _)| *m)
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
+/// Whether `key` is a member of class `c` (a property, an event or a
+/// method) rather than a child's name.
+pub fn is_member(c: &'static C, key: &str) -> bool {
+    matches!(key, "Name" | "ClassName" | "Parent")
+        || find_prop(c, key).is_some()
+        || has_event(c, key)
+        || find_method(c, key).is_some()
 }
 
 fn kind_name(k: K) -> String {
@@ -2227,9 +2300,7 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
             env.rbx().inst(id).class.name
         )));
     };
-    if id == env.rbx().mouse && matches!(k.as_str(), "Hit" | "Target" | "UnitRay") {
-        super::hstudio_rbx_draw::mouse_refresh(env);
-    }
+    super::hstudio_rbx_world::before_read(env, id, &k);
     if matches!(k.as_str(), "ViewportSize" | "ViewSizeX" | "ViewSizeY") {
         let snap = env_snapshot(env);
         env.rbx().refresh(id, &k, snap.as_ref());
@@ -2253,6 +2324,9 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
     }
     if let Some(p) = find_prop(c, &k) {
         return one(inst.get(p.name));
+    }
+    if let Some(v) = super::hstudio_rbx_world::member(rbx, id, &k) {
+        return one(v);
     }
     // Properties made of others.
     let derived = match k.as_str() {
@@ -2390,6 +2464,9 @@ fn newindex(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Result<(), Thro
             return rbx.set_parent(id, parent).map_err(|e| lua.rt_error(e));
         }
         "ClassName" => return Err(lua.rt_error("Unable to assign property ClassName. Property is read only")),
+        _ if super::hstudio_rbx_world::member(rbx, id, &key).is_some() => {
+            return Err(lua.rt_error(format!("Unable to assign property {key}. Property is read only")));
+        }
         _ => {}
     }
     if let Some(p) = find_prop(c, &key) {
@@ -2452,11 +2529,7 @@ impl Rbx {
         let class = self.inst(id).class.name;
         match (class, prop) {
             ("Sound", "Playing") if self.raw_get(id, "Playing").truthy() => self.play_sound(id),
-            (_, "CFrame") if id == self.root_part => {
-                let at = as_cf(&self.raw_get(id, "CFrame")).unwrap_or_default().position();
-                self.sends
-                    .push(format!("tp @s {:.3} {:.3} {:.3}", at.x, at.y - 0.9, at.z));
-            }
+            (_, "CFrame") if id == self.root_part => super::hstudio_rbx_world::root_moved(self),
             ("TextBox", "Text") => {}
             _ => {}
         }

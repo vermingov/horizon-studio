@@ -1408,6 +1408,51 @@ impl fmt::Display for Rect {
     }
 }
 
+/// A box in the world by its corners (Terrain:ReadVoxels' region), not
+/// turned.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Region3 {
+    pub min: Vector3,
+    pub max: Vector3,
+}
+
+impl Region3 {
+    /// Region3.new(min, max): the least and the most of the corners given.
+    pub fn new(a: Vector3, b: Vector3) -> Region3 {
+        Region3 {
+            min: a.min(b),
+            max: a.max(b),
+        }
+    }
+
+    /// Its centre, as a CFrame with no turn.
+    pub fn cframe(self) -> CFrame {
+        CFrame::from_position((self.min + self.max) / 2.0)
+    }
+
+    pub fn size(self) -> Vector3 {
+        self.max - self.min
+    }
+
+    /// Region3:ExpandToGrid(resolution): its corners out to the grid of
+    /// cells `resolution` a side.
+    pub fn expand_to_grid(self, resolution: f64) -> Region3 {
+        let r = resolution;
+        let out = |v: Vector3, f: fn(f64) -> f64| Vector3::new(f(v.x / r) * r, f(v.y / r) * r, f(v.z / r) * r);
+        Region3 {
+            min: out(self.min, f64::floor),
+            max: out(self.max, f64::ceil),
+        }
+    }
+}
+
+/// "CFrame; Size", as Roblox writes it.
+impl fmt::Display for Region3 {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}; {}", self.cframe(), self.size())
+    }
+}
+
 // ---------------------------------------------------------------- ranges and sequences
 
 /// A range of numbers, Min to Max.

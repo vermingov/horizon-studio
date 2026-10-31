@@ -40,6 +40,7 @@ fn bool_arg(args: &[Value], i: usize) -> bool {
 /// A method of an instance (`owner_class` says which class has it).
 pub fn method(env: &mut dyn Env, lua: &mut Lua, name: &str, owner_class: &str, args: Vec<Value>) -> Res {
     let id = me(env, lua, &args, name)?;
+    super::hstudio_rbx_world::before_call(env, id, name, &args);
     // CollectionService:AddTag(instance, tag) is the instance's own.
     if matches!(name, "AddTag" | "RemoveTag" | "HasTag" | "GetTags")
         && env.rbx().service("CollectionService") == Some(id)
@@ -355,51 +356,20 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
         }
         ("DataModel", "IsLoaded") => one(Value::Bool(true)),
         ("DataModel", "BindToClose") => none(),
-        ("Players", "GetPlayers") => {
-            let rbx = env.rbx();
-            let p = rbx.local_player;
-            one(rbx.list(&[p]))
+        (
+            "Players",
+            "GetPlayers"
+            | "GetPlayerFromCharacter"
+            | "GetPlayerByUserId"
+            | "GetNameFromUserIdAsync"
+            | "GetUserIdFromNameAsync",
+        )
+        | ("Player", "GetMouse" | "Kick" | "LoadCharacter" | "DistanceFromCharacter" | "GetNetworkPing") => {
+            super::hstudio_rbx_world::player_method(env, lua, id, name, args)
         }
-        ("Players", "GetPlayerFromCharacter") => {
-            let rbx = env.rbx();
-            let hit = args.get(1).and_then(|v| rbx.id_of(v)) == Some(rbx.character);
-            one(if hit { rbx.value(rbx.local_player) } else { Value::Nil })
-        }
-        ("Players", "GetPlayerByUserId") => {
-            let n = check_num(lua, args, 1, name)?;
-            let rbx = env.rbx();
-            one(if n == 1.0 {
-                rbx.value(rbx.local_player)
-            } else {
-                Value::Nil
-            })
-        }
-        ("Players", "GetNameFromUserIdAsync") => one(Value::str("Player1")),
-        ("Players", "GetUserIdFromNameAsync") => one(Value::Num(1.0)),
         ("Players", "GetUserThumbnailAsync") => Ok(vec![Value::str(""), Value::Bool(true)]),
-        ("Player", "GetMouse") => {
-            let rbx = env.rbx();
-            one(rbx.value(rbx.mouse))
-        }
-        ("Player", "Kick") => {
-            let why = args.get(1).and_then(Value::as_text).unwrap_or_default();
-            env.rbx()
-                .warnings
-                .push(format!("Player:Kick() asked to leave the game: {why}"));
-            none()
-        }
         ("Player", "IsFriendsWith" | "IsInGroup") => one(Value::Bool(false)),
         ("Player", "GetRankInGroup") => one(Value::Num(0.0)),
-        ("Player", "LoadCharacter") => none(),
-        ("Player", "DistanceFromCharacter") => {
-            let p = args
-                .get(1)
-                .and_then(as_v3)
-                .ok_or_else(|| bad_arg(lua, 1, name, "Vector3 expected"))?;
-            let rbx = env.rbx();
-            let at = as_cf(&rbx.raw_get(rbx.head, "CFrame")).unwrap_or_default().position();
-            one(Value::Num((p - at).magnitude()))
-        }
         ("RunService", "IsClient" | "IsRunning" | "IsRunMode") => one(Value::Bool(true)),
         ("RunService", "IsServer" | "IsStudio") => one(Value::Bool(false)),
         ("RunService", "BindToRenderStep") => {
@@ -710,8 +680,18 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
                 Some(Value::Table(t)) => Some(t.clone()),
                 _ => None,
             };
-            one(super::hstudio_rbx_draw::raycast(env, origin, dir, params.as_ref()))
+            one(super::hstudio_rbx_query::raycast(env, origin, dir, params.as_ref()))
         }
+        (
+            "Workspace",
+            "GetPartBoundsInRadius"
+            | "GetPartBoundsInBox"
+            | "GetPartsInPart"
+            | "FindPartOnRay"
+            | "FindPartOnRayWithIgnoreList"
+            | "FindPartOnRayWithWhitelist",
+        ) => super::hstudio_rbx_query::workspace_method(env, lua, name, args),
+        ("Terrain", _) => super::hstudio_rbx_query::terrain_method(env, lua, name, args),
         ("Workspace", "GetServerTimeNow") => one(Value::Num(now)),
         ("Camera", "WorldToViewportPoint" | "WorldToScreenPoint") => {
             let p = args
@@ -757,6 +737,14 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
                 .get(1)
                 .and_then(as_v3)
                 .ok_or_else(|| bad_arg(lua, 1, name, "Vector3 expected"))?;
+            // The player's character is moved up out of the blocks in its way,
+            // as Roblox moves a model up out of what is in its way.
+            let p = if id == env.rbx().character {
+                let (rbx, game) = env.rbx_and_game();
+                super::hstudio_rbx_world::room_for_player(game, rbx.world.root_y, p)
+            } else {
+                p
+            };
             let rbx = env.rbx();
             let now_at = pivot(rbx, id);
             move_to(rbx, id, CFrame::from_position(p) * now_at.rotation());
@@ -772,13 +760,7 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
                 .get(1)
                 .and_then(as_v3)
                 .ok_or_else(|| bad_arg(lua, 1, name, "Vector3 expected"))?;
-            let rbx = env.rbx();
-            rbx.agent.push(format!(
-                "goto {:.0} {:.0} {:.0} --near 1",
-                p.x.floor(),
-                p.y.floor(),
-                p.z.floor()
-            ));
+            super::hstudio_rbx_world::move_to(env.rbx(), id, p);
             none()
         }
         ("Humanoid", "TakeDamage") => {
@@ -789,7 +771,10 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             none()
         }
         ("Humanoid", "ChangeState") => none(),
-        ("Humanoid", "GetState") => one(enum_value(enum_item("HumanoidStateType", "Running"))),
+        ("Humanoid", "GetState") => {
+            let state = super::hstudio_rbx_world::state_of(env.rbx(), id);
+            one(enum_value(enum_item("HumanoidStateType", state)))
+        }
         ("Humanoid", "UnequipTools") => none(),
         ("Humanoid", "GetPlayingAnimationTracks") => one(Value::table(Table::new())),
         ("BindableEvent", "Fire") => {
@@ -953,6 +938,10 @@ pub fn step_tweens(rbx: &mut Rbx, dt: f64) {
     for (id, prop, v) in sets {
         if rbx.try_inst(id).is_some_and(|i| !i.destroyed) {
             rbx.raw_set(id, prop, v);
+            // A tween of the player's root part moves the player.
+            if id == rbx.root_part && prop == "CFrame" {
+                super::hstudio_rbx_world::root_moved(rbx);
+            }
         }
     }
     for (tid, callback) in done {
@@ -996,7 +985,8 @@ pub fn pivot(rbx: &Rbx, id: Id) -> CFrame {
     CFrame::from_position(sum / parts.len() as f64)
 }
 
-/// Moves a model (every part in it) or a part to `target`, keeping their offsets.
+/// Moves a model (every part in it) or a part to `target`, keeping their
+/// offsets. Moving the player's root part moves the player.
 fn move_to(rbx: &mut Rbx, id: Id, target: CFrame) {
     let from = pivot(rbx, id);
     let delta = target * from.inverse();
@@ -1007,6 +997,9 @@ fn move_to(rbx: &mut Rbx, id: Id, target: CFrame) {
             && let Some(c) = as_cf(&rbx.raw_get(d, "CFrame"))
         {
             rbx.raw_set(d, "CFrame", cf(delta * c));
+            if d == rbx.root_part {
+                super::hstudio_rbx_world::root_moved(rbx);
+            }
         }
     }
     if rbx.inst(id).class.name == "Model" {

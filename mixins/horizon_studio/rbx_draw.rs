@@ -1352,7 +1352,7 @@ fn ray_through(cam: &super::hstudio::Camera, x: f64, y: f64, w: f64, h: f64) -> 
 }
 
 /// The Roblox material a block looks most like.
-fn block_material(id: &str) -> &'static str {
+pub fn block_material(id: &str) -> &'static str {
     let b = id.trim_start_matches("minecraft:");
     match b {
         _ if b.contains("water") => "Water",
@@ -1379,7 +1379,7 @@ fn block_material(id: &str) -> &'static str {
     }
 }
 
-fn passable(id: &str) -> bool {
+pub fn passable(id: &str) -> bool {
     let b = id.trim_start_matches("minecraft:");
     b == "air"
         || b == "cave_air"
@@ -1391,7 +1391,7 @@ fn passable(id: &str) -> bool {
 
 /// The first solid block a ray meets within `limit`: how far, the face's
 /// normal and the block's id (Amanatides and Woo's walk, a block at a time).
-fn first_block(
+pub fn first_block(
     game: &mut dyn GameApi,
     origin: Vector3,
     unit: Vector3,
@@ -1447,8 +1447,10 @@ fn first_block(
     None
 }
 
-/// The Mouse's Hit, Target and UnitRay, worked out as a script reads them:
-/// where the pointer (or the crosshair) points, through the blocks.
+/// The Mouse's Hit, Target, TargetSurface, UnitRay and Origin (the camera,
+/// looking along the ray), worked out as a script reads them: where the
+/// pointer (or the crosshair) points, at a part or a block
+/// (hstudio_rbx_query).
 pub fn mouse_refresh(env: &mut dyn Env) {
     let (free, px, py) = {
         let p = &env.rbx().pointer;
@@ -1463,132 +1465,14 @@ pub fn mouse_refresh(env: &mut dyn Env) {
         (f64::from(w) / 2.0, f64::from(h) / 2.0)
     };
     let (o, d) = ray_through(&cam, mx, my, f64::from(w), f64::from(h));
-    let hit = first_block(game, o, d, 500.0, true).map_or(o + d * 500.0, |(t, _, _)| o + d * t);
+    let (hit, target, surface) = super::hstudio_rbx_query::mouse_hit(env, o, d);
     let rbx = env.rbx();
     let m = rbx.mouse;
-    let terrain = rbx.raw_get(rbx.workspace, "Terrain");
-    let target = if (hit - o).magnitude() < 499.0 {
-        terrain
-    } else {
-        Value::Nil
-    };
     rbx.quiet_set(m, "Hit", cf(CFrame::from_position(hit)));
     rbx.quiet_set(m, "Target", target);
+    rbx.quiet_set(m, "TargetSurface", enum_value(enum_item("NormalId", surface)));
     rbx.quiet_set(m, "UnitRay", super::hstudio_rbx_values::wrap(Data::Ray(o, d)));
-}
-
-/// workspace:Raycast: through the world's blocks and the Workspace's parts;
-/// a RaycastResult table, or nil.
-pub fn raycast(
-    env: &mut dyn Env,
-    origin: Vector3,
-    dir: Vector3,
-    params: Option<&super::hstudio_lua::TableRef>,
-) -> Value {
-    let length = dir.magnitude().min(5000.0);
-    if length <= 0.0 {
-        return Value::Nil;
-    }
-    let unit = dir.unit();
-    let ignore_water = params.is_some_and(|p| p.borrow().get_str("IgnoreWater").truthy());
-    // The parts first: their nearest hit.
-    let (filter, include) = match params {
-        Some(p) => {
-            let p = p.borrow();
-            let include = as_item(&p.get_str("FilterType")).is_some_and(|i| i.value == 1);
-            let list = match p.get_str("FilterDescendantsInstances") {
-                Value::Table(t) => t.borrow().list(),
-                _ => Vec::new(),
-            };
-            (list, include)
-        }
-        None => (Vec::new(), false),
-    };
-    let rbx = env.rbx();
-    let filter: Vec<Id> = filter.iter().filter_map(|v| rbx.id_of(v)).collect();
-    let in_filter = |rbx: &Rbx, id: Id| filter.iter().any(|&f| f == id || rbx.is_descendant_of(id, f));
-    let mut best: Option<(f64, Vector3, Id)> = None;
-    for id in rbx.descendants(rbx.workspace) {
-        let inst = rbx.inst(id);
-        if !is_a(inst.class, "BasePart") || inst.class.name == "Terrain" || !inst.get("CanQuery").truthy() {
-            continue;
-        }
-        // The character's own parts only when a filter asks for them.
-        if (id == rbx.root_part || id == rbx.head) && (!include || !in_filter(rbx, id)) {
-            continue;
-        }
-        let hit = in_filter(rbx, id);
-        if include != hit {
-            continue;
-        }
-        let frame = as_cf(&inst.get("CFrame")).unwrap_or_default();
-        let half = as_v3(&inst.get("Size")).unwrap_or(Vector3::ONE) / 2.0;
-        // The ray in the part's space, against its box.
-        let o = frame.point_to_object(origin);
-        let d = frame.vector_to_object(unit);
-        let mut t0 = 0.0f64;
-        let mut t1 = length;
-        let mut normal = Vector3::ZERO;
-        let mut ok = true;
-        for (axis, (oc, dc, hc)) in [(o.x, d.x, half.x), (o.y, d.y, half.y), (o.z, d.z, half.z)]
-            .into_iter()
-            .enumerate()
-        {
-            if dc.abs() < 1e-12 {
-                if oc.abs() > hc {
-                    ok = false;
-                    break;
-                }
-                continue;
-            }
-            let (mut a, mut b) = ((-hc - oc) / dc, (hc - oc) / dc);
-            let mut sign = -1.0;
-            if a > b {
-                std::mem::swap(&mut a, &mut b);
-                sign = 1.0;
-            }
-            if a > t0 {
-                t0 = a;
-                let mut n = [0.0; 3];
-                n[axis] = sign;
-                normal = Vector3::new(n[0], n[1], n[2]);
-            }
-            t1 = t1.min(b);
-            if t0 > t1 {
-                ok = false;
-                break;
-            }
-        }
-        if ok && best.is_none_or(|b| t0 < b.0) {
-            best = Some((t0, frame.vector_to_world(normal), id));
-        }
-    }
-    // Then the blocks, a step at a time (Amanatides and Woo).
-    let limit = best.map_or(length, |b| b.0);
-    let terrain = rbx.raw_get(rbx.workspace, "Terrain");
-    let block_hit = first_block(env.game(), origin, unit, limit, ignore_water);
-    let mut t = Table::new();
-    match (block_hit, best) {
-        (Some((bt, n, b)), _) if bt <= limit => {
-            t.set_str("Position", v3(origin + unit * bt));
-            t.set_str("Normal", v3(n));
-            t.set_str("Distance", Value::Num(bt));
-            t.set_str("Instance", terrain);
-            t.set_str("Material", enum_value(enum_item("Material", block_material(&b))));
-            t.set_str("Block", Value::str(&b));
-        }
-        (_, Some((pt, n, id))) => {
-            let rbx = env.rbx();
-            t.set_str("Position", v3(origin + unit * pt));
-            t.set_str("Normal", v3(n));
-            t.set_str("Distance", Value::Num(pt));
-            t.set_str("Instance", rbx.value(id));
-            let mat = rbx.raw_get(id, "Material");
-            t.set_str("Material", mat);
-        }
-        _ => return Value::Nil,
-    }
-    Value::table(t)
+    rbx.quiet_set(m, "Origin", cf(CFrame::look_at(o, o + d, Vector3::Y_AXIS)));
 }
 
 // ---------------------------------------------------------------- each frame
@@ -1605,38 +1489,13 @@ pub fn step(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64, dt: f64, frame_no: 
     super::hstudio_sunc::poll_network(rbx);
 }
 
-/// The DataModel brought up to the game: the character, the Camera and the
-/// time of day.
+/// The DataModel brought up to the game: the world (hstudio_rbx_world: the
+/// player and their character), the Camera and the time of day.
 pub fn sync(rbx: &mut Rbx, game: &mut dyn GameApi) {
     let now = rbx.now;
     let ws = rbx.workspace;
     rbx.quiet_set(ws, "DistributedGameTime", Value::Num(now));
-    if let Some(p) = game.player() {
-        let yaw = f64::from(p.yaw).to_radians();
-        let pitch = f64::from(p.pitch).to_radians();
-        let feet = Vector3::new(p.x, p.y, p.z);
-        let flat = Vector3::new(-yaw.sin(), 0.0, yaw.cos());
-        let look = Vector3::new(-yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos());
-        let root = feet + Vector3::new(0.0, 0.9, 0.0);
-        let head = feet + Vector3::new(0.0, 1.62, 0.0);
-        let rp = rbx.root_part;
-        let hd = rbx.head;
-        // Kept quiet so a script's teleport isn't undone by the player's own place.
-        rbx.quiet_set(rp, "CFrame", cf(CFrame::look_at(root, root + flat, Vector3::Y_AXIS)));
-        rbx.fire(rp, "prop:CFrame", Vec::new());
-        rbx.quiet_set(hd, "CFrame", cf(CFrame::look_at(head, head + look, Vector3::Y_AXIS)));
-        let hum = rbx.humanoid;
-        rbx.raw_set(hum, "MaxHealth", Value::Num(f64::from(p.max_health) * 5.0));
-        let health = f64::from(p.health) * 5.0;
-        if rbx.last_health.is_none_or(|h| h != p.health) {
-            rbx.raw_set(hum, "Health", Value::Num(health));
-            rbx.fire(hum, "HealthChanged", vec![Value::Num(health)]);
-            if p.health <= 0.0 && rbx.last_health.is_some_and(|h| h > 0.0) {
-                rbx.fire(hum, "Died", Vec::new());
-            }
-            rbx.last_health = Some(p.health);
-        }
-    }
+    super::hstudio_rbx_world::sync(rbx, game);
     if let Some(cam) = game.camera() {
         let c = rbx.camera;
         rbx.quiet_set(c, "CFrame", cf(camera_cframe(&cam)));
@@ -1682,11 +1541,18 @@ fn step_events(rbx: &mut Rbx, now: f64, dt: f64, frame_no: u64) {
         rbx.deferred.push((owner, f, vec![Value::Num(dt)]));
     }
     super::hstudio_rbx_methods::step_tweens(rbx, dt);
-    // Debris whose time came.
+    // Debris whose time came. What Destroy can't destroy (a service, the
+    // character, the world's mirrors and other players) stays, as in Roblox.
     let due: Vec<Id> = rbx.debris.iter().filter(|d| d.1 <= now).map(|d| d.0).collect();
     rbx.debris.retain(|d| d.1 > now);
     for id in due {
-        rbx.destroy(id);
+        match rbx.try_inst(id) {
+            Some(i) if i.locked && i.parent.is_some() && !i.destroyed => {
+                let note = format!("Debris can't destroy {}: its Parent property is locked", i.name);
+                rbx.warnings.push(note);
+            }
+            _ => rbx.destroy(id),
+        }
     }
     // WaitForChild's timeouts, and its warning after 5 seconds.
     let mut i = 0;

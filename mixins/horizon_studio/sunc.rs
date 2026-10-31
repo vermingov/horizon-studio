@@ -1049,6 +1049,11 @@ impl Ctx<'_> {
                 one(rbx.value(rbx.hui))
             }
             2043 | 2044 => {
+                // The world's entities are instances too: getinstances mirrors
+                // them first. getnilinstances needn't: they are in the Workspace.
+                if id == 2043 {
+                    super::hstudio_rbx_world::look(self);
+                }
                 let rbx = &self.s.rbx;
                 let mut ids: Vec<Id> = rbx
                     .insts

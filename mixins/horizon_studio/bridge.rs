@@ -5,8 +5,8 @@
 // command can reach the game's own command path) do nothing.
 
 use super::hstudio::{
-    Camera, Corner, Font, GameApi, ID, NAME, OPEN_KEY, PartFrame, PlayerInfo, PlayerPose, Reply, Studio, TexRef, VERSION,
-    ViaInfo, WorldTri,
+    Camera, Corner, EntityInfo, Font, GameApi, ID, NAME, OPEN_KEY, PartFrame, PlayerEntry, PlayerInfo, PlayerPose,
+    Reply, Studio, TexRef, VERSION, ViaInfo, WorldTri,
 };
 use horizon_client::net::hstudio_via as via;
 use super::hstudio_ui::{Input, Key, Mods, UiResult, draw, draw_screen, handle, handle_screen};
@@ -165,6 +165,108 @@ fn game_corner(c: Corner) -> GameCorner {
     }
 }
 
+/// The player's own profile name and UUID: on a server, the one it joined
+/// with; hosting a LAN world, the host's; alone, the game's single-player
+/// name and the level's UUID.
+fn own_profile(g: &Game<'_>) -> (String, u128) {
+    if let Some(r) = g.remote.as_ref() {
+        return (r.profile_name.clone(), r.profile());
+    }
+    if let Some(h) = g.lan.as_ref() {
+        return (h.host_name.clone(), h.host_uuid);
+    }
+    let uuid = g
+        .level
+        .player_uuid
+        .map_or(0, |u| u.iter().fold(0u128, |a, &w| (a << 32) | u128::from(w as u32)));
+    (g.acting_player_name().to_owned(), uuid)
+}
+
+/// Where something is `alpha` of the way from its last tick to this one.
+fn between(a: &horizon_core::geometry::Vec3, b: &horizon_core::geometry::Vec3, alpha: f64) -> [f64; 3] {
+    [
+        a.x + (b.x - a.x) * alpha,
+        a.y + (b.y - a.y) * alpha,
+        a.z + (b.z - a.z) * alpha,
+    ]
+}
+
+/// An angle `alpha` of the way from `a` to `b`, the short way round.
+fn degrees_between(a: f32, b: f32, alpha: f64) -> f32 {
+    let d = (b - a + 540.0).rem_euclid(360.0) - 180.0;
+    a + d * alpha as f32
+}
+
+/// A tick's move as a speed, in blocks a second. More than five blocks in a
+/// tick is a teleport, not a speed.
+fn per_second(from: &horizon_core::geometry::Vec3, to: &horizon_core::geometry::Vec3) -> [f64; 3] {
+    let d = [to.x - from.x, to.y - from.y, to.z - from.z];
+    if d.iter().map(|c| c * c).sum::<f64>() > 25.0 {
+        return [0.0; 3];
+    }
+    d.map(|c| c * 20.0)
+}
+
+/// What the studio is told of a mob, or of another player's body (`name`
+/// is the player's, for one).
+fn mob_info(m: &horizon_client::mobs::Mob, name: Option<&str>, alpha: f64) -> EntityInfo {
+    EntityInfo {
+        id: m.id,
+        kind: m.kind.id.clone(),
+        name: name
+            .map(str::to_owned)
+            .or_else(|| m.custom_name.clone())
+            .unwrap_or_default(),
+        pos: between(&m.previous, &m.position, alpha),
+        velocity: per_second(&m.previous, &m.position),
+        body_yaw: degrees_between(m.previous_body_yaw, m.body_yaw, alpha),
+        head_yaw: degrees_between(m.previous_head_yaw, m.head_yaw, alpha),
+        pitch: degrees_between(m.previous_head_pitch, m.head_pitch, alpha),
+        width: f64::from(m.width()),
+        height: f64::from(m.height()),
+        eye: m.eye_height(),
+        health: m.health.max(0.0),
+        max_health: horizon_client::mobs::finalize::max_health(m),
+        speed: m.movement_speed(),
+        on_ground: m.on_ground,
+        baby: m.is_baby(),
+        item: None,
+    }
+}
+
+/// What the studio is told of a dropped item.
+fn item_info(i: &horizon_client::entities::ItemEntity, alpha: f64) -> EntityInfo {
+    let size = horizon_client::entities::ItemEntity::WIDTH;
+    EntityInfo {
+        id: i.id,
+        kind: "minecraft:item".into(),
+        pos: between(&i.previous, &i.position, alpha),
+        velocity: per_second(&i.previous, &i.position),
+        width: size,
+        height: size,
+        eye: size * 0.85,
+        on_ground: i.on_ground,
+        item: Some((i.stack.item.to_string(), i.stack.count)),
+        ..EntityInfo::default()
+    }
+}
+
+/// What the studio is told of an experience orb.
+fn orb_info(o: &horizon_client::entities::ExperienceOrb, alpha: f64) -> EntityInfo {
+    EntityInfo {
+        id: o.id,
+        kind: "minecraft:experience_orb".into(),
+        pos: between(&o.previous, &o.position, alpha),
+        velocity: per_second(&o.previous, &o.position),
+        width: 0.5,
+        height: 0.5,
+        eye: 0.425,
+        on_ground: o.on_ground,
+        item: Some((String::new(), o.value)),
+        ..EntityInfo::default()
+    }
+}
+
 /// The window's size in GUI pixels and the GUI's scale.
 fn gui(game: &Game<'_>) -> (f32, f32, f32) {
     let size = game
@@ -199,6 +301,7 @@ impl GameApi for Host<'_, '_> {
             .get(g.selected)
             .and_then(|s| s.as_ref())
             .map(|s| (s.item.to_string(), s.count));
+        let (name, uuid) = own_profile(g);
         let mut info = PlayerInfo {
             x: base.x,
             y: base.y,
@@ -214,6 +317,11 @@ impl GameApi for Host<'_, '_> {
             mode: g.mode.name().to_owned(),
             slot: g.selected,
             held,
+            name,
+            uuid,
+            velocity: per_second(&p.old_position, &p.position),
+            speed: None,
+            jump: None,
         };
         if let Some(g) = self.g_mut()
             && let Some(p) = g.player.as_mut()
@@ -221,7 +329,125 @@ impl GameApi for Host<'_, '_> {
         {
             info.max_health = max as f32;
         }
+        // Attributes are worked out on a mutable player: only while the game can change.
+        if let Some(g) = self.g_mut()
+            && let Some(p) = g.player.as_mut()
+        {
+            info.speed = p.attribute("minecraft:movement_speed").ok();
+            info.jump = p.attribute("minecraft:jump_strength").ok();
+        }
         Some(info)
+    }
+    fn entities(&mut self, max: usize) -> Vec<EntityInfo> {
+        let g = self.g();
+        let Some(me) = g.player.as_ref() else {
+            return Vec::new();
+        };
+        let me = [me.position.x, me.position.y, me.position.z];
+        let alpha = g.clock.fraction();
+        // The other players' entities by name: a server's, and a LAN host's guests.
+        let mut names: std::collections::HashMap<u32, String> = g.remote_player_names().into_iter().collect();
+        if let Some(h) = g.lan.as_ref() {
+            for (conn, m) in &h.models {
+                if let Some(guest) = h.hub.guest(*conn) {
+                    names.entry(m.id).or_insert_with(|| guest.name.clone());
+                }
+            }
+        }
+        let guests: Vec<&horizon_client::mobs::Mob> =
+            g.lan.as_ref().map_or_else(Vec::new, |h| h.models.values().collect());
+        // Each entity first as what orders them: whether it is another
+        // player, how far it is (squared), and where it is (0 the mobs, 1 the
+        // guests, 2 the dropped items, 3 the orbs, and its index there). Only
+        // the `max` kept are read in full, so a farm's thousands cost little.
+        let far = |p: [f64; 3]| (p[0] - me[0]).powi(2) + (p[1] - me[1]).powi(2) + (p[2] - me[2]).powi(2);
+        let mut keys: Vec<(bool, f64, u8, usize)> = Vec::new();
+        // Dying mobs stay until they are removed, so the studio sees them die.
+        for (i, m) in g.mobs.iter().enumerate().filter(|(_, m)| !m.removed) {
+            let at = between(&m.previous, &m.position, alpha);
+            keys.push((names.contains_key(&m.id), far(at), 0, i));
+        }
+        for (i, m) in guests.iter().enumerate().filter(|(_, m)| !m.removed) {
+            let at = between(&m.previous, &m.position, alpha);
+            keys.push((names.contains_key(&m.id), far(at), 1, i));
+        }
+        for (i, d) in g.dropped.iter().enumerate() {
+            keys.push((false, far(between(&d.previous, &d.position, alpha)), 2, i));
+        }
+        for (i, o) in g.orbs.iter().enumerate() {
+            keys.push((false, far(between(&o.previous, &o.position, alpha)), 3, i));
+        }
+        // The players first, then the nearest (and as the lists have them).
+        let order = |a: &(bool, f64, u8, usize), b: &(bool, f64, u8, usize)| {
+            b.0.cmp(&a.0)
+                .then(a.1.total_cmp(&b.1))
+                .then(a.2.cmp(&b.2))
+                .then(a.3.cmp(&b.3))
+        };
+        if max == 0 {
+            return Vec::new();
+        }
+        if keys.len() > max {
+            keys.select_nth_unstable_by(max - 1, order);
+            keys.truncate(max);
+        }
+        keys.sort_unstable_by(order);
+        let name = |id: u32| names.get(&id).map(String::as_str);
+        keys.into_iter()
+            .map(|(_, _, list, i)| match list {
+                0 => mob_info(&g.mobs[i], name(g.mobs[i].id), alpha),
+                1 => mob_info(guests[i], name(guests[i].id), alpha),
+                2 => item_info(&g.dropped[i], alpha),
+                _ => orb_info(&g.orbs[i], alpha),
+            })
+            .collect()
+    }
+    fn players(&mut self) -> Option<Vec<PlayerEntry>> {
+        // A server's list fetches the players' skins as it is read: only while the game can change.
+        let g = self.g_mut()?;
+        let mut out = Vec::new();
+        if g.remote.is_some() {
+            let (listed, _, _) = g.remote_tab_players()?;
+            let r = g.remote.as_ref()?;
+            let me = r.profile();
+            for p in listed {
+                let shown = p
+                    .display_name
+                    .as_ref()
+                    .map(|c| horizon_client::scoreboard::comp_text(c).plain())
+                    .filter(|s| !s.trim().is_empty());
+                out.push(PlayerEntry {
+                    uuid: p.uuid,
+                    display_name: shown.unwrap_or_else(|| p.name.clone()),
+                    entity: r.player_entity(p.uuid),
+                    local: p.uuid == me,
+                    latency: p.latency,
+                    name: p.name,
+                });
+            }
+        } else if let Some(h) = g.lan.as_ref() {
+            out.push(PlayerEntry {
+                uuid: h.host_uuid,
+                name: h.host_name.clone(),
+                display_name: h.host_name.clone(),
+                entity: None,
+                local: true,
+                latency: 0,
+            });
+            for guest in h.hub.guests.iter().filter(|guest| guest.placed) {
+                out.push(PlayerEntry {
+                    uuid: guest.uuid,
+                    name: guest.name.clone(),
+                    display_name: guest.name.clone(),
+                    entity: h.models.get(&guest.conn).map(|m| m.id),
+                    local: false,
+                    latency: guest.latency.load(std::sync::atomic::Ordering::Relaxed),
+                });
+            }
+        }
+        // The list keeps no order of its own: this player first, then by name.
+        out.sort_by_key(|p| (!p.local, p.name.to_lowercase()));
+        Some(out)
     }
     fn block(&self, x: i32, y: i32, z: i32) -> Option<String> {
         let g = self.g();

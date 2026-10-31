@@ -664,6 +664,48 @@ pub fn namespaces() -> Vec<String> {
     ns
 }
 
+/// What `game` has in a Roblox script besides the studio's own functions:
+/// the DataModel's services by name (game.Players), game.LocalPlayer
+/// (Horizon's own shortcut for game.Players.LocalPlayer), Roblox's older
+/// game.workspace, and the DataModel's properties, events and methods, as
+/// (name, what it is, kind).
+fn game_members() -> Vec<(&'static str, String, Kind)> {
+    use super::hstudio_rbx::{CLASSES, class_def, method_names};
+    let value = |n: &'static str, doc: &str| (n, doc.to_owned(), Kind::Value);
+    let mut out = vec![
+        value(
+            "LocalPlayer",
+            "Roblox: the player playing (Horizon's own shortcut; game.Players.LocalPlayer in Roblox)",
+        ),
+        value("workspace", "Roblox: the Workspace, by its older name"),
+        value("Name", "Roblox: the DataModel's name"),
+        value("ClassName", "Roblox: \"DataModel\""),
+        value("Parent", "Roblox: nil, the DataModel being the root"),
+    ];
+    for c in CLASSES.iter().filter(|c| c.service) {
+        out.push((c.name, format!("Roblox: the {} service", c.name), Kind::Value));
+    }
+    let mut at = class_def("DataModel");
+    while let Some(c) = at {
+        let whose = if c.name == "Instance" {
+            "every Instance"
+        } else {
+            "the DataModel"
+        };
+        for p in c.props.iter().chain(c.more) {
+            out.push((p.name, format!("Roblox: a property of {whose}"), Kind::Value));
+        }
+        for e in c.events {
+            out.push((*e, format!("Roblox: an event of {whose}"), Kind::Event));
+        }
+        at = c.base.and_then(class_def);
+    }
+    for m in method_names("DataModel") {
+        out.push((m, "Roblox: a method of the DataModel".to_owned(), Kind::Function));
+    }
+    out
+}
+
 /// How well `name` matches what was typed: a prefix first, then any case,
 /// then its letters in order; None when it doesn't.
 fn score(name: &str, typed: &str) -> Option<u32> {
@@ -904,6 +946,33 @@ pub fn suggest(
                     for (n, sig, d) in STDLIB.iter().filter(|(n, ..)| n.starts_with("string.")) {
                         let m = &n["string.".len()..];
                         push(m, &sig.replacen("string.", ":", 1), d, Kind::Function, &mut items);
+                    }
+                }
+            }
+            // In a Roblox script `game` is the DataModel too: its services,
+            // LocalPlayer and properties after '.', its methods after ':'.
+            if owner == "game" {
+                let wanted = if sep == ':' { Kind::Function } else { Kind::Value };
+                for (name, doc, kind) in game_members().into_iter().filter(|m| m.2 == wanted) {
+                    if let Some(s) = score(name, typed).filter(|_| name != typed) {
+                        // From the ':' when the studio's own functions take it as a '.'.
+                        let insert = if start == owner_end {
+                            format!("{sep}{name}")
+                        } else {
+                            name.to_owned()
+                        };
+                        let detail = format!("game{sep}{name}");
+                        let label = name.to_owned();
+                        items.push((
+                            s,
+                            Suggestion {
+                                label,
+                                insert,
+                                detail,
+                                doc,
+                                kind,
+                            },
+                        ));
                     }
                 }
             }
@@ -1470,10 +1539,12 @@ fn sibling_words(lines: &[String]) -> Vec<String> {
 
 /// Uses of a library's member it doesn't have (`player.poss`), and of a
 /// table name nothing defines (`plyer.pos`), outside strings and comments.
-/// What a module's other files define for all of it counts as defined.
+/// What a module's other files define for all of it counts as defined, and
+/// so does what `game` has in a Roblox script (game.Players, game.LocalPlayer).
 fn unknown_names(lines: &[String], module: Option<&Siblings>) -> Vec<Problem> {
     let ns = namespaces();
     let all = names(true);
+    let roblox: Vec<&str> = game_members().into_iter().map(|m| m.0).collect();
     let defined: std::collections::HashSet<String> = {
         let mut d = std::collections::HashSet::new();
         defined_names(lines, false, &mut d);
@@ -1502,7 +1573,10 @@ fn unknown_names(lines: &[String], module: Option<&Siblings>) -> Vec<Problem> {
                 let member = &code[end + 1..m_end];
                 let full = format!("{root}.{member}");
                 if ns.iter().any(|n| n == root) && !defined.contains(root) {
-                    if !member.is_empty() && !all.iter().any(|(n, ..)| n == &full) {
+                    if !member.is_empty()
+                        && !all.iter().any(|(n, ..)| n == &full)
+                        && !(root == "game" && roblox.contains(&member))
+                    {
                         out.push(Problem {
                             line: i + 1,
                             span: Some((end + 1, m_end)),

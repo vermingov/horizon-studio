@@ -398,7 +398,8 @@ fn the_character_camera_and_raycasts_follow_the_game() {
     "#;
     load(&mut game, &mut st, "world", src, 0.7);
     let p = printed(&st, "world");
-    assert_eq!(p[0], "10    64    100    100");
+    // The root part is the torso, 1.05 blocks above the feet at y 64.
+    assert_eq!(p[0], "10    65    100    100");
     assert_eq!(p[1], "true    64    0, 1, 0    Enum.Material.Grass");
     assert_eq!(p[2], "0    0, 0, -1    minecraft:stone");
     assert_eq!(p[3], "nil");

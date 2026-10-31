@@ -9,7 +9,7 @@ use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 use horizon_studio::game::hstudio_rbx_types::{
     Axis, BrickColor, CFrame, Color3, ColorSequence, ColorSequenceKeypoint, EasingDirection, EasingStyle, Font,
     FontEnum, FontStyle, FontWeight, MAX_KEYPOINTS, NormalId, NumberRange, NumberSequence, NumberSequenceKeypoint,
-    Random, Rect, RotationOrder, TweenInfo, UDim, UDim2, Vector2, Vector3, ease, float32,
+    Random, Rect, Region3, RotationOrder, TweenInfo, UDim, UDim2, Vector2, Vector3, ease, float32,
 };
 
 const EPS: f64 = 1e-9;
@@ -1283,4 +1283,25 @@ fn random_shuffle_and_clone() {
     assert_eq!(from_a, from_b);
     a.next_u32();
     assert_ne!(a.next_u32(), b.next_u32());
+}
+
+#[test]
+fn region3s_by_their_corners() {
+    let r = Region3::new(Vector3::new(4.0, 64.0, 3.0), Vector3::new(0.0, 60.5, 0.0));
+    assert_v3(r.min, 0.0, 60.5, 0.0);
+    assert_v3(r.max, 4.0, 64.0, 3.0);
+    assert_v3(r.size(), 4.0, 3.5, 3.0);
+    assert_cf(r.cframe(), CFrame::new(2.0, 62.25, 1.5));
+    // Out to the grid, never in.
+    let g = r.expand_to_grid(4.0);
+    assert_v3(g.min, 0.0, 60.0, 0.0);
+    assert_v3(g.max, 4.0, 64.0, 4.0);
+    assert_eq!(
+        r.expand_to_grid(0.5),
+        Region3::new(Vector3::new(0.0, 60.5, 0.0), Vector3::new(4.0, 64.0, 3.0))
+    );
+    assert_eq!(
+        Region3::new(Vector3::ZERO, Vector3::ONE * 2.0).to_string(),
+        "1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1; 2, 2, 2"
+    );
 }

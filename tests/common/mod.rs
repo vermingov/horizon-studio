@@ -2,7 +2,9 @@
 // answers its questions from plain fields.
 #![allow(dead_code)]
 
-use horizon_studio::game::hstudio::{Camera, Corner, Font, GameApi, PlayerInfo, Reply, Studio, ViaInfo};
+use horizon_studio::game::hstudio::{
+    Camera, Corner, EntityInfo, Font, GameApi, PlayerEntry, PlayerInfo, PlayerPose, Reply, Studio, ViaInfo,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -32,6 +34,13 @@ pub struct FakeGame {
     pub particles: Vec<Particle>,
     /// ViaHorizon, as the bridge reports it (the real one is the game's).
     pub via: ViaInfo,
+    /// The player's pose (`pose`), if the game says.
+    pub pose: Option<PlayerPose>,
+    /// The entities and the player list the game reports, and how many
+    /// times the studio asked for the entities.
+    pub entities: Vec<EntityInfo>,
+    pub players: Option<Vec<PlayerEntry>>,
+    pub entity_asks: usize,
 }
 
 /// A particle spawned: its id, place, speed and colour.
@@ -63,6 +72,11 @@ impl FakeGame {
                 mode: "survival".into(),
                 slot: 0,
                 held: Some(("minecraft:diamond_pickaxe".into(), 1)),
+                name: String::new(),
+                uuid: 0,
+                velocity: [0.0; 3],
+                speed: Some(0.1),
+                jump: Some(0.42),
             }),
             blocks: HashMap::new(),
             clock: Some((1000, 50_000)),
@@ -106,6 +120,10 @@ impl FakeGame {
                     .collect(),
                 log: vec!["[ViaProxy] Binding proxy server to 127.0.0.1:41234".into()],
             },
+            pose: None,
+            entities: Vec::new(),
+            players: None,
+            entity_asks: 0,
         }
     }
     pub fn mods_dir(&self) -> PathBuf {
@@ -255,6 +273,17 @@ impl GameApi for FakeGame {
             Corner::BottomLeft => (2.0, 200.0),
             Corner::BottomRight => (300.0, 200.0),
         }
+    }
+    fn pose(&self) -> Option<PlayerPose> {
+        self.player.as_ref()?;
+        self.pose.clone()
+    }
+    fn entities(&mut self, max: usize) -> Vec<EntityInfo> {
+        self.entity_asks += 1;
+        self.entities.iter().take(max).cloned().collect()
+    }
+    fn players(&mut self) -> Option<Vec<PlayerEntry>> {
+        self.players.clone()
     }
 }
 

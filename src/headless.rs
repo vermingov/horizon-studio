@@ -1,12 +1,13 @@
 //! Script mods without Horizon: the studio itself (its interpreter, mod
 //! loading, events, commands, timers, libraries and screens) on a simulated
 //! game, for the MCP server's `check` and `test`. The game is simple: a player
-//! standing in a world of air with the blocks a test sets, a clock, 20 ticks a
-//! second (a frame is one tick, 50 ms), and a record of everything the mods
-//! print, send, draw, play and spawn.
+//! standing in a world of air with the blocks, entities and other players a
+//! test sets, a clock, 20 ticks a second (a frame is one tick, 50 ms), and a
+//! record of everything the mods print, send, draw, play and spawn.
 
 use crate::game::hstudio::{
-    Camera, Corner, Font, GameApi, LogKind, PartFrame, PlayerInfo, PlayerPose, Reply, Studio, ViaInfo,
+    Camera, Corner, EntityInfo, Font, GameApi, LogKind, PartFrame, PlayerEntry, PlayerInfo, PlayerPose, Reply, Studio,
+    ViaInfo,
 };
 use crate::game::hstudio_chatcmd::split_line;
 use crate::game::hstudio_examples::EXAMPLES;
@@ -58,6 +59,12 @@ pub struct HeadlessGame {
     pub camera_mode: String,
     /// The player's pose ("standing", "crouching"...).
     pub pose: String,
+    /// Whether the player stands on the ground (a jump or a fall: not).
+    pub on_ground: bool,
+    /// The entities near the player (an `entities` step), and the server's
+    /// player list (a `players` step; None, as a world played alone has).
+    pub entities: Vec<EntityInfo>,
+    pub players: Option<Vec<PlayerEntry>>,
     /// How many of `sent` reached the mods' commands.
     routed: usize,
 }
@@ -83,6 +90,11 @@ impl HeadlessGame {
                 mode: "survival".into(),
                 slot: 0,
                 held: None,
+                name: String::new(),
+                uuid: 0,
+                velocity: [0.0; 3],
+                speed: Some(0.1),
+                jump: Some(0.42),
             }),
             blocks: HashMap::new(),
             clock: Some((1000, 1000)),
@@ -98,6 +110,9 @@ impl HeadlessGame {
             meshes: Vec::new(),
             camera_mode: "third_back".into(),
             pose: "standing".into(),
+            on_ground: true,
+            entities: Vec::new(),
+            players: None,
             routed: 0,
         }
     }
@@ -285,10 +300,29 @@ impl GameApi for HeadlessGame {
         Some(PlayerPose {
             pose: self.pose.clone(),
             sprinting: false,
-            on_ground: true,
+            on_ground: self.on_ground,
             flying: false,
             camera: self.camera_mode.clone(),
         })
+    }
+    fn entities(&mut self, max: usize) -> Vec<EntityInfo> {
+        // As the game lists them: the other players first, then the nearest.
+        let Some(p) = self.player.as_ref() else {
+            return Vec::new();
+        };
+        let far = |e: &EntityInfo| (e.pos[0] - p.x).powi(2) + (e.pos[1] - p.y).powi(2) + (e.pos[2] - p.z).powi(2);
+        let mut list = self.entities.clone();
+        list.sort_by(|a, b| {
+            (b.kind == "minecraft:player")
+                .cmp(&(a.kind == "minecraft:player"))
+                .then(far(a).total_cmp(&far(b)))
+        });
+        list.truncate(max);
+        list
+    }
+    fn players(&mut self) -> Option<Vec<PlayerEntry>> {
+        self.player.as_ref()?;
+        self.players.clone()
     }
     fn world_item(
         &mut self,
@@ -769,10 +803,132 @@ fn player_patch(p: &mut PlayerInfo, patch: &Json) {
     if let Some(v) = patch.get("dimension").and_then(Json::as_str) {
         p.dimension = v.to_owned();
     }
+    if let Some(v) = patch.get("name").and_then(Json::as_str) {
+        p.name = v.to_owned();
+    }
+    // A UUID as it is written, its dashes or not.
+    if let Some(v) = patch.get("uuid").and_then(Json::as_str)
+        && let Ok(uuid) = u128::from_str_radix(&v.replace('-', ""), 16)
+    {
+        p.uuid = uuid;
+    }
+    // How the player moves, in blocks a second.
+    if let Some(Json::Array(v)) = patch.get("velocity") {
+        let n: Vec<f64> = v.iter().filter_map(Json::as_f64).collect();
+        if let [x, y, z] = n[..] {
+            p.velocity = [x, y, z];
+        }
+    }
     match patch.get("held") {
         Some(Json::String(item)) => p.held = Some((item.clone(), 1)),
         Some(Json::Null) => p.held = None,
         _ => {}
+    }
+}
+
+/// The box and eyes, most health and movement_speed of an entity type, as
+/// the game has them (a type not here is a player's size).
+fn kind_defaults(kind: &str) -> (f64, f64, f64, f32, f64) {
+    match kind.trim_start_matches("minecraft:") {
+        "player" => (0.6, 1.8, 1.62, 20.0, 0.1),
+        "zombie" | "husk" | "drowned" | "zombie_villager" => (0.6, 1.95, 1.74, 20.0, 0.23),
+        "skeleton" | "stray" => (0.6, 1.99, 1.74, 20.0, 0.25),
+        "creeper" => (0.6, 1.7, 1.445, 20.0, 0.25),
+        "spider" => (1.4, 0.9, 0.65, 16.0, 0.3),
+        "enderman" => (0.6, 2.9, 2.55, 40.0, 0.3),
+        "villager" => (0.6, 1.95, 1.62, 20.0, 0.5),
+        "cow" => (0.9, 1.4, 1.3, 10.0, 0.2),
+        "pig" => (0.9, 0.9, 0.765, 10.0, 0.25),
+        "sheep" => (0.9, 1.3, 1.235, 8.0, 0.23),
+        "chicken" => (0.4, 0.7, 0.644, 4.0, 0.25),
+        "item" => (0.25, 0.25, 0.2125, 0.0, 0.0),
+        "experience_orb" => (0.5, 0.5, 0.425, 0.0, 0.0),
+        _ => (0.6, 1.8, 1.53, 20.0, 0.25),
+    }
+}
+
+/// An `entities` step's entity: its type (`zombie` is `minecraft:zombie`),
+/// id (from its place in the list unless given), name, position, facing,
+/// box, health, speed and motion, a dropped item's `item` and `count` or an
+/// orb's `value`; the rest as the game has that type.
+fn entity_of(i: usize, e: &Json) -> EntityInfo {
+    let num = |k: &str| e.get(k).and_then(Json::as_f64);
+    let triple = |k: &str| -> Option<[f64; 3]> {
+        let v: Vec<f64> = e.get(k)?.as_array()?.iter().filter_map(Json::as_f64).collect();
+        match v[..] {
+            [x, y, z] => Some([x, y, z]),
+            _ => None,
+        }
+    };
+    let kind = e.get("kind").and_then(Json::as_str).unwrap_or("zombie");
+    let kind = if kind.contains(':') {
+        kind.to_owned()
+    } else {
+        format!("minecraft:{kind}")
+    };
+    let (width, height, eye, max_health, speed) = kind_defaults(&kind);
+    let max_health = num("max_health").map_or(max_health, |h| h as f32);
+    let yaw = num("yaw").unwrap_or(0.0) as f32;
+    let item = match kind.as_str() {
+        "minecraft:item" => Some((
+            e.get("item")
+                .and_then(Json::as_str)
+                .unwrap_or("minecraft:stone")
+                .to_owned(),
+            num("count").unwrap_or(1.0) as u32,
+        )),
+        "minecraft:experience_orb" => Some((String::new(), num("value").unwrap_or(1.0) as u32)),
+        _ => None,
+    };
+    EntityInfo {
+        id: num("id").map_or(100 + i as u32, |n| n as u32),
+        name: e.get("name").and_then(Json::as_str).unwrap_or("").to_owned(),
+        pos: triple("pos").unwrap_or([0.5, 64.0, 2.5]),
+        velocity: triple("velocity").unwrap_or([0.0; 3]),
+        body_yaw: yaw,
+        head_yaw: num("head_yaw").map_or(yaw, |v| v as f32),
+        pitch: num("pitch").unwrap_or(0.0) as f32,
+        width: num("width").unwrap_or(width),
+        height: num("height").unwrap_or(height),
+        eye: num("eye").unwrap_or(eye),
+        health: num("health").map_or(max_health, |h| h as f32),
+        max_health,
+        speed: num("speed").unwrap_or(speed),
+        on_ground: e.get("on_ground").and_then(Json::as_bool).unwrap_or(true),
+        baby: e.get("baby").and_then(Json::as_bool).unwrap_or(false),
+        item,
+        kind,
+    }
+}
+
+/// A `players` step's player: their name, UUID (from the name unless
+/// given), display name, entity while near (an `entities` step's id), ping,
+/// and whether they are the player playing (as named by the player step).
+fn player_entry_of(p: &Json, me: Option<&PlayerInfo>) -> PlayerEntry {
+    let name = p.get("name").and_then(Json::as_str).unwrap_or("Player").to_owned();
+    let uuid = p
+        .get("uuid")
+        .and_then(Json::as_str)
+        .and_then(|u| u128::from_str_radix(&u.replace('-', ""), 16).ok())
+        .unwrap_or_else(|| {
+            // FNV-1a, twice over: a UUID of its own for each name.
+            let hash = |seed: u64| {
+                name.bytes()
+                    .fold(seed, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+            };
+            (u128::from(hash(0xcbf2_9ce4_8422_2325)) << 64) | u128::from(hash(0x8422_2325_cbf2_9ce4))
+        });
+    let local = p
+        .get("local")
+        .and_then(Json::as_bool)
+        .unwrap_or_else(|| me.is_some_and(|m| !m.name.is_empty() && m.name == name));
+    PlayerEntry {
+        uuid,
+        display_name: p.get("display_name").and_then(Json::as_str).unwrap_or(&name).to_owned(),
+        entity: p.get("entity").and_then(Json::as_u64).map(|n| n as u32),
+        local,
+        latency: p.get("latency").and_then(Json::as_i64).unwrap_or(0) as i32,
+        name,
     }
 }
 
@@ -861,6 +1017,9 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
                     "the player is gone (set \"player\": {...} after null to bring one back is not supported)".into(),
                 ),
             }
+            if let Some(on) = patch.get("on_ground").and_then(Json::as_bool) {
+                run.game.on_ground = on;
+            }
             frames(run, 1, &mut drawn);
         } else if let Some(at) = step.get("block").and_then(Json::as_array) {
             let c: Vec<i32> = at.iter().filter_map(|v| v.as_f64().map(|f| f.floor() as i32)).collect();
@@ -879,6 +1038,13 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
             frames(run, 1, &mut drawn);
         } else if let Some(pose) = step.get("pose").and_then(Json::as_str) {
             run.game.pose = pose.to_owned();
+            frames(run, 1, &mut drawn);
+        } else if let Some(list) = step.get("entities").and_then(Json::as_array) {
+            run.game.entities = list.iter().enumerate().map(|(i, e)| entity_of(i, e)).collect();
+            frames(run, 1, &mut drawn);
+        } else if let Some(list) = step.get("players").and_then(Json::as_array) {
+            let me = run.game.player.clone();
+            run.game.players = Some(list.iter().map(|p| player_entry_of(p, me.as_ref())).collect());
             frames(run, 1, &mut drawn);
         } else if let Some(t) = step.get("time").and_then(Json::as_i64) {
             if let Some(c) = run.game.clock.as_mut() {
@@ -908,7 +1074,7 @@ pub fn run_steps(run: &mut Run, steps: &[Json]) -> Json {
             // Expectations only: about the state as it is.
         } else {
             failures.push(format!(
-                "unknown step {}: use frames, seconds, command, chat, key, lua, suggest, player, block, time, camera, pose, click, type or reload",
+                "unknown step {}: use frames, seconds, command, chat, key, lua, suggest, player, block, entities, players, time, camera, pose, click, type or reload",
                 describe(step)
             ));
         }
@@ -1130,8 +1296,19 @@ headless, keys.down sees it held), or with \"down\": true/false; {\"lua\": \"cod
 (globals; import(\"id\") gets a library; assert() fails the step); {\"suggest\": \"/name words\"} gives the completions \
 the chat would show for that line (the cursor at its end, so \"/wp \" completes the first argument), each as its \
 text and its tooltip in brackets, for expect_output (headless); {\"player\": {\"x\":..,\"y\":..,\"z\":..,\"health\":..,\
-\"mode\":\"creative\",\"held\":\"minecraft:stick\"}} moves or changes the player; {\"block\": [x,y,z], \"id\": \
-\"minecraft:stone\"} sets a block (live: not available); {\"time\": 13000} sets the day time; {\"click\": \"label\"} \
+\"mode\":\"creative\",\"held\":\"minecraft:stick\",\"name\":\"Steve\",\"uuid\":\"8667ba71-b85a-4004-af54-457a9734eed7\",\
+\"velocity\":[0,6,0],\"on_ground\":false}} moves or changes the player (name and uuid are their profile's, which Roblox \
+scripts see as the LocalPlayer's Name and UserId; velocity, in blocks a second, and on_ground are how they move, which \
+the Roblox Humanoid's MoveDirection and state follow); {\"block\": [x,y,z], \"id\": \
+\"minecraft:stone\"} sets a block (live: not available); {\"entities\": [{\"kind\": \"zombie\", \"pos\": [3,64,0], \
+\"health\": 10}, {\"kind\": \"player\", \"name\": \"Alex\", \"id\": 12, \"pos\": [5,64,0]}, {\"kind\": \"item\", \"item\": \
+\"minecraft:diamond\", \"count\": 3}]} puts these entities near the player in place of the last ones, which Roblox \
+scripts see in the Workspace: a kind (zombie, player, item, experience_orb...), an id (100 on in their order unless given), \
+pos, and name, yaw, velocity, on_ground, baby, health, max_health, speed, width, height and eye (the rest as the game has \
+the kind), a dropped item's item and count, or an orb's value; {\"players\": [{\"name\": \"Alex\", \"entity\": 12, \"latency\": 40}]} is the \
+server's player list (uuid, display_name and local too), the other players Roblox scripts see in Players, each with the \
+entity of their entity id as their Character (live: neither step is available); {\"time\": 13000} sets the day time; \
+{\"click\": \"label\"} \
 clicks text on the open script screen; {\"type\": \"text\"} types into it; {\"reload\": \"id\"} (or true) reloads; \
 {\"camera\": \"first\"|\"third_back\"|\"third_front\"} and {\"pose\": \"crouching\"} set the view and the player's pose \
 (headless). \
