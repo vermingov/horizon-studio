@@ -2211,7 +2211,27 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
         let bar = (track * rows as f32 / ed.lines.len() as f32).max(24.0);
         let span = (ed.lines.len() - rows).max(1) as f32;
         let by = top_y + (track - bar) * (s / span).clamp(0.0, 1.0);
-        p.rect([panel[0] + panel[2] - 9.0, by, 4.0, bar], 2.0, fade(pal().ink, 0.18));
+        // Dragged or pointed at, it widens; the track takes clicks (a jump there).
+        let zone = [panel[0] + panel[2] - 16.0, top_y, 16.0, track];
+        let held = st.s.ui.scroll_drag.is_some();
+        let over = held || inside(zone, st.s.ui.mouse);
+        let hv = hover(&mut st.s.ui, id("editor-scrollbar", 0), over, dt);
+        let bw = 4.0 + 3.0 * hv;
+        let ed = &st.s.editor;
+        p.rect(
+            [panel[0] + panel[2] - 7.0 - bw / 2.0, by, bw, bar],
+            bw / 2.0,
+            fade(pal().ink, 0.18 + 0.17 * hv),
+        );
+        st.s.ui.scrollbar = Some(super::hstudio_ui::ScrollBar {
+            x: zone[0] + zone[2] / 2.0,
+            top: top_y,
+            track,
+            bar,
+            span,
+            at: by,
+        });
+        st.s.ui.hits.push((zone, Action::ScrollBar));
         // Where the problems are, on the track.
         for pr in &ed.problems {
             let my = top_y + track * ((pr.line.max(1) - 1) as f32 / ed.lines.len() as f32);

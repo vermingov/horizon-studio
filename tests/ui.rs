@@ -1095,3 +1095,42 @@ fn console_and_agent_text_select_and_copy() {
     handle(&mut st, &mut game, key(Key::Char('c'), CTRL));
     assert_ne!(game.clipboard, "alpha bravo charlie\ndelta echo foxtrot");
 }
+
+#[test]
+fn the_editor_scroll_bar_drags_and_jumps() {
+    let mut game = FakeGame::new("ui-scrollbar");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    let text: Vec<String> = (1..=300).map(|i| format!("local v{i} = {i}")).collect();
+    st.s.editor.set_text(&text.join("\n"));
+    redraw(&mut st, &mut game);
+    let sb = st.s.ui.scrollbar.expect("a scroll bar for 300 lines");
+    let k = st.s.ui.dp_factor() / st.s.ui.look.scale;
+    // GUI pixels from the studio's units, as the pointer arrives.
+    let px = |v: f32| v / k;
+    // Press on the thumb and drag it to the bottom of the track.
+    let thumb = (sb.top + sb.bar / 2.0, sb.top + sb.track);
+    let bar_x = sb.x;
+    let row = st.s.editor.row;
+    handle(&mut st, &mut game, Input::Mouse(px(bar_x), px(thumb.0)));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    handle(&mut st, &mut game, Input::Mouse(px(bar_x), px(thumb.1 + 50.0)));
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    assert_eq!(st.s.editor.scroll, sb.span as usize, "dragged to the end");
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.editor.scroll, sb.span as usize, "the view stays there");
+    assert_eq!(st.s.editor.row, row, "the cursor didn't move");
+    // A click on the track near the top jumps there.
+    redraw(&mut st, &mut game);
+    click(&mut st, &mut game, (px(bar_x), px(sb.top + 2.0)));
+    assert_eq!(st.s.editor.scroll, 0);
+}

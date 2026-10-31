@@ -145,6 +145,21 @@ pub(crate) enum Action {
     ClearLog,
     /// Over something that takes no click (it doesn't reach what is under it).
     Block,
+    /// The editor's scroll bar: its thumb dragged, or its track clicked.
+    ScrollBar,
+}
+
+/// The editor's scroll bar as drawn: where it is across, its track's top and height, the thumb's
+/// height and top, and the lines it scrolls through.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ScrollBar {
+    /// The middle of its track, across.
+    pub x: f32,
+    pub top: f32,
+    pub track: f32,
+    pub bar: f32,
+    pub span: f32,
+    pub at: f32,
 }
 
 /// The suggestions shown as you type: under the editor's cursor, or over
@@ -359,6 +374,10 @@ pub struct Ui {
     pub(crate) text_areas: Vec<(u8, [f32; 4])>,
     pub(crate) text_sel: Option<TextSel>,
     pub(crate) text_drag: bool,
+    /// The editor's scroll bar, from the last frame, and where its thumb is
+    /// held (from its top) while dragged.
+    pub scrollbar: Option<ScrollBar>,
+    pub(crate) scroll_drag: Option<f32>,
     pub(crate) view: Option<EditorView>,
     /// Lines the last frame could show, for Page Up/Down.
     pub(crate) page: usize,
@@ -1707,6 +1726,10 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 st.s.ui.panel_h = (h + (from - y) / room).clamp(0.15, 0.8);
                 return UiResult::Used;
             }
+            if let Some(grab) = st.s.ui.scroll_drag {
+                scroll_to_thumb(st, y - grab);
+                return UiResult::Used;
+            }
             if let Some(d) = st.s.ui.drag {
                 let (dx, dy) = (x - d.from.0, y - d.from.1);
                 let [rx, ry, rw, rh] = d.rect;
@@ -1739,6 +1762,7 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
         }
         Input::Button { left, down } => {
             if !down {
+                st.s.ui.scroll_drag = None;
                 st.s.ui.text_drag = false;
                 if st.s.ui.text_sel.is_some_and(|s| s.anchor == s.head) {
                     st.s.ui.text_sel = None;
@@ -1784,6 +1808,18 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                     from: at,
                     rect,
                 });
+                return UiResult::Used;
+            }
+            if let (Some(Action::ScrollBar), Some(sb)) = (hit, st.s.ui.scrollbar) {
+                // Held where it was pressed on the thumb; pressed on the track, the
+                // thumb comes to the pointer, centred.
+                let grab = if at.1 >= sb.at && at.1 <= sb.at + sb.bar {
+                    at.1 - sb.at
+                } else {
+                    sb.bar / 2.0
+                };
+                st.s.ui.scroll_drag = Some(grab);
+                scroll_to_thumb(st, at.1 - grab);
                 return UiResult::Used;
             }
             if let Some(Action::PanelResize) = hit {
@@ -1983,6 +2019,17 @@ fn column_at(game: &mut dyn GameApi, line: &str, skip: usize, dx: f32, scale: f3
     line[from..].chars().count()
 }
 
+/// The editor scrolled so its scroll bar's thumb has its top at `y`: at
+/// once (no glide), the cursor and the selection where they are.
+fn scroll_to_thumb(st: &mut Studio, y: f32) {
+    let Some(sb) = st.s.ui.scrollbar else { return };
+    let room = (sb.track - sb.bar).max(1.0);
+    let k = ((y - sb.top) / room).clamp(0.0, 1.0);
+    let ed = &mut st.s.editor;
+    ed.scroll = ((k * sb.span).round() as usize).min(ed.lines.len().saturating_sub(1));
+    st.s.ui.smooth[1] = ed.scroll as f32;
+}
+
 /// Before another file opens in the editor (`to`), the one open is saved
 /// if it has unsaved edits, so switching scripts never loses them.
 fn save_before_switch(st: &mut Studio, game: &mut dyn GameApi, to: Option<&PathBuf>) {
@@ -2163,7 +2210,7 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
         Action::KeepMine => st.s.editor.conflict = false,
         Action::AgentNext => agent_next(st),
         Action::AgentStop => agent_stop(st),
-        Action::Block => {}
+        Action::Block | Action::ScrollBar => {}
         Action::ClearLog => {
             st.s.log.clear();
             st.s.ui.log_scroll = 0;
