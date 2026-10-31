@@ -15,8 +15,8 @@
 // insets, CanvasPosition clamped), ClipsDescendants, ZIndexBehavior Global
 // and Sibling, and ScreenGui's DisplayOrder and IgnoreGuiInset. Rotation
 // leaves the layout upright, as Roblox's is (and switches clipping off
-// under it); each object gets the turns it is drawn with, and hits treat
-// objects as upright. Coordinates are Roblox's
+// under it); each object gets the turns it is drawn with, and is hit where
+// it is drawn. Coordinates are Roblox's
 // GUI coordinates: the origin is under the top bar, so an IgnoreGuiInset
 // ScreenGui starts at -inset.
 
@@ -929,6 +929,22 @@ impl Placed {
             None => self.rect(),
         }
     }
+
+    /// A point on the screen in its own upright space: its turns undone,
+    /// the outermost first.
+    pub fn unturned(&self, point: Vector2) -> Vector2 {
+        self.turns.iter().rev().fold(point, |q, t| {
+            let (sin, cos) = (-t.degrees).to_radians().sin_cos();
+            let d = q - t.centre;
+            t.centre + Vector2::new(d.x * cos - d.y * sin, d.x * sin + d.y * cos)
+        })
+    }
+
+    /// Whether `point` is on it as it is drawn: in what clips it, and in its
+    /// rectangle turned as it is.
+    pub fn holds(&self, point: Vector2) -> bool {
+        self.clip.is_none_or(|c| contains(c, point)) && contains(self.rect(), self.unturned(point))
+    }
 }
 
 fn intersect(a: Rect, b: Rect) -> Rect {
@@ -955,14 +971,11 @@ impl Layout {
         self.placed.get(id).and_then(Option::as_ref)
     }
 
-    /// Every drawn GuiObject whose visible rectangle holds `point`, topmost
-    /// first (LayerCollector:GetGuiObjectsAtPosition; MouseEnter and
-    /// MouseLeave go by this, covered or not).
+    /// Every drawn GuiObject `point` is on as drawn (turned, and cut by what
+    /// clips it), topmost first (LayerCollector:GetGuiObjectsAtPosition;
+    /// MouseEnter and MouseLeave go by this, covered or not).
     pub fn objects_at(&self, point: Vector2) -> Vec<NodeId> {
-        let over = |id: &NodeId| {
-            self.get(*id)
-                .is_some_and(|p| !p.inert && contains(p.visible_rect(), point))
-        };
+        let over = |id: &NodeId| self.get(*id).is_some_and(|p| !p.inert && p.holds(point));
         self.draw_order.iter().rev().copied().filter(over).collect()
     }
 

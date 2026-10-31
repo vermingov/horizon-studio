@@ -3276,7 +3276,14 @@ fn caret_to_pointer(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id, extend: bool)
     if t.lines.is_empty() {
         return;
     }
-    let (x, y) = (rbx.pointer.x, rbx.pointer.y);
+    // The pointer in the box's upright space, if it is turned.
+    let at = Vector2::new(rbx.pointer.x, rbx.pointer.y);
+    let at = rbx
+        .layout
+        .as_ref()
+        .and_then(|f| f.layout.get(*f.inst_node.get(&id)?))
+        .map_or(at, |p| p.unturned(at));
+    let (x, y) = (at.x, at.y);
     let i = t.lines.iter().rposition(|l| l.position.y <= y).unwrap_or(0);
     let to = nearest(game, &t, i, x, scale, font);
     let mut e = edit_of(rbx, id);

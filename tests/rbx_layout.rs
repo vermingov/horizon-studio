@@ -1640,3 +1640,25 @@ fn hits_use_gui_coordinates() {
     assert_eq!(l.button_at(v(400.0, -30.0)), Some(bar));
     assert_eq!(l.button_at(v(400.0, 0.0)), None);
 }
+
+#[test]
+fn rotated_objects_hit_where_drawn() {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    // A 100 x 20 button whose middle is at (150, 110), turned upright.
+    let button = add(&mut tree, Class::TextButton, gui, px(100.0, 100.0), px(100.0, 20.0));
+    tree[button].rotation = 90.0;
+    let l = run(&tree);
+    assert_eq!(l.hit_test(v(150.0, 150.0)), Some(button), "40 below its middle");
+    assert_eq!(l.hit_test(v(190.0, 110.0)), None, "40 to the right of it");
+    // A child turns with it: its top-left corner, turned, lies at the right.
+    let child = add(&mut tree, Class::TextButton, button, px(0.0, 0.0), px(10.0, 10.0));
+    let l = run(&tree);
+    assert_eq!(l.hit_test(v(155.0, 65.0)), Some(child));
+    assert_eq!(l.hit_test(v(105.0, 105.0)), None, "where it would be upright");
+    // Turned back, they are hit where they lie.
+    tree[button].rotation = 0.0;
+    let l = run(&tree);
+    assert_eq!(l.hit_test(v(105.0, 105.0)), Some(child));
+    assert_eq!(l.hit_test(v(190.0, 110.0)), Some(button));
+}
