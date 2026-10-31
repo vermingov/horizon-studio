@@ -231,7 +231,7 @@ fn require_suggests_the_modules_files() {
 }
 
 #[test]
-fn a_required_files_members_are_suggested_and_checked() {
+fn a_required_files_members_are_suggested() {
     let lib = "local lib = {}\nfunction lib.greet(name) return name end\nfunction lib.stop() end\nlib.version = 2\nreturn lib\n";
     let m = module("main.lua", &[("lib.lua", lib)]);
     let file = ["local lib = require('lib')".to_owned(), "lib.".to_owned()];
@@ -242,30 +242,36 @@ fn a_required_files_members_are_suggested_and_checked() {
     }
     let greet = s.iter().find(|x| x.label == "greet").unwrap();
     assert_eq!((greet.kind, greet.doc.as_str()), (Kind::Function, "in lib.lua"));
-    let src = "local lib = require('lib')\nprint(lib.gret('x'), lib.stop(), lib.whatever)\n";
-    assert_eq!(
-        problems_in(src, Some(&m)),
-        vec![(
-            2,
-            Some((10, 14)),
-            "lib.lua has no 'gret' (did you mean greet?)".to_owned(),
-            false
-        )]
-    );
-    // What the file itself adds to the table is known.
-    let adds = "local lib = require('lib')\nfunction lib.gree() end\nlib.gree()\n";
-    assert!(problems_in(adds, Some(&m)).is_empty());
     // A table returned as a constructor.
     let m = module(
         "main.lua",
         &[("cfg.lua", "return {\n  speed = 1,\n  go = function() end,\n}\n")],
     );
-    let p = problems_in("local cfg = require('cfg')\nprint(cfg.sped)\n", Some(&m));
-    assert!(p[0].2.contains("cfg.lua has no 'sped' (did you mean speed?)"), "{p:?}");
-    // One made with setmetatable or filled by key can't be read: nothing is said.
-    let dynamic = "local lib = setmetatable({}, {})\nfunction lib.greet() end\nreturn lib\n";
-    let m = module("main.lua", &[("lib.lua", dynamic)]);
-    assert!(problems_in("local lib = require('lib')\nlib.gret()\n", Some(&m)).is_empty());
+    let file = ["local cfg = require('cfg')".to_owned(), "cfg.".to_owned()];
+    let (_, s) = suggest("cfg.sp", &file, false, Some(&m)).unwrap();
+    assert_eq!(s[0].label, "speed");
+}
+
+#[test]
+fn members_another_file_adds_to_a_shared_table_are_no_problem() {
+    // The template's way: shared.lua holds a table, main.lua adds to it at
+    // start, lib.lua reads what it added. That runs: nothing is marked, a
+    // name one letter from a member's (players, player) included.
+    let shared = "local shared = {\n  greeting = 'Hello',\n  ticks = 0,\n  player = nil,\n}\nreturn shared\n";
+    let main = "local shared = require('shared')\nshared.players = {}\nlocal lib = require('lib')\n";
+    let m = module("lib.lua", &[("main.lua", main), ("shared.lua", shared)]);
+    let lib = "local shared = require('shared')\nlocal lib = {}\nfunction lib.count()\n  return #shared.players\nend\nreturn lib\n";
+    assert_eq!(problems_in(lib, Some(&m)), vec![]);
+    // Nor is a member of a required file's table one letter from another:
+    // members come from anywhere (a set by key, another file, a function).
+    let m = module(
+        "main.lua",
+        &[("lib.lua", "local lib = {}\nfunction lib.greet() end\nreturn lib\n")],
+    );
+    assert_eq!(
+        problems_in("local lib = require('lib')\nlib.gret()\n", Some(&m)),
+        vec![]
+    );
 }
 
 #[test]

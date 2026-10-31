@@ -1129,9 +1129,9 @@ pub struct Problem {
 /// Checks a script as it is typed: its syntax (with the studio's parser),
 /// then names that don't exist (`player.poss`, `plyer.pos`), and the files
 /// it requires. `module` is the module the file is in (None: a script, the
-/// scratch file): what its other files define is not unknown here, a
-/// `require` of a file it lacks is a problem, and so is a typo in a member
-/// of the table a required file returns.
+/// scratch file): what its other files define is not unknown here, and a
+/// `require` of a file it lacks is a problem. The members of a required
+/// file's table are suggested, never marked: any file can add to it.
 pub fn check(lines: &[String], chunk: &str, module: Option<&Siblings>) -> Vec<Problem> {
     let src = lines.join("\n");
     let mut lua = super::hstudio_lua::Lua::new();
@@ -1184,8 +1184,7 @@ fn requires(lines: &[String]) -> Vec<(usize, (usize, usize), String)> {
 
 /// What is wrong with a file's `require`s: a file the module lacks, the
 /// file itself, main.lua, a name require can't take, or any file at all in
-/// a file that is not a module's; and typos in the members of what a
-/// required file returns.
+/// a file that is not a module's.
 fn require_problems(lines: &[String], module: Option<&Siblings>) -> Vec<Problem> {
     let mut out = Vec::new();
     for (row, span, name) in requires(lines) {
@@ -1209,9 +1208,6 @@ fn require_problems(lines: &[String], module: Option<&Siblings>) -> Vec<Problem>
                 error: false,
             });
         }
-    }
-    if let Some(m) = module {
-        out.extend(member_typos(lines, m));
     }
     out
 }
@@ -1240,91 +1236,6 @@ fn bound_members(lines: &[String], owner: &str, module: &Siblings) -> Option<(St
         let members = returned_members(module.lines_of(&rel)?)?;
         Some((rel, members))
     })
-}
-
-/// `L.m` where the file says `local L = require("x")` and x.lua returns a
-/// table with members it names: an `m` it doesn't have but a letter or two
-/// from one it does is a typo ("lib.lua has no 'gret' (did you mean
-/// greet?)"). Other unknown members may well be added elsewhere: they are
-/// left alone.
-fn member_typos(lines: &[String], module: &Siblings) -> Vec<Problem> {
-    let mut bound: Vec<(String, String, Members)> = Vec::new();
-    for (row, (start, _), _) in requires(lines) {
-        let code = strip_strings(&lines[row]);
-        let head = code[..start].trim_end();
-        let head = head.strip_suffix('(').map_or(head, str::trim_end);
-        let Some(name) = head
-            .strip_suffix("require")
-            .map(str::trim_end)
-            .and_then(|h| h.strip_suffix('='))
-            .map(str::trim)
-            .and_then(|h| h.strip_prefix("local "))
-            .map(str::trim)
-        else {
-            continue;
-        };
-        if let Some((rel, mut members)) = bound_members(lines, name, module) {
-            // What this file adds to the table is known too.
-            for m in defined_members(lines, name) {
-                add_member(&m, false, &mut members);
-            }
-            bound.push((name.to_owned(), rel, members));
-        }
-    }
-    let mut out = Vec::new();
-    for (row, line) in lines.iter().enumerate() {
-        let code = strip_strings(line);
-        for (name, rel, members) in &bound {
-            for (at, _) in code.match_indices(name.as_str()) {
-                if !whole_at(&code, at, name) {
-                    continue;
-                }
-                let rest = &code[at + name.len()..];
-                let Some(after) = rest.strip_prefix('.').or_else(|| rest.strip_prefix(':')) else {
-                    continue;
-                };
-                let member: String = after.chars().take_while(|c| is_word(*c)).collect();
-                if member.is_empty() || members.iter().any(|(m, _)| *m == member) {
-                    continue;
-                }
-                if let Some((close, _)) = members.iter().find(|(m, _)| near(m, &member)) {
-                    let s = at + name.len() + 1;
-                    out.push(Problem {
-                        line: row + 1,
-                        span: Some((s, s + member.len())),
-                        message: format!("{rel} has no '{member}' (did you mean {close}?)"),
-                        error: false,
-                    });
-                }
-            }
-        }
-    }
-    out
-}
-
-/// The members a file defines in the table `owner`: `function owner.m(`,
-/// `function owner:m(` and `owner.m = ...` (uses of a member don't count).
-fn defined_members(lines: &[String], owner: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in lines {
-        let code = strip_strings(line);
-        for (at, _) in code.match_indices(owner) {
-            if !whole_at(&code, at, owner) {
-                continue;
-            }
-            let rest = &code[at + owner.len()..];
-            let Some(after) = rest.strip_prefix('.').or_else(|| rest.strip_prefix(':')) else {
-                continue;
-            };
-            let name: String = after.chars().take_while(|c| is_word(*c)).collect();
-            let tail = after[name.len()..].trim_start();
-            let assigned = tail.starts_with('=') && !tail.starts_with("==");
-            if !name.is_empty() && (assigned || code[..at].trim_end().ends_with("function")) {
-                out.push(name);
-            }
-        }
-    }
-    out
 }
 
 /// What a file returns, as (member, whether it is a function), when that is
