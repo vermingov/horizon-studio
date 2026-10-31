@@ -207,8 +207,64 @@ fn per_second(from: &horizon_core::geometry::Vec3, to: &horizon_core::geometry::
     d.map(|c| c * 20.0)
 }
 
-fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
-    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+/// What the studio is told of a mob, or of another player's body (`name`
+/// is the player's, for one).
+fn mob_info(m: &horizon_client::mobs::Mob, name: Option<&str>, alpha: f64) -> EntityInfo {
+    EntityInfo {
+        id: m.id,
+        kind: m.kind.id.clone(),
+        name: name
+            .map(str::to_owned)
+            .or_else(|| m.custom_name.clone())
+            .unwrap_or_default(),
+        pos: between(&m.previous, &m.position, alpha),
+        velocity: per_second(&m.previous, &m.position),
+        body_yaw: degrees_between(m.previous_body_yaw, m.body_yaw, alpha),
+        head_yaw: degrees_between(m.previous_head_yaw, m.head_yaw, alpha),
+        pitch: degrees_between(m.previous_head_pitch, m.head_pitch, alpha),
+        width: f64::from(m.width()),
+        height: f64::from(m.height()),
+        eye: m.eye_height(),
+        health: m.health.max(0.0),
+        max_health: horizon_client::mobs::finalize::max_health(m),
+        speed: m.movement_speed(),
+        on_ground: m.on_ground,
+        baby: m.is_baby(),
+        item: None,
+    }
+}
+
+/// What the studio is told of a dropped item.
+fn item_info(i: &horizon_client::entities::ItemEntity, alpha: f64) -> EntityInfo {
+    let size = horizon_client::entities::ItemEntity::WIDTH;
+    EntityInfo {
+        id: i.id,
+        kind: "minecraft:item".into(),
+        pos: between(&i.previous, &i.position, alpha),
+        velocity: per_second(&i.previous, &i.position),
+        width: size,
+        height: size,
+        eye: size * 0.85,
+        on_ground: i.on_ground,
+        item: Some((i.stack.item.to_string(), i.stack.count)),
+        ..EntityInfo::default()
+    }
+}
+
+/// What the studio is told of an experience orb.
+fn orb_info(o: &horizon_client::entities::ExperienceOrb, alpha: f64) -> EntityInfo {
+    EntityInfo {
+        id: o.id,
+        kind: "minecraft:experience_orb".into(),
+        pos: between(&o.previous, &o.position, alpha),
+        velocity: per_second(&o.previous, &o.position),
+        width: 0.5,
+        height: 0.5,
+        eye: 0.425,
+        on_ground: o.on_ground,
+        item: Some((String::new(), o.value)),
+        ..EntityInfo::default()
+    }
 }
 
 /// The window's size in GUI pixels and the GUI's scale.
@@ -290,80 +346,61 @@ impl GameApi for Host<'_, '_> {
         let me = [me.position.x, me.position.y, me.position.z];
         let alpha = g.clock.fraction();
         // The other players' entities by name: a server's, and a LAN host's guests.
-        let mut names = g.remote_player_names();
+        let mut names: std::collections::HashMap<u32, String> = g.remote_player_names().into_iter().collect();
         if let Some(h) = g.lan.as_ref() {
             for (conn, m) in &h.models {
                 if let Some(guest) = h.hub.guest(*conn) {
-                    names.push((m.id, guest.name.clone()));
+                    names.entry(m.id).or_insert_with(|| guest.name.clone());
                 }
             }
         }
-        let guest_models = g.lan.as_ref().map(|h| h.models.values());
-        let mut found: Vec<(bool, f64, EntityInfo)> = Vec::new();
+        let guests: Vec<&horizon_client::mobs::Mob> =
+            g.lan.as_ref().map_or_else(Vec::new, |h| h.models.values().collect());
+        // Each entity first as what orders them: whether it is another
+        // player, how far it is (squared), and where it is (0 the mobs, 1 the
+        // guests, 2 the dropped items, 3 the orbs, and its index there). Only
+        // the `max` kept are read in full, so a farm's thousands cost little.
+        let far = |p: [f64; 3]| (p[0] - me[0]).powi(2) + (p[1] - me[1]).powi(2) + (p[2] - me[2]).powi(2);
+        let mut keys: Vec<(bool, f64, u8, usize)> = Vec::new();
         // Dying mobs stay until they are removed, so the studio sees them die.
-        for m in g.mobs.iter().chain(guest_models.into_iter().flatten()) {
-            if m.removed {
-                continue;
-            }
-            let player = names.iter().find(|(id, _)| *id == m.id).map(|(_, n)| n.clone());
-            let pos = between(&m.previous, &m.position, alpha);
-            let info = EntityInfo {
-                id: m.id,
-                kind: m.kind.id.clone(),
-                name: player.clone().or_else(|| m.custom_name.clone()).unwrap_or_default(),
-                pos,
-                velocity: per_second(&m.previous, &m.position),
-                body_yaw: degrees_between(m.previous_body_yaw, m.body_yaw, alpha),
-                head_yaw: degrees_between(m.previous_head_yaw, m.head_yaw, alpha),
-                pitch: degrees_between(m.previous_head_pitch, m.head_pitch, alpha),
-                width: f64::from(m.width()),
-                height: f64::from(m.height()),
-                eye: m.eye_height(),
-                health: m.health.max(0.0),
-                max_health: horizon_client::mobs::finalize::max_health(m),
-                speed: m.movement_speed(),
-                on_ground: m.on_ground,
-                baby: m.is_baby(),
-                item: None,
-            };
-            found.push((player.is_some(), distance(me, pos), info));
+        for (i, m) in g.mobs.iter().enumerate().filter(|(_, m)| !m.removed) {
+            let at = between(&m.previous, &m.position, alpha);
+            keys.push((names.contains_key(&m.id), far(at), 0, i));
         }
-        let size = horizon_client::entities::ItemEntity::WIDTH;
-        for i in &g.dropped {
-            let pos = between(&i.previous, &i.position, alpha);
-            let info = EntityInfo {
-                id: i.id,
-                kind: "minecraft:item".into(),
-                pos,
-                velocity: per_second(&i.previous, &i.position),
-                width: size,
-                height: size,
-                eye: size * 0.85,
-                on_ground: i.on_ground,
-                item: Some((i.stack.item.to_string(), i.stack.count)),
-                ..EntityInfo::default()
-            };
-            found.push((false, distance(me, pos), info));
+        for (i, m) in guests.iter().enumerate().filter(|(_, m)| !m.removed) {
+            let at = between(&m.previous, &m.position, alpha);
+            keys.push((names.contains_key(&m.id), far(at), 1, i));
         }
-        for o in &g.orbs {
-            let pos = between(&o.previous, &o.position, alpha);
-            let info = EntityInfo {
-                id: o.id,
-                kind: "minecraft:experience_orb".into(),
-                pos,
-                velocity: per_second(&o.previous, &o.position),
-                width: 0.5,
-                height: 0.5,
-                eye: 0.425,
-                on_ground: o.on_ground,
-                item: Some((String::new(), o.value)),
-                ..EntityInfo::default()
-            };
-            found.push((false, distance(me, pos), info));
+        for (i, d) in g.dropped.iter().enumerate() {
+            keys.push((false, far(between(&d.previous, &d.position, alpha)), 2, i));
         }
-        // The players first, then the nearest.
-        found.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.total_cmp(&b.1)));
-        found.into_iter().take(max).map(|(_, _, e)| e).collect()
+        for (i, o) in g.orbs.iter().enumerate() {
+            keys.push((false, far(between(&o.previous, &o.position, alpha)), 3, i));
+        }
+        // The players first, then the nearest (and as the lists have them).
+        let order = |a: &(bool, f64, u8, usize), b: &(bool, f64, u8, usize)| {
+            b.0.cmp(&a.0)
+                .then(a.1.total_cmp(&b.1))
+                .then(a.2.cmp(&b.2))
+                .then(a.3.cmp(&b.3))
+        };
+        if max == 0 {
+            return Vec::new();
+        }
+        if keys.len() > max {
+            keys.select_nth_unstable_by(max - 1, order);
+            keys.truncate(max);
+        }
+        keys.sort_unstable_by(order);
+        let name = |id: u32| names.get(&id).map(String::as_str);
+        keys.into_iter()
+            .map(|(_, _, list, i)| match list {
+                0 => mob_info(&g.mobs[i], name(g.mobs[i].id), alpha),
+                1 => mob_info(guests[i], name(guests[i].id), alpha),
+                2 => item_info(&g.dropped[i], alpha),
+                _ => orb_info(&g.orbs[i], alpha),
+            })
+            .collect()
     }
     fn players(&mut self) -> Option<Vec<PlayerEntry>> {
         // A server's list fetches the players' skins as it is read: only while the game can change.
