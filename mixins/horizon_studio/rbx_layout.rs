@@ -344,6 +344,9 @@ pub struct Node {
     /// Sinks input; buttons take clicks only when Active.
     pub active: bool,
     pub interactable: bool,
+    /// Only its size is wanted (a partial layout's node): it is sized for
+    /// its parent's layout, but neither it nor what is under it is placed.
+    pub size_only: bool,
 
     // TextLabel, TextButton, TextBox
     pub text: String,
@@ -442,6 +445,7 @@ impl Node {
             clips_descendants: class == Class::ScrollingFrame,
             active: button,
             interactable: true,
+            size_only: false,
             text: match class {
                 Class::TextLabel => "Label",
                 Class::TextButton => "Button",
@@ -1349,7 +1353,9 @@ impl<'a> Pass<'a> {
             ));
         }
         for (child, area) in areas {
-            self.place(child, area, ctx);
+            if !self.node(child).size_only {
+                self.place(child, area, ctx);
+            }
         }
     }
 

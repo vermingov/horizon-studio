@@ -7,7 +7,8 @@ mod common;
 
 use common::{FakeGame, log, mod_index, run_for, studio};
 use horizon_studio::game::hstudio::{ModState, Studio};
-use horizon_studio::game::hstudio_rbx_draw::{pointer_button, pointer_moved};
+use horizon_studio::game::hstudio_rbx_draw::{OUTPUTS, fresh_layout, lay_out, pointer_button, pointer_moved};
+use horizon_studio::game::hstudio_rbx_values::get;
 
 fn printed(st: &Studio, id: &str) -> Vec<String> {
     let prefix = format!("[{id}] ");
@@ -270,4 +271,231 @@ fn text_truncates_and_shows_its_first_graphemes() {
     assert!(st.command("more"));
     run_for(&mut st, &mut game, 0.05);
     assert_eq!(texts(&hud(&mut st, &mut game)), ["Hello wo...", "Typewriter"]);
+}
+
+/// Runs a mod's command and gives what it returned (shown in chat).
+fn say(st: &mut Studio, game: &mut FakeGame, command: &str) -> String {
+    assert!(st.command(command), "/{command}");
+    st.frame(game, 0.016);
+    game.chats.last().cloned().unwrap_or_default()
+}
+
+#[test]
+fn absolute_values_are_fresh_when_read() {
+    let mut game = FakeGame::new("rbx-fresh");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local frame = Instance.new("Frame", gui)
+        frame.Position = UDim2.fromOffset(10, 20)
+        frame.Size = UDim2.fromOffset(100, 50)
+        print(frame.AbsoluteSize, frame.AbsolutePosition)
+        frame.Size = UDim2.new(0.5, 0, 0, 20)
+        print(frame.AbsoluteSize)
+        local label = Instance.new("TextLabel", frame)
+        label.Size = UDim2.fromScale(1, 1)
+        label.Text = "hello"
+        print(label.AbsolutePosition, label.AbsoluteSize, label.TextBounds)
+        local list = Instance.new("UIListLayout", frame)
+        list.Padding = UDim.new(0, 5)
+        local second = Instance.new("TextLabel", frame)
+        second.Size = UDim2.new(1, 0, 0, 30)
+        print(second.AbsolutePosition, list.AbsoluteContentSize)
+        local folder = Instance.new("Folder")
+        local inside = Instance.new("Frame", folder)
+        inside.Size = UDim2.fromOffset(7, 7)
+        print(inside.AbsoluteSize)
+        folder.Parent = gui
+        print(inside.AbsoluteSize, inside.AbsolutePosition)
+        label.Name = "Z"
+        second.Name = "A"
+        list.SortOrder = Enum.SortOrder.Name
+        print(second.AbsolutePosition)
+        command("again", function()
+            return tostring(frame.AbsoluteSize) .. " " .. tostring(frame.AbsolutePosition)
+        end)
+        command("resize", function()
+            frame.Size = UDim2.fromOffset(40, 40)
+            return tostring(frame.AbsoluteSize)
+        end)
+        command("build", function()
+            for i = 1, 20 do
+                local row = Instance.new("TextLabel")
+                row.Text = "row " .. i
+                row.Size = UDim2.new(1, 0, 0, 10)
+                row.Parent = frame
+            end
+        end)
+    "#;
+    load(&mut game, &mut st, "fresh", src, 0.6);
+    let p = printed(&st, "fresh");
+    assert_eq!(
+        p,
+        [
+            "100, 50    10, 20",
+            "480, 20",
+            "10, 20    480, 20    30, 8",
+            "10, 45    480, 55",
+            "0, 0",
+            "7, 7    0, 0",
+            "10, 20",
+        ]
+    );
+    // After a frame drew the GUI, reading lays nothing out again.
+    hud(&mut st, &mut game);
+    let before = st.s.rbx.fresh_layouts;
+    assert_eq!(say(&mut st, &mut game, "again"), "480, 20 10, 20");
+    assert_eq!(st.s.rbx.fresh_layouts, before);
+    // A change, then a read: one layout, and a second read needs none.
+    assert_eq!(say(&mut st, &mut game, "resize"), "40, 40");
+    assert_eq!(st.s.rbx.fresh_layouts, before + 1);
+    assert_eq!(say(&mut st, &mut game, "again"), "40, 40 10, 20");
+    assert_eq!(st.s.rbx.fresh_layouts, before + 1);
+    // Building without reading lays nothing out.
+    say(&mut st, &mut game, "build");
+    assert_eq!(st.s.rbx.fresh_layouts, before + 1);
+}
+
+#[test]
+fn reads_while_a_gui_is_built_lay_out_only_their_way() {
+    // A UI library builds rows and reads each one's place as it goes. Each
+    // read lays out the way down to its row, and in a list only the sizes
+    // of the rows beside it, never the whole GUI again with every text.
+    let mut game = FakeGame::new("rbx-build");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        for i = 1, 100 do
+            local other = Instance.new("TextLabel", gui)
+            other.Text = "elsewhere " .. i
+        end
+        local panel = Instance.new("Frame", gui)
+        panel.Size = UDim2.fromOffset(200, 400)
+        local plain = Instance.new("Frame", panel)
+        plain.Size = UDim2.fromScale(1, 0.5)
+        local listed = Instance.new("Frame", panel)
+        listed.Position = UDim2.fromScale(0, 0.5)
+        listed.Size = UDim2.fromScale(1, 0.5)
+        Instance.new("UIListLayout", listed)
+        command("plain", function()
+            local y = 0
+            for i = 1, 50 do
+                local row = Instance.new("TextLabel")
+                row.Text = "row " .. i
+                row.Size = UDim2.new(1, 0, 0, 10)
+                row.Position = UDim2.fromOffset(0, (i - 1) * 10)
+                row.Parent = plain
+                y = row.AbsolutePosition.Y
+            end
+            return y
+        end)
+        command("listed", function()
+            local y = 0
+            for i = 1, 50 do
+                local row = Instance.new("TextLabel")
+                row.Text = "row " .. i
+                row.Size = UDim2.new(1, 0, 0, 10)
+                row.Parent = listed
+                y = row.AbsolutePosition.Y
+            end
+            return y
+        end)
+    "#;
+    load(&mut game, &mut st, "build", src, 0.6);
+    let nodes = st.s.rbx.fresh_nodes;
+    assert_eq!(say(&mut st, &mut game, "plain"), "490");
+    let plain = st.s.rbx.fresh_nodes - nodes;
+    // The ScreenGui, the panel, the frame and the row: four a read.
+    assert_eq!(plain, 50 * 4, "{plain}");
+    let nodes = st.s.rbx.fresh_nodes;
+    assert_eq!(say(&mut st, &mut game, "listed"), "690");
+    let listed = st.s.rbx.fresh_nodes - nodes;
+    // The way down and its layout, then the rows so far, sized only.
+    assert_eq!(listed, (1..=50).map(|i| 4 + i).sum::<u64>(), "{listed}");
+}
+
+#[test]
+fn a_read_lays_out_as_the_whole_gui_does() {
+    // Every output a read works out on its own is what laying out the whole
+    // GUI gives, with automatic sizes, layouts, padding, scale, constraints,
+    // Folders and scrolling canvases on the way.
+    let mut game = FakeGame::new("rbx-partial");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local panel = Instance.new("Frame", gui)
+        panel.AnchorPoint = Vector2.new(0.5, 0.5)
+        panel.Position = UDim2.fromScale(0.5, 0.5)
+        panel.Size = UDim2.fromOffset(300, 0)
+        panel.AutomaticSize = Enum.AutomaticSize.Y
+        local pad = Instance.new("UIPadding", panel)
+        pad.PaddingTop, pad.PaddingLeft, pad.PaddingRight = UDim.new(0, 8), UDim.new(0, 8), UDim.new(0, 8)
+        local list = Instance.new("UIListLayout", panel)
+        list.Padding = UDim.new(0, 4)
+        list.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        local title = Instance.new("TextLabel", panel)
+        title.Size = UDim2.new(1, 0, 0, 0)
+        title.AutomaticSize = Enum.AutomaticSize.Y
+        title.TextWrapped = true
+        title.Text = "A title long enough to wrap over two or three lines here"
+        local row = Instance.new("Frame", panel)
+        row.Size = UDim2.new(1, 0, 0, 30)
+        Instance.new("UIListLayout", row).FillDirection = Enum.FillDirection.Horizontal
+        for i = 1, 3 do
+            local b = Instance.new("TextButton", row)
+            b.Size = UDim2.fromOffset(0, 30)
+            b.AutomaticSize = Enum.AutomaticSize.X
+            b.Text = string.rep("b", i * 3)
+        end
+        local folder = Instance.new("Folder", panel)
+        local loose = Instance.new("Frame", folder)
+        loose.Position = UDim2.fromOffset(5, 5)
+        loose.Size = UDim2.fromOffset(20, 20)
+        local scroll = Instance.new("ScrollingFrame", panel)
+        scroll.Size = UDim2.new(1, 0, 0, 100)
+        scroll.CanvasSize = UDim2.new()
+        scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        scroll.CanvasPosition = Vector2.new(0, 30)
+        local grid = Instance.new("UIGridLayout", scroll)
+        grid.CellSize = UDim2.fromOffset(60, 40)
+        for i = 1, 7 do
+            Instance.new("ImageLabel", scroll).Name = "cell" .. i
+        end
+        local big = Instance.new("TextLabel", panel)
+        big.Size = UDim2.new(0.5, 0, 0, 20)
+        big.TextScaled = true
+        big.Text = "scaled"
+        Instance.new("UIScale", big).Scale = 1.5
+        local side = Instance.new("Frame", gui)
+        side.Size = UDim2.fromScale(0.5, 0.5)
+        Instance.new("UIAspectRatioConstraint", side).AspectRatio = 2
+        local limit = Instance.new("UISizeConstraint", side)
+        limit.MaxSize = Vector2.new(300, 300)
+        local corner = Instance.new("TextBox", side)
+        corner.Size = UDim2.fromScale(0.25, 0.25)
+        corner.Text = ""
+        corner.PlaceholderText = "type"
+    "#;
+    load(&mut game, &mut st, "partial", src, 0.6);
+    let rbx = &mut st.s.rbx;
+    let gui = rbx.player_gui;
+    let ids: Vec<_> = rbx.descendants(gui).into_iter().filter(|&i| rbx.inst(i).gui).collect();
+    let outputs = |rbx: &horizon_studio::game::hstudio_rbx::Rbx, id| -> Vec<String> {
+        OUTPUTS
+            .iter()
+            .map(|k| format!("{k} {:?}", get(&rbx.raw_get(id, k))))
+            .collect()
+    };
+    let mut alone = Vec::new();
+    for &id in &ids {
+        // Something moved: each read works its own values out.
+        rbx.gui_epoch += 1;
+        fresh_layout(rbx, &mut game, id);
+        alone.push(outputs(rbx, id));
+    }
+    rbx.gui_epoch += 1;
+    lay_out(rbx, &mut game);
+    for (i, &id) in ids.iter().enumerate() {
+        assert_eq!(alone[i], outputs(rbx, id), "{}", rbx.full_name(id));
+    }
 }

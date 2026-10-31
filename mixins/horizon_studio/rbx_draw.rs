@@ -318,7 +318,7 @@ pub fn lay_out(rbx: &mut Rbx, game: &mut dyn GameApi) {
     if !rbx.active {
         return;
     }
-    let (w, h, _) = game.dp();
+    let (w, h) = see_view(rbx, game);
     let mut tree = Tree::new();
     let mut node_inst: Vec<Id> = Vec::new();
     let mut inst_node: HashMap<Id, NodeId> = HashMap::new();
@@ -347,35 +347,12 @@ pub fn lay_out(rbx: &mut Rbx, game: &mut dyn GameApi) {
     let mut writes: Vec<(Id, &'static str, Value, bool)> = Vec::new();
     for (n, &id) in node_inst.iter().enumerate() {
         let Some(p) = lay.get(n) else { continue };
-        let inst = rbx.inst(id);
-        let c = inst.class;
-        if is_a(c, "GuiBase2d") {
-            writes.push((id, "AbsolutePosition", v2(p.position), true));
-            writes.push((id, "AbsoluteSize", v2(p.size), true));
-            writes.push((id, "AbsoluteRotation", Value::Num(p.rotation), false));
-        }
-        if let Some(t) = &p.text {
-            writes.push((id, "TextBounds", v2(t.bounds), true));
-            writes.push((id, "TextFits", Value::Bool(t.fits), false));
-        }
-        if c.name == "ScrollingFrame" {
-            writes.push((id, "AbsoluteCanvasSize", v2(p.canvas_size), true));
-            writes.push((id, "AbsoluteWindowSize", v2(p.window_size), true));
-        }
-        if matches!(c.name, "UIListLayout" | "UIGridLayout") {
-            writes.push((id, "AbsoluteContentSize", v2(p.content_size), true));
-            if c.name == "UIGridLayout" {
-                writes.push((id, "AbsoluteCellSize", v2(p.cell_size), false));
-                writes.push((id, "AbsoluteCellCount", v2(p.cell_count), false));
-            }
-        }
+        outputs(rbx, p, id, &mut writes);
     }
-    for (id, k, v, loud) in writes {
-        if loud {
-            rbx.raw_set(id, k, v);
-        } else {
-            rbx.quiet_set(id, k, v);
-        }
+    write_outputs(rbx, writes);
+    let epoch = rbx.gui_epoch;
+    for &id in &node_inst {
+        rbx.inst_mut(id).laid_out = epoch;
     }
     rbx.layout = Some(Frame {
         layout: lay,
@@ -383,6 +360,230 @@ pub fn lay_out(rbx: &mut Rbx, game: &mut dyn GameApi) {
         inst_node,
         view: (f64::from(w), f64::from(h)),
     });
+}
+
+/// The properties the layout writes back. A change to one of them doesn't
+/// move the layout, and reading one lays the GUI out first if it moved.
+pub const OUTPUTS: &[&str] = &[
+    "AbsolutePosition",
+    "AbsoluteSize",
+    "AbsoluteRotation",
+    "TextBounds",
+    "TextFits",
+    "AbsoluteCanvasSize",
+    "AbsoluteWindowSize",
+    "AbsoluteContentSize",
+    "AbsoluteCellSize",
+    "AbsoluteCellCount",
+];
+
+/// The screen's size in dp; a new size moves the GUI's layout.
+fn see_view(rbx: &mut Rbx, game: &mut dyn GameApi) -> (f32, f32) {
+    let (w, h, _) = game.dp();
+    if rbx.gui_view != (w, h) {
+        rbx.gui_view = (w, h);
+        rbx.gui_epoch += 1;
+    }
+    (w, h)
+}
+
+/// What Roblox reports of a laid-out instance: (instance, property, value,
+/// whether Changed fires for it).
+fn outputs(rbx: &Rbx, p: &layout::Placed, id: Id, writes: &mut Vec<(Id, &'static str, Value, bool)>) {
+    let c = rbx.inst(id).class;
+    if is_a(c, "GuiBase2d") {
+        writes.push((id, "AbsolutePosition", v2(p.position), true));
+        writes.push((id, "AbsoluteSize", v2(p.size), true));
+        writes.push((id, "AbsoluteRotation", Value::Num(p.rotation), false));
+    }
+    if let Some(t) = &p.text {
+        writes.push((id, "TextBounds", v2(t.bounds), true));
+        writes.push((id, "TextFits", Value::Bool(t.fits), false));
+    }
+    if c.name == "ScrollingFrame" {
+        writes.push((id, "AbsoluteCanvasSize", v2(p.canvas_size), true));
+        writes.push((id, "AbsoluteWindowSize", v2(p.window_size), true));
+    }
+    if matches!(c.name, "UIListLayout" | "UIGridLayout") {
+        writes.push((id, "AbsoluteContentSize", v2(p.content_size), true));
+        if c.name == "UIGridLayout" {
+            writes.push((id, "AbsoluteCellSize", v2(p.cell_size), false));
+            writes.push((id, "AbsoluteCellCount", v2(p.cell_count), false));
+        }
+    }
+}
+
+fn write_outputs(rbx: &mut Rbx, writes: Vec<(Id, &'static str, Value, bool)>) {
+    for (id, k, v, loud) in writes {
+        if loud {
+            rbx.raw_set(id, k, v);
+        } else {
+            rbx.quiet_set(id, k, v);
+        }
+    }
+}
+
+/// Brings `id`'s layout outputs (AbsoluteSize, TextBounds...) up to date
+/// before a script reads one, as Roblox works them out when they are read:
+/// when the GUI moved since they were last worked out, its ScreenGui is
+/// laid out again, though only as far as `id` needs (the way down to it,
+/// and the sizes of what a layout on the way arranges). Returns the nodes
+/// laid out, none when its values were fresh or it isn't in a ScreenGui
+/// that draws.
+pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
+    if !rbx.try_inst(id).is_some_and(|i| i.gui) {
+        return 0;
+    }
+    let (w, h) = see_view(rbx, game);
+    if rbx.inst(id).laid_out == rbx.gui_epoch {
+        return 0;
+    }
+    let Some(path) = drawn_path(rbx, id) else {
+        return 0;
+    };
+    let mut part = Partial {
+        rbx,
+        tree: Tree::new(),
+        node_inst: Vec::new(),
+        path: &path,
+    };
+    part.add(path[0], None, true);
+    let (tree, node_inst) = (part.tree, part.node_inst);
+    let mut measure = |text: &str, size: f64, font: &Font| -> f64 {
+        f64::from(game.dp_measure(text, size as f32, studio_font(font)))
+    };
+    let lay = tree.layout(&Viewport::new(f64::from(w), f64::from(h), 0.0), &mut measure);
+    // Only the way down is laid out as the whole GUI would be, with the
+    // layouts that arrange it.
+    let wanted = |n: NodeId| {
+        path.contains(&node_inst[n])
+            || matches!(tree[n].class, Class::UIListLayout | Class::UIGridLayout)
+                && tree.parent(n).is_some_and(|p| path.contains(&node_inst[p]))
+    };
+    let mut writes = Vec::new();
+    let mut fresh = Vec::new();
+    for (n, &i) in node_inst.iter().enumerate() {
+        if wanted(n) {
+            fresh.push(i);
+            if let Some(p) = lay.get(n) {
+                outputs(rbx, p, i, &mut writes);
+            }
+        }
+    }
+    write_outputs(rbx, writes);
+    let epoch = rbx.gui_epoch;
+    for i in fresh {
+        rbx.inst_mut(i).laid_out = epoch;
+    }
+    rbx.fresh_layouts += 1;
+    rbx.fresh_nodes += node_inst.len() as u64;
+    node_inst.len()
+}
+
+/// The instances from the ScreenGui that draws `id` down to it, if one does.
+fn drawn_path(rbx: &Rbx, id: Id) -> Option<Vec<Id>> {
+    let drawn = [rbx.player_gui, rbx.core_gui, rbx.hui];
+    let mut path = vec![id];
+    let mut at = id;
+    loop {
+        let inst = rbx.try_inst(at)?;
+        let parent = inst.parent?;
+        if inst.class.name == "ScreenGui" && drawn.contains(&parent) {
+            path.reverse();
+            return Some(path);
+        }
+        path.push(parent);
+        at = parent;
+    }
+}
+
+/// The part of a ScreenGui's tree a read needs, as `fresh_layout` builds it.
+struct Partial<'a> {
+    rbx: &'a Rbx,
+    tree: Tree,
+    node_inst: Vec<Id>,
+    /// From the ScreenGui down to the instance read.
+    path: &'a [Id],
+}
+
+impl Partial<'_> {
+    /// Adds `id` under `parent`: placed as in the whole layout when it is
+    /// on the path, else only sized. Under it go the UI components that
+    /// apply, and the children its size, its canvas or its layout (on the
+    /// path) depends on.
+    fn add(&mut self, id: Id, parent: Option<NodeId>, on_path: bool) {
+        let rbx = self.rbx;
+        let inst = rbx.inst(id);
+        let class = layout_class(inst.class);
+        let n = self.tree.add(class, parent);
+        let auto = is_a(inst.class, "GuiObject") && enum_name(&inst.get("AutomaticSize")) != "None";
+        if on_path || auto || !class.is_gui_object() {
+            fill(&mut self.tree[n], inst, rbx.pointer.focus == Some(id));
+        } else {
+            fill_size(&mut self.tree[n], inst);
+        }
+        self.tree[n].size_only = !on_path;
+        if self.node_inst.len() <= n {
+            self.node_inst.resize(n + 1, 0);
+        }
+        self.node_inst[n] = id;
+        let next = self
+            .path
+            .iter()
+            .position(|&p| p == id)
+            .and_then(|i| self.path.get(i + 1).copied())
+            .filter(|_| on_path);
+        let folder = class == Class::Folder;
+        let canvas = inst.class.name == "ScrollingFrame" && enum_name(&inst.get("AutomaticCanvasSize")) != "None";
+        let arranged = inst
+            .children
+            .iter()
+            .any(|&c| matches!(rbx.inst(c).class.name, "UIListLayout" | "UIGridLayout"));
+        for &c in &inst.children {
+            if Some(c) == next {
+                self.add(c, Some(n), true);
+                continue;
+            }
+            let cc = layout_class(rbx.inst(c).class);
+            if cc == Class::ScreenGui {
+                continue;
+            }
+            if !cc.is_gui_object() && cc != Class::Folder {
+                // A UI component: a sized node needs only its size constraints.
+                if on_path || auto || matches!(cc, Class::UISizeConstraint | Class::UIAspectRatioConstraint) {
+                    self.add(c, Some(n), false);
+                }
+                continue;
+            }
+            // What a Folder holds counts for its GUI ancestor's size.
+            let needed = if folder {
+                !on_path
+            } else if on_path {
+                auto || canvas || arranged && cc.is_gui_object() && next.is_some()
+            } else {
+                auto
+            };
+            if needed {
+                self.add(c, Some(n), false);
+            }
+        }
+    }
+}
+
+/// The properties a node's size and its place in its parent's layout come
+/// from: enough for a node a partial layout only sizes.
+fn fill_size(node: &mut layout::Node, inst: &super::hstudio_rbx::Inst) {
+    node.name = inst.name.clone();
+    node.position = as_udim2(&inst.get("Position")).unwrap_or_default();
+    node.size = as_udim2(&inst.get("Size")).unwrap_or_default();
+    node.anchor_point = as_v2(&inst.get("AnchorPoint")).unwrap_or_default();
+    node.visible = flag(inst, "Visible");
+    node.layout_order = num(inst, "LayoutOrder") as i32;
+    node.size_constraint = match enum_name(&inst.get("SizeConstraint")) {
+        "RelativeXX" => SizeConstraint::RelativeXX,
+        "RelativeYY" => SizeConstraint::RelativeYY,
+        _ => SizeConstraint::RelativeXY,
+    };
 }
 
 // ---------------------------------------------------------------- drawing
@@ -874,6 +1075,8 @@ pub fn focus(rbx: &mut Rbx, id: Option<Id>) {
     unfocus(rbx, false);
     let Some(id) = id else { return };
     rbx.pointer.focus = Some(id);
+    // An empty TextBox shows its placeholder only without the focus.
+    rbx.gui_epoch += 1;
     if rbx.raw_get(id, "ClearTextOnFocus").truthy() && rbx.raw_get(id, "TextEditable").truthy() {
         rbx.raw_set(id, "Text", Value::str(""));
     }
@@ -885,6 +1088,7 @@ pub fn focus(rbx: &mut Rbx, id: Option<Id>) {
 
 pub fn unfocus(rbx: &mut Rbx, enter: bool) {
     let Some(id) = rbx.pointer.focus.take() else { return };
+    rbx.gui_epoch += 1;
     let input = input_object(
         rbx,
         Some(if enter { "Return" } else { "Unknown" }),

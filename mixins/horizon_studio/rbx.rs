@@ -1057,6 +1057,11 @@ pub struct Inst {
     /// Properties setscriptable turned off, and hidden ones it turned on.
     pub unscriptable: HashSet<String>,
     pub revealed: HashSet<String>,
+    /// A GuiBase2d or a UI component: a change to it changes the GUI's layout.
+    pub gui: bool,
+    /// The GUI epoch its layout's outputs (AbsoluteSize, TextBounds...) were
+    /// worked out at; 0 before they ever were.
+    pub laid_out: u64,
 }
 
 impl Inst {
@@ -1187,6 +1192,16 @@ pub struct Rbx {
     /// the GUI's own screen draws.
     pub workspace_dir: std::path::PathBuf,
     pub screen_images: super::hstudio_sunc::ImageCache,
+    /// Counts the changes that move the GUI's layout (a GUI instance's
+    /// property, any Parent, the screen's size, the TextBox focus), so that
+    /// a read of AbsoluteSize, TextBounds and the like lays out again only
+    /// when one came since its value was worked out.
+    pub gui_epoch: u64,
+    /// The screen size in dp the GUI was last laid out for.
+    pub gui_view: (f32, f32),
+    /// Layouts a read made, and the nodes they laid out in all.
+    pub fresh_layouts: u64,
+    pub fresh_nodes: u64,
 }
 
 /// An HTTP request a thread waits for.
@@ -1291,6 +1306,10 @@ impl Rbx {
             loaded_modules: Vec::new(),
             workspace_dir: std::path::PathBuf::new(),
             screen_images: super::hstudio_sunc::ImageCache::default(),
+            gui_epoch: 1,
+            gui_view: (0.0, 0.0),
+            fresh_layouts: 0,
+            fresh_nodes: 0,
         };
         r.build();
         r
@@ -1420,6 +1439,8 @@ impl Rbx {
                 locked: false,
                 unscriptable: HashSet::new(),
                 revealed: HashSet::new(),
+                gui: is_a(c, "GuiBase2d") || is_a(c, "UIComponent"),
+                laid_out: 0,
             },
         );
         id
@@ -1490,6 +1511,13 @@ impl Rbx {
     /// Changed and the property's own signal, as Roblox fires them (a
     /// ValueBase's Changed is for its Value only, with the value).
     pub fn changed(&mut self, id: Id, name: &str, v: &Value) {
+        // Every change the layout can see goes through here (properties,
+        // Parent, Name), except the layout's own outputs. Any Parent counts:
+        // a Folder of GuiObjects moves them too.
+        let gui = self.insts.get(&id).is_some_and(|i| i.gui);
+        if name == "Parent" || gui && !super::hstudio_rbx_draw::OUTPUTS.contains(&name) {
+            self.gui_epoch += 1;
+        }
         let value_base = self.insts.get(&id).is_some_and(|i| is_a(i.class, "ValueBase"));
         if value_base && name == "Value" {
             self.fire(id, "Changed", vec![v.clone()]);
@@ -2260,6 +2288,13 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
         && let Some(loaded) = env.rbx().image_loaded(id)
     {
         return Ok(vec![Value::Bool(loaded)]);
+    }
+    // AbsoluteSize and the layout's other outputs are worked out afresh
+    // when the GUI changed since; the nodes laid out count as steps.
+    if super::hstudio_rbx_draw::OUTPUTS.contains(&k.as_str()) {
+        let (rbx, game) = env.rbx_and_game();
+        let nodes = super::hstudio_rbx_draw::fresh_layout(rbx, game, id);
+        lua.charge(nodes * 16)?;
     }
     let rbx = env.rbx();
     let inst = rbx.inst(id);
