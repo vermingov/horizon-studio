@@ -1369,3 +1369,20 @@ fn a_headless_test_puts_mobs_and_players_near() {
         "{report:#}"
     );
 }
+
+#[test]
+fn a_mobs_humanoid_walks_no_one() {
+    let mut game = FakeGame::new("rbxw-mobwalk");
+    game.entities = vec![zombie(5, 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local hum = workspace:WaitForChild("Zombie").Humanoid
+        hum.MoveToFinished:Connect(function(reached) print("finished", reached) end)
+        hum:MoveTo(Vector3.new(0, 64, 0))
+        print(hum:GetState().Name, hum.WalkSpeed > 9)
+    "#;
+    load(&mut game, &mut st, "mobwalk", src, 0.6);
+    // The game moves it: its MoveToFinished fires with false, and the agent isn't asked.
+    assert!(game.agent_calls.is_empty(), "{:?}", game.agent_calls);
+    assert_eq!(printed(&st, "mobwalk"), ["Running    true", "finished    false"]);
+}

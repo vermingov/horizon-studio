@@ -1179,7 +1179,8 @@ pub fn member(rbx: &Rbx, id: Id, key: &str) -> Option<Value> {
 }
 
 /// What a read of `key` on `id` needs from the game first: the Mouse's Hit,
-/// Target, UnitRay and Origin are worked out where it points; the local
+/// Target, TargetSurface, UnitRay and Origin are worked out where it points
+/// (its Hit, Target and TargetSurface are a look at the world); the local
 /// Humanoid's FloorMaterial is the block under the player, looked up only
 /// when a script asks; and a read that reaches the world's entities
 /// (`reaches_world`) has them mirrored.
