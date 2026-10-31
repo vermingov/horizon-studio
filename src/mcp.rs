@@ -372,8 +372,9 @@ pub fn tools() -> Json {
             "test_mod",
             "Tests a mod end to end with steps. Headless (default): on a simulated game, no Horizon \
               needed. live: true runs the same steps in the running game through the AI link (the mod as written \
-              in the mods folder). Each step reports what it caused: chat, sent lines, console lines, text drawn, \
-              sounds, particles, failures.",
+              in the mods folder). Give files to test text not yet written (for a module that exists, only the \
+              files that change, over its other files; live writes them first). Each step reports what it caused: \
+              chat, sent lines, console lines, text drawn, sounds, particles, failures.",
             json!({ "id": id, "files": files_schema(), "steps": steps_schema(),
                      "live": { "type": "boolean", "description": "Run in the game (default false: headless)." },
                      "mods_dir": mods_dir }),

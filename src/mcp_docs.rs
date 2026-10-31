@@ -1369,6 +1369,8 @@ Headless tests have no ViaHorizon: `via.status()` says "Not in a headless test",
 const TESTS: &str = r##"
 `test_mod` runs a list of steps against a mod and reports what each step caused. Headless (the default) it runs on a simulated game with no Horizon needed; with `live: true` it runs the same steps in the running game through the AI link.
 
+Without `files` it tests the mod as it is in the mods folder. Give `files` to test text not yet written: a script's file, or for a module that exists only the files that change, laid over its other files as they are on disk (with `live: true` they are written first, the others kept, as `write_mod` writes them).
+
 The step format, as the MCP server describes it:
 
 > {STEPS_HELP}
@@ -1469,7 +1471,7 @@ const MCP: &str = r##"
 - `write_mod` (`id`, `files`, `remove`, `mods_dir`; `files` or `remove` or both): creates or changes a mod. `files` is `{"<id>.lua": "..."}` for a script, or a module's files, `{"main.lua": "...", "lib/util.lua": "..."}`. For a module that exists, only the files given are written and the others stay as they are, and `remove` (paths in the module, `["old.lua"]`; not main.lua) deletes files for good. `main.lua` for an existing script makes it a module: the script's file goes to the trash, beside the mods folder, once the module's files are written. Every path is checked before anything on disk changes, so one refused (outside the mod, more than three folders deep, where a folder is) leaves the mod as it was. The mod is checked headless first, as it will be on disk (for a module, over its other files as they are there, every byte, its assets too, and without the files `remove` deletes), then written and the files removed; while the game is linked it reloads there. Returns `{"ok", "written", "removed", "check", "live"}` (`check` as `check_mod`; `live` the mod's state in the game, or "not linked: ...").
 - `delete_mod` (`id`, `mods_dir`): deletes the file or folder; `{"ok": true, "deleted"}`.
 - `check_mod` (`id`, `files` optional, `mods_dir`): loads the mod headless with the libraries it imports and runs 2 frames: `{"ok", "mod", "libraries", "log", "chat"}`; `mod` has `state`, `error`, `file` and `line` (where the error is: in a module, the file `require` loaded when that is where it failed), `traceback`, `commands`, `handlers`, `timers`, `library`, `imports`... Give `files` to check text not yet written (for a module that exists, they are checked over its other files).
-- `test_mod` (`id`, `steps`, `files` optional, `live` default false, `mods_dir`): runs test steps (see `tests`) and returns the report.
+- `test_mod` (`id`, `steps`, `files` optional, `live` default false, `mods_dir`): runs test steps (see `tests`) and returns the report. `files` are tested as `check_mod` checks them (for a module that exists, over its other files); with `live` they are written first.
 - `run_lua` (`code`, `live`, `with_mod`, `mods_dir`): runs Lua in the console: in the game while it is linked (default), else headless (with the mod `with_mod` loaded first). Returns `{"ok", "where", "lines": [{"kind", "text"}]}` (headless also `chat`).
 - `send_chat` (`line`, `wait_frames` default 20, 1 to 1200): sends a chat line or command in the game as the player, waits, and returns `{"chat", "log"}` that followed. Live only.
 - `game_log` (`since_log`, `since_chat`): the console's log and the chat from the game; give the last numbers seen to get only newer lines. Live only.
