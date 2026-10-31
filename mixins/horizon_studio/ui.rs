@@ -665,9 +665,11 @@ pub struct LineEdit {
 }
 
 impl LineEdit {
+    /// New text, the cursor at its end and nothing selected.
     pub fn set(&mut self, text: &str) {
         self.text = text.to_owned();
         self.cursor = self.text.len();
+        self.anchor = None;
     }
     /// Types `s` at the cursor, over the selection if there is one.
     pub fn insert(&mut self, s: &str) {

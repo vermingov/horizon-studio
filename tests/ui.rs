@@ -203,6 +203,14 @@ fn line_edit_selects_and_keeps_lines() {
     l.edit_key(Key::Char('a'), CTRL);
     l.edit_key(Key::Backspace, NONE);
     assert_eq!((l.text.as_str(), l.cursor, l.anchor), ("", 0, None));
+    // New text drops the selection, however long the old text was.
+    l.set("a longer text");
+    l.edit_key(Key::Char('a'), CTRL);
+    l.set("hi");
+    assert_eq!((l.cursor, l.selection(), l.selected()), (2, None, ""));
+    l.insert("!");
+    assert_eq!(l.text, "hi!");
+    l.set("");
     // One line turns newlines into spaces; several keep them, and Home,
     // End, Up and Down keep to the lines.
     l.insert("a\nb");
