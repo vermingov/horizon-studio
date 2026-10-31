@@ -10,7 +10,8 @@
 use crate::game::hstudio::VERSION;
 use crate::game::hstudio_examples::EXAMPLES;
 use crate::headless::{
-    OldScript, Run, STEPS_HELP, Source, check_id, read_mod, removable, remove_files, run_steps, write_mod,
+    OldScript, Run, STEPS_HELP, Source, check_holder, check_id, delete_mod, find_mod, read_mod, removable,
+    remove_files, run_steps, write_mod,
 };
 use crate::mcp_docs::{self, Reference};
 use serde_json::{Value as Json, json};
@@ -301,7 +302,7 @@ fn steps_schema() -> Json {
 }
 
 pub fn tools() -> Json {
-    let id = json!({ "type": "string", "description": "The mod's id: its file or folder name (lowercase, digits, _ and -)." });
+    let id = json!({ "type": "string", "description": "The mod's id, as list_mods gives it: its file or folder name in lowercase letters, digits, _ and - (\"Night Light.lua\" is night_light)." });
     let mods_dir = json!({ "type": "string", "description": "The mods folder, if not the game's (found by itself)." });
     json!([
         tool(
@@ -359,7 +360,8 @@ pub fn tools() -> Json {
         ),
         tool(
             "delete_mod",
-            "Deletes a script mod (its file or folder) from the mods folder.",
+            "Deletes a script mod from the mods folder for good: the file or folder list_mods lists under its id, \
+              whatever it is called (\"Night Light.lua\" for night_light).",
             json!({ "id": id, "mods_dir": mods_dir }),
             &["id"]
         ),
@@ -721,6 +723,8 @@ impl Server {
                     return Err("give 'files' to write, or 'remove': files of a module to delete".into());
                 }
                 let dir = dir()?;
+                // Not under an id another file holds: the studio would pass it over.
+                check_holder(&dir, id)?;
                 removable(&dir, id, &remove)?;
                 // Checked as it will be on disk: over a module's other files.
                 let check = check(&Source::Files {
@@ -761,18 +765,16 @@ impl Server {
             }
             "delete_mod" => {
                 let id = str_arg(args, "id")?;
-                check_id(id)?;
                 let dir = dir()?;
-                let (file, folder) = (dir.join(format!("{id}.lua")), dir.join(id));
-                if folder.join("main.lua").is_file() {
-                    std::fs::remove_dir_all(&folder).map_err(|e| e.to_string())?;
-                } else if file.is_file() {
-                    std::fs::remove_file(&file).map_err(|e| e.to_string())?;
-                } else {
-                    return Err(format!("no mod '{id}' in {}", dir.display()));
-                }
+                // What list_mods lists under the id, whatever its name.
+                let path = delete_mod(&dir, id)?;
                 let _ = self.live("scan", json!({}));
-                Ok(json!({ "ok": true, "deleted": id }))
+                let mut reply = json!({ "ok": true, "deleted": id, "path": path });
+                // Another file had that id too, passed over until now.
+                if let Some((main, folder)) = find_mod(&dir, id) {
+                    reply["now_listed"] = json!(folder.unwrap_or(main));
+                }
+                Ok(reply)
             }
             "check_mod" => {
                 let id = str_arg(args, "id")?;

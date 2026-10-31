@@ -616,6 +616,21 @@ fn an_id_another_file_of_the_mods_folder_holds_is_refused() {
                 "steps": [{ "command": "/lamp", "expect_chat": "lamp on" }] }),
     );
     assert!(!error && r["ok"] == true, "{r:#}");
+    // `remove` is refused there as writing its files is: neither changes a
+    // module whose folder is named otherwise.
+    let (r, error) = call(
+        &mut s,
+        "write_mod",
+        json!({ "id": "desk_lamp", "mods_dir": d, "remove": ["lib.lua"] }),
+    );
+    assert!(error, "{r:#}");
+    assert!(
+        r.as_str()
+            .unwrap_or("")
+            .contains("desk_lamp is \"Desk Lamp\" in the mods folder"),
+        "{r}"
+    );
+    assert!(folder.join("lib.lua").is_file());
     // A mod's own file is written as before.
     for text in ["print('lamp')\n", "print('lamp, again')\n"] {
         let (r, error) = call(
@@ -625,6 +640,87 @@ fn an_id_another_file_of_the_mods_folder_holds_is_refused() {
         );
         assert!(!error, "{r:#}");
     }
+}
+
+#[test]
+fn delete_mod_deletes_what_list_mods_lists_under_the_id() {
+    let mut s = server();
+    let studio = Folder::new("delete");
+    let mods = studio.mods();
+    let d = mods.to_str().unwrap();
+    let night = mods.join("Night Light.lua");
+    std::fs::write(&night, "print('night')\n").unwrap();
+    let lamp = mods.join("Desk Lamp");
+    std::fs::create_dir_all(&lamp).unwrap();
+    std::fs::write(lamp.join("main.lua"), "print('lamp')\n").unwrap();
+    // The ids list_mods gives, whatever the names on disk.
+    for (id, path) in [("desk_lamp", &lamp), ("night_light", &night)] {
+        let (r, error) = call(&mut s, "delete_mod", json!({ "id": id, "mods_dir": d }));
+        assert!(!error, "{id}: {r:#}");
+        assert_eq!((&r["deleted"], &r["path"]), (&json!(id), &json!(path)), "{r:#}");
+        assert!(r.get("now_listed").is_none(), "{r:#}");
+        assert!(!path.exists(), "{id}");
+    }
+    let (r, _) = call(&mut s, "list_mods", json!({ "mods_dir": d }));
+    assert_eq!(r["mods"], json!([]), "{r:#}");
+    // Of two names with one id, the one listed goes, not the one passed
+    // over, and the reply says the other is listed now.
+    std::fs::write(&night, "print('night')\n").unwrap();
+    std::fs::create_dir_all(mods.join("night_light")).unwrap();
+    std::fs::write(mods.join("night_light/main.lua"), "print('passed over')\n").unwrap();
+    let (r, error) = call(&mut s, "delete_mod", json!({ "id": "night_light", "mods_dir": d }));
+    assert!(!error, "{r:#}");
+    assert_eq!(r["path"], json!(night), "{r:#}");
+    assert!(!night.exists() && mods.join("night_light/main.lua").is_file());
+    assert_eq!(r["now_listed"], json!(mods.join("night_light")), "{r:#}");
+    let (r, error) = call(&mut s, "delete_mod", json!({ "id": "nope", "mods_dir": d }));
+    assert!(error && r.as_str().unwrap_or("").contains("no mod 'nope'"), "{r}");
+}
+
+#[test]
+fn where_case_is_ignored_a_mods_own_name_is_its_own() {
+    let mut s = server();
+    let studio = Folder::new("case");
+    let mods = studio.mods();
+    let d = mods.to_str().unwrap();
+    // "Lamp.lua" is lamp. Where the file system ignores case (macOS's,
+    // Windows') lamp.lua is that very file; a hard link, a second name for
+    // one file, is the same on any other.
+    std::fs::write(mods.join("Lamp.lua"), "print('lamp')\n").unwrap();
+    if !mods.join("lamp.lua").exists() {
+        std::fs::hard_link(mods.join("Lamp.lua"), mods.join("lamp.lua")).unwrap();
+    }
+    let (r, error) = call(
+        &mut s,
+        "write_mod",
+        json!({ "id": "lamp", "mods_dir": d, "files": { "lamp.lua": "print('lamp, again')\n" } }),
+    );
+    assert!(!error, "{r:#}");
+    assert_eq!(
+        std::fs::read_to_string(mods.join("Lamp.lua")).unwrap(),
+        "print('lamp, again')\n"
+    );
+    // A module's folder the same way: "Kit" is kit/.
+    std::fs::create_dir_all(mods.join("Kit")).unwrap();
+    std::fs::write(mods.join("Kit/main.lua"), "print('kit')\n").unwrap();
+    #[cfg(unix)]
+    if !mods.join("kit").exists() {
+        std::os::unix::fs::symlink("Kit", mods.join("kit")).unwrap();
+    }
+    let (r, error) = call(
+        &mut s,
+        "write_mod",
+        json!({ "id": "kit", "mods_dir": d, "files": { "lib.lua": "return 1\n" } }),
+    );
+    assert!(!error, "{r:#}");
+    assert!(mods.join("Kit/lib.lua").is_file());
+    let (r, error) = call(
+        &mut s,
+        "write_mod",
+        json!({ "id": "kit", "mods_dir": d, "remove": ["lib.lua"] }),
+    );
+    assert!(!error, "{r:#}");
+    assert!(!mods.join("Kit/lib.lua").exists());
 }
 
 #[test]

@@ -449,24 +449,12 @@ pub enum OldScript {
 /// changes, and a module's files are written beside it first, so a path
 /// refused or a write that fails leaves the mod as it was. An id that
 /// another file of the mods folder has ("Night Light.lua" is
-/// night_light's) is refused.
+/// night_light's) is refused (`check_holder`).
 pub fn write_mod(mods_dir: &Path, id: &str, files: &[(String, String)]) -> Result<Written, String> {
     check_id(id)?;
+    check_holder(mods_dir, id)?;
     let dir = mods_dir.join(id);
     let script = mods_dir.join(format!("{id}.lua"));
-    // The studio lists one mod an id: what is written here would be passed
-    // over for another file that has it.
-    if let Some((main, folder)) = find_mod(mods_dir, id) {
-        let held = folder.unwrap_or(main);
-        if held != dir && held != script {
-            let name = held
-                .file_name()
-                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-            return Err(format!(
-                "{id} is \"{name}\" in the mods folder: rename that file or choose another id"
-            ));
-        }
-    }
     let exists = dir.join("main.lua").is_file();
     if !exists && !files.iter().any(|(p, _)| p == "main.lua") {
         let [(name, text)] = files else {
@@ -557,11 +545,70 @@ fn module_paths(dir: &Path, files: &[(String, String)]) -> Result<Vec<PathBuf>, 
     Ok(out)
 }
 
+/// Refuses an id that another file or folder of the mods folder holds
+/// ("Night Light.lua" is night_light's): the studio lists one mod an id, so
+/// what is written or removed at `<id>.lua` or `<id>/` would be passed over
+/// for that one. A name that is one of those on disk is the mod's own: where
+/// the file system ignores case (macOS's, Windows'), "Lamp.lua" is lamp.lua.
+pub fn check_holder(mods_dir: &Path, id: &str) -> Result<(), String> {
+    let Some((main, folder)) = find_mod(mods_dir, id) else {
+        return Ok(());
+    };
+    let held = folder.unwrap_or(main);
+    if [mods_dir.join(id), mods_dir.join(format!("{id}.lua"))]
+        .iter()
+        .any(|own| same_file(&held, own))
+    {
+        return Ok(());
+    }
+    let name = held
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    Err(format!(
+        "{id} is \"{name}\" in the mods folder: rename that file or choose another id"
+    ))
+}
+
+/// Whether two paths name one file or folder: the same path, or two names
+/// that reach one file on disk ("Lamp.lua" and "lamp.lua" where the file
+/// system ignores case).
+fn same_file(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!((std::fs::metadata(a), std::fs::metadata(b)),
+            (Ok(x), Ok(y)) if (x.dev(), x.ino()) == (y.dev(), y.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+    }
+}
+
+/// Deletes mod `id` for good: the file or folder the studio lists under
+/// that id, whatever it is called ("Night Light.lua" for night_light), as
+/// list_mods, read_mod and check_mod take the id. Returns its path.
+pub fn delete_mod(mods_dir: &Path, id: &str) -> Result<PathBuf, String> {
+    check_id(id)?;
+    let (main, folder) = locate(mods_dir, id).ok_or_else(|| format!("no mod '{id}' in {}", mods_dir.display()))?;
+    let deleted = match folder {
+        Some(folder) => std::fs::remove_dir_all(&folder).map(|()| folder),
+        None => std::fs::remove_file(&main).map(|()| main),
+    };
+    deleted.map_err(|e| e.to_string())
+}
+
 /// Files of a module to delete, by their paths in it, as given: each must
 /// be there, and main.lua, which starts the module, can't go (delete the
-/// mod instead).
+/// mod instead). Not for an id another file holds (`check_holder`).
 pub fn removable(mods_dir: &Path, id: &str, paths: &[String]) -> Result<Vec<(String, PathBuf)>, String> {
     let dir = mods_dir.join(id);
+    if !paths.is_empty() {
+        check_holder(mods_dir, id)?;
+    }
     if !paths.is_empty() && !dir.join("main.lua").is_file() {
         return Err(format!(
             "'{id}' is not a module: remove deletes files of a module (delete_mod deletes a mod)"
