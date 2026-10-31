@@ -1058,3 +1058,40 @@ fn save_file_saves_scratch_code_as_a_new_script() {
     assert!(!st.s.editor.dirty);
     assert!(std::fs::read_to_string(&path).unwrap().contains("-- more"));
 }
+
+#[test]
+fn console_and_agent_text_select_and_copy() {
+    use horizon_studio::game::hstudio::LogKind;
+    let mut game = FakeGame::new("ui-select");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.s.now = 10.0;
+    handle(&mut st, &mut game, key(Key::Char('1'), CTRL));
+    st.s.log(LogKind::Info, "alpha bravo charlie");
+    st.s.log(LogKind::Info, "delta echo foxtrot");
+    redraw(&mut st, &mut game);
+    // Drag from the start of the first line to the end of the second.
+    let a = text_at(&game, "alpha bravo charlie");
+    let b = text_at(&game, "delta echo foxtrot");
+    handle(&mut st, &mut game, Input::Mouse(a.0 - 2.0, a.1 + 4.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    redraw(&mut st, &mut game);
+    handle(&mut st, &mut game, Input::Mouse(b.0 + 2000.0, b.1 + 4.0));
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    redraw(&mut st, &mut game);
+    handle(&mut st, &mut game, key(Key::Char('c'), CTRL));
+    assert_eq!(game.clipboard, "alpha bravo charlie\ndelta echo foxtrot");
+    // A click elsewhere lets it go: Ctrl+C is the input's again.
+    click(&mut st, &mut game, (5.0, 5.0));
+    game.clipboard.clear();
+    handle(&mut st, &mut game, key(Key::Char('c'), CTRL));
+    assert_ne!(game.clipboard, "alpha bravo charlie\ndelta echo foxtrot");
+}

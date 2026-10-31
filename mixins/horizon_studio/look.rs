@@ -277,6 +277,11 @@ impl P<'_> {
         out
     }
     pub(super) fn wrap(&mut self, s: &str, max: f32, size: f32, font: Font) -> Vec<String> {
+        self.wrap_sep(s, max, size, font).into_iter().map(|(l, _)| l).collect()
+    }
+    /// `wrap`, each piece with what came after it in `s`: a line break, a
+    /// space (the wrap's), or nothing (a word cut); copying puts it back.
+    pub(super) fn wrap_sep(&mut self, s: &str, max: f32, size: f32, font: Font) -> Vec<(String, &'static str)> {
         let mut lines = Vec::new();
         for para in s.split('\n') {
             let mut line = String::new();
@@ -287,23 +292,71 @@ impl P<'_> {
                     continue;
                 }
                 if !line.is_empty() {
-                    lines.push(line.trim_end().to_owned());
+                    lines.push((line.trim_end().to_owned(), " "));
                 }
                 let mut piece = String::new();
                 for c in word.chars() {
                     piece.push(c);
                     if self.measure(&piece, size, font) > max {
                         piece.pop();
-                        lines.push(std::mem::take(&mut piece));
+                        lines.push((std::mem::take(&mut piece), ""));
                         piece.push(c);
                     }
                 }
                 line = piece;
             }
-            lines.push(line.trim_end().to_owned());
+            lines.push((line.trim_end().to_owned(), "\n"));
         }
         lines
     }
+}
+
+/// A row of selectable text (the console's, the agent's) drawn at `[x, y]`,
+/// `h` high: remembered for the pointer, its selected part shaded. Its
+/// char edges are measured only while the pointer may need them.
+#[allow(clippy::too_many_arguments)]
+fn text_row(
+    ui: &mut Ui,
+    p: &mut P,
+    area: u8,
+    key: (u64, usize),
+    text: &str,
+    after: &'static str,
+    [x, y, h]: [f32; 3],
+    size: f32,
+    font: Font,
+) {
+    use super::hstudio_ui::TextRow;
+    if let Some((a, b)) = super::hstudio_ui::selected_cols(ui, area, key, text.len()) {
+        let sx = x + p.measure(&text[..a], size, font);
+        let mut sw = p.measure(&text[a..b], size, font);
+        if b == text.len() && after == "\n" && super::hstudio_ui::selection_goes_on(ui, area, key) {
+            sw += 5.0;
+        }
+        p.rect([sx, y + 1.0, sw, h - 2.0], 3.0, fade(pal().accent, 0.30));
+    }
+    let want = ui.text_drag || ui.text_areas.iter().any(|(a, r)| *a == area && inside(*r, ui.mouse));
+    let edges = if want {
+        let mut e = vec![0.0];
+        let mut acc = String::new();
+        for c in text.chars() {
+            acc.push(c);
+            e.push(p.measure(&acc, size, font));
+        }
+        e
+    } else {
+        Vec::new()
+    };
+    ui.text_rows.push(TextRow {
+        area,
+        key,
+        x,
+        y,
+        h,
+        text: text.to_owned(),
+        after,
+        edges,
+    });
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -405,6 +458,8 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         ui.dp = k;
         ui.screen = (w, h);
         ui.hits.clear();
+        ui.text_rows.clear();
+        ui.text_areas.clear();
         ui.view = None;
         tick(ui, now)
     };
@@ -882,6 +937,10 @@ fn console_suggest(
 /// The log's last lines in `[x, y, w, h]`, the newest at the bottom; with
 /// `scrolled` as far back as the console is scrolled (the executors'
 /// output shows the newest).
+/// A wrapped piece of a console line: its text, colour, when written, whether
+/// it starts an input line, its key for selecting and what followed it.
+type LogRow = (String, u32, f64, bool, (u64, usize), &'static str);
+
 pub(super) fn draw_log(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], scrolled: bool, dt: f32) {
     let now = st.s.now;
     let log_bottom = y + h;
@@ -892,16 +951,27 @@ pub(super) fn draw_log(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], scrol
     let scroll = if scrolled { st.s.ui.log_scroll } else { 0 };
     let need = rows + scroll + 2;
     let text_w = w - 20.0;
-    let mut shown: Vec<(String, u32, f64, bool)> = Vec::new();
-    for line in st.s.log.iter().rev() {
+    st.s.ui.text_areas.push((super::hstudio_ui::AREA_LOG, [x, y, w, h]));
+    // Each piece with its line's number (log_seq counts every line written) and place, for selecting.
+    let mut shown: Vec<LogRow> = Vec::new();
+    let newest = st.s.log_seq;
+    for (r, line) in st.s.log.iter().rev().enumerate() {
         let (body, prompt) = match line.text.strip_prefix("> ") {
             Some(rest) if line.kind == LogKind::Input => (rest, true),
             _ => (line.text.as_str(), false),
         };
-        let pieces = p.wrap(body, text_w, code_size(), Font::Mono);
+        let pieces = p.wrap_sep(body, text_w, code_size(), Font::Mono);
         let n = pieces.len();
-        for (i, piece) in pieces.into_iter().enumerate().rev() {
-            shown.push((piece, log_color(line.kind), line.at, prompt && i == 0 && n > 0));
+        let seq = newest.saturating_sub(r as u64);
+        for (i, (piece, after)) in pieces.into_iter().enumerate().rev() {
+            shown.push((
+                piece,
+                log_color(line.kind),
+                line.at,
+                prompt && i == 0 && n > 0,
+                (seq, i),
+                after,
+            ));
         }
         if shown.len() >= need {
             break;
@@ -920,7 +990,7 @@ pub(super) fn draw_log(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], scrol
     let first = back.floor().max(0.0) as usize;
     let frac = back - first as f32;
     let (base, dy) = (p.alpha, p.dy);
-    for (i, (line, c, at, prompt)) in shown.iter().skip(first).take(rows + 1).enumerate() {
+    for (i, (line, c, at, prompt, key, after)) in shown.iter().skip(first).take(rows + 1).enumerate() {
         let ly = log_bottom - code_line() * (i as f32 + 1.0 - frac);
         if ly < y - 0.5 || ly + code_line() > log_bottom + 0.5 {
             continue;
@@ -932,6 +1002,17 @@ pub(super) fn draw_log(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], scrol
         if *prompt {
             p.text("›", x, ty, code_size(), Font::Mono, pal().accent);
         }
+        text_row(
+            &mut st.s.ui,
+            p,
+            super::hstudio_ui::AREA_LOG,
+            *key,
+            line,
+            after,
+            [x + 20.0, ly, code_line()],
+            code_size(),
+            Font::Mono,
+        );
         p.text(line, x + 20.0, ty, code_size(), Font::Mono, *c);
     }
     p.alpha = base;
@@ -1500,6 +1581,9 @@ struct Said {
     mark: Option<u32>,
     bar: bool,
     at: f64,
+    /// Its line's number and place, for selecting (None: a gap).
+    key: Option<(u64, usize)>,
+    after: &'static str,
 }
 
 /// The agent: the conversation (newest at the bottom), and what to ask it.
@@ -1514,7 +1598,12 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
     let want = visible + st.s.ui.agent.scroll.ceil() as usize + 2;
     let mut rows: Vec<Said> = Vec::new();
     let mut whole = true;
-    for line in st.s.ui.agent.lines.iter().rev() {
+    st.s.ui
+        .text_areas
+        .push((super::hstudio_ui::AREA_AGENT, [x, y, w, log_h]));
+    let newest = st.s.ui.agent.seq;
+    for (r, line) in st.s.ui.agent.lines.iter().rev().enumerate() {
+        let seq = newest.saturating_sub(r as u64);
         let (font, size, c, indent, mark, bar) = match line.kind {
             K::You => (Font::Regular, 13.0, pal().ink, 12.0, None, true),
             K::Said => (Font::Regular, 13.0, pal().ink, 0.0, None, false),
@@ -1524,9 +1613,9 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
             K::Error => (Font::Regular, 13.0, pal().danger, 0.0, None, false),
             K::Done => (Font::Regular, 11.5, pal().muted, 0.0, None, false),
         };
-        let pieces = p.wrap(&line.text, w - indent - 8.0, size, font);
+        let pieces = p.wrap_sep(&line.text, w - indent - 8.0, size, font);
         let n = pieces.len();
-        for (i, piece) in pieces.into_iter().enumerate().rev() {
+        for (i, (piece, after)) in pieces.into_iter().enumerate().rev() {
             rows.push(Said {
                 text: piece,
                 font,
@@ -1536,6 +1625,8 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
                 mark: if i == 0 { mark } else { None },
                 bar: bar && n > 0,
                 at: line.at,
+                key: Some((seq, i)),
+                after,
             });
         }
         if line.kind == K::You || line.kind == K::Done {
@@ -1549,6 +1640,8 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
                 mark: None,
                 bar: false,
                 at: line.at,
+                key: None,
+                after: "",
             });
         }
         if rows.len() >= want {
@@ -1593,6 +1686,19 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
         }
         if let Some(c) = row.mark {
             p.rect([x + 2.0, ly + ROW / 2.0 - 3.0, 6.0, 6.0], 3.0, c);
+        }
+        if let Some(key) = row.key {
+            text_row(
+                &mut st.s.ui,
+                p,
+                super::hstudio_ui::AREA_AGENT,
+                key,
+                &row.text,
+                row.after,
+                [x + row.indent, ly, ROW],
+                row.size,
+                row.font,
+            );
         }
         p.text(
             &row.text,

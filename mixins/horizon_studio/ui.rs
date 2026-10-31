@@ -191,6 +191,122 @@ pub(crate) struct EditorView {
     pub(crate) rows: usize,
 }
 
+/// The console's lines and the agent's: the areas text is selected in.
+pub(crate) const AREA_LOG: u8 = 0;
+pub(crate) const AREA_AGENT: u8 = 1;
+
+/// A row of selectable text as drawn: its area, its line's number and its
+/// place among the line's wrapped pieces, where it is, its text, what came
+/// after it (a line break, a space or nothing) and its char edges (x from
+/// its start; empty when not measured).
+#[derive(Clone, Debug)]
+pub(crate) struct TextRow {
+    pub area: u8,
+    pub key: (u64, usize),
+    pub x: f32,
+    pub y: f32,
+    pub h: f32,
+    pub text: String,
+    pub after: &'static str,
+    pub edges: Vec<f32>,
+}
+
+/// A place in selectable text: a row's key and a byte of its text.
+pub(crate) type TextPos = ((u64, usize), usize);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TextSel {
+    pub area: u8,
+    pub anchor: TextPos,
+    pub head: TextPos,
+}
+
+impl TextSel {
+    fn range(&self) -> (TextPos, TextPos) {
+        if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+}
+
+/// The selected bytes of row `key` (`len` long) in `area`, if any.
+pub(crate) fn selected_cols(ui: &Ui, area: u8, key: (u64, usize), len: usize) -> Option<(usize, usize)> {
+    let sel = ui.text_sel.filter(|s| s.area == area && s.anchor != s.head)?;
+    let ((k1, c1), (k2, c2)) = sel.range();
+    if key < k1 || key > k2 {
+        return None;
+    }
+    let a = if key == k1 { c1.min(len) } else { 0 };
+    let b = if key == k2 { c2.min(len) } else { len };
+    Some((a, b.max(a)))
+}
+
+/// Whether the selection goes on past row `key` (its line break is selected too).
+pub(crate) fn selection_goes_on(ui: &Ui, area: u8, key: (u64, usize)) -> bool {
+    ui.text_sel
+        .filter(|s| s.area == area)
+        .is_some_and(|s| s.range().1.0 > key)
+}
+
+/// The place in selectable text under `(x, y)`: in the area there, the row
+/// at that height (above the rows: the first, from its start; below: the
+/// last, to its end), the char edge nearest `x`. With `area`, only there
+/// (a drag goes on in the area it began in, wherever the pointer goes).
+fn text_pos_at(ui: &Ui, (x, y): (f32, f32), area: Option<u8>) -> Option<(u8, TextPos)> {
+    let area = match area {
+        Some(a) => a,
+        None => ui.text_areas.iter().rev().find(|(_, r)| inside(*r, (x, y)))?.0,
+    };
+    let mut rows: Vec<&TextRow> = ui.text_rows.iter().filter(|r| r.area == area).collect();
+    rows.sort_by_key(|r| r.key);
+    let (first, last) = (*rows.first()?, *rows.last()?);
+    let row = match rows.iter().find(|r| y >= r.y && y < r.y + r.h) {
+        Some(r) => *r,
+        None if y < first.y => return Some((area, (first.key, 0))),
+        None if y >= last.y + last.h => return Some((area, (last.key, last.text.len()))),
+        // Between rows (a gap): the next one down.
+        None => *rows.iter().filter(|r| r.y > y).min_by(|a, b| a.y.total_cmp(&b.y))?,
+    };
+    let dx = x - row.x;
+    let col = if row.edges.len() > 1 {
+        let n = row
+            .edges
+            .windows(2)
+            .position(|e| dx < (e[0] + e[1]) / 2.0)
+            .unwrap_or(row.edges.len() - 1);
+        row.text.char_indices().nth(n).map_or(row.text.len(), |(i, _)| i)
+    } else if dx <= 0.0 {
+        0
+    } else {
+        row.text.len()
+    };
+    Some((area, (row.key, col)))
+}
+
+/// The selected text, as it was written: wrapped pieces joined by what
+/// separated them. Only rows drawn this frame are known.
+pub(crate) fn selected_text(ui: &Ui) -> Option<String> {
+    let sel = ui.text_sel.filter(|s| s.anchor != s.head)?;
+    let mut rows: Vec<&TextRow> = ui.text_rows.iter().filter(|r| r.area == sel.area).collect();
+    rows.sort_by_key(|r| r.key);
+    rows.dedup_by(|a, b| a.key == b.key);
+    let mut out = String::new();
+    let mut prev: Option<&TextRow> = None;
+    for row in rows {
+        let Some((a, b)) = selected_cols(ui, sel.area, row.key, row.text.len()) else {
+            continue;
+        };
+        if let Some(p) = prev {
+            out.push_str(if p.key.0 != row.key.0 { "\n" } else { p.after });
+        }
+        out.push_str(&row.text[a..b]);
+        prev = Some(row);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 #[derive(Default)]
 pub struct Ui {
     pub open: bool,
@@ -237,6 +353,12 @@ pub struct Ui {
     pub buttons: [bool; 2],
     dragging: bool,
     pub(crate) hits: Vec<([f32; 4], Action)>,
+    /// Selectable text drawn this frame (the console's and the agent's), where
+    /// it was, what is selected in it, and whether the pointer is selecting.
+    pub(crate) text_rows: Vec<TextRow>,
+    pub(crate) text_areas: Vec<(u8, [f32; 4])>,
+    pub(crate) text_sel: Option<TextSel>,
+    pub(crate) text_drag: bool,
     pub(crate) view: Option<EditorView>,
     /// Lines the last frame could show, for Page Up/Down.
     pub(crate) page: usize,
@@ -1603,6 +1725,12 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 ));
                 return UiResult::Used;
             }
+            if st.s.ui.text_drag
+                && let Some(sel) = st.s.ui.text_sel
+                && let Some((_, head)) = text_pos_at(&st.s.ui, (x, y), Some(sel.area))
+            {
+                st.s.ui.text_sel = Some(TextSel { head, ..sel });
+            }
             if st.s.ui.dragging {
                 let drawn = st.s.ui.smooth[1];
                 editor_point(st, game, x, y, true, drawn);
@@ -1611,6 +1739,10 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
         }
         Input::Button { left, down } => {
             if !down {
+                st.s.ui.text_drag = false;
+                if st.s.ui.text_sel.is_some_and(|s| s.anchor == s.head) {
+                    st.s.ui.text_sel = None;
+                }
                 st.s.ui.dragging = false;
                 st.s.ui.panel_drag = None;
                 if st.s.ui.drag.take().is_some() {
@@ -1623,6 +1755,19 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
             }
             let at = st.s.ui.mouse;
             let hit = st.s.ui.hits.iter().rev().find(|(r, _)| inside(*r, at)).map(|(_, a)| *a);
+            // A press on the console's or the agent's text starts selecting it;
+            // anywhere else, what was selected there is let go.
+            st.s.ui.text_sel = None;
+            if matches!(hit, None | Some(Action::FocusPanel))
+                && let Some((area, pos)) = text_pos_at(&st.s.ui, at, None)
+            {
+                st.s.ui.text_sel = Some(TextSel {
+                    area,
+                    anchor: pos,
+                    head: pos,
+                });
+                st.s.ui.text_drag = true;
+            }
             if let Some(action @ (Action::WinMove | Action::WinResize)) = hit {
                 let (w, h) = st.s.ui.screen;
                 let look = &mut st.s.ui.look;
@@ -2065,6 +2210,14 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
         }
         return UiResult::Used;
     }
+    if mods.ctrl
+        && key == Key::Char('c')
+        && let Some(text) = selected_text(&st.s.ui)
+    {
+        game.set_clipboard(&text);
+        st.s.toast(format!("Copied {} characters", text.chars().count()));
+        return UiResult::Used;
+    }
     if key == Key::Escape && st.s.ui.suggest.take().is_some() {
         return UiResult::Used;
     }
@@ -2235,6 +2388,8 @@ pub struct AgentPane {
     pub agents: Option<Vec<super::hstudio_agent::AgentSpec>>,
     pub chosen: usize,
     pub(crate) scroll: f32,
+    /// Lines said so far (the newest's number), for selecting.
+    pub(crate) seq: u64,
 }
 
 /// Lines kept of the conversation.
@@ -2246,6 +2401,7 @@ impl AgentPane {
         if text.trim().is_empty() {
             return;
         }
+        self.seq += 1;
         self.lines.push(AgentLine { kind, text, at });
         if self.lines.len() > AGENT_LINES {
             self.lines.drain(..self.lines.len() - AGENT_LINES);

@@ -859,7 +859,7 @@ impl State {
     pub fn mods_dir(&self) -> PathBuf {
         self.dir.join("mods")
     }
-    fn toast(&mut self, text: impl Into<String>) {
+    pub(crate) fn toast(&mut self, text: impl Into<String>) {
         self.toast = Some((text.into(), self.now + 2.5));
     }
     /// Who owns `/name`, if anyone.
