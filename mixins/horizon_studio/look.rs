@@ -2881,7 +2881,17 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         m.handlers.count(),
         m.reloads
     );
-    let commands: Vec<(String, String)> = m.commands.iter().map(|c| (c.name.clone(), c.help.clone())).collect();
+    // Each command with its usage (`wp [<action>] [<name>]`), then its description.
+    let commands: Vec<(String, String)> = m
+        .commands
+        .iter()
+        .map(|c| {
+            (
+                format!("{} {}", c.name, c.usage_line()).trim_end().to_owned(),
+                c.help.clone(),
+            )
+        })
+        .collect();
     let failure = match &m.state {
         ModState::Failed(msg, trace) => Some((msg.clone(), trace.clone())),
         _ => None,
@@ -3057,7 +3067,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             if dy + 22.0 > bottom {
                 break;
             }
-            let cmd = format!("/{name}");
+            let cmd = p.fit(&format!("/{name}"), dw * 0.6, 13.0, Font::Mono);
             let cw = p.text(&cmd, dx, dy, 13.0, Font::Mono, pal().ink);
             let help = p.fit(help, dw - cw - 12.0, 13.0, Font::Regular);
             p.text(&help, dx + cw + 12.0, dy, 13.0, Font::Regular, pal().muted);
