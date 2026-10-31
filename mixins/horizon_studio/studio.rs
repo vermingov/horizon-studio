@@ -218,6 +218,16 @@ pub struct PlayerInfo {
     pub slot: usize,
     /// The held item's id and count, if any.
     pub held: Option<(String, u32)>,
+    /// The player's profile name and UUID ("" and 0 where the game doesn't say).
+    pub name: String,
+    pub uuid: u128,
+    /// How far the player moved in the last tick, in blocks a second.
+    pub velocity: [f64; 3],
+    /// The movement_speed and jump_strength attributes (0.1 and 0.42 for a
+    /// player walking with no effects; sprinting is in the speed), None
+    /// where the game can't read them now.
+    pub speed: Option<f64>,
+    pub jump: Option<f64>,
 }
 
 /// An agent command's answer: now, or later on this channel (JSON text).
@@ -308,6 +318,17 @@ pub trait GameApi {
         true
     }
     fn pose(&self) -> Option<PlayerPose> {
+        None
+    }
+    /// The entities near the player, at most `max`: the other players first,
+    /// then the nearest mobs, dropped items and experience orbs.
+    fn entities(&mut self, max: usize) -> Vec<EntityInfo> {
+        let _ = max;
+        Vec::new()
+    }
+    /// The players the server lists, this one among them (none in a world
+    /// played alone); None where the list can't be read now.
+    fn players(&mut self) -> Option<Vec<PlayerEntry>> {
         None
     }
     /// An item as a 3D model in the world: `m` is its frame (its x, y and z
@@ -406,6 +427,55 @@ pub struct PlayerPose {
     pub flying: bool,
     /// "first", "third_back" or "third_front".
     pub camera: String,
+}
+
+/// An entity near the player, as the game has it this frame: another
+/// player, a mob, a dropped item or an experience orb.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EntityInfo {
+    pub id: u32,
+    /// Its type: "minecraft:zombie", "minecraft:player", "minecraft:item",
+    /// "minecraft:experience_orb".
+    pub kind: String,
+    /// A player's profile name or a mob's custom name ("" for none).
+    pub name: String,
+    /// Its feet, between its last two ticks as this frame draws it.
+    pub pos: [f64; 3],
+    /// How far it moved in its last tick, in blocks a second.
+    pub velocity: [f64; 3],
+    /// In degrees, as the player's yaw and pitch: its body's and its head's
+    /// yaw, and its head's pitch.
+    pub body_yaw: f32,
+    pub head_yaw: f32,
+    pub pitch: f32,
+    /// Its box's width and height, and its eyes' height, in blocks.
+    pub width: f64,
+    pub height: f64,
+    pub eye: f64,
+    /// Its health and the most it can have (0 for items and orbs).
+    pub health: f32,
+    pub max_health: f32,
+    /// Its movement_speed attribute (0 for items and orbs).
+    pub speed: f64,
+    pub on_ground: bool,
+    pub baby: bool,
+    /// A dropped item's id and count; "" and its value for an orb.
+    pub item: Option<(String, u32)>,
+}
+
+/// A player in the server's player list.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlayerEntry {
+    pub uuid: u128,
+    pub name: String,
+    /// The list's name for them as plain text (their name where it has none).
+    pub display_name: String,
+    /// Their entity, while the server sends it (they are near).
+    pub entity: Option<u32>,
+    /// The player playing this game.
+    pub local: bool,
+    /// Their ping in milliseconds; negative while unknown.
+    pub latency: i32,
 }
 
 /// A frame's camera: where it is, where it looks, its vertical field of view.
