@@ -160,6 +160,17 @@ fn names_from_sibling_files_are_not_unknown() {
     let p = problems_in(main, Some(&m));
     assert!(!warned(&p), "{p:?}");
     assert!(!p.iter().any(|f| f.2.contains("chat has no")), "{p:?}");
+    // Set through _G or the executor's getgenv(), in a function a table
+    // holds, or after a long comment with a brace in it: the module's too.
+    for lib in [
+        "_G.players = {}\n",
+        "getgenv().players = {}\n",
+        "local M = {\n  start = function()\n    players = {}\n  end,\n}\nreturn M\n",
+        "--[[ call lib.setup({\n  before anything ]]\nplayers = {}\n",
+    ] {
+        let p = problems_in(main, Some(&module("main.lua", &[("lib.lua", lib)])));
+        assert!(!warned(&p), "{lib}: {p:?}");
+    }
     // A sibling's locals are its own.
     let m = module("main.lua", &[("players.lua", "local players = {}\nreturn players\n")]);
     assert!(warned(&problems_in(main, Some(&m))));
@@ -184,11 +195,19 @@ fn a_siblings_members_and_parameters_hide_no_typos() {
     assert!(warned(&p, "chat has no 'sya'"), "{p:?}");
     assert!(!p.iter().any(|f| f.2.contains("'shout'")), "{p:?}");
     assert!(warned(&problems_in(main, None), "chat has no 'shout'"));
-    // Its parameters and loop names are its own, though named like a library.
+    // Its parameters and loop names are its own, though named like a
+    // library, and a table's fields and a call's arguments are no globals,
+    // one a line too; nor is what a long string or comment holds.
     for lib in [
         "local M = {}\nfunction M.describe(player) return player.name end\nreturn M\n",
         "M = {}\nM.find = function(chat, player) return chat end\n",
         "for chat, player in pairs({}) do end\nreturn true\n",
+        "local cfg = {\n  player = nil,\n  chat = true,\n}\nreturn cfg\n",
+        "return {\n  chat = 1,\n  player = nil,\n}\n",
+        "local function f()\n  ui.button({\n    chat = 1,\n    player = 2,\n  })\nend\n",
+        "local t = {\n  f = function() local x = if a then 1 else 2 end,\n  chat = 1, player = 2,\n}\n",
+        "local doc = [[\nplayer = nil\nchat = nil\n]]\n",
+        "--[==[\nplayer = 1\nchat = 2\n]==]\n",
     ] {
         let p = problems_in(main, Some(&module("main.lua", &[("lib.lua", lib)])));
         assert!(warned(&p, "player has no 'poss'"), "{lib}: {p:?}");

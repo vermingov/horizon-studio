@@ -1402,22 +1402,24 @@ fn defined_names(lines: &[String], d: &mut HashSet<String>) {
     }
 }
 
-/// What another file of a module defines for all of it, on the lines that
-/// don't start with `local`: the bare names it makes functions of or sets
-/// (`function f(`, `x = `, `a, b = `), into `globals`, and the members it
-/// puts in tables, as full names (`function chat.shout(`, `function
-/// obj:m(` as `obj.m`, `cfg.x = `; `a.b.c` is `a.b` and `a.b.c`), into
-/// `fields`. Its parameters and loop names are its own, and so is a
-/// `local`.
+/// What another file of a module defines for all of it: the bare names it
+/// makes functions of or sets (`function f(`, `x = `, `a, b = `, and `_G.x
+/// = ` or `getgenv().x = `, which set the global x as well), into
+/// `globals`, and the members it puts in tables, as full names (`function
+/// chat.shout(`, `function obj:m(` as `obj.m`, `cfg.x = `; `a.b.c` is `a.b`
+/// and `a.b.c`), into `fields`. It is read statement by statement over its
+/// lines, so a table constructor's fields and a call's arguments are no
+/// assignments even one a line (`  player = nil,`); its parameters, loop
+/// names and locals are its own.
 fn module_names(lines: &[String], globals: &mut HashSet<String>, fields: &mut HashSet<String>) {
-    for line in lines {
-        if line.trim_start().starts_with("local") {
-            continue;
-        }
-        for name in global_definitions(&strip_strings(line)) {
+    let mut open = Vec::new();
+    for code in code_lines(lines) {
+        for name in global_definitions(&code, &mut open) {
+            // In a module's file, `_G` is the mod's globals.
+            let name = name.strip_prefix("_G.").unwrap_or(&name);
             let parts: Vec<&str> = name.split('.').collect();
             if parts.len() == 1 {
-                globals.insert(name);
+                globals.insert(name.to_owned());
             } else {
                 fields.extend((2..=parts.len()).map(|k| parts[..k].join(".")));
             }
@@ -1425,23 +1427,39 @@ fn module_names(lines: &[String], globals: &mut HashSet<String>, fields: &mut Ha
     }
 }
 
-/// The names a line of code (its strings blanked) defines for whatever
-/// sees its globals, dotted as written (`t:m` as `t.m`): after `function`
-/// (not `local function`), and what a statement assigns, at the line's
-/// start or after `then`, `do`, `else`, `end`, `;` or `)` (`x = 1`, `a, t.b
-/// = 1, 2`). A table constructor's fields, comparisons and indexing
-/// (`t[k] =`) are none.
-fn global_definitions(code: &str) -> Vec<String> {
+/// The brackets and blocks a statement can be inside: in the first three it
+/// is a part of an expression (a constructor's field, a call's argument).
+const OPENERS: [&str; 7] = ["{", "(", "[", "function", "do", "if", "repeat"];
+
+/// The tokens an expression comes after: an `if` there is Luau's `if`
+/// expression, not a statement.
+const EXPRESSION_BEFORE: &[&str] = &[
+    "=", "(", ",", "{", "[", "return", "and", "or", "not", ".", "+", "-", "*", "/", "%", "^", "<", ">",
+];
+
+/// The names a line of code (`code_lines`: strings blanked, comments cut)
+/// defines for whatever sees its globals, dotted as written (`t:m` as
+/// `t.m`): after `function` (not `local function`), and what a statement
+/// assigns, at the line's start or after `then`, `do`, `else`, `end`, `;`
+/// or `)` (`x = 1`, `a, t.b = 1, 2`, and `getgenv().x = 1` or `getfenv().x
+/// = 1` as `x`), when it is in no bracket. `open` holds the brackets and
+/// blocks open at the line's start (`OPENERS`), and leaves those open at
+/// its end, so a constructor's fields, a call's arguments, comparisons and
+/// indexing (`t[k] =`) are none.
+fn global_definitions(code: &str, open: &mut Vec<&'static str>) -> Vec<String> {
     let toks = tokens(code);
     let is_name = |t: &str| t.starts_with(|c: char| is_word(c) && !c.is_ascii_digit()) && !KEYWORDS.contains(&t);
     let mut out = Vec::new();
     for (k, t) in toks.iter().enumerate() {
-        match t.2.as_str() {
-            "function" if k == 0 || toks[k - 1].2 != "local" => {
+        let tok = t.2.as_str();
+        let before = |back: usize| k.checked_sub(back).map_or("", |i| toks[i].2.as_str());
+        match tok {
+            "function" if before(1) != "local" => {
                 out.extend(toks.get(k + 1).filter(|n| is_name(&n.2)).map(|n| n.2.clone()));
             }
             "=" if k > 0
-                && !matches!(toks[k - 1].2.as_str(), "=" | "<" | ">" | "~")
+                && !open.last().is_some_and(|o| matches!(*o, "{" | "(" | "["))
+                && !matches!(before(1), "=" | "<" | ">" | "~")
                 && toks.get(k + 1).is_none_or(|n| n.2 != "=") =>
             {
                 // The names before it, `a, b.c`, from the last back.
@@ -1456,6 +1474,18 @@ fn global_definitions(code: &str) -> Vec<String> {
                         break;
                     }
                 }
+                // `getgenv().x =`: the executor's globals, which every file
+                // sees; `getfenv().x =`, a file's, whose new names are the mod's.
+                let called = |at: usize| {
+                    at >= 4
+                        && toks[at - 1].2 == "."
+                        && toks[at - 2].2 == ")"
+                        && toks[at - 3].2 == "("
+                        && matches!(toks[at - 4].2.as_str(), "getgenv" | "getfenv")
+                };
+                if names.len() == 1 && called(j) {
+                    j -= 4;
+                }
                 let begins = j == 0
                     || matches!(
                         toks[j - 1].2.as_str(),
@@ -1467,8 +1497,99 @@ fn global_definitions(code: &str) -> Vec<String> {
             }
             _ => {}
         }
+        // What it opens or closes.
+        match tok {
+            // Luau's `if` in an expression (`x = if a then b else c`) has no `end`.
+            "if" if EXPRESSION_BEFORE.contains(&before(1)) => {}
+            "}" | ")" | "]" => {
+                let pair = match tok {
+                    "}" => "{",
+                    ")" => "(",
+                    _ => "[",
+                };
+                if open.last() == Some(&pair) {
+                    open.pop();
+                }
+            }
+            "end" | "until" => {
+                let block = |o: &&str| {
+                    if tok == "end" {
+                        matches!(*o, "function" | "do" | "if")
+                    } else {
+                        *o == "repeat"
+                    }
+                };
+                if let Some(i) = open.iter().rposition(block) {
+                    open.truncate(i);
+                }
+            }
+            _ => open.extend(OPENERS.iter().find(|o| **o == tok)),
+        }
     }
     out
+}
+
+/// A file's lines as code, for reading it statement by statement: strings
+/// blanked and comments cut, as `strip_strings` does a line, and the long
+/// ones too (`[[...]]`, `--[==[...]==]`), which go on over lines.
+fn code_lines(lines: &[String]) -> Vec<String> {
+    // The level (its `=`s) of a long string or comment still open.
+    let mut long: Option<usize> = None;
+    let mut out = Vec::with_capacity(lines.len());
+    for line in lines {
+        let mut code = String::with_capacity(line.len());
+        let mut rest = line.as_str();
+        loop {
+            if let Some(level) = long {
+                let close = format!("]{}]", "=".repeat(level));
+                let Some(end) = rest.find(&close) else {
+                    break;
+                };
+                code.extend(std::iter::repeat_n(' ', end + close.len()));
+                rest = &rest[end + close.len()..];
+                long = None;
+            }
+            let short = strip_strings(rest);
+            // A comment `strip_strings` cut that is a long one.
+            let comment = rest[short.len()..]
+                .strip_prefix("--")
+                .and_then(long_bracket)
+                .filter(|b| b.0 == 0);
+            match (long_bracket(&short), comment) {
+                (Some((at, level, len)), _) => {
+                    code.push_str(&short[..at]);
+                    code.extend(std::iter::repeat_n(' ', len));
+                    rest = &rest[at + len..];
+                    long = Some(level);
+                }
+                (None, Some((_, level, len))) => {
+                    code.push_str(&short);
+                    rest = &rest[short.len() + 2 + len..];
+                    long = Some(level);
+                }
+                (None, None) if code.is_empty() => {
+                    code = short;
+                    break;
+                }
+                (None, None) => {
+                    code.push_str(&short);
+                    break;
+                }
+            }
+        }
+        out.push(code);
+    }
+    out
+}
+
+/// The first long bracket in `code` (`[[`, `[==[`): where it is, its level
+/// (how many `=`) and its length.
+fn long_bracket(code: &str) -> Option<(usize, usize, usize)> {
+    let b = code.as_bytes();
+    (0..b.len()).filter(|&i| b[i] == b'[').find_map(|i| {
+        let level = b[i + 1..].iter().take_while(|c| **c == b'=').count();
+        (b.get(i + 1 + level) == Some(&b'[')).then_some((i, level, level + 2))
+    })
 }
 
 /// Uses of a library's member it doesn't have (`player.poss`), and of a
