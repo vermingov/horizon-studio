@@ -38,7 +38,8 @@
 //   server"); its tools then appear as `mcp__horizon-studio__<tool>`. The flag
 //   takes several values (`<tools...>`), so it goes last, after the prompt.
 //   New tools of the server (the player's editor: open_script, read_script,
-//   edit_script, save_script) are approved with the rest, nothing to add.
+//   edit_script, save_script, mark_lines, clear_marks) are approved with the
+//   rest, nothing to add.
 // - `--permission-mode default` (Manual mode) is passed too: in it a `-p` run
 //   denies every call that needs approval (Bash, Edit, Write...) since nobody
 //   can answer, whatever the user's settings make their default mode; reads
@@ -441,6 +442,8 @@ pub fn prompt(request: &str, ctx: &AgentContext) -> String {
          (old_text and new_text, one function or block per call; start_line one past the end appends); \
          save_script saves it and the game reloads the mod.\n\
          - open_script: opens any script (any mod, any file of a module) in the editor.\n\
+         - mark_lines, clear_marks: point at code in the editor: lines highlighted with a short note beside \
+         them, such as where a bug is and why (tone error, warning, good or note).\n\
          - game_status, game_log: the game, the mods' states and errors, the console.\n\
          - screenshot: a picture of the game as the player sees it (studio: true shows the editor too); \
          look with it to check what a mod draws.\n\n",
@@ -486,6 +489,8 @@ pub fn prompt(request: &str, ctx: &AgentContext) -> String {
           Line numbers count from 1 in read_script's text. Save before test_mod or reload_mod: they use the \
           file on disk. Use write_mod for a new mod or files that aren't open, after reading them with \
           read_mod.\n\
+          - When the player asks what is wrong, mark the lines with mark_lines and a note of one or two \
+          sentences, and explain in your answer.\n\
           - Answer briefly, in plain text without Markdown: your answer is shown in a small panel in the game.\n\n\
           The player's request:\n";
     p += request.trim();
@@ -532,7 +537,7 @@ pub enum AgentEvent {
 /// it did there as a line of its own in the Agent panel (one that jumps to
 /// the code), so their calls and results show no line besides, unless one
 /// fails.
-pub const EDITOR_TOOLS: &[&str] = &["open_script", "edit_script", "save_script"];
+pub const EDITOR_TOOLS: &[&str] = &["open_script", "edit_script", "save_script", "mark_lines", "clear_marks"];
 
 /// A tool's name without the horizon-studio MCP prefix (Claude Code's
 /// `mcp__horizon-studio__`, omp's `mcp__horizon_studio_`).

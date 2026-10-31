@@ -86,7 +86,8 @@ Once the `horizon-studio` tools are available:
 - In the user's editor, while they have the game open: `read_script` reads the script they have open as they have it
   (unsaved edits too, with line numbers), `edit_script` types a change into it as they watch (one function or block a
   call), and `save_script` saves it, after which the game reloads the mod; save before `test_mod`, which uses the file
-  on disk. `open_script` opens another script.
+  on disk. `open_script` opens another script. `mark_lines` points at lines with a note (where a bug is and why),
+  and `clear_marks` clears them.
 - With Horizon started with `--control` (or `horizon-ctl launch --world NAME --wait`), `horizon_ctl` plays the game
   and `horizon_ctl` with `screenshot` shows you the screen.
 - Mods are sandboxed: no files, no network, a step budget per call. A mod that fails stops alone.

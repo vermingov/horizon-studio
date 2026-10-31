@@ -112,7 +112,14 @@ fn an_agent_opens_and_reads_the_players_scripts() {
     );
     // The editor's tools are listed, each with its arguments.
     let tools = handle(&mut s, &json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" })).unwrap();
-    for name in ["open_script", "read_script"] {
+    for name in [
+        "open_script",
+        "read_script",
+        "edit_script",
+        "save_script",
+        "mark_lines",
+        "clear_marks",
+    ] {
         let t = tools["result"]["tools"]
             .as_array()
             .unwrap()
@@ -247,6 +254,34 @@ fn an_agent_opens_and_reads_the_players_scripts() {
     );
     let (r, _) = call_json(&mut s, "read_mod", json!({ "id": "greeter" }));
     assert!(r.get("editor_unsaved").is_none(), "{r:#}");
+    // Pointing at code: a line marked with a note, which read_script and
+    // game_status know of, and cleared.
+    let (r, error) = call_json(
+        &mut s,
+        "mark_lines",
+        json!({ "start_line": 3, "note": "Who was greeted.", "tone": "good" }),
+    );
+    assert!(!error, "{r:#}");
+    assert_eq!(
+        (&r["did"], &r["lines"]),
+        (&json!("Highlighted line 3 in greeter.lua"), &json!([3, 3]))
+    );
+    let (status, _) = call_json(&mut s, "game_status", json!({}));
+    assert_eq!(status["game"]["editor"]["marks"], 1, "{status:#}");
+    let (texts, _) = call(&mut s, "read_script", json!({}));
+    let state: Json = serde_json::from_str(&texts[0]).unwrap();
+    assert_eq!(
+        (&state["marks"][0]["note"], &state["marks"][0]["tone"]),
+        (&json!("Who was greeted."), &json!("good"))
+    );
+    let (r, error) = call_json(&mut s, "mark_lines", json!({ "start_line": 99 }));
+    assert!(
+        error && r.as_str().unwrap().contains("line 99 isn't one of them"),
+        "{r}"
+    );
+    let (r, error) = call_json(&mut s, "clear_marks", json!({}));
+    assert!(!error, "{r:#}");
+    assert_eq!(r["cleared"], 1);
     // What isn't there as the editor has it is an error that says what to do.
     let (r, error) = call_json(
         &mut s,

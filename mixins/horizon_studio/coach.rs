@@ -1,10 +1,11 @@
 // The agent in the editor: what an AI agent connected through the MCP
 // server (horizon-studio-mcp, over the AI link) does in the player's editor
 // while they watch. It opens any script, reads the buffer as the player has
-// it, and types its changes into it with a caret of its own. Its state lives
-// in the studio's UI (`Ui::coach`); ui.rs hands it the player's input,
-// look.rs draws it, link.rs offers it as the link's editor methods, and the
-// studio's frame moves it on.
+// it, and types its changes into it with a caret of its own. It points at
+// code: lines highlighted in a colour with a note, which stay on their lines
+// as the code changes. Its state lives in the studio's UI (`Ui::coach`);
+// ui.rs hands it the player's input, look.rs draws it, link.rs offers it as
+// the link's editor methods, and the studio's frame moves it on.
 //
 // The player comes first: their keys always land where they type, an agent
 // never switches their file or tab while they are using the studio, and
@@ -12,7 +13,7 @@
 
 use super::hstudio::{GameApi, ModState, Studio, mod_id};
 use super::hstudio_modfiles::{file_name, path_in, plan_mod};
-use super::hstudio_ui::{AgentLineKind, Editor, Input, Tab};
+use super::hstudio_ui::{Action, AgentLineKind, Editor, Input, Key, Mods, Tab};
 use serde_json::{Value as Json, json};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -75,6 +76,19 @@ pub struct Coach {
     /// The game's own agent's turn just ended (well or not): its unsaved
     /// edits are saved, or a line says they aren't.
     turn_over: Option<bool>,
+    /// Lines agents pointed at, with a note, in any file (one the editor
+    /// doesn't show keeps its marks until it opens).
+    pub marks: Vec<Mark>,
+    /// The mark whose note shows in a bubble (one at a time), and whether
+    /// the bubble shows all of it (its More was pressed).
+    pub open_mark: Option<u32>,
+    pub more: bool,
+    next_mark: u32,
+    /// The editor's file as the marks last followed it.
+    followed: Option<Followed>,
+    /// Where the code and the open mark's bubble were drawn last frame.
+    pub code_at: Option<[f32; 4]>,
+    pub bubble_at: Option<[f32; 4]>,
 }
 
 /// A note over the code: what an agent changed elsewhere, its Agent panel
@@ -101,17 +115,26 @@ impl Default for Coach {
             next_edit: 1,
             notice: None,
             turn_over: None,
+            marks: Vec::new(),
+            open_mark: None,
+            more: false,
+            next_mark: 1,
+            followed: None,
+            code_at: None,
+            bubble_at: None,
         }
     }
 }
 
-/// Some code an Agent panel line is about: a file and its rows (from 0).
+/// Some code an Agent panel line is about: a file and its rows (from 0),
+/// and the mark there, whose note opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Jump {
     pub path: PathBuf,
     pub file: String,
     pub first: usize,
     pub last: usize,
+    pub mark: Option<u32>,
 }
 
 /// Where an edit being typed in is.
@@ -495,6 +518,7 @@ pub fn read(st: &mut Studio, params: &Json) -> Result<Json, String> {
         "to": if page.is_empty() { from - 1 } else { to },
         "more": to < count,
         "lines": page,
+        "marks": marks_json(st, &t.path),
     });
     if open {
         out["cursor"] = place(ed, (ed.row, ed.col));
@@ -540,7 +564,8 @@ fn final_lines(st: &Studio) -> Vec<String> {
 }
 
 /// The editor for `status`: the file open, whether it has unsaved edits,
-/// its lines and mod, an edit being typed in, an agent's edits not saved.
+/// its lines and mod, an edit being typed in, an agent's edits not saved,
+/// how many marks there are.
 pub fn summary(st: &Studio) -> Json {
     let ed = &st.s.editor;
     let module = ed
@@ -562,6 +587,7 @@ pub fn summary(st: &Studio) -> Json {
         "line_count": line_count(&ed.lines),
         "typing": typing_state(st),
         "unsaved": unsaved.map(|u| json!({ "file": u.file, "by": u.by.name, "conn": u.by.conn })),
+        "marks": st.s.ui.coach.marks.len(),
     })
 }
 
@@ -662,6 +688,7 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
             file: t.file.clone(),
             first: row,
             last: row,
+            mark: None,
         };
         let text = if t.exists {
             did.clone()
@@ -1141,8 +1168,11 @@ fn edit_on_disk(
         text.push('\n');
     }
     std::fs::write(&t.path, &text).map_err(|e| format!("could not write {}: {e}", t.file))?;
+    // Its marks move with its lines.
+    let new: Vec<String> = text.split('\n').map(str::to_owned).collect();
+    shift_marks(&mut st.s.ui.coach.marks, &t.path, lines, &new);
     st.scan(game);
-    let lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
+    let lines = new;
     let siblings = siblings_of(st, &t.path);
     let problems = super::hstudio_assist::check(&lines, &t.file, siblings.as_ref());
     let what = did_text(change.removed, span, false, &t.file);
@@ -1152,6 +1182,7 @@ fn edit_on_disk(
         file: t.file.clone(),
         first: span.0 - 1,
         last: span.1 - 1,
+        mark: None,
     };
     say(st, by, in_run, what, Some(jump));
     if st.s.ui.open {
@@ -1181,7 +1212,7 @@ fn edit_on_disk(
 }
 
 /// Each frame, the studio open or not: the edit being typed in comes on,
-/// and what was kept for a while goes.
+/// the marks follow their lines, and what was kept for a while goes.
 pub fn step(st: &mut Studio, game: &mut dyn GameApi) {
     let now = st.s.now;
     let c = &mut st.s.ui.coach;
@@ -1195,6 +1226,12 @@ pub fn step(st: &mut Studio, game: &mut dyn GameApi) {
     if let Some(ok) = c.turn_over.take() {
         end_turn(st, game, ok);
     }
+    type_on(st, game);
+    follow_marks(st);
+}
+
+/// The edit being typed in, a frame on: in once its time is up.
+fn type_on(st: &mut Studio, game: &mut dyn GameApi) {
     let Some(mut t) = st.s.ui.coach.typing.take() else {
         return;
     };
@@ -1410,6 +1447,7 @@ fn land(st: &mut Studio, t: &Typing, cut_short: Option<&str>) -> Json {
         file: t.file.clone(),
         first: t.lines.0 - 1,
         last: t.lines.1.max(t.lines.0) - 1,
+        mark: None,
     };
     say(st, &t.by, t.in_run, did, Some(jump));
     out
@@ -1449,6 +1487,7 @@ fn save_now(st: &mut Studio, game: &mut dyn GameApi, by: &By, in_run: bool) -> R
         file: file.clone(),
         first: n as usize - 1,
         last: n as usize - 1,
+        mark: None,
     });
     say(st, by, in_run, saved_text(&file, &m), jump);
     Ok(m)
@@ -1518,9 +1557,14 @@ pub fn go(st: &mut Studio, game: &mut dyn GameApi, seq: u64) {
         .checked_sub(seq)
         .and_then(|back| pane.lines.len().checked_sub(back as usize + 1))
         .and_then(|i| pane.lines[i].jump.clone());
-    let Some(jump) = jump else {
+    let Some(mut jump) = jump else {
         return;
     };
+    // A mark's lines are where it is now (it follows the code).
+    let mark = jump.mark.and_then(|id| st.s.ui.coach.marks.iter().find(|m| m.id == id));
+    if let Some(m) = mark {
+        jump.path = m.path.clone();
+    }
     let open = st.s.editor.path.as_ref() == Some(&jump.path);
     if !open && !jump.path.is_file() {
         st.s.toast(format!("{} isn't there any more", jump.file));
@@ -1529,6 +1573,13 @@ pub fn go(st: &mut Studio, game: &mut dyn GameApi, seq: u64) {
     if !open {
         st.save_before_switch(game, Some(&jump.path));
         st.open_file(&jump.path);
+    }
+    follow_marks(st);
+    let c = &mut st.s.ui.coach;
+    if let Some(m) = jump.mark.and_then(|id| c.marks.iter().find(|m| m.id == id)) {
+        (jump.first, jump.last) = (m.first, m.last);
+        c.open_mark = Some(m.id);
+        c.more = false;
     }
     show_line(st, jump.first + 1, true);
     let now = st.s.now;
@@ -1605,7 +1656,8 @@ pub fn save(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
 
 /// The link's editor methods for the agent `by`: `editor` reads, `open`
 /// opens, `edit` changes, `typed` says whether an edit is in, `save`
-/// saves. A request that changes something and carries a `key` is done
+/// saves, `mark` points at lines and `unmark` clears marks. A request that
+/// changes something and carries a `key` is done
 /// once: sent again with the same key (its client trying again after a
 /// timeout), it gets the same answer. One that has to wait for the player
 /// isn't kept, so asking again tries again.
@@ -1629,6 +1681,14 @@ pub fn call(st: &mut Studio, game: &mut dyn GameApi, by: &By, method: &str, para
         }
         "edit" => edit(st, game, by, params),
         "save" => save(st, game, by, params),
+        "mark" => {
+            finish_typing(st, "mark_lines came");
+            mark(st, by, params)
+        }
+        "unmark" => {
+            finish_typing(st, "clear_marks came");
+            unmark(st, by, params)
+        }
         other => Err(format!("no editor method '{other}'")),
     };
     let waits = answer.as_ref().is_ok_and(|a| a["busy"] == true);
@@ -1642,4 +1702,584 @@ pub fn call(st: &mut Studio, game: &mut dyn GameApi, by: &By, method: &str, para
         replies.push_back((k, answer.clone()));
     }
     answer
+}
+
+// ----------------------------------------------------------------- marks
+
+/// The most marks there are at once (the oldest goes for a new one), and
+/// the most a note says, in characters.
+pub const MAX_MARKS: usize = 20;
+const NOTE_CHARS: usize = 500;
+/// How few letters a mark's lines may have and still be looked for in a
+/// file opened again (a lone "end" is everywhere).
+const FINDABLE: usize = 8;
+
+/// A mark's colour, by what its note is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    /// A note (the accent colour).
+    Note,
+    /// Something wrong.
+    Error,
+    /// Something to look at.
+    Warning,
+    /// Something right.
+    Good,
+}
+
+impl Tone {
+    fn parse(given: Option<&str>) -> Result<Tone, String> {
+        Ok(match given.unwrap_or("note") {
+            "note" => Tone::Note,
+            "error" => Tone::Error,
+            "warning" => Tone::Warning,
+            "good" => Tone::Good,
+            other => return Err(format!("tone '{other}' isn't one: note, error, warning or good")),
+        })
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Tone::Note => "note",
+            Tone::Error => "error",
+            Tone::Warning => "warning",
+            Tone::Good => "good",
+        }
+    }
+}
+
+/// Lines an agent pointed at, with a note (where a bug is and why). It
+/// stays on its lines as the code changes.
+pub struct Mark {
+    pub id: u32,
+    pub path: PathBuf,
+    pub file: String,
+    /// Its rows (from 0), both included.
+    pub first: usize,
+    pub last: usize,
+    /// The bytes of its first row it is about, underlined.
+    pub span: Option<(usize, usize)>,
+    pub note: String,
+    pub tone: Tone,
+    pub by: By,
+    /// Its lines as last seen: in a file opened again, they are looked for.
+    text: Vec<String>,
+}
+
+/// The editor's file as the marks last followed it: its revision and its
+/// lines' hashes.
+struct Followed {
+    path: PathBuf,
+    rev: u64,
+    hashes: Vec<u64>,
+}
+
+/// "no notes", "1 note", "3 notes".
+pub fn notes_text(n: usize) -> String {
+    match n {
+        0 => "no notes".into(),
+        1 => "1 note".into(),
+        n => format!("{n} notes"),
+    }
+}
+
+/// Text an agent gives the player to read: its control characters out
+/// (line breaks kept, tabs as spaces), cut to `max` characters.
+fn clean(s: &str, max: usize) -> String {
+    let s: String = s
+        .replace("\r\n", "\n")
+        .chars()
+        .map(|c| if c == '\t' { ' ' } else { c })
+        .filter(|c| *c == '\n' || !c.is_control())
+        .collect();
+    cut(s.trim(), max)
+}
+
+/// Where a mark goes: its rows (from 0, both included), and the bytes of
+/// the first it underlines.
+struct Place {
+    first: usize,
+    last: usize,
+    span: Option<(usize, usize)>,
+}
+
+/// Where a mark goes in a file of `lines` (`file` names it): its rows,
+/// from start_line to end_line (from 1), and the bytes of the first row
+/// that `columns` (its first and last character, from 1) underline.
+fn mark_place(lines: &[String], file: &str, params: &Json) -> Result<Place, String> {
+    let count = line_count(lines);
+    let start = line_param(params, "start_line")?.ok_or("start_line is the first line to mark, from 1")?;
+    let end = line_param(params, "end_line")?.unwrap_or(start);
+    if end < start {
+        return Err(format!("end_line {end} is before start_line {start}"));
+    }
+    if end > count {
+        return Err(if count == 0 {
+            format!("{file} is empty: there is no line to mark")
+        } else {
+            format!("{file} has {count} lines: line {end} isn't one of them")
+        });
+    }
+    let line = &lines[start - 1];
+    let chars = line.chars().count();
+    let span = match params.get("columns") {
+        None | Some(Json::Null) => None,
+        Some(Json::Array(c)) if c.len() == 2 => match (c[0].as_u64(), c[1].as_u64()) {
+            (Some(a), Some(b)) if a >= 1 && b >= a && a as usize <= chars => {
+                let byte = |k: usize| line.char_indices().nth(k).map_or(line.len(), |(i, _)| i);
+                Some((byte(a as usize - 1), byte((b as usize).min(chars))))
+            }
+            _ => {
+                return Err(format!(
+                    "columns are the first and last character of line {start} to underline, from 1 to {chars}"
+                ));
+            }
+        },
+        Some(_) => {
+            return Err("columns is [first, last]: the characters of start_line to underline, from 1".into());
+        }
+    };
+    Ok(Place {
+        first: start - 1,
+        last: end - 1,
+        span,
+    })
+}
+
+/// A file's marks, for the state the link gives.
+fn marks_json(st: &Studio, path: &Path) -> Json {
+    Json::Array(
+        st.s.ui
+            .coach
+            .marks
+            .iter()
+            .filter(|m| m.path == path)
+            .map(|m| {
+                json!({
+                    "mark": m.id,
+                    "lines": [m.first + 1, m.last + 1],
+                    "tone": m.tone.name(),
+                    "note": m.note,
+                    "by": m.by.name,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Scrolls the editor so rows `first..=last` show, the first a third of
+/// the way down, unless they all show already. The cursor stays.
+fn reveal_rows(st: &mut Studio, first: usize, last: usize) {
+    let page = if st.s.ui.page > 0 { st.s.ui.page } else { 30 };
+    let ed = &mut st.s.editor;
+    let shows = first >= ed.scroll && last < ed.scroll + page;
+    if !shows {
+        ed.scroll = first.saturating_sub(page / 3).min(ed.lines.len() - 1);
+    }
+    ed.followed = Some((ed.row, ed.col, ed.revision));
+}
+
+/// The link's `mark`: lines of a file pointed at, highlighted in a colour
+/// (`tone`) with a note beside them. With `reveal` (the default) its note
+/// opens in a bubble and the view goes there, unless the player is using
+/// the studio; their cursor stays. A file the editor doesn't have open
+/// keeps its mark until it opens, and a note over the code shows it:
+/// marking never switches the player's file or tab. `replace` clears the
+/// agent's other marks first.
+pub fn mark(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
+    let t = target(st, params, false)?;
+    // The marks there are, on their lines now (a new one is followed from here).
+    follow_marks(st);
+    let open = st.s.editor.path.as_deref() == Some(t.path.as_path());
+    let lines = if open {
+        st.s.editor.lines.clone()
+    } else {
+        disk_lines(&t.path, &t.file)?
+    };
+    let Place { first, last, span } = mark_place(&lines, &t.file, params)?;
+    let note = clean(raw(params, "note").unwrap_or(""), NOTE_CHARS);
+    let tone = Tone::parse(text(params, "tone"))?;
+    let reveal = flag(params, "reveal").unwrap_or(true);
+    let in_run = in_run(st, by);
+    let c = &mut st.s.ui.coach;
+    if flag(params, "replace") == Some(true) {
+        c.marks.retain(|m| m.by.name != by.name);
+    }
+    if c.marks.len() >= MAX_MARKS {
+        c.marks.remove(0);
+    }
+    let id = c.next_mark;
+    c.next_mark += 1;
+    c.marks.push(Mark {
+        id,
+        path: t.path.clone(),
+        file: t.file.clone(),
+        first,
+        last,
+        span,
+        note,
+        tone,
+        by: by.clone(),
+        text: lines[first..=last].to_vec(),
+    });
+    if reveal {
+        c.open_mark = Some(id);
+        c.more = false;
+    }
+    if open {
+        track(st);
+        if reveal && !st.s.ui.coach.player_busy(st.s.now) {
+            reveal_rows(st, first, last);
+        }
+    }
+    let rows = lines_text(first + 1, last + 1);
+    let said = format!("Highlighted {rows} in {}", t.file);
+    let jump = Jump {
+        path: t.path.clone(),
+        file: t.file.clone(),
+        first,
+        last,
+        mark: Some(id),
+    };
+    say(st, by, in_run, said.clone(), Some(jump));
+    if !st.s.ui.open {
+        st.s.toast(format!("{} highlighted {rows} in {}", by.name, t.file));
+    } else if !open {
+        st.s.ui.coach.notice = Some(Notice {
+            text: format!("{} marked {rows} in {}", by.name, t.file),
+            seq: st.s.ui.agent.seq,
+            at: st.s.now,
+        });
+    }
+    let did = if open {
+        said
+    } else {
+        format!(
+            "{said}: it shows once the player opens it (the editor has {} open)",
+            st.s.editor.title
+        )
+    };
+    Ok(json!({
+        "ok": true,
+        "mark": id,
+        "did": did,
+        "file": t.file,
+        "lines": [first + 1, last + 1],
+        "open": open,
+    }))
+}
+
+/// The link's `unmark`: a mark cleared (`mark`, its number), a file's
+/// marks (`id`, `file` or `scratch`), or with none of these every mark.
+pub fn unmark(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
+    let given = |k: &str| params.get(k).is_some_and(|v| !v.is_null());
+    let (cleared, did) = if given("mark") {
+        let id = params["mark"]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or("mark is a mark's number, as mark_lines gave it")?;
+        let c = &mut st.s.ui.coach;
+        let i = c
+            .marks
+            .iter()
+            .position(|m| m.id == id)
+            .ok_or_else(|| format!("there is no mark {id} now (read_script lists a file's marks)"))?;
+        let m = c.marks.remove(i);
+        (
+            1,
+            format!(
+                "Cleared the note on {} of {}",
+                lines_text(m.first + 1, m.last + 1),
+                m.file
+            ),
+        )
+    } else if given("id") || given("file") || given("scratch") {
+        let t = target(st, params, false)?;
+        let c = &mut st.s.ui.coach;
+        let before = c.marks.len();
+        c.marks.retain(|m| m.path != t.path);
+        let n = before - c.marks.len();
+        (n, format!("Cleared {} in {}", notes_text(n), t.file))
+    } else {
+        let c = &mut st.s.ui.coach;
+        let n = c.marks.len();
+        c.marks.clear();
+        (n, format!("Cleared {}", notes_text(n)))
+    };
+    if cleared > 0 {
+        let in_run = in_run(st, by);
+        say(st, by, in_run, did.clone(), None);
+    }
+    Ok(json!({ "ok": true, "cleared": cleared, "did": did }))
+}
+
+fn line_hash(line: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    line.hash(&mut h);
+    h.finish()
+}
+
+fn hashes(lines: &[String]) -> Vec<u64> {
+    lines.iter().map(|l| line_hash(l)).collect()
+}
+
+/// What changed between two versions of a file's lines: rows
+/// `start..old_end` of the old became rows `start..new_end` of the new; the
+/// rows before and after are the same in both.
+#[derive(Clone, Copy, Debug)]
+struct Changed {
+    start: usize,
+    old_end: usize,
+    new_end: usize,
+}
+
+fn changed_rows(old: &[u64], new: &[u64]) -> Changed {
+    let start = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let room = old.len().min(new.len()) - start;
+    let same = old
+        .iter()
+        .rev()
+        .zip(new.iter().rev())
+        .take(room)
+        .take_while(|(a, b)| a == b)
+        .count();
+    Changed {
+        start,
+        old_end: old.len() - same,
+        new_end: new.len() - same,
+    }
+}
+
+impl Changed {
+    /// Where row `r` of the old lines is in the new: before what changed it
+    /// stays, after it it moves with its text, and inside it it stays in
+    /// what came in its place (where that is, when nothing came).
+    fn row(self, r: usize) -> usize {
+        if r < self.start {
+            r
+        } else if r >= self.old_end {
+            r - self.old_end + self.new_end
+        } else if self.new_end > self.start {
+            r.min(self.new_end - 1)
+        } else {
+            self.start
+        }
+    }
+}
+
+/// A mark kept inside a file of `lines`, its lines taken as they are now.
+/// Its underline goes when its first line changed.
+fn settle(m: &mut Mark, lines: &[String]) {
+    let end = line_count(lines).max(1) - 1;
+    m.first = m.first.min(end);
+    m.last = m.last.clamp(m.first, end);
+    let now = &lines[m.first..=m.last];
+    if m.text.first() != now.first() {
+        m.span = None;
+    }
+    m.text = now.to_vec();
+}
+
+/// The marks of file `path` after its lines `old` became `new`: lines put
+/// in or taken out before a mark move it, inside it they grow or shrink it.
+fn shift_marks(marks: &mut [Mark], path: &Path, old: &[String], new: &[String]) {
+    let change = changed_rows(&hashes(old), &hashes(new));
+    for m in marks.iter_mut().filter(|m| m.path == path) {
+        let first = change.row(m.first);
+        m.last = change.row(m.last).max(first);
+        m.first = first;
+        settle(m, new);
+    }
+}
+
+/// A mark in a file opened again: where its lines are now, the nearest to
+/// where they were, unless they are too plain to tell apart; else where it
+/// was.
+fn refind(m: &mut Mark, lines: &[String]) {
+    let n = m.last - m.first + 1;
+    let here = |at: usize| lines.get(at..at + n).is_some_and(|l| l == m.text.as_slice());
+    if here(m.first) || lines.len() < n {
+        return;
+    }
+    let letters: usize = m
+        .text
+        .iter()
+        .map(|l| l.chars().filter(|c| !c.is_whitespace()).count())
+        .sum();
+    if letters < FINDABLE {
+        return;
+    }
+    if let Some(at) = (0..=lines.len() - n)
+        .filter(|&at| here(at))
+        .min_by_key(|&at| at.abs_diff(m.first))
+    {
+        m.first = at;
+        m.last = at + n - 1;
+    }
+}
+
+/// The editor's file as it is now, for the marks to follow from.
+fn track(st: &mut Studio) {
+    let ed = &st.s.editor;
+    st.s.ui.coach.followed = ed.path.clone().map(|path| Followed {
+        path,
+        rev: ed.revision,
+        hashes: hashes(&ed.lines),
+    });
+}
+
+/// Keeps the marks of the editor's file on their lines as the code changes
+/// (the player's typing, an agent's edit, undo, the file read again): lines
+/// put in or taken out before a mark move it, inside it they grow or
+/// shrink it. A file opened again has its marks looked for where their
+/// lines are now, and a file that moved (renamed, a script made a module)
+/// takes its marks along, and the record of an agent's unsaved edits too.
+pub fn follow_marks(st: &mut Studio) {
+    let ed = &st.s.editor;
+    let c = &mut st.s.ui.coach;
+    let Some(path) = ed.path.clone() else {
+        c.followed = None;
+        return;
+    };
+    let same_rev = c.followed.as_ref().is_some_and(|f| f.rev == ed.revision);
+    match c.followed.as_mut() {
+        Some(f) if f.path == path && same_rev => return,
+        Some(f) if same_rev => {
+            // The same buffer at another path: the file moved.
+            let from = std::mem::replace(&mut f.path, path.clone());
+            for m in c.marks.iter_mut().filter(|m| m.path == from) {
+                m.path = path.clone();
+                m.file = ed.title.clone();
+            }
+            if let Some(u) = c.unsaved.as_mut().filter(|u| u.path == from) {
+                u.path = path;
+                u.file = ed.title.clone();
+            }
+            return;
+        }
+        _ => {}
+    }
+    if !c.marks.iter().any(|m| m.path == path) {
+        c.followed = None;
+        return;
+    }
+    let now = hashes(&ed.lines);
+    let change = c
+        .followed
+        .as_ref()
+        .filter(|f| f.path == path)
+        .map(|f| changed_rows(&f.hashes, &now));
+    for m in c.marks.iter_mut().filter(|m| m.path == path) {
+        match change {
+            Some(change) => {
+                let first = change.row(m.first);
+                m.last = change.row(m.last).max(first);
+                m.first = first;
+            }
+            None => refind(m, &ed.lines),
+        }
+        settle(m, &ed.lines);
+    }
+    c.followed = Some(Followed {
+        path,
+        rev: ed.revision,
+        hashes: now,
+    });
+}
+
+/// The open mark, while the editor has its file open.
+pub fn shown_mark<'a>(c: &'a Coach, ed: &Editor) -> Option<&'a Mark> {
+    let id = c.open_mark?;
+    c.marks.iter().find(|m| m.id == id && ed.path.as_ref() == Some(&m.path))
+}
+
+/// Goes to mark `id`, as the player asked: its file opens (the one open
+/// saved first, as the script list does), its lines show and its note
+/// opens. A mark whose file is gone goes too.
+fn go_to_mark(st: &mut Studio, game: &mut dyn GameApi, id: u32) {
+    let Some(m) = st.s.ui.coach.marks.iter().find(|m| m.id == id) else {
+        return;
+    };
+    let (path, file) = (m.path.clone(), m.file.clone());
+    if st.s.editor.path.as_ref() != Some(&path) {
+        if !path.is_file() {
+            st.s.ui.coach.marks.retain(|m| m.id != id);
+            st.s.toast(format!("{file} isn't there any more"));
+            return;
+        }
+        st.save_before_switch(game, Some(&path));
+        st.open_file(&path);
+    }
+    follow_marks(st);
+    let c = &mut st.s.ui.coach;
+    let Some(m) = c.marks.iter().find(|m| m.id == id) else {
+        return;
+    };
+    let (first, last) = (m.first, m.last);
+    c.open_mark = Some(id);
+    c.more = false;
+    st.s.ui.tab = Tab::Editor;
+    reveal_rows(st, first, last);
+}
+
+/// The note chip's click: the next mark (by file, then line) after the one
+/// whose note is open.
+fn next_mark(st: &mut Studio, game: &mut dyn GameApi) {
+    let c = &st.s.ui.coach;
+    let mut order: Vec<(&Path, usize, u32)> = c.marks.iter().map(|m| (m.path.as_path(), m.first, m.id)).collect();
+    order.sort();
+    let at = c.open_mark.and_then(|id| order.iter().position(|o| o.2 == id));
+    let Some(next) = order.get(at.map_or(0, |i| (i + 1) % order.len())).map(|o| o.2) else {
+        return;
+    };
+    go_to_mark(st, game, next);
+}
+
+/// The × of a mark's note: the mark goes.
+fn close_mark(st: &mut Studio, id: u32) {
+    let c = &mut st.s.ui.coach;
+    c.marks.retain(|m| m.id != id);
+    if c.open_mark == Some(id) {
+        c.open_mark = None;
+    }
+}
+
+/// The note chip's ×: every mark goes.
+fn clear_marks(st: &mut Studio) {
+    let c = &mut st.s.ui.coach;
+    c.marks.clear();
+    c.open_mark = None;
+}
+
+/// What a click on what agents show in the editor does: a mark's note
+/// opened, or its × pressed; the whole note shown; the next mark gone to;
+/// every mark cleared.
+pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) {
+    match action {
+        Action::MarkOpen(id) => {
+            let c = &mut st.s.ui.coach;
+            c.open_mark = Some(id);
+            c.more = false;
+        }
+        Action::MarkClose(id) => close_mark(st, id),
+        Action::MarkMore => st.s.ui.coach.more = true,
+        Action::NextMark => next_mark(st, game),
+        Action::ClearMarks => clear_marks(st),
+        _ => {}
+    }
+}
+
+/// The editor's keys for what agents show there: Esc closes the note open
+/// (before Esc closes the studio). True when the key was theirs.
+pub fn key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> bool {
+    let _ = game;
+    if st.s.ui.tab != Tab::Editor {
+        return false;
+    }
+    let c = &st.s.ui.coach;
+    if key == Key::Escape && !mods.ctrl && c.bubble_at.is_some() && shown_mark(c, &st.s.editor).is_some() {
+        st.s.ui.coach.open_mark = None;
+        return true;
+    }
+    false
 }

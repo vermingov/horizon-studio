@@ -1378,3 +1378,484 @@ fn a_turn_that_failed_or_found_the_file_changed_leaves_the_edits_unsaved() {
         "who made them"
     );
 }
+
+// ----------------------------------------------------------------- marks
+
+/// Every place a text was drawn.
+fn texts_at(game: &FakeGame, text: &str) -> Vec<(f32, f32)> {
+    game.drawn
+        .iter()
+        .filter(|d| d.starts_with(&format!("text {text} @")))
+        .map(|d| {
+            let at: Vec<f32> = d
+                .split(" @[")
+                .nth(1)
+                .unwrap()
+                .split(']')
+                .next()
+                .unwrap()
+                .split(", ")
+                .map(|v| v.parse().unwrap())
+                .collect();
+            (at[0], at[1])
+        })
+        .collect()
+}
+
+fn inside(r: [f32; 4], (x, y): (f32, f32)) -> bool {
+    x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3]
+}
+
+/// The rows (from 0) of the marks in the editor's file, in order made.
+fn marked(st: &Studio) -> Vec<(usize, usize)> {
+    let path = st.s.editor.path.clone();
+    st.s.ui
+        .coach
+        .marks
+        .iter()
+        .filter(|m| Some(&m.path) == path.as_ref())
+        .map(|m| (m.first, m.last))
+        .collect()
+}
+
+const TEN: &str = "local a = 1\nlocal b = 2\nlocal total = a + b\nprint(total)\nlocal c = 3\nlocal d = 4\nlocal e = 5\nlocal f = 6\nlocal g = 7\nreturn total\n";
+
+#[test]
+fn marks_follow_their_lines_as_the_code_changes() {
+    let (mut game, mut st) = editing("coach-follow", "sum", TEN);
+    let r = ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "start_line": 3, "end_line": 4, "note": "This adds them up." }),
+    )
+    .unwrap();
+    assert_eq!(r["did"], "Highlighted lines 3-4 in sum.lua", "{r}");
+    assert_eq!(r["lines"], json!([3, 4]));
+    assert_eq!(marked(&st), [(2, 3)]);
+    // The player puts two lines in at the top: it moves down with its lines.
+    st.s.editor.click(0, 0, false);
+    handle(&mut st, &mut game, Input::Text("-- one".into()));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    handle(&mut st, &mut game, Input::Text("-- two".into()));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(marked(&st), [(4, 5)]);
+    assert_eq!(st.s.editor.lines[4], "local total = a + b");
+    // They change a marked line itself: it stays.
+    st.s.editor.click(4, "local total".len(), false);
+    handle(&mut st, &mut game, Input::Text("_sum".into()));
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(marked(&st), [(4, 5)]);
+    // A line put in inside it: it grows; taken out, it shrinks.
+    st.s.editor.click(4, st.s.editor.lines[4].len(), false);
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    handle(&mut st, &mut game, Input::Text("local x = 0".into()));
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(marked(&st), [(4, 6)]);
+    // (Two undo steps: the line typed, then the line break.)
+    handle(&mut st, &mut game, key(Key::Char('z'), CTRL));
+    handle(&mut st, &mut game, key(Key::Char('z'), CTRL));
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(marked(&st), [(4, 5)], "undo takes it back too");
+    // An agent's edit above it moves it by exactly the lines it put in.
+    st.s.ui.coach.player_at = f64::NEG_INFINITY;
+    ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "start_line": 1, "end_line": 0, "new_text": "-- a\n-- b\n-- c", "typing": false }),
+    )
+    .unwrap();
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(marked(&st), [(7, 8)]);
+    // Typed in as the player watches, too.
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "start_line": 1, "end_line": 0, "new_text": "local first = true" }),
+    )
+    .unwrap();
+    typed_in(&mut st, &mut game, r["typing"].as_u64().unwrap());
+    assert_eq!(marked(&st), [(8, 9)]);
+    assert_eq!(st.s.editor.lines[8], "local total_sum = a + b");
+    // Everything taken out: it stays inside the file.
+    st.s.editor.select_all();
+    handle(&mut st, &mut game, key(Key::Backspace, NONE));
+    handle(&mut st, &mut game, Input::Text("print(1)".into()));
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(marked(&st), [(0, 0)]);
+}
+
+#[test]
+fn a_file_opened_again_or_moved_keeps_its_marks() {
+    let (mut game, mut st) = editing("coach-reopen", "sum", TEN);
+    ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "start_line": 4, "note": "Printed here." }),
+    )
+    .unwrap();
+    // Another file opens; sum.lua changes on disk meanwhile.
+    let scratch = st.scratch_path();
+    st.open_file(&scratch);
+    run_for(&mut st, &mut game, 0.05);
+    let path = game.mods_dir().join("sum.lua");
+    std::fs::write(&path, format!("-- new\n-- lines\n{TEN}")).unwrap();
+    st.open_file(&path);
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(marked(&st), [(5, 5)], "found where its line is now");
+    // An agent's change to a file the editor doesn't show moves its marks too.
+    st.open_file(&scratch);
+    ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "id": "sum", "start_line": 1, "end_line": 2, "new_text": "" }),
+    )
+    .unwrap();
+    let m = &st.s.ui.coach.marks[0];
+    assert_eq!((m.first, m.last), (3, 3));
+    // A file of a module renamed: its marks go along.
+    let (mut game, mut st) = with_module("coach-moved");
+    let util = game.mods_dir().join("kit/lib/util.lua");
+    st.open_file(&util);
+    ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "start_line": 1, "note": "The helper." }),
+    )
+    .unwrap();
+    let to = st.rename_file(&mut game, &util, "lib/helpers").unwrap();
+    run_for(&mut st, &mut game, 0.05);
+    let m = &st.s.ui.coach.marks[0];
+    assert_eq!((&m.path, m.file.as_str()), (&to, "kit/lib/helpers.lua"));
+    assert_eq!(marked(&st), [(0, 0)]);
+}
+
+#[test]
+fn marks_are_cleared_by_number_by_file_or_all() {
+    let (mut game, mut st) = editing("coach-unmark", "sum", TEN);
+    game.write_mod("other.lua", "print('other')\n");
+    st.scan(&mut game);
+    let one = ask(&mut st, &mut game, "mark", json!({ "start_line": 1, "note": "One." })).unwrap();
+    ask(&mut st, &mut game, "mark", json!({ "start_line": 2, "note": "Two." })).unwrap();
+    let r = ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "id": "other", "start_line": 1, "note": "Elsewhere." }),
+    )
+    .unwrap();
+    assert_eq!(r["open"], false);
+    assert!(r["did"].as_str().unwrap().contains("once the player opens it"), "{r}");
+    assert_eq!(st.s.editor.title, "sum.lua", "marking never switches the file");
+    // One, by its number; again, it isn't there.
+    let r = ask(&mut st, &mut game, "unmark", json!({ "mark": one["mark"] })).unwrap();
+    assert_eq!(
+        (&r["cleared"], &r["did"]),
+        (&json!(1), &json!("Cleared the note on line 1 of sum.lua"))
+    );
+    let e = ask(&mut st, &mut game, "unmark", json!({ "mark": one["mark"] })).unwrap_err();
+    assert!(e.contains("no mark"), "{e}");
+    // A file's, then all.
+    let r = ask(&mut st, &mut game, "unmark", json!({ "id": "sum" })).unwrap();
+    assert_eq!(
+        (&r["cleared"], &r["did"]),
+        (&json!(1), &json!("Cleared 1 note in sum.lua"))
+    );
+    assert_eq!(st.s.ui.coach.marks.len(), 1);
+    let r = ask(&mut st, &mut game, "unmark", json!({})).unwrap();
+    assert_eq!(r["cleared"], 1);
+    assert!(st.s.ui.coach.marks.is_empty());
+    // At most 20: the oldest goes.
+    for n in 1..=21 {
+        ask(
+            &mut st,
+            &mut game,
+            "mark",
+            json!({ "start_line": 1 + n % 10, "reveal": false }),
+        )
+        .unwrap();
+    }
+    let c = &st.s.ui.coach;
+    assert_eq!(c.marks.len(), 20);
+    assert_eq!(c.marks[0].first, 2, "the first one went");
+    // replace clears the agent's own marks, not another's.
+    let cursor = By {
+        name: "Cursor".into(),
+        conn: 2,
+    };
+    coach::call(&mut st, &mut game, &cursor, "mark", &json!({ "start_line": 5 })).unwrap();
+    ask(&mut st, &mut game, "mark", json!({ "start_line": 6, "replace": true })).unwrap();
+    let by: Vec<&str> = st.s.ui.coach.marks.iter().map(|m| m.by.name.as_str()).collect();
+    assert_eq!(by, ["Cursor", "Claude Code"]);
+    // What isn't a place to mark says so.
+    for (params, says) in [
+        (json!({ "start_line": 11 }), "has 10 lines"),
+        (json!({ "start_line": 4, "end_line": 3 }), "before start_line"),
+        (json!({ "start_line": 4, "columns": [20, 30] }), "from 1 to 12"),
+        (json!({ "start_line": 4, "columns": 3 }), "[first, last]"),
+        (
+            json!({ "start_line": 4, "tone": "loud" }),
+            "note, error, warning or good",
+        ),
+        (json!({ "note": "where?" }), "start_line"),
+    ] {
+        let e = ask(&mut st, &mut game, "mark", params.clone()).unwrap_err();
+        assert!(e.contains(says), "{params}: {e}");
+    }
+    // A note is cleaned and cut.
+    let r = ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "start_line": 4, "columns": [1, 5], "note": format!("a\u{7}b\tc\n{}", "x".repeat(600)) }),
+    )
+    .unwrap();
+    let m =
+        st.s.ui
+            .coach
+            .marks
+            .iter()
+            .find(|m| m.id as u64 == r["mark"].as_u64().unwrap())
+            .unwrap();
+    assert!(
+        m.note.starts_with("ab c\nxxx") && m.note.chars().count() == 501,
+        "{:?}",
+        &m.note[..10]
+    );
+    assert_eq!(m.span, Some((0, 5)), "print, underlined");
+    // read_script lists a file's marks, and game_status counts them.
+    let read = ask(&mut st, &mut game, "editor", json!({ "from": 1, "to": 2 })).unwrap();
+    assert_eq!(read["marks"].as_array().unwrap().len(), 3);
+    assert_eq!(read["marks"][2]["lines"], json!([4, 4]));
+    assert_eq!(coach::summary(&st)["marks"], 3);
+}
+
+/// A draw at Motion off: everything is where it goes at once.
+fn still(st: &mut Studio, game: &mut FakeGame) {
+    st.s.ui.look.motion = false;
+    redraw(st, game);
+    redraw(st, game);
+}
+
+#[test]
+fn a_mark_shows_its_note_and_closes_with_its_cross() {
+    use horizon_studio::game::hstudio_ui::UiResult;
+    let (mut game, mut st) = editing("coach-bubble", "sum", TEN);
+    st.s.editor.click(0, 0, false);
+    ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "start_line": 3, "end_line": 4, "note": "This line never changes i.", "tone": "error" }),
+    )
+    .unwrap();
+    still(&mut st, &mut game);
+    let code = st.s.ui.coach.code_at.unwrap();
+    let bubble = st.s.ui.coach.bubble_at.expect("its note shows in a bubble");
+    let note = text_at(&game, "This line never changes i.");
+    assert!(inside(bubble, note) && inside(code, note), "{bubble:?} {note:?}");
+    // Under its lines, inside the code's panel; a red band behind them.
+    let (_, line4) = text_at(&game, "print");
+    assert!(bubble[1] > line4, "under line 4");
+    assert!(bubble[0] >= code[0] && bubble[0] + bubble[2] <= code[0] + code[2]);
+    assert!(bubble[1] >= code[1] && bubble[1] + bubble[3] <= code[1] + code[3]);
+    let danger = format!("{:08x}", horizon_studio::game::hstudio_theme::THEMES[0].palette.danger);
+    let bar = format!(", 3.0, {:.1}] r0 ", horizon_studio::game::hstudio_ui::code_line());
+    let bars = game
+        .drawn
+        .iter()
+        .filter(|d| d.starts_with("rect") && d.contains(&bar) && d.ends_with(&danger[2..]))
+        .count();
+    assert_eq!(bars, 2, "its tone's bar in the gutter, on both lines");
+    assert_eq!((st.s.editor.row, st.s.editor.col), (0, 0), "the cursor stays");
+    // Its × clears it.
+    let cross = texts_at(&game, "×").into_iter().find(|at| inside(bubble, *at)).unwrap();
+    click(&mut st, &mut game, (cross.0 + 2.0, cross.1 + 4.0));
+    assert!(st.s.ui.coach.marks.is_empty());
+    still(&mut st, &mut game);
+    assert!(st.s.ui.coach.bubble_at.is_none());
+    // Esc closes a note, and the next Esc the studio.
+    ask(&mut st, &mut game, "mark", json!({ "start_line": 2, "note": "Two." })).unwrap();
+    still(&mut st, &mut game);
+    assert!(st.s.ui.coach.bubble_at.is_some());
+    assert_eq!(handle(&mut st, &mut game, key(Key::Escape, NONE)), UiResult::Used);
+    assert_eq!(st.s.ui.coach.open_mark, None);
+    assert_eq!(st.s.ui.coach.marks.len(), 1, "closed, not cleared");
+    still(&mut st, &mut game);
+    assert_eq!(handle(&mut st, &mut game, key(Key::Escape, NONE)), UiResult::Close);
+}
+
+#[test]
+fn several_marks_show_their_notes_at_the_line_end_and_the_chip_cycles() {
+    let (mut game, mut st) = editing("coach-chip", "sum", TEN);
+    for (line, note) in [(1, "First note."), (5, "Second note."), (8, "Third note.")] {
+        ask(&mut st, &mut game, "mark", json!({ "start_line": line, "note": note })).unwrap();
+    }
+    still(&mut st, &mut game);
+    // The newest in a bubble, the others at the end of their line.
+    let bubble = st.s.ui.coach.bubble_at.unwrap();
+    assert!(inside(bubble, text_at(&game, "Third note.")));
+    let first = text_at(&game, "First note.");
+    // (Code is drawn in pieces, by colour: line 1's first is "local".)
+    let (_, row1) = text_at(&game, "local");
+    assert!(
+        !inside(bubble, first) && (first.1 - row1).abs() < 4.0,
+        "at line 1's end"
+    );
+    let second = text_at(&game, "Second note.");
+    // A click on one opens it.
+    click(&mut st, &mut game, (second.0 + 2.0, second.1 + 4.0));
+    let second_id = st.s.ui.coach.marks[1].id;
+    assert_eq!(st.s.ui.coach.open_mark, Some(second_id));
+    still(&mut st, &mut game);
+    assert!(inside(st.s.ui.coach.bubble_at.unwrap(), text_at(&game, "Second note.")));
+    // The header's chip counts them and goes to the next.
+    let chip = text_at(&game, "3 notes");
+    click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 4.0));
+    assert_eq!(st.s.ui.coach.open_mark, Some(st.s.ui.coach.marks[2].id));
+    click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 4.0));
+    assert_eq!(st.s.ui.coach.open_mark, Some(st.s.ui.coach.marks[0].id), "round again");
+    // Its × clears them all.
+    still(&mut st, &mut game);
+    let cross = texts_at(&game, "×")
+        .into_iter()
+        .find(|at| (at.1 - chip.1).abs() < 6.0 && at.0 > chip.0)
+        .unwrap();
+    click(&mut st, &mut game, (cross.0 + 2.0, cross.1 + 4.0));
+    assert!(st.s.ui.coach.marks.is_empty());
+    still(&mut st, &mut game);
+    assert!(texts_at(&game, "3 notes").is_empty());
+}
+
+#[test]
+fn marking_another_file_never_switches_the_players_and_show_goes_there() {
+    use horizon_studio::game::hstudio_ui::Panel;
+    let (mut game, mut st) = editing("coach-mark-elsewhere", "sum", TEN);
+    let scratch = st.scratch_path();
+    st.open_file(&scratch);
+    // The player is typing in the console.
+    st.s.ui.tab = Tab::Console;
+    handle(&mut st, &mut game, Input::Text("print(".into()));
+    ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "id": "sum", "start_line": 3, "end_line": 4, "note": "Here.", "reveal": false }),
+    )
+    .unwrap();
+    assert_eq!((st.s.ui.tab, st.s.editor.title.as_str()), (Tab::Console, "scratch.lua"));
+    handle(&mut st, &mut game, Input::Text("1)".into()));
+    assert_eq!(st.s.ui.input.text, "print(1)", "their keys stay theirs");
+    // In the Editor tab a note over the code says so; the panel's line goes there.
+    st.s.ui.tab = Tab::Editor;
+    st.s.ui.panel = Panel::Agent;
+    st.s.ui.panel_hidden = false;
+    st.s.ui.panel_focus = true;
+    still(&mut st, &mut game);
+    text_at(&game, "Claude Code marked lines 3-4 in sum.lua · Show");
+    let line = text_at(&game, "Claude Code: Highlighted lines 3-4 in sum.lua");
+    let show = texts_at(&game, "Show")
+        .into_iter()
+        .find(|at| (at.1 - line.1).abs() < 4.0)
+        .unwrap();
+    click(&mut st, &mut game, (show.0 + 4.0, show.1 + 4.0));
+    assert_eq!(st.s.editor.title, "sum.lua");
+    assert_eq!((st.s.editor.row, st.s.editor.col), (2, 0));
+    assert!(!st.s.ui.panel_focus);
+    assert_eq!(
+        st.s.ui.coach.open_mark,
+        Some(st.s.ui.coach.marks[0].id),
+        "its note opens"
+    );
+    still(&mut st, &mut game);
+    assert!(inside(st.s.ui.coach.bubble_at.unwrap(), text_at(&game, "Here.")));
+    // With the studio closed, a toast says what the agent did.
+    st.s.ui.open = false;
+    ask(&mut st, &mut game, "mark", json!({ "start_line": 1, "note": "Look." })).unwrap();
+    assert_eq!(
+        st.s.toast.as_ref().map(|t| t.0.as_str()),
+        Some("Claude Code highlighted line 1 in sum.lua")
+    );
+}
+
+#[test]
+fn every_style_draws_a_note_inside_its_code() {
+    use horizon_studio::game::hstudio_theme::{Look, THEMES};
+    let (mut game, mut st) = editing("coach-styles", "sum", TEN);
+    let long = "This note is long enough to wrap over several lines in a small window. ".repeat(6);
+    ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "start_line": 2, "end_line": 3, "note": long }),
+    )
+    .unwrap();
+    for i in 0..THEMES.len() {
+        for rect in [Some([10.0, 10.0, 330.0, 230.0]), None] {
+            st.s.ui.look = Look {
+                theme: i,
+                rect,
+                motion: false,
+                ..Look::default()
+            };
+            st.s.ui.tab = Tab::Editor;
+            st.s.editor.scroll = 0;
+            redraw(&mut st, &mut game);
+            redraw(&mut st, &mut game);
+            let c = &st.s.ui.coach;
+            let (code, bubble) = (c.code_at.unwrap(), c.bubble_at);
+            if let Some(b) = bubble {
+                assert!(
+                    b[0] >= code[0]
+                        && b[1] >= code[1]
+                        && b[0] + b[2] <= code[0] + code[2]
+                        && b[1] + b[3] <= code[1] + code[3],
+                    "theme {i} {rect:?}: {b:?} in {code:?}"
+                );
+                assert!(b[3] <= code[3] - 2.0 * horizon_studio::game::hstudio_ui::code_line() + 0.5 || b[3] <= 37.0);
+            } else {
+                assert!(code[3] < 80.0, "theme {i} {rect:?}: no bubble in {code:?}");
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_mark_has_one_line_in_the_agent_panel() {
+    use horizon_studio::game::hstudio_ui::agent_ask;
+    let (mut game, mut st) = editing("coach-mark-line", "greet", GREET);
+    let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m1","name":"mcp__horizon-studio__mark_lines","input":{"id":"greet","start_line":2}}]},"session_id":"s1"}"#;
+    let ok = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m1","content":[{"type":"text","text":"{\"ok\": true, \"mark\": 1, \"did\": \"Highlighted line 2 in greet.lua\"}"}]}]},"session_id":"s1"}"#;
+    let clear = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m2","name":"mcp__horizon-studio__clear_marks","input":{}}]},"session_id":"s1"}"#;
+    let cleared = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"m2","content":[{"type":"text","text":"{\"ok\": true, \"cleared\": 1}"}]}]},"session_id":"s1"}"#;
+    fake_claude(&mut st, "mark", &[INIT, call, ok, clear, cleared], GOOD);
+    agent_ask(&mut st, "what is wrong?");
+    ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "start_line": 2, "note": "This prints, it doesn't count." }),
+    )
+    .unwrap();
+    until_done(&mut st, &mut game);
+    let lines: Vec<(AgentLineKind, String)> = st.s.ui.agent.lines.iter().map(|l| (l.kind, l.text.clone())).collect();
+    assert!(
+        lines.contains(&(AgentLineKind::Action, "Highlighted line 2 in greet.lua".into())),
+        "{lines:#?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|(k, t)| t.starts_with("mark_lines") || t.starts_with("clear_marks") || *k == AgentLineKind::ToolOk),
+        "{lines:#?}"
+    );
+    let jump = st.s.ui.agent.lines.iter().find_map(|l| l.jump.clone()).unwrap();
+    assert_eq!(jump.mark, Some(st.s.ui.coach.marks[0].id), "its Show opens its note");
+}

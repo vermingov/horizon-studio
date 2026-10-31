@@ -32,8 +32,9 @@ the files that change, and `remove` deletes files); a library calls export(table
 then `test_mod` with steps, headless first (no game needed) and live once `game_status` says the game is linked. \
 `run_lua`, `send_chat` and `game_log` work in the running game; `horizon_ctl` plays it and takes screenshots when the \
 game runs with --control. In the player's own editor, live: `read_script` reads a script as they have it (unsaved edits \
-too), `edit_script` types a change into it as they watch, `save_script` saves it, `open_script` opens one. Mods are \
-sandboxed Lua: no files, no network, a step budget per call.";
+too), `edit_script` types a change into it as they watch, `save_script` saves it, `open_script` opens one, and \
+`mark_lines` points at lines with a note (`clear_marks` clears them). Mods are sandboxed Lua: no files, no network, a \
+step budget per call.";
 
 // ------------------------------------------------------------------ paths
 
@@ -497,6 +498,37 @@ pub fn tools() -> Json {
               the player is typing in it, and refuses when the file changed on disk since the editor read it (the \
               player chooses then). Live only.",
             script_props(json!({})),
+            &[]
+        ),
+        tool(
+            "mark_lines",
+            "Points at code in the player's editor: lines highlighted in a colour (tone) with a note beside them \
+              in a bubble, such as where a bug is and why, in one or two sentences. The view goes there unless the \
+              player is using the studio (reveal: false only highlights); their cursor stays. A file the editor \
+              doesn't have open keeps its mark until it opens, and a note over the code tells the player: \
+              marking never switches their file. Marks stay on their lines as the code changes; replace: true \
+              clears your other marks first; at most 20 (the oldest goes). Returns the mark's number, for \
+              clear_marks. Live only.",
+            script_props(json!({
+                "start_line": { "type": "integer", "description": "The first line to mark, from 1 (as read_script numbers them)." },
+                "end_line": { "type": "integer", "description": "The last (default start_line)." },
+                "note": { "type": "string", "description": "What to say about the lines (500 characters at most)." },
+                "tone": { "type": "string", "enum": ["note", "error", "warning", "good"],
+                          "description": "Its colour: note (default), error, warning or good." },
+                "columns": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2,
+                             "description": "[first, last]: the characters of start_line to underline, from 1." },
+                "reveal": { "type": "boolean", "description": "Open its note and scroll to it (default true)." },
+                "replace": { "type": "boolean", "description": "Clear your other marks first (default false)." },
+            })),
+            &["start_line"]
+        ),
+        tool(
+            "clear_marks",
+            "Clears marks from the player's editor: one by its number (mark), a file's (id, file or scratch), or \
+              with none of these every mark. Live only.",
+            script_props(json!({
+                "mark": { "type": "integer", "description": "A mark's number, as mark_lines gave it." },
+            })),
             &[]
         ),
         tool(
@@ -1081,6 +1113,8 @@ impl Server {
                 }
             }
             "save_script" => self.editor_live("save", args, true, 8.0),
+            "mark_lines" => self.editor_live("mark", args, true, 0.0),
+            "clear_marks" => self.editor_live("unmark", args, true, 0.0),
             "read_script" => {
                 let mut state = self.editor_live("editor", args, false, 0.0)?;
                 let lines = state.as_object_mut().and_then(|o| o.remove("lines"));

@@ -178,6 +178,14 @@ well, its unsaved edits are saved; otherwise the panel says they aren't, and how
 Each thing it did in the editor has a line in the panel (*Typed lines 12-19 into timer.lua*), and **Show** on it
 goes to that code.
 
+**It points at code.** Ask *why does my timer never stop?* and the agent can highlight the lines at fault, in red
+for an error (amber for a warning, green for something right, the accent for a note), with a note beside them: the
+view goes there unless you are busy, and your cursor stays. The newest note shows in a bubble under its lines; the
+others show at the end of their first line, and a click opens them. The bubble's × removes a note, Esc closes the
+bubble, and the editor's header says how many notes there are (*3 notes*: a click goes to the next, its × clears
+them all). Notes stay on their lines as you edit, and one for a file you don't have open waits there; **Show** on
+its line in the panel opens it.
+
 It works in your mods folder and runs with its own permissions: Claude Code may use Horizon Studio's MCP tools and
 read files, and asks for nothing else (in a run from the game, anything that needs your approval is refused); omp
 runs with `--approval-mode write`, which refuses shell commands. To use another agent, put its command line in
@@ -332,6 +340,7 @@ shows the JSON). Then restart the agent.
 | `test_mod` | Steps (commands, chat, keys, Lua assertions, player and blocks, screen clicks...) with expectations (chat, output, text drawn, sounds, particles, mod state), headless or `live` |
 | `game_status`, `run_lua`, `send_chat`, `game_log`, `reload_mod` | The running game: its state and mods, Lua in the console, chat and commands, the console log |
 | `open_script`, `read_script`, `edit_script`, `save_script` | The player's editor, live: open any script, read it as they have it (unsaved edits too, numbered as edits count lines), type a change in as they watch (one undo step; a file that isn't open is written to disk instead), save it and say how the mod runs |
+| `mark_lines`, `clear_marks` | Point at code in the player's editor: lines highlighted in a colour with a note, which stay on their lines as the code changes |
 | `horizon_ctl` | Horizon's own `horizon-ctl` commands for a game started with `--control`: playing it, its widgets, screenshots |
 
 **Headless** tests run the studio itself (the interpreter, events, commands, timers, libraries, screens) on a
@@ -777,7 +786,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `ui.rs` (`hstudio_ui`) | The screen: console, editor, library, docs, settings; input, the window's moving and sizing |
 | `assist.rs` (`hstudio_assist`) | The editor's and console's suggestions, and the live check of a script (syntax, unknown names) |
 | `agent.rs` (`hstudio_agent`) | The in-game agent: finding Claude Code and omp, running one with the editor's context, reading its events |
-| `coach.rs` (`hstudio_coach`) | AI agents in the player's editor: which file a request means, reading and opening, edits typed in at the agent's own caret, saving, the Agent panel's lines that go to the code |
+| `coach.rs` (`hstudio_coach`) | AI agents in the player's editor: which file a request means, reading and opening, edits typed in at the agent's own caret, saving, marks that follow their lines, the Agent panel's lines that go to the code |
 | `meshes.rs` (`hstudio_meshes`) | Textures and meshes: PNG and base64, `.obj` and `.bbmodel`, box UV, drawing them as textured triangles |
 | `look.rs` (`hstudio_look`) | How the screen draws: the studio's layout, Settings, the Windows 10 window, script screens |
 | `theme.rs` (`hstudio_theme`) | The themes' palettes, and the look chosen in Settings (`look.txt`) |

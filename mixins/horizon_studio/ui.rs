@@ -177,6 +177,14 @@ pub(crate) enum Action {
     /// The code an Agent panel line is about (by the line's number), shown:
     /// what an agent did in the editor.
     AgentJump(u64),
+    /// An agent's mark (by its number): its note opened, or its × pressed;
+    /// the open note shown whole (its More).
+    MarkOpen(u32),
+    MarkClose(u32),
+    MarkMore,
+    /// The editor header's notes chip: the next mark, or its × (every mark cleared).
+    NextMark,
+    ClearMarks,
 }
 
 /// What a menu item does when chosen.
@@ -3230,6 +3238,9 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
         Action::MenuPick(i) => menu_pick(st, game, i as usize),
         Action::ModelMenu => open_model_menu(st),
         Action::AgentJump(seq) => super::hstudio_coach::go(st, game, seq),
+        Action::MarkOpen(_) | Action::MarkClose(_) | Action::MarkMore | Action::NextMark | Action::ClearMarks => {
+            super::hstudio_coach::act(st, game, action)
+        }
         Action::ClearLog => {
             st.s.log.clear();
             st.s.ui.log_scroll = 0;
@@ -3291,6 +3302,10 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
         return UiResult::Used;
     }
     if !mods.ctrl && suggest_key(st, key) {
+        return UiResult::Used;
+    }
+    // What agents show in the editor: Esc closes an agent's note first.
+    if super::hstudio_coach::key(st, game, key, mods) {
         return UiResult::Used;
     }
     match key {

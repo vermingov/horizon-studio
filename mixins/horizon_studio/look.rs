@@ -1241,6 +1241,11 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     if chip > 0.0 {
         px += chip + 6.0;
     }
+    // Agents' notes in the code.
+    let chip = coach_chip(st, p, px - 8.0, y + 4.0, bx - 16.0, dt);
+    if chip > 0.0 {
+        px += chip + 6.0;
+    }
     if let Some(problem) = st.s.editor.problem.clone() {
         let msg = p.fit(
             &format!("Could not read the file: {problem}"),
@@ -2220,6 +2225,10 @@ fn floor_char(s: &str, i: usize) -> usize {
 /// scrollbar, the suggestions, and the file changing on disk.
 pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     let now = st.s.now;
+    // Agents' marks on their lines as they are now.
+    super::hstudio_coach::follow_marks(st);
+    st.s.ui.coach.code_at = Some(panel);
+    st.s.ui.coach.bubble_at = None;
     // The live check, once typing pauses; a module's file with its siblings
     // (read again, and checked again, when they change).
     let siblings = super::hstudio_ui::editor_siblings(st);
@@ -2334,6 +2343,7 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     }
     let problem_at = &st.s.ui.problem_at;
     let base = p.alpha;
+    let mut note_hits = Vec::new();
     for i in 0..=rows {
         let r = first + i;
         if r >= ed.lines.len() {
@@ -2405,6 +2415,9 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
             p.text(&shown, px, ty, code_size(), Font::Mono, tint(t));
             px += pw;
         }
+        // An agent's note at the line's end (it says that, not a problem).
+        let noted = mark_note(p, &st.s.ui.coach, ed, r, from, [text_x, text_w, ly]);
+        let noted = noted.map(|hit| note_hits.push(hit)).is_some();
         // Its problems: the worst marks the gutter and says why at the end.
         let mut said = false;
         for pr in ed.problems.iter().filter(|pr| pr.line == r + 1) {
@@ -2436,7 +2449,7 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
                 p.rect([panel[0] + 12.0, ly + code_line() / 2.0 - 3.0, 6.0, 6.0], 3.0, c);
                 let end = text_x + p.measure(&line[from..], code_size(), Font::Mono) + 20.0;
                 let room = text_x + text_w - end;
-                if room > 70.0 {
+                if room > 70.0 && !noted {
                     let msg = p.fit(&pr.message, room, 12.0, Font::Regular);
                     p.text(
                         &msg,
@@ -2451,6 +2464,7 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
         }
         p.alpha = base;
     }
+    st.s.ui.hits.extend(note_hits);
     // The cursor, solid while it moves and blinking once still.
     let caret_y = top_y + (caret[0] - s) * code_line();
     let line = &ed.lines[ed.row];
@@ -2498,6 +2512,8 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
             let c = if pr.error { pal().danger } else { warn() };
             p.rect([panel[0] + panel[2] - 11.0, my, 8.0, 2.0], 1.0, fade(c, 0.85));
         }
+        // And agents' marks.
+        mark_ticks(p, &st.s.ui.coach, ed, [panel[0] + panel[2] - 11.0, top_y, track]);
     }
     st.s.ui.view = Some(EditorView {
         x: text_x,
@@ -2505,6 +2521,7 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
         w: text_w,
         rows,
     });
+    note_bubble(st, p, panel, [text_x, top_y, bottom, s], dt);
     file_changed(st, p, panel, dt);
     agent_notice(st, p, panel, dt);
     // The suggestions, at the word being typed.
@@ -2527,7 +2544,8 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
 /// What an agent's edit shows on code row `r` (its text drawn from byte
 /// `from`; the panel's left and width, the text's left and width, the
 /// row's top): the text the edit is about to replace, tinted, and the lines
-/// it just put in, lit a moment.
+/// it just put in, lit a moment; and an agent's marks, a band in their
+/// colour with a bar at the gutter's left, what they are about underlined.
 fn coach_row(
     p: &mut P,
     coach: &super::hstudio_coach::Coach,
@@ -2538,6 +2556,32 @@ fn coach_row(
     now: f64,
 ) {
     use super::hstudio_coach::{FLASH, Phase};
+    for m in coach
+        .marks
+        .iter()
+        .filter(|m| (m.first..=m.last).contains(&r) && ed.path.as_ref() == Some(&m.path))
+    {
+        let c = tone_color(m.tone);
+        let open = coach.open_mark == Some(m.id);
+        p.rect(
+            [px + 6.0, ly, pw - 12.0, code_line()],
+            0.0,
+            fade(c, if open { 0.16 } else { 0.10 }),
+        );
+        p.rect([px + 6.0, ly, 3.0, code_line()], 0.0, c);
+        if let Some((a, b)) = m.span.filter(|_| r == m.first) {
+            let line = &ed.lines[r];
+            let a = floor_char(line, a).max(from);
+            let b = floor_char(line, b).max(a);
+            let sx = text_x + p.measure(&line[from..a], code_size(), Font::Mono);
+            let sw = p
+                .measure(&line[a..b], code_size(), Font::Mono)
+                .min(text_x + text_w - sx);
+            if sw > 0.0 {
+                p.rect([sx, ly + code_line() - 3.0, sw, 2.0], 1.0, c);
+            }
+        }
+    }
     if let Some(f) = &coach.flash
         && ed.path.as_ref() == Some(&f.path)
         && (f.first..=f.last).contains(&r)
@@ -2651,6 +2695,207 @@ fn agent_notice(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     );
     ui.hits.push((r, Action::AgentJump(seq)));
     p.alpha = base;
+}
+
+/// A mark's colour: the accent for a note, danger for an error, the
+/// warning amber, success for something right.
+pub(super) fn tone_color(t: super::hstudio_coach::Tone) -> u32 {
+    use super::hstudio_coach::Tone;
+    match t {
+        Tone::Note => pal().accent,
+        Tone::Error => pal().danger,
+        Tone::Warning => warn(),
+        Tone::Good => pal().success,
+    }
+}
+
+/// An agent's note at the end of its mark's first line (row `r`, its text
+/// drawn from byte `from`), in its colour, while its bubble isn't the one
+/// open: a click opens it. Its hit, when there was room to draw it.
+fn mark_note(
+    p: &mut P,
+    coach: &super::hstudio_coach::Coach,
+    ed: &super::hstudio_ui::Editor,
+    r: usize,
+    from: usize,
+    [text_x, text_w, ly]: [f32; 3],
+) -> Option<([f32; 4], Action)> {
+    let m = coach.marks.iter().rev().find(|m| {
+        m.first == r && !m.note.is_empty() && coach.open_mark != Some(m.id) && ed.path.as_ref() == Some(&m.path)
+    })?;
+    let line = &ed.lines[r];
+    let end = text_x + p.measure(&line[from..], code_size(), Font::Mono) + 20.0;
+    let room = text_x + text_w - end;
+    if room <= 70.0 {
+        return None;
+    }
+    let c = tone_color(m.tone);
+    let cy = ly + code_line() / 2.0;
+    let mut said = m.note.lines().next().unwrap_or_default().to_owned();
+    if m.note.contains('\n') {
+        said.push_str(" …");
+    }
+    let said = p.fit(&said, room - 14.0, 12.0, Font::Regular);
+    p.rect([end, cy - 3.0, 6.0, 6.0], 3.0, c);
+    let w = p.text(&said, end + 12.0, top(cy, 12.0), 12.0, Font::Regular, fade(c, 0.9));
+    Some(([end - 4.0, ly, w + 20.0, code_line()], Action::MarkOpen(m.id)))
+}
+
+/// Where agents' marks are in the editor's file, on its scroll bar's track
+/// (`x`, its top, its height).
+fn mark_ticks(
+    p: &mut P,
+    coach: &super::hstudio_coach::Coach,
+    ed: &super::hstudio_ui::Editor,
+    [x, top_y, track]: [f32; 3],
+) {
+    for m in coach.marks.iter().filter(|m| ed.path.as_ref() == Some(&m.path)) {
+        let my = top_y + track * (m.first as f32 / ed.lines.len() as f32);
+        p.rect([x, my, 8.0, 3.0], 1.0, tone_color(m.tone));
+    }
+}
+
+/// The open mark's note in a bubble under its lines (over them when there
+/// is no room below), from its first line's indent, at most 520 wide. It
+/// stays inside the code's panel, never taller than the panel less two rows:
+/// the note is cut to fit, and to eight lines until its More is pressed.
+/// Its × clears the mark; clicks elsewhere on it reach nothing under it.
+/// (`text_x`: where the code's text starts; the code's top and bottom; the
+/// view's row at its top, as drawn.)
+fn note_bubble(st: &mut Studio, p: &mut P, panel: [f32; 4], [text_x, top_y, bottom, s]: [f32; 4], dt: f32) {
+    const LINE: f32 = 17.0;
+    const PAD: f32 = 10.0;
+    const SOFT: usize = 8;
+    let ed = &st.s.editor;
+    let coach = &st.s.ui.coach;
+    let Some(m) = super::hstudio_coach::shown_mark(coach, ed).filter(|m| !m.note.is_empty()) else {
+        return;
+    };
+    let lh = code_line();
+    let (y0, y1) = (
+        top_y + (m.first as f32 - s) * lh,
+        top_y + (m.last as f32 + 1.0 - s) * lh,
+    );
+    // Its lines scrolled away, it waits for them.
+    let area = [panel[0] + 8.0, panel[1] + 4.0, panel[2] - 16.0, panel[3] - 8.0];
+    let w = area[2].min(520.0);
+    if y1 <= top_y || y0 >= bottom || w < 120.0 || area[3] < 2.0 * PAD + LINE {
+        return;
+    }
+    let line = &ed.lines[m.first];
+    let indent = (line.len() - line.trim_start().len()).saturating_sub(ed.hscroll);
+    let ix = p.measure(&" ".repeat(indent), code_size(), Font::Mono);
+    let x = (text_x + ix - 14.0).min(area[0] + area[2] - w).max(area[0]);
+    let (mark, tone, note) = (m.id, tone_color(m.tone), m.note.clone());
+    let soft = if coach.more { usize::MAX } else { SOFT };
+    // The rows it may take: the panel less two rows, so what it is about shows beside it.
+    let room = (panel[3] - 2.0 * lh).max(2.0 * PAD + LINE).min(area[3]);
+    let fit = ((room - 2.0 * PAD) / LINE).floor().max(1.0) as usize;
+    let tw = w - 52.0;
+    let mut lines = p.wrap(&note, tw, 12.5, Font::Regular);
+    let mut more = false;
+    if lines.len() > soft.min(fit) {
+        // Cut: "More" shows the rest when the panel has room for it.
+        more = soft < fit;
+        let keep = if more { soft } else { fit };
+        lines.truncate(keep);
+        let last = format!("{} …", lines[keep - 1]);
+        lines[keep - 1] = p.fit(&last, tw, 12.5, Font::Regular);
+    }
+    let n = lines.len() + usize::from(more);
+    let h = 2.0 * PAD + LINE * n as f32;
+    let (below, above, floor) = (y1 + 4.0, y0 - 4.0 - h, area[1] + area[3]);
+    let y = if below + h <= floor {
+        below
+    } else if above >= area[1] {
+        above
+    } else {
+        below.clamp(area[1], floor - h)
+    };
+    let r = [x, y, w, h];
+    let ui = &mut st.s.ui;
+    let base = p.alpha;
+    p.alpha = base * hover(ui, id("note-bubble", mark as usize), true, dt);
+    ui.hits.push((r, Action::Block));
+    p.rect(r, 10.0, pal().surface);
+    p.border(r, 10.0, fade(tone, 0.55));
+    p.rect([x + 8.0, y + 9.0, 3.0, h - 18.0], 1.5, tone);
+    for (i, l) in lines.iter().enumerate() {
+        let cy = y + PAD + LINE * (i as f32 + 0.5);
+        p.text(l, x + 20.0, top(cy, 12.5), 12.5, Font::Regular, pal().ink);
+    }
+    if more {
+        let cy = y + PAD + LINE * (lines.len() as f32 + 0.5);
+        let lw = p.measure("More", 12.0, Font::Medium);
+        let mr = [x + 16.0, cy - LINE / 2.0, lw + 8.0, LINE];
+        let hv = hover(ui, id("note-more", 0), inside(mr, ui.mouse), dt);
+        let c = mix(pal().accent, pal().accent_hover, hv);
+        p.text("More", x + 20.0, top(cy, 12.0), 12.0, Font::Medium, c);
+        p.rect([x + 20.0, cy + 7.0, lw, 1.0], 0.0, fade(c, hv));
+        ui.hits.push((mr, Action::MarkMore));
+    }
+    let xr = [x + w - 28.0, y + 6.0, 22.0, 22.0];
+    let hv = hover(ui, id("note-close", 0), inside(xr, ui.mouse), dt);
+    p.rect(xr, 11.0, fade(pal().ink, 0.10 * hv));
+    let xw = p.measure("×", 15.0, Font::Regular);
+    p.text(
+        "×",
+        xr[0] + (22.0 - xw) / 2.0,
+        top(xr[1] + 11.0, 15.0),
+        15.0,
+        Font::Regular,
+        mix(pal().muted, pal().ink, hv),
+    );
+    ui.hits.push((xr, Action::MarkClose(mark)));
+    ui.coach.bubble_at = Some(r);
+    p.alpha = base;
+}
+
+/// In the editor's header (at `x`, its top `y`, up to `right`), while
+/// agents have marked code: "3 notes" in the newest mark's colour, which
+/// goes to the next mark, and a × that clears them. Its width (0: not
+/// drawn).
+fn coach_chip(st: &mut Studio, p: &mut P, x: f32, y: f32, right: f32, dt: f32) -> f32 {
+    let c = &st.s.ui.coach;
+    let Some(newest) = c.marks.last() else {
+        return 0.0;
+    };
+    let tone = tone_color(newest.tone);
+    let label = super::hstudio_coach::notes_text(c.marks.len());
+    let lw = p.measure(&label, 12.0, Font::Medium);
+    let w = 21.0 + lw + 30.0;
+    if x + w > right {
+        return 0.0;
+    }
+    let chip = [x, y, w, 24.0];
+    let main = [x, y, w - 24.0, 24.0];
+    let cross = [x + w - 24.0, y + 2.0, 20.0, 20.0];
+    let ui = &mut st.s.ui;
+    let hv = hover(ui, id("notes-chip", 0), inside(main, ui.mouse), dt);
+    let hx = hover(ui, id("notes-chip-x", 0), inside(cross, ui.mouse), dt);
+    p.rect(chip, 12.0, fade(pal().ink, 0.04 + 0.06 * hv));
+    p.rect([x + 8.0, y + 8.5, 7.0, 7.0], 3.5, tone);
+    p.text(
+        &label,
+        x + 21.0,
+        top(y + 12.0, 12.0),
+        12.0,
+        Font::Medium,
+        mix(pal().ink_soft, pal().ink, hv),
+    );
+    p.rect(cross, 10.0, fade(pal().ink, 0.10 * hx));
+    let xw = p.measure("×", 14.0, Font::Regular);
+    p.text(
+        "×",
+        cross[0] + (20.0 - xw) / 2.0,
+        top(y + 12.0, 14.0),
+        14.0,
+        Font::Regular,
+        mix(pal().muted, pal().ink, hx),
+    );
+    ui.hits.push((main, Action::NextMark));
+    ui.hits.push((cross, Action::ClearMarks));
+    w
 }
 
 /// Over the code: the file changed on disk while it had edits here (take
@@ -3299,6 +3544,7 @@ fn docs() -> Vec<Doc> {
     out.push(Doc::Heading("AI agents".into()));
     out.push(Doc::Para("horizon-studio-mcp lets AI agents (Claude Code, omp, Codex, Cursor...) make mods here: they write and test them, headless and in this game, run Lua in the console and read what happened. Copy AI setup prompt, at the top right, copies a prompt for your agent that sets it all up; once one is connected, its name shows there. Options > Mods > Horizon Studio turns the AI link off.".into()));
     out.push(Doc::Para("An agent can work in this editor as you watch: it opens any script, reads it as you have it (unsaved edits too), and types its changes in at a caret of its own with its name on it. Your cursor stays where it is, the view follows the agent until you scroll, and any key or click puts the rest of its change in at once. Ctrl+Z takes a whole change back. Its changes stay unsaved until it saves them (or you do); nothing you are typing is saved for you. A file you don't have open is changed on disk instead, and a note over the code shows it. The Agent panel says what it did, and Show there goes to that code.".into()));
+    out.push(Doc::Para("It can point at code too: lines highlighted in a colour (red for an error, amber for a warning, green for something right) with a note. The newest note shows in a bubble under its lines, the others at the end of their line (a click opens them); the bubble's × removes a note and Esc closes it. The editor's header counts the notes: a click goes to the next, its × clears them. Notes stay on their lines as you edit.".into()));
     out.push(Doc::Heading("Commands in chat".into()));
     out.push(Doc::Para(
         "/studio opens this screen, /studio reload reloads every script mod, /lua <code> runs code.".into(),

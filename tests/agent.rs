@@ -372,6 +372,8 @@ fn the_prompt_teaches_the_live_editor() {
         "Line numbers count from 1",
         "Save before test_mod",
         "write_mod for a new mod",
+        "mark_lines, clear_marks: point at code",
+        "When the player asks what is wrong, mark the lines",
     ] {
         assert!(p.contains(part), "{part:?} missing in:\n{p}");
     }
