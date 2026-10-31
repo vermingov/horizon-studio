@@ -1160,7 +1160,7 @@ pub struct Rbx {
     pub sends: Vec<String>,
     /// Sounds to play: id, place, volume, pitch.
     pub sounds: Vec<(String, Option<[f64; 3]>, f32, f32)>,
-    /// Agent commands to run (Humanoid:MoveTo).
+    /// Agent commands to run (Humanoid:MoveTo's walk is Rbx.world's).
     pub agent: Vec<String>,
     /// The studio's clock.
     pub now: f64,

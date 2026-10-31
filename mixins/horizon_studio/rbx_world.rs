@@ -4,13 +4,15 @@
 // stud is a block), whose HumanoidRootPart is the torso's box, whose Head
 // is at the eyes and whose Humanoid is the player's: their health, the
 // game's speeds and how they move. Moving the root part teleports the player
-// with /tp. hstudio_rbx_draw's sync hands the player over to it every frame.
+// with /tp, and Humanoid:MoveTo walks them with the agent's goto.
+// hstudio_rbx_draw's sync hands the player over to it every frame.
 
-use super::hstudio::{GameApi, PlayerInfo, PlayerPose};
+use super::hstudio::{GameApi, PlayerInfo, PlayerPose, Reply};
 use super::hstudio_lua::Value;
 use super::hstudio_rbx::{Env, Id, Rbx};
 use super::hstudio_rbx_types::{CFrame, Vector3};
 use super::hstudio_rbx_values::{as_cf, cf, enum_item, enum_value, v3};
+use std::sync::mpsc::{Receiver, TryRecvError};
 
 /// A pixel of the player's model: the model is 15/16 the size of a
 /// block-sized one, whose pixel is 1/16 of a block.
@@ -31,6 +33,8 @@ pub const SPEED_SCALE: f64 = 43.178;
 pub const TICKS: f64 = 20.0;
 /// Moving slower than this, in blocks a second, a Humanoid isn't walking.
 const WALKING: f64 = 0.5;
+/// How long Humanoid:MoveTo walks before it gives up, in seconds (Roblox's).
+pub const MOVE_TIMEOUT: f64 = 8.0;
 /// The LocalPlayer's name until the game says the player's.
 pub const NO_NAME: &str = "Player1";
 
@@ -53,6 +57,8 @@ pub struct World {
     pub state: &'static str,
     pub on_ground: bool,
     pub running: f64,
+    /// Humanoid:MoveTo's walk, while it goes.
+    pub walk: Option<Walk>,
 }
 
 impl Default for World {
@@ -67,7 +73,85 @@ impl Default for World {
             state: "Running",
             on_ground: true,
             running: 0.0,
+            walk: None,
         }
+    }
+}
+
+/// A walk Humanoid:MoveTo started: its Humanoid, where to and when; whether
+/// its goto went to the game, whether another walk's must stop first, and
+/// the game's answer to come.
+pub struct Walk {
+    pub humanoid: Id,
+    pub to: Vector3,
+    pub since: f64,
+    pub sent: bool,
+    pub stop: bool,
+    pub reply: Option<Receiver<String>>,
+}
+
+/// Humanoid:MoveTo. The local Humanoid walks the player there with the
+/// agent's goto, and MoveToFinished fires with whether they got there:
+/// false after 8 seconds (Roblox's timeout), and when another MoveTo takes
+/// the walk's place. Another Humanoid has no one to walk: its MoveToFinished
+/// fires with false.
+pub fn move_to(rbx: &mut Rbx, humanoid: Id, to: Vector3) {
+    if humanoid != rbx.humanoid {
+        rbx.fire(humanoid, "MoveToFinished", vec![Value::Bool(false)]);
+        return;
+    }
+    let stop = match rbx.world.walk.take() {
+        Some(w) => {
+            rbx.fire(w.humanoid, "MoveToFinished", vec![Value::Bool(false)]);
+            w.sent || w.stop
+        }
+        None => false,
+    };
+    rbx.world.walk = Some(Walk {
+        humanoid,
+        to,
+        since: rbx.now,
+        sent: false,
+        stop,
+        reply: None,
+    });
+}
+
+/// Each frame, as the studio does what the layer asked of the game: a new
+/// walk's goto goes to the agent (after a stop, when it takes another's
+/// place), and its answer, or the timeout, ends it.
+pub fn walk(rbx: &mut Rbx, game: &mut dyn GameApi) {
+    let now = rbx.now;
+    let Some(w) = rbx.world.walk.as_mut() else {
+        return;
+    };
+    let arrived = |v: &serde_json::Value| v.get("arrived").and_then(serde_json::Value::as_bool) == Some(true);
+    let mut done = None;
+    if !w.sent {
+        w.sent = true;
+        if w.stop {
+            let _ = game.agent("stop");
+        }
+        let (x, y, z) = (w.to.x.floor(), w.to.y.floor(), w.to.z.floor());
+        match game.agent(&format!("goto {x:.0} {y:.0} {z:.0} --near 1 --timeout {MOVE_TIMEOUT}")) {
+            Ok(Reply::Later(rx)) => w.reply = Some(rx),
+            Ok(Reply::Now(v)) => done = Some(arrived(&v)),
+            // No path, or the agent busy with a mod's task: it doesn't walk.
+            Err(_) => done = Some(false),
+        }
+    }
+    if done.is_none() {
+        done = match w.reply.as_ref().map(Receiver::try_recv) {
+            Some(Ok(text)) => Some(serde_json::from_str(&text).is_ok_and(|v| arrived(&v))),
+            Some(Err(TryRecvError::Disconnected)) => Some(false),
+            _ if now - w.since >= MOVE_TIMEOUT => Some(false),
+            _ => None,
+        };
+    }
+    if let Some(reached) = done {
+        let humanoid = w.humanoid;
+        rbx.world.walk = None;
+        rbx.fire(humanoid, "MoveToFinished", vec![Value::Bool(reached)]);
     }
 }
 

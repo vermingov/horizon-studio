@@ -397,3 +397,54 @@ fn respawning_makes_a_new_character() {
     assert_eq!(p[2], "true    nil    true    true");
     assert_eq!(p[3], "100    4.3178    Running    HumanoidRootPart");
 }
+
+#[test]
+fn humanoid_move_to_walks_only_you_and_says_when_it_is_done() {
+    let mut game = FakeGame::new("rbxw-moveto");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local hum = game.Players.LocalPlayer.Character.Humanoid
+        local npc = Instance.new("Humanoid")
+        local log = {}
+        hum.MoveToFinished:Connect(function(reached) table.insert(log, "me " .. tostring(reached)) end)
+        npc.MoveToFinished:Connect(function(reached) table.insert(log, "npc " .. tostring(reached)) end)
+        command("walk", function() hum:MoveTo(Vector3.new(12.5, 64, -3.5)) end)
+        command("npc", function() npc:MoveTo(Vector3.new(1, 2, 3)) end)
+        command("log", function() print(table.concat(log, ", ")) end)
+    "#;
+    load(&mut game, &mut st, "walker", src, 0.7);
+    let goto = "goto 12 64 -4 --near 1 --timeout 8";
+    // A Humanoid of the script's own has no one to walk.
+    assert!(st.command("npc"));
+    run_for(&mut st, &mut game, 0.1);
+    assert!(game.agent_calls.is_empty(), "{:?}", game.agent_calls);
+    // The game answers at once: there.
+    game.agent_now
+        .insert("goto".into(), serde_json::json!({ "ok": true, "arrived": true }));
+    assert!(st.command("walk"));
+    run_for(&mut st, &mut game, 0.1);
+    assert_eq!(game.agent_calls, [goto]);
+    // The game answers later, when the player gets there.
+    game.agent_now.clear();
+    assert!(st.command("walk"));
+    run_for(&mut st, &mut game, 0.1);
+    let (_, tx) = game.agent_later.pop().unwrap();
+    tx.send(r#"{"ok": true, "arrived": true}"#.into()).unwrap();
+    run_for(&mut st, &mut game, 0.1);
+    // Another MoveTo takes the walk's place: the first stops, unfinished.
+    assert!(st.command("walk"));
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.command("walk"));
+    run_for(&mut st, &mut game, 0.1);
+    assert_eq!(game.agent_calls[2..], [goto, "stop", goto]);
+    // No answer: it gives up after 8 seconds, as Roblox's does.
+    run_for(&mut st, &mut game, 7.5);
+    assert!(st.command("log"));
+    run_for(&mut st, &mut game, 0.05);
+    run_for(&mut st, &mut game, 1.0);
+    assert!(st.command("log"));
+    run_for(&mut st, &mut game, 0.05);
+    let p = printed(&st, "walker");
+    assert_eq!(p[0], "npc false, me true, me true, me false");
+    assert_eq!(p[1], "npc false, me true, me true, me false, me false");
+}

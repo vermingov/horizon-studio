@@ -2279,6 +2279,7 @@ impl Studio {
         for cmd in std::mem::take(&mut rbx.agent) {
             let _ = game.agent(&cmd);
         }
+        super::hstudio_rbx_world::walk(rbx, game);
         for w in std::mem::take(&mut rbx.warnings) {
             match w.strip_prefix('\u{1}') {
                 Some(note) => game.chat(note),

@@ -772,13 +772,7 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
                 .get(1)
                 .and_then(as_v3)
                 .ok_or_else(|| bad_arg(lua, 1, name, "Vector3 expected"))?;
-            let rbx = env.rbx();
-            rbx.agent.push(format!(
-                "goto {:.0} {:.0} {:.0} --near 1",
-                p.x.floor(),
-                p.y.floor(),
-                p.z.floor()
-            ));
+            super::hstudio_rbx_world::move_to(env.rbx(), id, p);
             none()
         }
         ("Humanoid", "TakeDamage") => {
