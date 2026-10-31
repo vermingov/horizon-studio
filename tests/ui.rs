@@ -1205,6 +1205,11 @@ fn drawn_contains(game: &FakeGame, part: &str) -> bool {
     game.drawn.iter().any(|d| d.starts_with("text ") && d.contains(part))
 }
 
+/// Whether `text` was drawn, all of it as one text.
+fn drawn_text(game: &FakeGame, text: &str) -> bool {
+    game.drawn.iter().any(|d| d.starts_with(&format!("text {text} @")))
+}
+
 #[test]
 fn the_new_prompt_makes_a_script_or_a_module() {
     use horizon_studio::game::hstudio_ui::NamingKind;
@@ -1247,6 +1252,7 @@ fn the_new_prompt_makes_a_script_or_a_module() {
     assert_eq!(st.s.editor.path.as_ref(), Some(&main));
     assert_eq!(st.s.editor.title, "night_light/main.lua");
     assert_eq!(st.s.ui.tab, Tab::Editor);
+    assert!(st.s.ui.expanded.contains("night_light"), "unfolded in the script list");
     let scratch = std::fs::read_to_string(st.s.dir.join("scratch.lua")).unwrap();
     assert!(scratch.contains("-- before the prompt"), "saved first: {scratch}");
     // The same name again: the line says it is taken, and Enter keeps the prompt open.
@@ -1318,4 +1324,333 @@ fn the_plus_menu_offers_scripts_modules_and_files() {
     assert!(drawn_contains(&game, "dots are for require"));
     handle(&mut st, &mut game, key(Key::Enter, NONE));
     assert!(st.s.ui.naming.is_some());
+}
+
+/// Where `text` was drawn on the row whose text is at height `y` (a row's
+/// "..." or +), at its right of `x`.
+fn text_on_row(game: &FakeGame, text: &str, (x, y): (f32, f32)) -> (f32, f32) {
+    let prefix = format!("text {text} @[");
+    game.drawn
+        .iter()
+        .filter_map(|d| d.strip_prefix(&prefix))
+        .filter_map(|rest| {
+            let mut n = rest.split(']').next()?.split(", ").map(|v| v.parse::<f32>());
+            Some((n.next()?.ok()?, n.next()?.ok()?))
+        })
+        .find(|(tx, ty)| (ty - y).abs() < 3.0 && *tx > x)
+        .map(|(tx, ty)| (tx + 2.0, ty + 3.0))
+        .unwrap_or_else(|| panic!("no {text:?} on the row at {y}"))
+}
+
+fn right_click(st: &mut horizon_studio::game::hstudio::Studio, game: &mut FakeGame, (x, y): (f32, f32)) {
+    handle(st, game, Input::Mouse(x, y));
+    handle(
+        st,
+        game,
+        Input::Button {
+            left: false,
+            down: true,
+        },
+    );
+    handle(
+        st,
+        game,
+        Input::Button {
+            left: false,
+            down: false,
+        },
+    );
+}
+
+fn menu_labels(st: &horizon_studio::game::hstudio::Studio) -> Vec<(String, bool)> {
+    let menu = st.s.ui.menu.clone().expect("a menu");
+    menu.items.into_iter().map(|i| (i.label, i.enabled)).collect()
+}
+
+#[test]
+fn the_script_list_folds_modules_and_opens_their_files() {
+    use horizon_studio::game::hstudio_agent::AgentSpec;
+    use horizon_studio::game::hstudio_ui::Panel;
+    let mut game = FakeGame::new("ui-tree");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    let big = game.mods_dir().join("big");
+    std::fs::create_dir_all(&big).unwrap();
+    std::fs::write(big.join("main.lua"), "local s = require('shared')\n").unwrap();
+    std::fs::write(big.join("shared.lua"), "return {}\n").unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    redraw(&mut st, &mut game);
+    let folder = text_at(&game, "big/");
+    assert!(!drawn_text(&game, "shared.lua"), "folded at first");
+    click(&mut st, &mut game, (folder.0 + 2.0, folder.1 + 2.0));
+    redraw(&mut st, &mut game);
+    let shared = text_at(&game, "shared.lua");
+    text_at(&game, "main.lua");
+    assert!(shared.0 > folder.0, "a module's files are indented under it");
+    click(&mut st, &mut game, (shared.0 + 2.0, shared.1 + 2.0));
+    assert_eq!(st.s.editor.title, "big/shared.lua");
+    // Folded again, its row stands for the open file.
+    redraw(&mut st, &mut game);
+    click(&mut st, &mut game, (folder.0 + 2.0, folder.1 + 2.0));
+    redraw(&mut st, &mut game);
+    assert!(!drawn_text(&game, "shared.lua"));
+    assert!(!st.s.ui.expanded.contains("big"));
+    // A file opened from the Library unfolds its module.
+    handle(&mut st, &mut game, key(Key::Char('3'), CTRL));
+    st.s.ui.library_sel = mod_index(&st, "big");
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert_eq!(st.s.editor.title, "big/main.lua");
+    assert!(st.s.ui.expanded.contains("big"));
+    // The wheel over the list scrolls it, not the code.
+    for n in 0..20 {
+        game.write_mod(&format!("s{n:02}.lua"), "print(1)\n");
+    }
+    run_for(&mut st, &mut game, 0.6);
+    redraw(&mut st, &mut game);
+    let top_row = text_at(&game, "scratch.lua");
+    handle(&mut st, &mut game, Input::Mouse(top_row.0 + 2.0, top_row.1 + 2.0));
+    let code = st.s.editor.scroll;
+    handle(&mut st, &mut game, Input::Wheel(-2.0));
+    assert!(st.s.ui.scripts_scroll > 0);
+    assert_eq!(st.s.editor.scroll, code);
+    redraw(&mut st, &mut game);
+    assert!(!drawn_text(&game, "scratch.lua"), "scrolled off");
+    // A row's menu near the bottom opens above the pointer, whatever chip was drawn before:
+    // the last row is a module, scrolled to.
+    st.create_module(&mut game, "Zz").unwrap();
+    st.s.ui.agent.agents = Some(vec![AgentSpec::claude(std::path::PathBuf::from("claude"))]);
+    st.s.ui.panel = Panel::Agent;
+    redraw(&mut st, &mut game);
+    handle(&mut st, &mut game, Input::Wheel(-40.0));
+    redraw(&mut st, &mut game);
+    let low = text_at(&game, "zz/");
+    let at = (low.0 + 2.0, low.1 + 2.0);
+    right_click(&mut st, &mut game, at);
+    assert_eq!(menu_labels(&st)[0].0, "New file...");
+    redraw(&mut st, &mut game);
+    let rect = st.s.ui.menu.as_ref().and_then(|m| m.rect).expect("drawn");
+    assert!(rect[1] + rect[3] <= at.1, "{rect:?} above {at:?}");
+    assert!(
+        (rect[1] + rect[3] - (at.1 - 8.0)).abs() < 1.0,
+        "{rect:?} right above {at:?}"
+    );
+}
+
+#[test]
+fn a_rows_menu_adds_renames_and_deletes_files() {
+    use horizon_studio::game::hstudio_ui::NamingKind;
+    let mut game = FakeGame::new("ui-row-menu");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.create_module(&mut game, "Kit").unwrap();
+    let dir = game.mods_dir().join("kit");
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    redraw(&mut st, &mut game);
+    let kit = text_at(&game, "kit/");
+    click(&mut st, &mut game, (kit.0 + 2.0, kit.1 + 2.0));
+    // Pointed at, a file's row shows "...", its menu.
+    redraw(&mut st, &mut game);
+    let lib = text_at(&game, "lib.lua");
+    handle(&mut st, &mut game, Input::Mouse(lib.0 + 2.0, lib.1 + 2.0));
+    redraw(&mut st, &mut game);
+    let dots = text_on_row(&game, "...", lib);
+    click(&mut st, &mut game, dots);
+    assert_eq!(
+        menu_labels(&st),
+        [
+            ("Open".to_owned(), true),
+            ("Rename...".to_owned(), true),
+            ("Delete...".to_owned(), true)
+        ]
+    );
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    assert!(st.s.ui.menu.is_none());
+    // A right press opens the same; main.lua's can't rename or delete it.
+    redraw(&mut st, &mut game);
+    let main = text_at(&game, "main.lua");
+    right_click(&mut st, &mut game, (main.0 + 2.0, main.1 + 2.0));
+    assert_eq!(
+        menu_labels(&st),
+        [
+            ("Open".to_owned(), true),
+            ("Rename...".to_owned(), false),
+            ("Delete...".to_owned(), false)
+        ]
+    );
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    // The module's row: its menu, and its + for a new file.
+    right_click(&mut st, &mut game, (kit.0 + 2.0, kit.1 + 2.0));
+    let labels: Vec<String> = menu_labels(&st).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(
+        labels,
+        ["New file...", "Open main.lua", "Show in folder", "Delete module..."]
+    );
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    handle(&mut st, &mut game, Input::Mouse(kit.0 + 2.0, kit.1 + 2.0));
+    redraw(&mut st, &mut game);
+    let plus = text_on_row(&game, "+", kit);
+    click(&mut st, &mut game, plus);
+    assert_eq!(st.s.ui.naming_kind, NamingKind::NewFile(dir.clone()));
+    type_text(&mut st, &mut game, "util");
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert!(dir.join("util.lua").is_file());
+    assert_eq!(st.s.editor.title, "kit/util.lua");
+    // Renamed: the field starts with its name, and the editor follows it.
+    redraw(&mut st, &mut game);
+    let util = text_at(&game, "util.lua");
+    right_click(&mut st, &mut game, (util.0 + 2.0, util.1 + 2.0));
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, "Rename...");
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.ui.naming.as_ref().map(|n| n.text.as_str()), Some("util"));
+    for _ in 0..4 {
+        handle(&mut st, &mut game, key(Key::Backspace, NONE));
+    }
+    type_text(&mut st, &mut game, "helpers");
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    let helpers = dir.join("helpers.lua");
+    assert!(helpers.is_file() && !dir.join("util.lua").exists());
+    assert_eq!(st.s.editor.path.as_ref(), Some(&helpers));
+    assert_eq!(st.s.editor.title, "kit/helpers.lua");
+    // Deleted: it asks first, saying where it goes; nothing is typed.
+    redraw(&mut st, &mut game);
+    let row = text_at(&game, "helpers.lua");
+    right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, "Delete...");
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.ui.naming_kind, NamingKind::Delete(helpers.clone()));
+    type_text(&mut st, &mut game, "x");
+    redraw(&mut st, &mut game);
+    assert!(drawn_contains(&game, "Delete helpers.lua?"));
+    assert!(drawn_contains(&game, "It moves to trash/kit/helpers.lua"));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert!(!helpers.exists());
+    assert!(st.s.dir.join("trash").join("kit").join("helpers.lua").is_file());
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    assert!(
+        !st.s.mods[mod_index(&st, "kit")]
+            .files()
+            .contains(&"helpers.lua".to_owned())
+    );
+}
+
+#[test]
+fn save_file_execute_file_and_run_work_on_a_modules_files() {
+    use horizon_studio::game::hstudio_theme::THEMES;
+    let mut game = FakeGame::new("ui-module-run");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.s.ui.look.theme = THEMES.iter().position(|t| t.id == "synapse").unwrap();
+    st.create_module(&mut game, "Kit").unwrap();
+    let lib = game.mods_dir().join("kit").join("lib.lua");
+    let i = mod_index(&st, "kit");
+    st.open_file(&lib);
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    st.s.editor.insert("-- edited\n");
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "Save File");
+    click(&mut st, &mut game, at);
+    assert!(st.s.ui.naming.is_none(), "a module's file saves in place");
+    assert!(!st.s.editor.dirty);
+    assert!(std::fs::read_to_string(&lib).unwrap().starts_with("-- edited"));
+    // Execute File saves it and reloads the module.
+    let reloads = st.s.mods[i].reloads;
+    st.s.editor.insert("-- and again\n");
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "Execute File");
+    click(&mut st, &mut game, at);
+    assert!(!st.s.editor.dirty);
+    assert_eq!(st.s.mods[i].reloads, reloads + 1);
+    assert!(std::fs::read_to_string(&lib).unwrap().contains("-- and again"));
+    // With nothing to save it reloads the module, turning it on.
+    st.set_enabled(&mut game, i, false);
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "Execute File");
+    click(&mut st, &mut game, at);
+    assert!(st.s.mods[i].running(), "{:?}", st.s.mods[i].state);
+    // Synapse's list is the same tree.
+    redraw(&mut st, &mut game);
+    text_at(&game, "kit/");
+    text_at(&game, "shared.lua");
+    // In the studio's own layout, Ctrl+Enter on lib.lua reloads the module.
+    st.s.ui.look.theme = 0;
+    let before = log(&st).len();
+    handle(&mut st, &mut game, key(Key::Enter, CTRL));
+    let after = log(&st)[before..].to_vec();
+    assert!(after.contains(&"Ran kit (reloaded)".to_owned()), "{after:?}");
+    assert!(!after.iter().any(|l| l.contains("require works")), "{after:?}");
+}
+
+#[test]
+fn the_library_shows_a_modules_files() {
+    use horizon_studio::game::hstudio_ui::NamingKind;
+    let mut game = FakeGame::new("ui-library-module");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.create_module(&mut game, "Kit").unwrap();
+    handle(&mut st, &mut game, key(Key::Char('3'), CTRL));
+    st.s.ui.library_sel = mod_index(&st, "kit");
+    redraw(&mut st, &mut game);
+    text_at(&game, "Module");
+    assert!(drawn_contains(&game, "module  ·  3 files"));
+    for f in ["main.lua", "lib.lua", "shared.lua"] {
+        text_at(&game, f);
+    }
+    let at = text_at(&game, "lib.lua");
+    click(&mut st, &mut game, (at.0 + 2.0, at.1 + 2.0));
+    assert_eq!(st.s.ui.tab, Tab::Editor);
+    assert_eq!(st.s.editor.title, "kit/lib.lua");
+    handle(&mut st, &mut game, key(Key::Char('3'), CTRL));
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "New file");
+    click(&mut st, &mut game, (at.0 + 2.0, at.1 + 2.0));
+    assert_eq!(st.s.ui.naming_kind, NamingKind::NewFile(game.mods_dir().join("kit")));
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    // A script can become a module from here.
+    st.s.ui.library_sel = mod_index(&st, "hello");
+    redraw(&mut st, &mut game);
+    assert!(!drawn_contains(&game, "module  ·"));
+    let at = text_at(&game, "Make it a module");
+    click(&mut st, &mut game, (at.0 + 2.0, at.1 + 2.0));
+    assert!(game.mods_dir().join("hello").join("main.lua").is_file());
+    assert!(!game.mods_dir().join("hello.lua").exists());
+    let h = mod_index(&st, "hello");
+    assert!(st.s.mods[h].folder.is_some() && st.s.mods[h].running());
+    assert!(st.s.ui.expanded.contains("hello"));
+}
+
+#[test]
+fn the_editor_says_which_file_a_module_failed_in() {
+    let mut game = FakeGame::new("ui-failed-in");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.create_module(&mut game, "Kit").unwrap();
+    let dir = game.mods_dir().join("kit");
+    std::fs::write(
+        dir.join("lib.lua"),
+        "local shared = require('shared')\nlocal lib = {}\nfunction lib.greet() return 'hi' end\n\nerror('lib broke')\nreturn lib\n",
+    )
+    .unwrap();
+    run_for(&mut st, &mut game, 0.6);
+    let i = mod_index(&st, "kit");
+    assert!(matches!(st.s.mods[i].state, ModState::Failed(..)));
+    st.edit_mod(i);
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    // main.lua marks the line that required lib; the chip says where it failed.
+    assert_eq!(st.s.editor.error_line, Some(9));
+    redraw(&mut st, &mut game);
+    let chip = text_at(&game, "Failed in lib.lua:5");
+    click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 2.0));
+    assert_eq!(st.s.editor.title, "kit/lib.lua");
+    assert_eq!(st.s.editor.error_line, Some(5));
+    assert_eq!(st.s.editor.row, 4, "the cursor is at that line");
+    redraw(&mut st, &mut game);
+    assert!(!drawn_contains(&game, "Failed in"), "not about the file open");
 }

@@ -464,6 +464,7 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         ui.text_rows.clear();
         ui.text_areas.clear();
         ui.view = None;
+        ui.scripts_at = None;
         tick(ui, now)
     };
     // The open file changed on disk (an agent wrote it): read it again.
@@ -1226,6 +1227,33 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         ui.hits.push((chip, Action::PanelTab(Panel::Problems)));
         px += cw + 14.0;
     }
+    // A module that failed in another of its files: where, and a click opens it there.
+    let elsewhere =
+        st.s.editor
+            .path
+            .as_deref()
+            .and_then(|path| st.mod_of_path(path))
+            .filter(|&i| st.s.mods[i].folder.is_some())
+            .and_then(|i| {
+                let (file, line) = st.failure_place(i)?;
+                let m = &st.s.mods[i];
+                let k = m.files().iter().position(|f| *f == file)?;
+                (m.chunk_of(&file) != st.s.editor.title).then_some((i, k, file, line))
+            });
+    if let Some((i, k, file, line)) = elsewhere {
+        let label = format!("Failed in {file}:{line}");
+        let lw = p.measure(&label, 12.0, Font::Medium);
+        let chip = [px - 8.0, y + 4.0, lw + 34.0, 24.0];
+        if chip[0] + chip[2] < bx - 16.0 {
+            let ui = &mut st.s.ui;
+            let hv = hover(ui, id("failed-chip", 0), inside(chip, ui.mouse), dt);
+            p.rect(chip, 12.0, fade(pal().danger, 0.12 + 0.08 * hv));
+            p.rect([px, y + 12.5, 7.0, 7.0], 3.5, pal().danger);
+            p.text(&label, px + 14.0, top(y + 16.0, 12.0), 12.0, Font::Medium, pal().danger);
+            ui.hits.push((chip, Action::EditFile(i, k.min(65535) as u16)));
+            px += chip[2] + 6.0;
+        }
+    }
     if let Some(problem) = st.s.editor.problem.clone() {
         let msg = p.fit(
             &format!("Could not read the file: {problem}"),
@@ -1288,9 +1316,38 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     }
 }
 
-/// The script list beside the code: the scratch file, then every script mod
-/// (its state's dot); a click opens one, + starts a new one.
+/// A small filled triangle of 1 dp rects in a 7 x 7 box at (x, y),
+/// pointing down for an open folder, right for a folded one.
+pub(super) fn chevron(p: &mut P, x: f32, y: f32, open: bool, c: u32) {
+    for i in 0..4 {
+        let f = i as f32;
+        if open {
+            p.rect([x + f, y + 1.5 + f, 7.0 - 2.0 * f, 1.0], 0.0, c);
+        } else {
+            p.rect([x + 1.5 + f, y + f, 1.0, 7.0 - 2.0 * f], 0.0, c);
+        }
+    }
+}
+
+/// A mod's state as its dot's colour.
+pub(super) fn state_dot(state: &ModState) -> u32 {
+    match state {
+        ModState::Running => pal().success,
+        ModState::Failed(..) => pal().danger,
+        ModState::Off => pal().muted,
+    }
+}
+
+/// The script list beside the code, as VS Code's explorer: the scratch
+/// file, then each mod with its state's dot, a script as one row and a
+/// module as a folder that folds, its files under it. A click opens a file
+/// or folds a module; the row under the pointer (and the open one) shows
+/// "..." for its menu, which a right press opens too, and a module's row
+/// has a "+" for a new file of it. The "+" at the top makes a script or a
+/// module. The wheel scrolls it, and it brings the open file's row into
+/// view.
 fn draw_scripts(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
+    use super::hstudio_ui::{ScriptRow, open_row, row_label, script_rows, scripts_first};
     p.rect([x, y, w, h], 14.0, pal().plate_soft);
     p.text(
         "Scripts",
@@ -1320,70 +1377,88 @@ fn draw_scripts(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let row_h = 26.0;
     let list_y = y + 36.0;
     let rows = (((h - 44.0) / row_h).floor() as usize).max(1);
-    let open_path = st.s.editor.path.clone();
-    let scratch = st.scratch_path();
-    // Row 0 is the scratch file, row k + 1 is mod k.
-    let total = st.s.mods.len() + 1;
-    let open_row = if open_path.as_ref() == Some(&scratch) {
-        Some(0)
-    } else {
-        st.s.mods
-            .iter()
-            .position(|m| Some(&m.main) == open_path.as_ref())
-            .map(|i| i + 1)
-    };
-    let first = open_row
-        .unwrap_or(0)
-        .saturating_sub(rows - 1)
-        .min(total.saturating_sub(rows));
-    for (k, row) in (first..total).take(rows).enumerate() {
-        let r = [x + 6.0, list_y + row_h * k as f32, w - 12.0, row_h - 2.0];
+    let all = script_rows(st);
+    let open = open_row(st, &all);
+    let first = scripts_first(st, all.len(), rows, open);
+    st.s.ui.scripts_at = Some([x, list_y, w, row_h * rows as f32]);
+    for (k, row) in all.iter().enumerate().skip(first).take(rows) {
+        let r = [x + 6.0, list_y + row_h * (k - first) as f32, w - 12.0, row_h - 2.0];
+        let label = row_label(st, row);
         let ui = &mut st.s.ui;
-        let hv = hover(ui, id("scripts-row", row), inside(r, ui.mouse), dt);
-        let on = open_row == Some(row);
+        let over = inside(r, ui.mouse);
+        let hv = hover(ui, id(&label, k), over, dt);
+        let on = open == Some(k);
         let bg = if on {
             fade(pal().accent, 0.16)
         } else {
             fade(pal().ink, 0.06 * hv)
         };
         p.rect(r, 8.0, bg);
-        let (name, dot, fg, action) = if row == 0 {
-            (
-                "scratch.lua".to_owned(),
-                pal().muted,
-                pal().ink_soft,
-                Action::EditScratch,
-            )
-        } else {
-            let m = &st.s.mods[row - 1];
-            let dot = match m.state {
-                ModState::Running => pal().success,
-                ModState::Failed(..) => pal().danger,
-                ModState::Off => pal().muted,
-            };
-            let fg = if m.enabled { pal().ink_soft } else { pal().muted };
-            (m.chunk(), dot, fg, Action::Edit(row - 1))
+        let cy = r[1] + r[3] / 2.0;
+        let (enabled, state) = match row {
+            ScriptRow::Scratch => (true, None),
+            ScriptRow::Script { i, .. } | ScriptRow::Module { i, .. } | ScriptRow::File { i, .. } => {
+                st.s.mods
+                    .get(*i)
+                    .map_or((true, None), |m| (m.enabled, Some(m.state.clone())))
+            }
         };
-        p.rect([r[0] + 10.0, r[1] + r[3] / 2.0 - 3.0, 6.0, 6.0], 3.0, dot);
-        let name = p.fit(&name, r[2] - 32.0, 12.5, Font::Regular);
-        let fg = if on { pal().ink } else { mix(fg, pal().ink, hv) };
-        p.text(
-            &name,
-            r[0] + 24.0,
-            top(r[1] + r[3] / 2.0, 12.5),
-            12.5,
-            Font::Regular,
-            fg,
-        );
-        if on && st.s.editor.dirty {
-            p.rect(
-                [r[0] + r[2] - 14.0, r[1] + r[3] / 2.0 - 3.0, 6.0, 6.0],
-                3.0,
-                pal().accent,
-            );
+        let fg = if enabled { pal().ink_soft } else { pal().muted };
+        let tx = match row {
+            ScriptRow::Scratch | ScriptRow::Script { .. } => {
+                let dot = state.as_ref().map_or(pal().muted, state_dot);
+                p.rect([r[0] + 10.0, cy - 3.0, 6.0, 6.0], 3.0, dot);
+                r[0] + 24.0
+            }
+            ScriptRow::Module { open: unfolded, .. } => {
+                chevron(p, r[0] + 7.0, cy - 3.5, *unfolded, mix(pal().muted, pal().ink, hv));
+                let dot = state.as_ref().map_or(pal().muted, state_dot);
+                p.rect([r[0] + 19.0, cy - 3.0, 6.0, 6.0], 3.0, dot);
+                r[0] + 31.0
+            }
+            // A module's files, under its name.
+            ScriptRow::File { .. } => r[0] + 38.0,
+        };
+        // Its buttons at the right, under the pointer and on the open row.
+        let mut bx = r[0] + r[2];
+        let mut buttons: Vec<([f32; 4], &str, Action)> = Vec::new();
+        if (over || on) && !matches!(row, ScriptRow::Scratch) {
+            bx -= 22.0;
+            buttons.push((
+                [bx, r[1] + 2.0, 20.0, r[3] - 4.0],
+                "...",
+                Action::ScriptMenu(k.min(65535) as u16),
+            ));
+            if let ScriptRow::Module { i, .. } = row {
+                bx -= 20.0;
+                buttons.push(([bx, r[1] + 2.0, 20.0, r[3] - 4.0], "+", Action::NewFileIn(*i)));
+            }
         }
-        st.s.ui.hits.push((r, action));
+        if on && st.s.editor.dirty {
+            bx -= 12.0;
+            p.rect([bx, cy - 3.0, 6.0, 6.0], 3.0, pal().accent);
+        }
+        let name = p.fit(&label, (bx - tx - 6.0).max(12.0), 12.5, Font::Regular);
+        let fg = if on { pal().ink } else { mix(fg, pal().ink, hv) };
+        p.text(&name, tx, top(cy, 12.5), 12.5, Font::Regular, fg);
+        let ui = &mut st.s.ui;
+        ui.hits.push((r, Action::ScriptRow(k.min(65535) as u16)));
+        for (b, glyph, action) in buttons {
+            let bh = hover(ui, id(glyph, k), inside(b, ui.mouse), dt);
+            p.rect(b, 6.0, fade(pal().ink, 0.10 * bh));
+            let gw = p.measure(glyph, 12.5, Font::Medium);
+            p.text(
+                glyph,
+                b[0] + (b[2] - gw) / 2.0,
+                top(cy, 12.5),
+                12.5,
+                Font::Medium,
+                mix(pal().muted, pal().ink, bh),
+            );
+            ui.hits.push((b, action));
+        }
     }
+    st.s.ui.script_rows = all;
 }
 
 /// How many of `problems` are errors, and how many warnings.
@@ -2451,6 +2526,11 @@ fn file_changed(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     }
 }
 
+/// "1 file", "3 files".
+fn files_text(n: usize) -> String {
+    if n == 1 { "1 file".into() } else { format!("{n} files") }
+}
+
 fn status(state: &ModState, enabled: bool) -> (&'static str, u32) {
     match state {
         ModState::Running => ("Running", pal().success),
@@ -2555,7 +2635,10 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         let desc = if let Some(msg) = &failed {
             msg.clone()
         } else if m.description.is_empty() {
-            format!("{}.lua", m.id)
+            match &m.folder {
+                Some(_) => format!("{}/  ·  {}", m.id, files_text(m.file_count())),
+                None => format!("{}.lua", m.id),
+            }
         } else {
             m.description.clone()
         };
@@ -2711,8 +2794,10 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let i = st.s.ui.library_sel;
     let name = m.name.clone();
     let (label, c) = status(&m.state, m.enabled);
-    let file = if m.folder.is_some() {
-        format!("{}/main.lua", m.id)
+    let module = m.folder.is_some();
+    let files = m.files();
+    let file = if module {
+        format!("module  ·  {}", files_text(files.len()))
     } else {
         format!("{}.lua", m.id)
     };
@@ -2770,6 +2855,19 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         );
         chips_w += lw + 8.0;
     }
+    if module {
+        let mw = p.measure("Module", 12.0, Font::Medium) + 20.0;
+        p.rect([dx + chips_w + 8.0, dy, mw, 24.0], 12.0, fade(pal().ink, 0.10));
+        p.text(
+            "Module",
+            dx + chips_w + 18.0,
+            top(dy + 12.0, 12.0),
+            12.0,
+            Font::Medium,
+            pal().ink_soft,
+        );
+        chips_w += mw + 8.0;
+    }
     if running {
         let stats = p.fit(&stats, dw - chips_w - 12.0, 11.0, Font::Mono);
         p.text(
@@ -2825,7 +2923,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         Action::Toggle(i),
         dt,
     ) + 8.0;
-    pill(
+    bx += pill(
         &mut st.s.ui,
         p,
         "reload",
@@ -2836,8 +2934,44 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         Style::Secondary,
         Action::Reload(i),
         dt,
-    );
+    ) + 8.0;
+    // A module takes new files; a script can become a module.
+    let (key, more, action) = if module {
+        ("new-file", "New file", Action::NewFileIn(i))
+    } else {
+        ("make-module", "Make it a module", Action::MakeModule(i))
+    };
+    if bx + p.measure(more, 13.0, Font::Medium) + 28.0 > dx + dw {
+        dy += 40.0;
+        bx = dx;
+    }
+    pill(&mut st.s.ui, p, key, more, bx, dy, 32.0, Style::Quiet, action, dt);
     dy += 50.0;
+    // A module's files: a click opens one.
+    if module && dy + 46.0 <= bottom {
+        p.text("Files", dx, top(dy + 8.0, 13.0), 13.0, Font::Medium, pal().ink_soft);
+        dy += 24.0;
+        const SHOWN: usize = 8;
+        for (k, rel) in files.iter().enumerate().take(SHOWN) {
+            if dy + 22.0 > bottom {
+                break;
+            }
+            let r = [dx - 6.0, dy - 3.0, dw.min(340.0), 22.0];
+            let ui = &mut st.s.ui;
+            let hv = hover(ui, id("library-file", k), inside(r, ui.mouse), dt);
+            p.rect(r, 6.0, fade(pal().ink, 0.06 * hv));
+            let shown = p.fit(rel, r[2] - 12.0, 13.0, Font::Mono);
+            p.text(&shown, dx, dy, 13.0, Font::Mono, mix(pal().ink_soft, pal().ink, hv));
+            st.s.ui.hits.push((r, Action::EditFile(i, k.min(65535) as u16)));
+            dy += 22.0;
+        }
+        if files.len() > SHOWN && dy + 22.0 <= bottom {
+            let rest = format!("and {} more in the Editor's script list", files.len() - SHOWN);
+            p.text(&rest, dx, dy, 12.0, Font::Regular, pal().muted);
+            dy += 22.0;
+        }
+        dy += 10.0;
+    }
     if !commands.is_empty() && dy + 46.0 <= bottom {
         p.text("Commands", dx, top(dy + 8.0, 13.0), 13.0, Font::Medium, pal().ink_soft);
         dy += 24.0;

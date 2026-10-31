@@ -1649,6 +1649,7 @@ impl Studio {
                 let title = self.file_title(&new);
                 self.s.editor.moved(&new, &title);
                 self.mark_failure();
+                self.unfold_open();
             }
             None => self.open_file(instead),
         }
@@ -2718,11 +2719,52 @@ impl Studio {
     }
 
     /// Opens a file in the editor, titled as its errors name it, with the
-    /// line its mod failed at marked when that is in this file.
+    /// line its mod failed at marked when that is in this file. A module's
+    /// file unfolds the module in the script list.
     pub fn open_file(&mut self, path: &Path) {
         let title = self.file_title(path);
         self.s.editor.open(path, &title);
         self.mark_failure();
+        self.unfold_open();
+    }
+
+    /// Unfolds, in the script list, the module whose file the editor shows.
+    fn unfold_open(&mut self) {
+        if let Some(i) = self.s.editor.path.as_deref().and_then(|p| self.mod_of_path(p))
+            && self.s.mods[i].folder.is_some()
+        {
+            let id = self.s.mods[i].id.clone();
+            self.s.ui.expanded.insert(id);
+        }
+    }
+
+    /// Where mod `i` failed: one of its files (a module's by its path in it,
+    /// a script's by its file name) and the line, from the innermost place
+    /// in its error that is one of its files, else the first such line of
+    /// the traceback. None while it runs, or when its error names none of
+    /// its files.
+    pub fn failure_place(&self, i: usize) -> Option<(String, usize)> {
+        let m = self.s.mods.get(i)?;
+        let ModState::Failed(msg, trace) = &m.state else {
+            return None;
+        };
+        let prefix = format!("{}/", m.id);
+        let file_of = |chunk: &str| -> Option<String> {
+            match m.folder {
+                Some(_) => chunk.strip_prefix(prefix.as_str()).map(str::to_owned),
+                None => (chunk == m.chunk()).then(|| chunk.to_owned()),
+            }
+        };
+        error_places(msg)
+            .into_iter()
+            .rev()
+            .find_map(|(c, line)| Some((file_of(&c)?, line)))
+            .or_else(|| {
+                trace.lines().find_map(|l| {
+                    let (c, line) = trace_place(l)?;
+                    Some((file_of(&c)?, line))
+                })
+            })
     }
 
     /// Marks the editor's error line from the failure of the mod its file
@@ -3001,15 +3043,20 @@ pub fn error_line_in(msg: &str, trace: &str, chunk: &str) -> Option<usize> {
     if let Some((_, line)) = error_places(msg).into_iter().rev().find(|(c, _)| c == chunk) {
         return Some(line);
     }
-    trace.lines().find_map(|l| {
-        let rest = l.trim_start().strip_prefix(chunk)?.strip_prefix(':')?;
-        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-        if rest[digits.len()..].starts_with(':') {
-            digits.parse().ok()
-        } else {
-            None
-        }
-    })
+    trace
+        .lines()
+        .filter_map(trace_place)
+        .find_map(|(c, line)| (c == chunk).then_some(line))
+}
+
+/// A traceback line's place: "m/lib.lua:7: in f" is m/lib.lua, line 7.
+fn trace_place(line: &str) -> Option<(String, usize)> {
+    let (chunk, rest) = line.trim_start().split_once(':')?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() || !rest[digits.len()..].starts_with(':') {
+        return None;
+    }
+    Some((chunk.to_owned(), digits.parse().ok()?))
 }
 
 /// An agent reply's JSON as script values: the table, or nil and the error.

@@ -102,6 +102,19 @@ pub(crate) enum Action {
     NewMenu,
     /// The New prompt's switch: a module (true) or a script.
     NewKind(bool),
+    /// A row of the script list (by its place in `Ui::script_rows`): a
+    /// click opens its file or folds its module; and its "..." menu.
+    ScriptRow(u16),
+    ScriptMenu(u16),
+    /// The New file prompt for module `i`; script `i` made a module.
+    NewFileIn(usize),
+    MakeModule(usize),
+    /// File `k` of mod `i` (its place in `ScriptMod::files`) opened, the
+    /// cursor at the line it failed at.
+    EditFile(usize, u16),
+    /// The executor styles' Execute File: the open file of a mod saved and
+    /// the mod reloaded, else the code run.
+    ExecuteFile,
     ReloadAll,
     Install(usize),
     Close,
@@ -171,6 +184,15 @@ pub enum MenuCmd {
     NewModule,
     /// The New file prompt, for the module in this folder.
     NewFile(PathBuf),
+    /// A file opened in the editor; the Rename and Delete prompts for it
+    /// (Delete takes a module's folder or a script's file for the whole mod).
+    Open(PathBuf),
+    Rename(PathBuf),
+    Delete(PathBuf),
+    /// The script with this id made a module.
+    MakeModule(String),
+    /// A folder shown in the system's file manager.
+    Reveal(PathBuf),
 }
 
 /// A row of a menu: its label, a hint at the right (a shortcut), whether it
@@ -209,6 +231,98 @@ impl MenuItem {
     pub fn checked(mut self, on: bool) -> MenuItem {
         self.checked = on;
         self
+    }
+    /// Greyed out, when `on` is false: shown, but it can't be chosen.
+    pub fn enabled(mut self, on: bool) -> MenuItem {
+        self.enabled = on;
+        self
+    }
+}
+
+/// A row of the script list: the scratch file, a script, a module (folded
+/// or open), or a file of an open module. Mods are by their index when the
+/// rows were made; what a click does goes by the path or id.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScriptRow {
+    Scratch,
+    Script { i: usize, path: PathBuf },
+    Module { i: usize, id: String, open: bool },
+    File { i: usize, path: PathBuf, rel: String },
+}
+
+/// The script list's rows: the scratch file, then each mod, a script as one
+/// row and a module as a folder followed, while it is open, by its files
+/// (main.lua first).
+pub fn script_rows(st: &Studio) -> Vec<ScriptRow> {
+    let mut rows = vec![ScriptRow::Scratch];
+    for (i, m) in st.s.mods.iter().enumerate() {
+        let Some(folder) = &m.folder else {
+            rows.push(ScriptRow::Script {
+                i,
+                path: m.main.clone(),
+            });
+            continue;
+        };
+        let open = st.s.ui.expanded.contains(&m.id);
+        rows.push(ScriptRow::Module {
+            i,
+            id: m.id.clone(),
+            open,
+        });
+        if open {
+            for rel in m.files() {
+                let path = super::hstudio_modfiles::path_in(folder, &rel);
+                rows.push(ScriptRow::File { i, path, rel });
+            }
+        }
+    }
+    rows
+}
+
+/// The row that shows the file the editor has open: its own, or its
+/// module's while the module is folded.
+pub(crate) fn open_row(st: &Studio, rows: &[ScriptRow]) -> Option<usize> {
+    let path = st.s.editor.path.as_deref()?;
+    if path == st.scratch_path() {
+        return Some(0);
+    }
+    let owner = st.mod_of_path(path);
+    rows.iter().position(|r| match r {
+        ScriptRow::Script { path: p, .. } | ScriptRow::File { path: p, .. } => p == path,
+        ScriptRow::Module { i, open: false, .. } => owner == Some(*i),
+        _ => false,
+    })
+}
+
+/// The first row the script list shows, `rows` at a time out of `total`:
+/// when the editor's file changes it brings that file's row (`open`) into
+/// view, and otherwise stays where the wheel put it.
+pub(crate) fn scripts_first(st: &mut Studio, total: usize, rows: usize, open: Option<usize>) -> usize {
+    let path = st.s.editor.path.clone();
+    let ui = &mut st.s.ui;
+    if ui.scripts_followed != path {
+        ui.scripts_followed = path;
+        if let Some(k) = open {
+            if k < ui.scripts_scroll {
+                ui.scripts_scroll = k;
+            }
+            if k >= ui.scripts_scroll + rows {
+                ui.scripts_scroll = k + 1 - rows;
+            }
+        }
+    }
+    ui.scripts_scroll = ui.scripts_scroll.min(total.saturating_sub(rows));
+    ui.scripts_scroll
+}
+
+/// What a row of the script list says: the scratch file's name, a script's
+/// file, a module's folder, a module's file by its path in it.
+pub(crate) fn row_label(st: &Studio, row: &ScriptRow) -> String {
+    match row {
+        ScriptRow::Scratch => "scratch.lua".into(),
+        ScriptRow::Script { i, .. } => st.s.mods.get(*i).map_or_else(String::new, |m| m.chunk()),
+        ScriptRow::Module { id, .. } => format!("{id}/"),
+        ScriptRow::File { rel, .. } => rel.clone(),
     }
 }
 
@@ -439,6 +553,15 @@ pub struct Ui {
     pub(crate) model_chip: Option<[f32; 4]>,
     /// Where the script list's + was drawn (its menu opens under it).
     pub(crate) new_button: Option<[f32; 4]>,
+    /// The modules unfolded in the script list, by id (for the session).
+    pub expanded: std::collections::HashSet<String>,
+    /// The script list's rows as drawn last (`Action::ScriptRow` is a place
+    /// in them), the first row shown, where the list was drawn (None: it
+    /// wasn't), and the editor's file it last scrolled to.
+    pub(crate) script_rows: Vec<ScriptRow>,
+    pub scripts_scroll: usize,
+    pub(crate) scripts_at: Option<[f32; 4]>,
+    pub(crate) scripts_followed: Option<PathBuf>,
     /// When the AI setup prompt was copied (its button says so a moment).
     pub copied_at: Option<f64>,
     /// The looks chosen in Settings (`look.txt`).
@@ -1900,12 +2023,15 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 return UiResult::Used;
             }
             if !left {
-                // Any press outside an open menu closes it, and goes no further.
-                if !inside(
-                    st.s.ui.menu.as_ref().and_then(|m| m.rect).unwrap_or_default(),
-                    st.s.ui.mouse,
-                ) {
+                // Any press outside an open menu closes it; a right press then
+                // opens the menu of what is under the pointer, if it has one.
+                let at = st.s.ui.mouse;
+                if !inside(st.s.ui.menu.as_ref().and_then(|m| m.rect).unwrap_or_default(), at) {
                     st.s.ui.menu = None;
+                    let hit = st.s.ui.hits.iter().rev().find(|(r, _)| inside(*r, at)).map(|(_, a)| *a);
+                    if let Some(hit) = hit {
+                        context_menu(st, hit, at);
+                    }
                 }
                 return UiResult::Used;
             }
@@ -1980,6 +2106,18 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
         Input::Wheel(steps) => {
             let n = (steps.abs().ceil() as usize).max(1) * 3;
             let up = steps > 0.0;
+            // The script list, wherever it is drawn (Synapse has it beside every page).
+            if let Some(r) = st.s.ui.scripts_at
+                && inside(r, st.s.ui.mouse)
+            {
+                let ui = &mut st.s.ui;
+                ui.scripts_scroll = if up {
+                    ui.scripts_scroll.saturating_sub(n / 3)
+                } else {
+                    ui.scripts_scroll + n / 3
+                };
+                return UiResult::Used;
+            }
             if st.s.ui.tab == Tab::Editor
                 && let Some(r) = st.s.ui.panel_at
                 && inside(r, st.s.ui.mouse)
@@ -2196,7 +2334,7 @@ fn menu_key(st: &mut Studio, game: &mut dyn GameApi, key: Key) {
 }
 
 /// Item `i` of the open menu chosen: the menu closes and its command runs.
-fn menu_pick(st: &mut Studio, _game: &mut dyn GameApi, i: usize) {
+fn menu_pick(st: &mut Studio, game: &mut dyn GameApi, i: usize) {
     let Some(menu) = st.s.ui.menu.take() else { return };
     let Some(item) = menu.items.get(i).filter(|it| it.enabled) else {
         return;
@@ -2210,7 +2348,123 @@ fn menu_pick(st: &mut Studio, _game: &mut dyn GameApi, i: usize) {
         Some(MenuCmd::NewScript) => open_naming(st, NamingKind::NewScript, ""),
         Some(MenuCmd::NewModule) => open_naming(st, NamingKind::NewModule, ""),
         Some(MenuCmd::NewFile(folder)) => open_naming(st, NamingKind::NewFile(folder), ""),
+        Some(MenuCmd::Open(path)) => open_path(st, game, &path),
+        Some(MenuCmd::Rename(path)) => {
+            // The field starts with its path in the module.
+            let rel = file_in_module(st, &path).map(|(_, rel)| rel).unwrap_or_default();
+            let stem = rel.strip_suffix(".lua").unwrap_or(&rel).to_owned();
+            open_naming(st, NamingKind::Rename(path), &stem);
+        }
+        Some(MenuCmd::Delete(path)) => open_naming(st, NamingKind::Delete(path), ""),
+        Some(MenuCmd::MakeModule(id)) => {
+            if let Some(i) = st.s.mods.iter().position(|m| m.id == id) {
+                make_module(st, game, i);
+            }
+        }
+        Some(MenuCmd::Reveal(path)) => game.open_folder(&path),
         None => {}
+    }
+}
+
+/// Opens a file in the editor (unsaved edits in the one open saved first),
+/// unless it is open already.
+fn open_path(st: &mut Studio, game: &mut dyn GameApi, path: &Path) {
+    st.save_before_switch(game, Some(path));
+    if st.s.editor.path.as_deref() != Some(path) {
+        st.open_file(path);
+    }
+    st.s.ui.tab = Tab::Editor;
+}
+
+/// Script `i` made a module, unfolded in the script list.
+fn make_module(st: &mut Studio, game: &mut dyn GameApi, i: usize) {
+    match st.make_module(game, i) {
+        Ok(_) => {
+            let id = st.s.mods.get(i).map(|m| m.id.clone()).unwrap_or_default();
+            st.s.ui.expanded.insert(id);
+        }
+        Err(e) => st.s.log(LogKind::Error, e),
+    }
+}
+
+/// A click on row `k` of the script list: a file opens, a module folds or
+/// unfolds.
+fn script_row(st: &mut Studio, game: &mut dyn GameApi, k: usize) {
+    let Some(row) = st.s.ui.script_rows.get(k).cloned() else {
+        return;
+    };
+    match row {
+        ScriptRow::Scratch => {
+            act(st, game, Action::EditScratch);
+        }
+        ScriptRow::Script { path, .. } | ScriptRow::File { path, .. } => open_path(st, game, &path),
+        ScriptRow::Module { id, .. } => {
+            if !st.s.ui.expanded.remove(&id) {
+                st.s.ui.expanded.insert(id);
+            }
+        }
+    }
+}
+
+/// The menu of row `k` of the script list, at `at`: a module's (a new file,
+/// its main.lua, its folder, delete it), a file's (open, rename, delete:
+/// not main.lua, which starts the module) or a script's (make it a module,
+/// delete it). The scratch file has none.
+pub(crate) fn open_row_menu(st: &mut Studio, k: usize, at: (f32, f32)) {
+    let Some(row) = st.s.ui.script_rows.get(k).cloned() else {
+        return;
+    };
+    let items = match row {
+        ScriptRow::Scratch => return,
+        ScriptRow::Module { id, .. } => {
+            let Some(folder) = st.s.mods.iter().find(|m| m.id == id).and_then(|m| m.folder.clone()) else {
+                return;
+            };
+            vec![
+                MenuItem::new("New file...", MenuCmd::NewFile(folder.clone())),
+                MenuItem::new("Open main.lua", MenuCmd::Open(folder.join("main.lua"))),
+                MenuItem::new("Show in folder", MenuCmd::Reveal(folder.clone())),
+                MenuItem::new("Delete module...", MenuCmd::Delete(folder)),
+            ]
+        }
+        ScriptRow::File { path, rel, .. } => {
+            let main = rel == "main.lua";
+            vec![
+                MenuItem::new("Open", MenuCmd::Open(path.clone())),
+                MenuItem::new("Rename...", MenuCmd::Rename(path.clone())).enabled(!main),
+                MenuItem::new("Delete...", MenuCmd::Delete(path)).enabled(!main),
+            ]
+        }
+        ScriptRow::Script { path, .. } => {
+            let Some(id) = st.mod_of_path(&path).map(|i| st.s.mods[i].id.clone()) else {
+                return;
+            };
+            vec![
+                MenuItem::new("Make it a module", MenuCmd::MakeModule(id)),
+                MenuItem::new("Delete...", MenuCmd::Delete(path)),
+            ]
+        }
+    };
+    st.s.ui.menu = Some(Menu {
+        at: [at.0, at.1],
+        items,
+        sel: None,
+        opened_at: st.s.now,
+        rect: None,
+        anchor_h: 0.0,
+    });
+}
+
+/// A right press on what was drawn at `at` (`action` is its hit): opens
+/// the menu of what is there, if it has one, and says whether it did. A
+/// script list row's is its "..." menu.
+pub(crate) fn context_menu(st: &mut Studio, action: Action, at: (f32, f32)) -> bool {
+    match action {
+        Action::ScriptRow(k) | Action::ScriptMenu(k) => {
+            open_row_menu(st, usize::from(k), at);
+            st.s.ui.menu.is_some()
+        }
+        _ => false,
     }
 }
 
@@ -2462,8 +2716,19 @@ fn open_model_menu(st: &mut Studio) {
 
 fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
     // A row drawn last frame may be gone (the folder changed since).
-    if let Action::Select(i) | Action::Toggle(i) | Action::Edit(i) | Action::Reload(i) = action
+    if let Action::Select(i)
+    | Action::Toggle(i)
+    | Action::Edit(i)
+    | Action::Reload(i)
+    | Action::NewFileIn(i)
+    | Action::MakeModule(i)
+    | Action::EditFile(i, _) = action
         && i >= st.s.mods.len()
+    {
+        return UiResult::Used;
+    }
+    if let Action::ScriptRow(k) | Action::ScriptMenu(k) = action
+        && usize::from(k) >= st.s.ui.script_rows.len()
     {
         return UiResult::Used;
     }
@@ -2516,6 +2781,40 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
                 } else {
                     NamingKind::NewScript
                 };
+            }
+        }
+        Action::ScriptRow(k) => script_row(st, game, usize::from(k)),
+        Action::ScriptMenu(k) => {
+            let at = st.s.ui.mouse;
+            open_row_menu(st, usize::from(k), at);
+        }
+        Action::NewFileIn(i) => {
+            if let Some(folder) = st.s.mods[i].folder.clone() {
+                open_naming(st, NamingKind::NewFile(folder), "");
+            }
+        }
+        Action::MakeModule(i) => make_module(st, game, i),
+        Action::EditFile(i, k) => {
+            let m = &st.s.mods[i];
+            let path = match &m.folder {
+                Some(folder) => m
+                    .files()
+                    .get(usize::from(k))
+                    .map(|rel| super::hstudio_modfiles::path_in(folder, rel)),
+                None => Some(m.main.clone()),
+            };
+            if let Some(path) = path {
+                open_path(st, game, &path);
+                // At the line it failed at, if it did.
+                let ed = &mut st.s.editor;
+                if let Some(line) = ed.error_line {
+                    ed.click(line.saturating_sub(1), 0, false);
+                }
+            }
+        }
+        Action::ExecuteFile => {
+            if !st.reload_editor_mod(game) {
+                st.run_editor(game);
             }
         }
         Action::ReloadAll => st.reload_all(game),
