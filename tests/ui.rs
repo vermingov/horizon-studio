@@ -1702,3 +1702,23 @@ fn the_editor_checks_a_module_file_with_its_siblings() {
     let sg = st.s.ui.suggest.clone().expect("suggestions");
     assert_eq!(sg.items[0].label, "extra");
 }
+
+#[test]
+fn a_mod_opens_from_the_library_though_saving_first_rescans() {
+    let mut game = FakeGame::new("ui-edit-rescan");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    game.write_mod("zz.lua", "print('zz')\n");
+    run_for(&mut st, &mut game, 0.6);
+    // An unsaved edit, and a mod listed before zz gone from disk: saving
+    // first rescans, and zz's place in the list moves.
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    type_text(&mut st, &mut game, "-- edit\n");
+    std::fs::remove_file(game.mods_dir().join("hello.lua")).unwrap();
+    handle(&mut st, &mut game, key(Key::Char('3'), CTRL));
+    st.s.ui.library_sel = mod_index(&st, "zz");
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    assert_eq!(st.s.editor.title, "zz.lua");
+    assert!(!st.s.mods.iter().any(|m| m.id == "hello"));
+}

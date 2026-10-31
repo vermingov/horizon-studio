@@ -2435,9 +2435,9 @@ fn open_path(st: &mut Studio, game: &mut dyn GameApi, path: &Path) {
 
 /// Script `i` made a module, unfolded in the script list.
 fn make_module(st: &mut Studio, game: &mut dyn GameApi, i: usize) {
+    let id = st.s.mods[i].id.clone();
     match st.make_module(game, i) {
         Ok(_) => {
-            let id = st.s.mods.get(i).map(|m| m.id.clone()).unwrap_or_default();
             st.s.ui.expanded.insert(id);
         }
         Err(e) => st.s.log(LogKind::Error, e),
@@ -2798,9 +2798,10 @@ fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> UiResult {
             st.set_enabled(game, i, on);
         }
         Action::Edit(i) => {
+            // By its path: the save before may rescan the mods.
             let main = st.s.mods[i].main.clone();
             st.save_before_switch(game, Some(&main));
-            st.edit_mod(i);
+            st.open_file(&main);
             st.s.ui.tab = Tab::Editor;
         }
         Action::EditScratch => {
