@@ -412,6 +412,8 @@ fn protosmasher(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let dx = x + pad + 2.0 * (quarter + 6.0);
     let r = [dx, fy, x + w - pad - dx, foot_h];
     button(st, p, Btn { upper: false, ..btn }, &name, r, Action::NextTheme, dt);
+    // A right click lists every theme, as its dropdown did.
+    st.s.ui.hits.push((r, Action::Spot(Spot::Themes)));
     let (ax, ay) = (r[0] + r[2] - 16.0, r[1] + r[3] / 2.0 - 2.0);
     for i in 0..4 {
         let f = i as f32;

@@ -250,6 +250,20 @@ pub enum MenuCmd {
     /// The editor's file read again from disk, its unsaved edits dropped as
     /// one edit (Ctrl+Z brings them back).
     Revert,
+    /// The agent: the one found with this id used, or agents looked for again.
+    Agent(String),
+    FindAgents,
+    /// The editor's bottom panel hidden.
+    HidePanel,
+    /// Another list in the menu's place: the themes, the agent's models.
+    Themes,
+    Models,
+    /// The Docs tab as Markdown, to the clipboard.
+    CopyDocs,
+    /// A place in the editor's text selected (a problem's, a name's
+    /// definition): its row and the bytes from and to, in the file open, or
+    /// in this file of the module, opened first.
+    GoTo(Option<PathBuf>, usize, usize, usize),
 }
 
 /// What a mod's menu does to it.
@@ -3751,6 +3765,78 @@ pub fn agent_next(st: &mut Studio) {
     }
     let text = format!("Using {} ({}).", spec.name, spec.program.display());
     pane.say(AgentLineKind::Done, text, now);
+}
+
+/// The agents found on this computer (looked for the first time they are
+/// wanted): each one's id and name, and which is in use.
+pub fn agent_list(st: &mut Studio) -> (Vec<(String, String)>, usize) {
+    let dir = st.s.dir.clone();
+    let pane = &mut st.s.ui.agent;
+    let chosen = pane.chosen;
+    let found: Vec<(String, String)> = pane
+        .agents(&dir)
+        .iter()
+        .map(|a| (a.id.clone(), a.name.clone()))
+        .collect();
+    let chosen = chosen.min(found.len().saturating_sub(1));
+    (found, chosen)
+}
+
+/// Uses the agent found with this id; another than the one in use starts
+/// a new conversation (not while the agent works).
+pub fn agent_choose(st: &mut Studio, id: &str) {
+    if agent_busy(st) {
+        return;
+    }
+    let now = st.s.now;
+    let dir = st.s.dir.clone();
+    let pane = &mut st.s.ui.agent;
+    let before = pane.chosen;
+    let Some((k, spec)) = pane
+        .agents(&dir)
+        .iter()
+        .enumerate()
+        .find(|(_, a)| a.id == id)
+        .map(|(k, a)| (k, a.clone()))
+    else {
+        return;
+    };
+    pane.chosen = k;
+    if k != before {
+        pane.session = None;
+    }
+    let text = format!("Using {} ({}).", spec.name, spec.program.display());
+    pane.say(AgentLineKind::Done, text, now);
+}
+
+/// Looks for agents again, keeping the one in use when it is still found.
+pub fn agent_rescan(st: &mut Studio) {
+    if agent_busy(st) {
+        return;
+    }
+    let now = st.s.now;
+    let kept = agent_id(st);
+    let found = super::hstudio_agent::detect(&st.s.dir);
+    let pane = &mut st.s.ui.agent;
+    pane.agents = Some(found.clone());
+    if found.is_empty() {
+        pane.chosen = 0;
+        pane.say(
+            AgentLineKind::Error,
+            "No agent found: install Claude Code (claude) or omp, or name one in agent.txt in the studio's folder.",
+            now,
+        );
+        return;
+    }
+    match kept.and_then(|id| found.iter().position(|a| a.id == id)) {
+        Some(k) => pane.chosen = k,
+        None => {
+            pane.chosen = 0;
+            pane.session = None;
+        }
+    }
+    let names: Vec<&str> = found.iter().map(|a| a.name.as_str()).collect();
+    pane.say(AgentLineKind::Done, format!("Found {}.", names.join(", ")), now);
 }
 
 /// Stops the agent's work (its last events still come in).

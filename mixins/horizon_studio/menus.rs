@@ -9,12 +9,15 @@
 
 use super::hstudio::{GameApi, ModState, Studio};
 use super::hstudio_examples::EXAMPLES;
+use super::hstudio_look::docs_markdown;
 use super::hstudio_modfiles::{path_in, rel_in};
+use super::hstudio_theme::{Layout, THEMES};
 use super::hstudio_ui::{
     AREA_AGENT, AREA_LOG, Action, EditCmd, FIELD_AGENT, FieldCmd, Menu, MenuCmd, MenuItem, ModCmd, NamingKind, Panel,
-    ScriptRow, Spot, Tab, UiResult, act, agent_busy, agent_model, agent_new_conversation, agent_send, copy_text,
-    editor_pos, file_in_module, in_text_selection, inside, make_module, menu_pick, notice, open_module, open_naming,
-    open_path, run_console_line, selected_text, set_agent_model, spot_at,
+    ScriptRow, Spot, Tab, UiResult, act, agent_busy, agent_choose, agent_id, agent_list, agent_model,
+    agent_new_conversation, agent_rescan, agent_send, copy_text, editor_pos, file_in_module, in_text_selection, inside,
+    make_module, menu_pick, model_choices, model_items, model_label, notice, open_module, open_naming, open_path,
+    run_console_line, selected_text, set_agent_model, spot_at,
 };
 use std::path::Path;
 
@@ -88,9 +91,160 @@ fn open_spot(st: &mut Studio, game: &mut dyn GameApi, spot: Spot, rect: [f32; 4]
             (library_items(st, i), Some(rect))
         }
         Spot::Example(i) => (example_items(st, i), Some(rect)),
-        _ => return false,
+        Spot::Panel(p) => (panel_items(st, p), None),
+        Spot::Problem(k) => {
+            st.s.ui.problem_sel = k;
+            (problem_items(st, k), Some(rect))
+        }
+        Spot::Window => (window_items(st), None),
+        Spot::Themes => (theme_items(st), None),
+        Spot::Docs => (
+            vec![MenuItem::new("Copy the docs as Markdown", MenuCmd::CopyDocs)],
+            None,
+        ),
     };
     open(st, at, 0.0, items, target)
+}
+
+// ----------------------------------------------------------------- the panel, the window, the themes
+
+/// The menu of the bottom panel's tab `p` (its tab, its buttons, its empty
+/// space): the console's Copy all and Clear; the problems' Copy all
+/// problems; the agent's Stop, New conversation, Copy the conversation, the
+/// agents found (the one in use marked), Look for agents again and its
+/// model; then Hide the panel.
+fn panel_items(st: &mut Studio, p: Panel) -> Vec<MenuItem> {
+    let mut items = match p {
+        Panel::Console => vec![
+            MenuItem::new("Copy all", MenuCmd::CopyAll(AREA_LOG)).enabled(!st.s.log.is_empty()),
+            MenuItem::new("Clear", MenuCmd::Act(Action::ClearLog))
+                .keys("Ctrl L")
+                .enabled(!st.s.log.is_empty()),
+        ],
+        Panel::Problems => vec![
+            MenuItem::new("Copy all problems", MenuCmd::Copy(all_problems(st)))
+                .enabled(!st.s.editor.problems.is_empty()),
+        ],
+        Panel::Agent => {
+            let busy = agent_busy(st);
+            let said = !st.s.ui.agent.lines.is_empty();
+            let mut items = vec![
+                MenuItem::new("Stop", MenuCmd::Act(Action::AgentStop)).enabled(busy),
+                MenuItem::new("New conversation", MenuCmd::NewConversation).enabled(!busy && said),
+                MenuItem::new("Copy the conversation", MenuCmd::CopyAll(AREA_AGENT)).enabled(said),
+                MenuItem::separator(),
+            ];
+            let (agents, chosen) = agent_list(st);
+            for (k, (id, name)) in agents.into_iter().enumerate() {
+                items.push(
+                    MenuItem::new(name, MenuCmd::Agent(id))
+                        .checked(k == chosen)
+                        .enabled(!busy),
+                );
+            }
+            items.push(MenuItem::new("Look for agents again", MenuCmd::FindAgents).enabled(!busy));
+            if let Some(id) = agent_id(st).filter(|i| !model_choices(i).is_empty()) {
+                let model = agent_model(st);
+                let label = format!("Model: {}", model_label(&id, model.as_deref()));
+                items.push(MenuItem::new(label, MenuCmd::Models).keys("›"));
+            }
+            items
+        }
+    };
+    items.push(MenuItem::separator());
+    items.push(MenuItem::new("Hide the panel", MenuCmd::HidePanel));
+    items
+}
+
+/// Every problem the live check found, a line each as "<file>:<line>: <message>".
+fn all_problems(st: &Studio) -> String {
+    let ed = &st.s.editor;
+    let lines: Vec<String> = ed
+        .problems
+        .iter()
+        .map(|p| format!("{}:{}: {}", ed.title, p.line, p.message))
+        .collect();
+    lines.join("\n")
+}
+
+/// A problem's row: Go to it (its place, taken now), Copy, and Copy all problems.
+fn problem_items(st: &Studio, k: usize) -> Vec<MenuItem> {
+    let ed = &st.s.editor;
+    let Some(p) = ed.problems.get(k) else {
+        return Vec::new();
+    };
+    let row = (p.line.max(1) - 1).min(ed.lines.len() - 1);
+    let (start, end) = p.span.unwrap_or((0, 0));
+    vec![
+        MenuItem::new("Go to it", MenuCmd::GoTo(None, row, start, end)).keys("⏎"),
+        MenuItem::new("Copy", MenuCmd::Copy(format!("{}:{}: {}", ed.title, p.line, p.message))),
+        MenuItem::separator(),
+        MenuItem::new("Copy all problems", MenuCmd::Copy(all_problems(st))),
+    ]
+}
+
+/// The window's menu (its title bar, the studio's header): rolling it up,
+/// filling the screen and putting it back, full screen or a window (the
+/// studio's own layout), the themes, Settings and Close.
+fn window_items(st: &Studio) -> Vec<MenuItem> {
+    let ui = &st.s.ui;
+    let look = &ui.look;
+    let mut items = Vec::new();
+    if look.windowed() {
+        let roll = if ui.collapsed { "Unroll" } else { "Roll up" };
+        let fill = if look.maximized { "Restore" } else { "Fill the screen" };
+        let moved = look.rect.is_some() || look.maximized || ui.collapsed;
+        items.push(MenuItem::new(roll, MenuCmd::Act(Action::WinMin)));
+        items.push(MenuItem::new(fill, MenuCmd::Act(Action::WinMax)));
+        items.push(MenuItem::new("Reset window", MenuCmd::Act(Action::ResetWindow)).enabled(moved));
+    }
+    if look.theme().layout == Layout::Studio {
+        let (label, window) = if look.window {
+            ("Full screen", false)
+        } else {
+            ("In a window", true)
+        };
+        items.push(MenuItem::new(label, MenuCmd::Act(Action::Windowed(window))));
+    }
+    items.push(MenuItem::new("Theme", MenuCmd::Themes).keys("›"));
+    items.push(MenuItem::separator());
+    items.push(MenuItem::new("Settings", MenuCmd::Act(Action::Tab(Tab::Settings))).keys("Ctrl 5"));
+    items.push(MenuItem::new("Close", MenuCmd::Act(Action::Close)).keys("Esc"));
+    items
+}
+
+/// Every theme, the one in use marked.
+fn theme_items(st: &Studio) -> Vec<MenuItem> {
+    THEMES
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            MenuItem::new(t.name, MenuCmd::Act(Action::Theme(i.min(255) as u8))).checked(st.s.ui.look.theme == i)
+        })
+        .collect()
+}
+
+/// A list in the place of the menu chosen from (`place`, where it was
+/// drawn), its current choice lit, for the keys.
+fn replace(st: &mut Studio, place: [f32; 4], items: Vec<MenuItem>) {
+    if open(st, [place[0], place[1]], 0.0, items, None)
+        && let Some(menu) = st.s.ui.menu.as_mut()
+    {
+        menu.sel = menu.items.iter().position(|i| i.checked);
+    }
+}
+
+/// The editor's cursor to a place, selecting it: a row and its bytes from
+/// and to, in `path` (opened first) or in the file open.
+fn go_to(st: &mut Studio, game: &mut dyn GameApi, path: Option<&Path>, row: usize, start: usize, end: usize) {
+    if let Some(path) = path {
+        open_path(st, game, path);
+    }
+    st.s.editor.select_span(row, start, end);
+    let ui = &mut st.s.ui;
+    ui.tab = Tab::Editor;
+    ui.panel_focus = false;
+    ui.suggest = None;
 }
 
 // ----------------------------------------------------------------- the code, the text, the input lines
@@ -393,6 +547,22 @@ pub fn run(st: &mut Studio, game: &mut dyn GameApi, cmd: MenuCmd, place: [f32; 4
                 notice(st, "Back to the saved file: Ctrl+Z brings your edits back");
             }
         }
+        MenuCmd::Agent(id) => agent_choose(st, &id),
+        MenuCmd::FindAgents => agent_rescan(st),
+        MenuCmd::HidePanel => {
+            st.s.ui.panel_hidden = true;
+            st.s.ui.panel_focus = false;
+        }
+        MenuCmd::Themes => {
+            let items = theme_items(st);
+            replace(st, place, items);
+        }
+        MenuCmd::Models => {
+            let items = model_items(st);
+            replace(st, place, items);
+        }
+        MenuCmd::CopyDocs => copy_text(st, game, &docs_markdown()),
+        MenuCmd::GoTo(path, row, start, end) => go_to(st, game, path.as_deref(), row, start, end),
     }
     UiResult::Used
 }

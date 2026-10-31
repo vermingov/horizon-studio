@@ -908,6 +908,8 @@ fn window(st: &mut Studio, p: &mut P, r: [f32; 4], c: Chrome, dt: f32) -> Option
         }
         ui.hits.push((b, action));
     }
+    // A right click on the title bar opens the window's menu, as Windows' does.
+    ui.hits.push(([x, y, w, TITLE], Action::Spot(Spot::Window)));
     p.border([x, y, w, h], 0.0, c.edge);
     set_pal(Palette { round, ..pal() });
     // (The eased value is a hair off 0 at rest.)
@@ -986,6 +988,8 @@ fn header(st: &mut Studio, p: &mut P, x: f32, y: f32, w: f32, dt: f32, windowed:
         p.text(label, r[0] + 14.0, top(y + 16.0, 13.0), 13.0, Font::Medium, c);
         ui.hits.push((r, Action::Tab(tab)));
     }
+    // A right click anywhere on the header opens the window's menu.
+    ui.hits.push(([x, y, w, 32.0], Action::Spot(Spot::Window)));
     // Close, at the right.
     let mut right = x + w;
     if !windowed {
@@ -1683,6 +1687,8 @@ fn draw_panel(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     p.rect([x, y, w, h], 14.0, pal().plate_soft);
     p.border([x, y, w, h], 14.0, fade(pal().accent, 0.35 * focus));
     ui.hits.push(([x, y, w, h], Action::FocusPanel));
+    // The tab shown's menu, under what its tab's content marks.
+    ui.hits.push(([x, y, w, h], Action::Spot(Spot::Panel(ui.panel))));
     let (errors, warnings) = counts(&st.s.editor.problems);
     let busy = super::hstudio_ui::agent_busy(st);
     let ui = &mut st.s.ui;
@@ -1728,6 +1734,7 @@ fn draw_panel(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             active = [r[0] + 8.0, r[2] - 16.0];
         }
         ui.hits.push((r, Action::PanelTab(panel)));
+        ui.hits.push((r, Action::Spot(Spot::Panel(panel))));
         tx += r[2] + 2.0;
     }
     // The line under the tab shown glides to it.
@@ -1944,6 +1951,7 @@ fn panel_problems(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             mix(pal().ink_soft, pal().ink, hv.max(sel)),
         );
         ui.hits.push((r, Action::Problem(k)));
+        ui.hits.push((r, Action::Spot(Spot::Problem(k))));
     }
     p.alpha = base;
     if n > rows {
@@ -3342,6 +3350,7 @@ pub fn docs_markdown() -> String {
 }
 
 fn draw_docs(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
+    st.s.ui.hits.push(([x, y, w, h], Action::Spot(Spot::Docs)));
     let width = w.min(820.0);
     // Laid out as lines of (text, size, font, colour, height).
     let mut lines: Vec<(String, f32, Font, u32, f32)> = Vec::new();

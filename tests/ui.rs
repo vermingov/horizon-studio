@@ -3020,3 +3020,219 @@ fn the_script_lists_own_menu_and_synapses() {
     right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
     assert_eq!(menu_items(&st)[0], "Open");
 }
+
+#[test]
+fn problems_and_panel_tabs_have_menus() {
+    use horizon_studio::game::hstudio_ui::Panel;
+    let (mut game, mut st) = editing("ui-problem-menus", "local here = 1\n\nprint(player.poss())\n");
+    st.s.now = 10.0;
+    st.s.ui.panel = Panel::Problems;
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.editor.problems.len(), 1);
+    let row = text_at(&game, "player has no 'poss'");
+    right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
+    assert_eq!(usable(&st), ["Go to it", "Copy", "Copy all problems"]);
+    choose(&mut st, &mut game, "Go to it");
+    assert_eq!(st.s.editor.row, 2, "on its line");
+    assert_eq!(
+        st.s.editor.selected_text().as_deref(),
+        Some("poss"),
+        "the name selected"
+    );
+    redraw(&mut st, &mut game);
+    right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
+    choose(&mut st, &mut game, "Copy");
+    assert_eq!(game.clipboard, "scratch.lua:3: player has no 'poss'");
+    // The tabs' menus: the Problems tab, then the Console's Hide the panel.
+    redraw(&mut st, &mut game);
+    let tab = last_text_at(&game, "Problems");
+    right_click(&mut st, &mut game, tab);
+    assert_eq!(usable(&st), ["Copy all problems", "Hide the panel"]);
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    let tab = last_text_at(&game, "Console");
+    right_click(&mut st, &mut game, tab);
+    assert_eq!(menu_items(&st), ["Copy all", "Clear", "", "Hide the panel"]);
+    choose(&mut st, &mut game, "Hide the panel");
+    assert!(st.s.ui.panel_hidden && !st.s.ui.panel_focus);
+}
+
+#[test]
+fn the_title_bar_menu_leaves_an_executor_style() {
+    use horizon_studio::game::hstudio_theme::THEMES;
+    let mut game = FakeGame::new("ui-window-menu");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    let synapse = THEMES.iter().position(|t| t.id == "synapse").unwrap();
+    st.s.ui.look.theme = synapse;
+    st.s.ui.tab = Tab::Editor;
+    redraw(&mut st, &mut game);
+    let title = text_at(&game, "Horizon Studio");
+    right_click(&mut st, &mut game, (title.0 + 40.0, title.1 + 4.0));
+    assert_eq!(
+        menu_items(&st),
+        [
+            "Roll up",
+            "Fill the screen",
+            "Reset window",
+            "Theme",
+            "",
+            "Settings",
+            "Close"
+        ]
+    );
+    assert_eq!(usable(&st)[2], "Theme", "nothing to reset yet");
+    // Theme lists every theme in the menu's place, the one in use marked.
+    choose(&mut st, &mut game, "Theme");
+    let menu = st.s.ui.menu.clone().expect("the themes");
+    let names: Vec<&str> = menu.items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(names, THEMES.iter().map(|t| t.name).collect::<Vec<_>>());
+    assert!(menu.items[synapse].checked);
+    assert_eq!(menu.sel, Some(synapse), "lit, for the keys");
+    choose(&mut st, &mut game, "Horizon");
+    assert_eq!(st.s.ui.look.theme, 0);
+    assert!(
+        std::fs::read_to_string(st.s.dir.join("look.txt"))
+            .unwrap()
+            .contains("theme=horizon")
+    );
+    // A left press on the title bar still drags the window.
+    st.s.ui.look.theme = synapse;
+    redraw(&mut st, &mut game);
+    let before = st.s.ui.look.window_rect(960.0, 540.0);
+    let title = text_at(&game, "Horizon Studio");
+    handle(&mut st, &mut game, Input::Mouse(title.0 + 100.0, title.1 + 4.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    handle(&mut st, &mut game, Input::Mouse(title.0 + 80.0, title.1 + 24.0));
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    let after = st.s.ui.look.window_rect(960.0, 540.0);
+    assert_eq!((after[0] - before[0], after[1] - before[1]), (-20.0, 20.0));
+    // Roll up from the menu, and back.
+    redraw(&mut st, &mut game);
+    let title = text_at(&game, "Horizon Studio");
+    right_click(&mut st, &mut game, (title.0 + 40.0, title.1 + 4.0));
+    choose(&mut st, &mut game, "Roll up");
+    assert!(st.s.ui.collapsed);
+}
+
+#[test]
+fn the_headers_menu_and_the_docs() {
+    let mut game = FakeGame::new("ui-header-menu");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    redraw(&mut st, &mut game);
+    let name = text_at(&game, "Horizon Studio");
+    right_click(&mut st, &mut game, (name.0 + 4.0, name.1 + 4.0));
+    assert_eq!(menu_items(&st), ["In a window", "Theme", "", "Settings", "Close"]);
+    choose(&mut st, &mut game, "In a window");
+    assert!(st.s.ui.look.window);
+    // Close closes the studio.
+    redraw(&mut st, &mut game);
+    let name = text_at(&game, "Horizon Studio");
+    right_click(&mut st, &mut game, (name.0 + 40.0, name.1 + 4.0));
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, "Close");
+    handle(&mut st, &mut game, Input::Mouse(at.0, at.1));
+    let out = handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    assert_eq!(out, UiResult::Close);
+    // The Docs: copied as Markdown.
+    st.s.ui.tab = Tab::Docs;
+    st.s.ui.look.window = false;
+    redraw(&mut st, &mut game);
+    let heading = text_at(&game, "Script mods");
+    right_click(&mut st, &mut game, (heading.0 + 4.0, heading.1 + 4.0));
+    choose(&mut st, &mut game, "Copy the docs as Markdown");
+    assert!(game.clipboard.starts_with("# Horizon Studio scripting\n"));
+}
+
+#[test]
+fn the_executor_styles_have_the_menus_too() {
+    use horizon_studio::game::hstudio::LogKind;
+    use horizon_studio::game::hstudio_theme::THEMES;
+    for theme in ["protosmasher", "protoclassic", "rc7"] {
+        let mut game = FakeGame::new(&format!("ui-style-menus-{theme}"));
+        let mut st = studio(&mut game);
+        st.s.ui.open = true;
+        st.s.ui.look.motion = false;
+        st.s.ui.look.theme = THEMES.iter().position(|t| t.id == theme).unwrap();
+        st.s.ui.tab = Tab::Editor;
+        st.s.editor.set_text("print('menus')");
+        st.s.log(LogKind::Info, "said in the output");
+        redraw(&mut st, &mut game);
+        // The code.
+        let code = text_at(&game, "print");
+        right_click(&mut st, &mut game, (code.0 + 2.0, code.1 + 4.0));
+        assert_eq!(menu_items(&st)[0], "Cut", "{theme}");
+        handle(&mut st, &mut game, key(Key::Escape, NONE));
+        // The output, where it has one.
+        if theme != "rc7" {
+            let said = text_at(&game, "said in the output");
+            right_click(&mut st, &mut game, (said.0 + 2.0, said.1 + 4.0));
+            assert_eq!(menu_items(&st)[1], "Copy all", "{theme}");
+            handle(&mut st, &mut game, key(Key::Escape, NONE));
+        }
+        // ProtoSmasher's theme dropdown lists the themes.
+        if theme == "protosmasher" {
+            let name = text_at(&game, "ProtoSmasher");
+            right_click(&mut st, &mut game, (name.0 + 2.0, name.1 + 4.0));
+            assert_eq!(menu_items(&st).len(), THEMES.len(), "{theme}");
+            choose(&mut st, &mut game, "Nord");
+            assert_eq!(st.s.ui.look.theme().id, "nord");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_agent_tab_menu_chooses_an_agent_and_starts_over() {
+    use horizon_studio::game::hstudio_agent::AgentSpec;
+    use horizon_studio::game::hstudio_ui::{Panel, agent_new_conversation};
+    let (mut game, mut st) = editing("ui-agent-tab-menu", "");
+    let echo = AgentSpec {
+        id: "custom".into(),
+        name: "Echo".into(),
+        program: "/bin/echo".into(),
+        args: vec!["{prompt}".into()],
+        json: false,
+    };
+    st.s.ui.agent.agents = Some(vec![echo, AgentSpec::claude(std::path::PathBuf::from("claude"))]);
+    st.s.ui.agent.session = Some("before".into());
+    st.s.ui.panel = Panel::Agent;
+    agent_new_conversation(&mut st);
+    st.s.ui.agent.session = Some("before".into());
+    redraw(&mut st, &mut game);
+    let tab = last_text_at(&game, "Agent");
+    right_click(&mut st, &mut game, tab);
+    let menu = st.s.ui.menu.clone().unwrap();
+    let echo = menu.items.iter().find(|i| i.label == "Echo").expect("Echo listed");
+    assert!(echo.checked, "the one in use");
+    assert!(menu.items.iter().any(|i| i.label == "Claude Code" && !i.checked));
+    choose(&mut st, &mut game, "Claude Code");
+    assert_eq!(st.s.ui.agent.chosen, 1);
+    assert_eq!(st.s.ui.agent.session, None, "a new conversation");
+    // New conversation empties it.
+    redraw(&mut st, &mut game);
+    let tab = last_text_at(&game, "Agent");
+    right_click(&mut st, &mut game, tab);
+    choose(&mut st, &mut game, "New conversation");
+    assert_eq!(st.s.ui.agent.lines.len(), 1);
+    assert_eq!(st.s.ui.agent.lines[0].text, "New conversation.");
+    // Claude Code's model: its list in the menu's place.
+    redraw(&mut st, &mut game);
+    let tab = last_text_at(&game, "Agent");
+    right_click(&mut st, &mut game, tab);
+    choose(&mut st, &mut game, "Model: Default");
+    assert_eq!(
+        menu_items(&st),
+        ["Default", "Opus", "Sonnet", "Haiku", "Fable", "", "Other model..."]
+    );
+    assert_eq!(lit(&st), "Default");
+}
