@@ -793,6 +793,7 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
             }
             OPEN.with(|o| o.set(false));
             super::hstudio_link::stop();
+            chat_commands_off(game);
             return;
         }
         SCALE.with(|s| s.set(gui(game).2));
@@ -843,6 +844,10 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
                     st.s.ui.open = false;
                 }
             }
+            // The chat's command tree, after what this frame changed, and
+            // the completions the chat asked for (with the event loop, so
+            // suggest functions can use the agent).
+            chat_commands(st, &mut host);
         }
         // A script's ui.open: over the studio, or in its own place.
         if st.s.screen_request.is_some() {
@@ -1113,6 +1118,215 @@ pub(super) fn command(game: &mut Game<'_>, command: &str) -> bool {
         return false;
     }
     with(|st| st.command(command)).unwrap_or(false)
+}
+
+// ----------------------------------------------------------------- the chat's command tree
+
+use super::hstudio_chatcmd::{ArgKind, split_line};
+use super::hstudio_cmdtree::{ChatSync, NewNode, Tree};
+use horizon_client::command::{ArgType, Dispatcher, MOD_COMMAND, Node, NodeKind, Registries, Suggests};
+
+thread_local! {
+    /// The studio's commands in the chat's tree, and the completion request
+    /// the chat made for one of them, for the frame to answer.
+    static CHAT: RefCell<ChatSync> = const { RefCell::new(ChatSync::new()) };
+}
+
+/// The chat's command tree, a server's (`Remote.commands`), as
+/// hstudio_cmdtree changes it, with the registries the chat parses with.
+struct ChatTree<'g> {
+    tree: &'g mut Dispatcher,
+    registries: &'g Registries,
+}
+
+/// The tree the chat parses and completes with, when a server sent one
+/// (chat::chat_tree picks it so; without one the chat has the game's own,
+/// which stays as it is).
+fn chat_tree<'g>(game: &'g mut Game<'_>) -> Option<ChatTree<'g>> {
+    let registries = &game.ui.registries;
+    let tree = game.remote.as_mut()?.commands.as_mut()?;
+    Some(ChatTree { tree, registries })
+}
+
+/// The argument type the chat reads a kind with.
+fn arg_type(kind: ArgKind) -> ArgType {
+    match kind {
+        // Anything up to the next space, as the studio splits words (Brigadier's
+        // word takes only letters, digits and _-.+); one that starts with @
+        // reads as a player selector.
+        ArgKind::Word => ArgType::GameProfile,
+        ArgKind::Text => ArgType::Greedy,
+        ArgKind::Int { min, max } => ArgType::Integer { min, max },
+        ArgKind::Number { min, max } => ArgType::Double { min, max },
+        ArgKind::Bool => ArgType::Bool,
+        // As Horizon's server mods' player argument (docs/mods.md).
+        ArgKind::Player => ArgType::Entity {
+            single: true,
+            players: true,
+        },
+        ArgKind::Pos => ArgType::BlockPos,
+        ArgKind::Item => ArgType::Item,
+        ArgKind::Block => ArgType::BlockState,
+    }
+}
+
+impl Tree for ChatTree<'_> {
+    fn size(&self) -> usize {
+        self.tree.nodes.len()
+    }
+    fn addr(&self) -> usize {
+        self.tree.nodes.as_ptr() as usize
+    }
+    fn children(&self, node: usize) -> &[usize] {
+        self.tree.nodes.get(node).map_or(&[], |n| n.children.as_slice())
+    }
+    fn set_children(&mut self, node: usize, children: Vec<usize>) {
+        if let Some(n) = self.tree.nodes.get_mut(node) {
+            n.children = children;
+        }
+    }
+    fn literal(&self, node: usize) -> Option<&str> {
+        match &self.tree.nodes.get(node)?.kind {
+            NodeKind::Literal(l) => Some(l.as_str()),
+            _ => None,
+        }
+    }
+    fn redirect(&self, node: usize) -> Option<usize> {
+        self.tree.nodes.get(node)?.redirect
+    }
+    fn set_redirect(&mut self, node: usize, to: usize) {
+        if let Some(n) = self.tree.nodes.get_mut(node) {
+            n.redirect = Some(to);
+        }
+    }
+    fn push(&mut self, parent: Option<usize>, node: NewNode<'_>, executes: bool) -> usize {
+        let (kind, children, suggests) = match node {
+            // Shown after a redirect to it as "-> ..." (one to the root is "...").
+            NewNode::RootCopy(children) => (NodeKind::Literal("...".to_owned()), children, None),
+            NewNode::Literal(name) => (NodeKind::Literal(name.to_owned()), Vec::new(), None),
+            NewNode::Argument { name, kind, asks } => {
+                // The studio's completions, asked for as a server's are; a
+                // word has none of its own (the game would offer player names).
+                let suggests = if asks {
+                    Some(Suggests::AskServer)
+                } else if kind == ArgKind::Word {
+                    Some(Suggests::Nothing)
+                } else {
+                    None
+                };
+                let kind = NodeKind::Argument {
+                    name: name.to_owned(),
+                    ty: arg_type(kind),
+                };
+                (kind, Vec::new(), suggests)
+            }
+        };
+        let id = self.tree.nodes.len();
+        self.tree.nodes.push(Node {
+            kind,
+            children,
+            command: executes.then_some(MOD_COMMAND),
+            redirect: None,
+            // Every player may use them, as native mods' commands.
+            permission: 0,
+            suggests,
+        });
+        if let Some(p) = parent.and_then(|p| self.tree.nodes.get_mut(p)) {
+            p.children.push(id);
+        }
+        id
+    }
+    fn truncate(&mut self, size: usize) {
+        self.tree.nodes.truncate(size.max(1));
+    }
+    fn locate(&self, line: &str) -> (usize, usize) {
+        // As the chat parses the line and finds what to complete
+        // (ChatScreen::update_command_info, Dispatcher::suggestions_within).
+        let from = usize::from(line.starts_with('/'));
+        let parse = self.tree.parse_at(line, from, self.registries);
+        let (node, start, _) = parse.context.suggestion_context(line.len());
+        (node, start.min(line.len()))
+    }
+}
+
+/// Whether no screen holds a parse of the chat's tree, so the studio's
+/// nodes nothing links to can go: the chat shows no command (a line without
+/// its `/` is not parsed) and no command block's command is being edited.
+fn chat_quiet(game: &Game<'_>) -> bool {
+    game.command_block_screen.is_none() && game.ui.chat_screen.as_ref().is_none_or(|s| !s.value().starts_with('/'))
+}
+
+/// Each frame: the chat's command tree gets the commands the studio takes
+/// (none while a command block's command is edited: command blocks run on
+/// the server), and the completion request the chat made for one of them
+/// is answered, through the path a server's answer takes.
+fn chat_commands(st: &mut Studio, host: &mut Host<'_, '_>) {
+    let Some(game) = host.g_mut() else { return };
+    let quiet = chat_quiet(game);
+    let stamp = game.command_block_screen.is_none().then(|| st.command_stamp());
+    let asked = CHAT.with(|c| {
+        let mut c = c.borrow_mut();
+        c.want(stamp, || st.chat_commands());
+        let mut tree = chat_tree(game);
+        c.sync(tree.as_mut().map(|t| t as &mut dyn Tree), quiet);
+        c.take_asked(tree.as_ref().map(|t| t as &dyn Tree))
+    });
+    let Some(asked) = asked else { return };
+    let answer = match asked.at {
+        Some((arg, start)) => st.complete(host, &asked.line, arg, start),
+        None => None,
+    };
+    let (range, list) = match answer {
+        Some(c) => ((c.start, c.len), c.list),
+        // Nothing to add: the chat shows its own, and the usage line.
+        None => ((0, 0), Vec::new()),
+    };
+    if let Some(game) = host.g_mut() {
+        game.chat_server_suggestions(asked.id, range, list);
+    }
+}
+
+/// The chat's completion request, before the game sends it to the server
+/// (remote.rs, send_suggestion_request): one for a command the studio takes
+/// stays in the game and is answered at the frame, so nothing typed after
+/// its name reaches the server; any other, one made while a name is still
+/// being typed among them, is sent as the game sends it. False when the
+/// chat has no request: the game then sends a command block's, as before.
+pub(super) fn suggestion_request(game: &mut Game<'_>) -> bool {
+    if game.remote.is_none() || !game.native_window() || !game.native_on(ID) {
+        return false;
+    }
+    let Some((id, line)) = game.ui.chat_screen.as_mut().and_then(|s| s.take_request()) else {
+        return false;
+    };
+    let name = split_line(&line).map_or("", |(name, _)| name);
+    let takes = with(|st| st.takes(name)).unwrap_or(false);
+    let kept = CHAT.with(|c| {
+        let tree = chat_tree(game);
+        c.borrow_mut().request(tree.as_ref().map(|t| t as &dyn Tree), id, &line, takes)
+    });
+    if !kept {
+        // What send_suggestion_request does with it (remote.rs).
+        let mut w = horizon_protocol::buf::Writer::new();
+        w.varint(id);
+        w.string(&line);
+        game.send(horizon_protocol::packets::play::Serverbound::Unknown(
+            horizon_protocol::ids::play::serverbound::COMMAND_SUGGESTION,
+            w.data,
+        ));
+    }
+    true
+}
+
+/// With the studio off: the chat's tree goes back to the server's commands.
+fn chat_commands_off(game: &mut Game<'_>) {
+    let quiet = chat_quiet(game);
+    CHAT.with(|c| {
+        let mut c = c.borrow_mut();
+        c.want(None, Vec::new);
+        let mut tree = chat_tree(game);
+        c.sync(tree.as_mut().map(|t| t as &mut dyn Tree), quiet);
+    });
 }
 
 /// A chat line from the server, for the scripts' `chat` handlers.

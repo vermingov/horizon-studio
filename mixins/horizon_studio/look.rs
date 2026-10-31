@@ -3092,7 +3092,17 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         m.handlers.count(),
         m.reloads
     );
-    let commands: Vec<(String, String)> = m.commands.iter().map(|c| (c.name.clone(), c.help.clone())).collect();
+    // Each command with its usage (`wp [<action>] [<name>]`), then its description.
+    let commands: Vec<(String, String)> = m
+        .commands
+        .iter()
+        .map(|c| {
+            (
+                format!("{} {}", c.name, c.usage_line()).trim_end().to_owned(),
+                c.help.clone(),
+            )
+        })
+        .collect();
     let failure = match &m.state {
         ModState::Failed(msg, trace) => Some((msg.clone(), trace.clone())),
         _ => None,
@@ -3268,7 +3278,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             if dy + 22.0 > bottom {
                 break;
             }
-            let cmd = format!("/{name}");
+            let cmd = p.fit(&format!("/{name}"), dw * 0.6, 13.0, Font::Mono);
             let cw = p.text(&cmd, dx, dy, 13.0, Font::Mono, pal().ink);
             let help = p.fit(help, dw - cw - 12.0, 13.0, Font::Regular);
             p.text(&help, dx + cw + 12.0, dy, 13.0, Font::Regular, pal().muted);
@@ -3345,8 +3355,9 @@ fn docs() -> Vec<Doc> {
     out.push(Doc::Para("horizon-studio-mcp lets AI agents (Claude Code, omp, Codex, Cursor...) make mods here: they write and test them, headless and in this game, run Lua in the console and read what happened. Copy AI setup prompt, at the top right, copies a prompt for your agent that sets it all up; once one is connected, its name shows there. Options > Mods > Horizon Studio turns the AI link off.".into()));
     out.push(Doc::Heading("Commands in chat".into()));
     out.push(Doc::Para(
-        "/studio opens this screen, /studio reload reloads every script mod, /lua <code> runs code.".into(),
+        "/studio opens this screen, /studio reload reloads every script mod, /studio help lists the commands the studio takes, /lua <code> runs code.".into(),
     ));
+    out.push(Doc::Para("Every mod's command is in the chat's suggestions beside the server's: / lists it, Tab completes it, and the line under the box shows what it takes. command(name, fn, {description = ..., args = {...}}) declares its arguments: a word, text, int, number, bool, player, pos, item or block, with options or a suggest function that the chat completes. A command block's editor and /execute ... run don't offer them: the server runs those.".into()));
     out
 }
 

@@ -983,12 +983,12 @@ impl Server {
                 };
                 self.live("reload", params)?;
                 wait(self, 2)?;
-            } else if ["player", "block", "time", "click", "type", "camera", "pose"]
+            } else if ["player", "block", "time", "click", "type", "camera", "pose", "suggest"]
                 .iter()
                 .any(|k| step.get(*k).is_some())
             {
                 failures.push(
-                    "player, block, time, click, type, camera and pose steps are headless only: live, use a \
+                    "player, block, time, click, type, camera, pose and suggest steps are headless only: live, use a \
                      command step (\"/tp\", \"/setblock\", \"/time set\") or horizon_ctl (F5, sneaking)"
                         .into(),
                 );

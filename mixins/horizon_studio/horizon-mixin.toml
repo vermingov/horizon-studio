@@ -6,8 +6,9 @@ priority = 100
 # Pinned: besides Horizon's native hook points, the studio hooks the window's
 # events (follow_keymap, to take the keyboard while it is open), the
 # per-frame control poll (for the event loop the agent commands need), the
-# server's chat lines, the world's entity geometry (end_geometry) and the last
-# HUD layer (remote_hud). Every target's body
+# server's chat lines, the chat's completion requests
+# (send_suggestion_request), the world's entity geometry (end_geometry) and
+# the last HUD layer (remote_hud). Every target's body
 # is free of macros, as horizon-mixins 0d6b103 (the launcher's) requires.
 [compatibility]
 horizon_revision = "baa379d71777f06a95b4e7650b2209a3d4209033"
@@ -90,6 +91,18 @@ id = "modfiles"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_modfiles"
 source = "modfiles.rs"
+
+[[module]]
+id = "chatcmd"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_chatcmd"
+source = "chatcmd.rs"
+
+[[module]]
+id = "cmdtree"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_cmdtree"
+source = "cmdtree.rs"
 
 [[module]]
 id = "studio"
@@ -283,6 +296,19 @@ bindings = [
   { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
   { name = "content", ty = "&horizon_client::text::Text", value = "&content" },
   { name = "source", ty = "&horizon_client::chat::ChatSource", value = "&source" },
+]
+
+# The chat's completion requests, as the game sends them to the server: one
+# for a command the studio takes stays in the game and the studio answers it
+# (hstudio_bridge::suggestion_request); any other is sent as before.
+[[injection]]
+id = "suggest"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::remote::Game<'_>::send_suggestion_request"
+helper = "suggest.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
 ]
 
 [[injection]]

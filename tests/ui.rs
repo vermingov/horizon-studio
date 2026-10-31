@@ -3922,3 +3922,25 @@ fn a_bundled_library_deleted_from_its_menu_stays_deleted() {
     let again = studio(&mut game);
     assert!(!uikit.exists() && !again.s.mods.iter().any(|m| m.id == "uikit"));
 }
+
+#[test]
+fn the_library_shows_each_commands_usage() {
+    let mut game = FakeGame::new("ui-library-usage");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    game.write_mod(
+        "wp.lua",
+        "command('wp', function() end, { description = 'Waypoints', args = {\n  { name = 'action', optional = true },\n  { name = 'name', kind = 'text', optional = true },\n} })\ncommand('here', function() end, 'Marks this place')\n",
+    );
+    run_for(&mut st, &mut game, 0.6);
+    handle(&mut st, &mut game, key(Key::Char('3'), CTRL));
+    st.s.ui.library_sel = mod_index(&st, "wp");
+    redraw(&mut st, &mut game);
+    let (x, y) = text_at(&game, "/wp [<action>] [<name>]");
+    let (dx, dy) = text_at(&game, "Waypoints");
+    assert!(dx > x && (dy - y).abs() < 0.5, "the description follows on its row");
+    // A command without declared arguments shows its name alone.
+    text_at(&game, "/here");
+    text_at(&game, "Marks this place");
+}
