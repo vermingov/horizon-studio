@@ -734,7 +734,13 @@ enum Msg {
     Line(String),
     /// A line on stderr (consecutive ones become one Error).
     Stderr(String),
+    /// The agent exited, and its output stayed open a while after: something it started holds
+    /// it (an MCP server, a background tool), so the reader would wait for ever.
+    Exited(Option<ExitStatus>),
 }
+
+/// How long after the agent exits its output may stay open before the run ends without it.
+const EXIT_GRACE: Duration = Duration::from_secs(3);
 
 /// Whether a program is a batch file, which Windows runs through cmd.exe.
 fn is_batch(program: &Path) -> bool {
@@ -869,6 +875,10 @@ pub struct AgentRun {
     session: Option<String>,
     stderr_shown: usize,
     killing: bool,
+    /// The agent's name, and whether it ends with a result line (Claude Code), for a Done made
+    /// when it exits without one.
+    name: String,
+    has_result: bool,
 }
 
 impl AgentRun {
@@ -940,6 +950,33 @@ impl AgentRun {
                     true
                 });
                 over.store(true, Ordering::Release);
+            });
+        }
+
+        // The watchdog: once the agent has exited, the run ends within EXIT_GRACE even if its
+        // output never closes (the reader below waits for it to close).
+        {
+            let (tx, child, over) = (tx.clone(), child.clone(), over.clone());
+            thread::spawn(move || {
+                let status = loop {
+                    if over.load(Ordering::Acquire) {
+                        return;
+                    }
+                    match lock(&child).try_wait() {
+                        Ok(Some(s)) => break Some(s),
+                        Ok(None) => {}
+                        Err(_) => break None,
+                    }
+                    thread::sleep(Duration::from_millis(200));
+                };
+                let until = Instant::now() + EXIT_GRACE;
+                while Instant::now() < until {
+                    if over.load(Ordering::Acquire) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+                let _ = tx.send(Msg::Exited(status));
             });
         }
 
@@ -1047,6 +1084,8 @@ impl AgentRun {
             session: None,
             stderr_shown: 0,
             killing: false,
+            name: spec.name.clone(),
+            has_result: format == Format::Claude,
         })
     }
 
@@ -1099,6 +1138,22 @@ impl AgentRun {
                     }
                     out.push(AgentEvent::Error(line));
                     join = Join::Stderr;
+                }
+                Msg::Exited(status) => {
+                    join = Join::None;
+                    let success = status.is_some_and(|s| s.success());
+                    let ok = success && !self.has_result;
+                    let why = if success {
+                        format!("{} ended without a result", self.name)
+                    } else {
+                        format!("{} stopped ({})", self.name, exit_text(status))
+                    };
+                    self.done = true;
+                    out.push(AgentEvent::Done {
+                        ok,
+                        session: self.session.clone(),
+                        summary: (!ok).then_some(why),
+                    });
                 }
                 Msg::Event(e) => {
                     join = Join::None;

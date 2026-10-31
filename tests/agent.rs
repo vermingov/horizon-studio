@@ -721,3 +721,32 @@ fn a_missing_program_or_folder_is_an_error() {
         .unwrap();
     assert!(err.contains("isn't a folder"), "{err}");
 }
+
+#[cfg(unix)]
+#[test]
+fn an_agent_whose_output_something_else_keeps_open_is_still_done() {
+    // It exits, but a process it started holds its stdout for a minute: the
+    // run ends within a few seconds of the exit anyway, not when that closes.
+    let dir = temp("held");
+    let spec = AgentSpec {
+        id: "custom".into(),
+        name: "Holder".into(),
+        program: PathBuf::new(),
+        args: vec!["{prompt}".into()],
+        json: false,
+    };
+    let script = "echo working on it\n(sleep 60) &\nexit 0\n";
+    let started = Instant::now();
+    let mut run = start_fake(&dir, script, spec, None);
+    let events = to_the_end(&mut run, 15);
+    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    assert!(events.contains(&Text("working on it".into())), "{events:?}");
+    assert_eq!(
+        events.last(),
+        Some(&Done {
+            ok: true,
+            session: None,
+            summary: None
+        })
+    );
+}
