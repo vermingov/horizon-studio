@@ -1668,6 +1668,7 @@ impl Rbx {
         self.pointer.pressed = None;
         self.pointer.drag = None;
         self.layout = None;
+        super::hstudio_rbx_world::forget(self, owner);
     }
 
     /// A child named `name` of `parent`, the first.
@@ -1964,6 +1965,15 @@ pub fn method_names(class: &str) -> Vec<&'static str> {
     names
 }
 
+/// Whether `key` is a member of class `c` (a property, an event or a
+/// method) rather than a child's name.
+pub fn is_member(c: &'static C, key: &str) -> bool {
+    matches!(key, "Name" | "ClassName" | "Parent")
+        || find_prop(c, key).is_some()
+        || has_event(c, key)
+        || find_method(c, key).is_some()
+}
+
 fn kind_name(k: K) -> String {
     match k {
         K::Bool => "bool".into(),
@@ -2234,14 +2244,11 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
             env.rbx().inst(id).class.name
         )));
     };
-    if id == env.rbx().mouse && matches!(k.as_str(), "Hit" | "Target" | "UnitRay" | "Origin") {
-        super::hstudio_rbx_draw::mouse_refresh(env);
-    }
+    super::hstudio_rbx_world::before_read(env, id, &k);
     if matches!(k.as_str(), "ViewportSize" | "ViewSizeX" | "ViewSizeY") {
         let snap = env_snapshot(env);
         env.rbx().refresh(id, &k, snap.as_ref());
     }
-    super::hstudio_rbx_world::before_read(env, id, &k);
     let rbx = env.rbx();
     let inst = rbx.inst(id);
     let c = inst.class;

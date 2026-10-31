@@ -40,6 +40,7 @@ fn bool_arg(args: &[Value], i: usize) -> bool {
 /// A method of an instance (`owner_class` says which class has it).
 pub fn method(env: &mut dyn Env, lua: &mut Lua, name: &str, owner_class: &str, args: Vec<Value>) -> Res {
     let id = me(env, lua, &args, name)?;
+    super::hstudio_rbx_world::before_call(env, id, name, &args);
     // CollectionService:AddTag(instance, tag) is the instance's own.
     if matches!(name, "AddTag" | "RemoveTag" | "HasTag" | "GetTags")
         && env.rbx().service("CollectionService") == Some(id)

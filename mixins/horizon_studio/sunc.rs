@@ -1049,6 +1049,8 @@ impl Ctx<'_> {
                 one(rbx.value(rbx.hui))
             }
             2043 | 2044 => {
+                // The world's entities are instances too: they are mirrored first.
+                super::hstudio_rbx_world::look(self);
                 let rbx = &self.s.rbx;
                 let mut ids: Vec<Id> = rbx
                     .insts

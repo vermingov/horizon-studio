@@ -1,11 +1,12 @@
 // The Roblox layer's world on a fake game (hstudio_rbx_world): the
 // LocalPlayer is the player playing, and its Character an R6 rig that
-// follows them.
+// follows them; the entities near them are mirrored in the Workspace once a
+// script looks.
 
 mod common;
 
 use common::{FakeGame, log, mod_index, run_for, studio};
-use horizon_studio::game::hstudio::{ModState, PlayerPose, Studio};
+use horizon_studio::game::hstudio::{EntityInfo, ModState, PlayerPose, Studio};
 use horizon_studio::headless::{Run, Source, run_steps};
 use serde_json::json;
 
@@ -488,5 +489,408 @@ fn the_mouse_has_its_unit_ray_and_origin() {
         p[2].starts_with("false") && p[2].contains("Property is read only"),
         "{}",
         p[2]
+    );
+}
+
+/// A zombie of the fake game's at (x, 64, z), facing south, with its health.
+fn zombie(id: u32, x: f64, z: f64) -> EntityInfo {
+    EntityInfo {
+        id,
+        kind: "minecraft:zombie".into(),
+        pos: [x, 64.0, z],
+        width: 0.6,
+        height: 1.95,
+        eye: 1.74,
+        health: 20.0,
+        max_health: 20.0,
+        speed: 0.23,
+        on_ground: true,
+        ..EntityInfo::default()
+    }
+}
+
+/// A dropped stack of `count` of `item` at (x, 64, z); with `item` empty,
+/// an experience orb worth `count`.
+fn dropped(id: u32, item: &str, count: u32, x: f64, z: f64) -> EntityInfo {
+    let orb = item.is_empty();
+    let size = if orb { 0.5 } else { 0.25 };
+    EntityInfo {
+        id,
+        kind: if orb {
+            "minecraft:experience_orb"
+        } else {
+            "minecraft:item"
+        }
+        .into(),
+        pos: [x, 64.0, z],
+        width: size,
+        height: size,
+        eye: size * 0.85,
+        on_ground: true,
+        item: Some((item.into(), count)),
+        ..EntityInfo::default()
+    }
+}
+
+#[test]
+fn mobs_items_and_orbs_are_in_the_workspace() {
+    let mut game = FakeGame::new("rbxw-mobs");
+    let mut bob = zombie(6, 8.5, -6.0);
+    bob.name = "Bob".into();
+    bob.baby = true;
+    game.entities = vec![
+        zombie(5, 12.5, -3.25),
+        bob,
+        dropped(7, "minecraft:diamond_sword", 3, 9.5, -1.5),
+        dropped(8, "", 7, 11.5, -1.5),
+    ];
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{FMT}{}",
+        r#"
+        command("look", function()
+            local names = {}
+            for _, c in workspace:GetChildren() do table.insert(names, c.Name .. ":" .. c.ClassName) end
+            print(table.concat(names, " "))
+            local z = workspace.Zombie
+            local root, head, hum = z.HumanoidRootPart, z.Head, z.Humanoid
+            print(z.PrimaryPart == root, hum.RootPart == root, hum.Health, hum.MaxHealth, hum.RigType, hum.HipHeight, string.format("%.4f", hum.WalkSpeed))
+            print(v(root.Size), v(root.Position), v(head.Size), v(head.Position))
+            print(z:GetAttribute("EntityId"), z:GetAttribute("EntityType"), z:GetAttribute("Baby"), workspace.Bob:GetAttribute("Baby"))
+            local item = workspace["Diamond Sword"]
+            print(item.ClassName, item:GetAttribute("ItemId"), item:GetAttribute("Count"), v(item.Size), v(item.Position))
+            local orb = workspace["Experience Orb"]
+            print(orb:GetAttribute("Value"), orb:GetAttribute("EntityType"), root.Transparency, root.CanCollide, root.CanTouch, root.CanQuery, root.Anchored)
+        end)
+    "#
+    );
+    load(&mut game, &mut st, "mobs", &src, 0.6);
+    // Nothing looked at the world yet: the game wasn't asked.
+    assert_eq!(game.entity_asks, 0);
+    assert!(st.command("look"));
+    run_for(&mut st, &mut game, 0.05);
+    let p = printed(&st, "mobs");
+    assert_eq!(
+        p[0],
+        "Camera:Camera Terrain:Terrain Player1:Model Zombie:Model Bob:Model Diamond Sword:Part Experience Orb:Part"
+    );
+    assert_eq!(
+        p[1],
+        "true    true    100    100    Enum.HumanoidRigType.R6    0    9.9309"
+    );
+    // The root part from the feet to under the head, a half-block cube at the eyes (1.74).
+    assert_eq!(
+        p[2],
+        "0.600 1.490 0.600    12.500 64.745 -3.250    0.500 0.500 0.500    12.500 65.740 -3.250"
+    );
+    assert_eq!(p[3], "5    minecraft:zombie    false    true");
+    assert_eq!(
+        p[4],
+        "Part    minecraft:diamond_sword    3    0.250 0.250 0.250    9.500 64.125 -1.500"
+    );
+    assert_eq!(
+        p[5],
+        "7    minecraft:experience_orb    1    false    false    true    true"
+    );
+    // The game draws them, so the layer draws nothing for them.
+    game.world_quads.clear();
+    st.world(&mut game);
+    assert!(game.world_quads.is_empty(), "{} quads", game.world_quads.len());
+}
+
+#[test]
+fn entities_move_quietly() {
+    let mut game = FakeGame::new("rbxw-move");
+    game.entities = vec![zombie(5, 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{FMT}{}",
+        r#"
+        local root = workspace:WaitForChild("Zombie").HumanoidRootPart
+        local changes = 0
+        root.Changed:Connect(function() changes += 1 end)
+        root:GetPropertyChangedSignal("CFrame"):Connect(function() changes += 1 end)
+        command("where", function() print(v(root.Position), v(root.AssemblyLinearVelocity), changes) end)
+    "#
+    );
+    load(&mut game, &mut st, "move", &src, 0.6);
+    game.entities[0].pos = [14.5, 64.0, -3.25];
+    game.entities[0].velocity = [4.0, 0.0, 0.0];
+    run_for(&mut st, &mut game, 0.05);
+    assert!(st.command("where"));
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(printed(&st, "move"), ["14.500 64.745 -3.250    4.000 0.000 0.000    0"]);
+}
+
+#[test]
+fn entities_coming_and_going_fire_events() {
+    let mut game = FakeGame::new("rbxw-events");
+    game.entities = vec![zombie(5, 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local log, descendants = {}, 0
+        workspace.ChildAdded:Connect(function(c)
+            table.insert(log, "added " .. c.Name .. " " .. tostring(c:FindFirstChildOfClass("Humanoid") ~= nil))
+            c.Destroying:Connect(function() table.insert(log, "destroying " .. c.Name) end)
+        end)
+        workspace.ChildRemoved:Connect(function(c) table.insert(log, "removed " .. c.Name .. " " .. tostring(c.Parent)) end)
+        game.DescendantAdded:Connect(function() descendants += 1 end)
+        command("log", function() print(table.concat(log, ", "), descendants) end)
+    "#;
+    load(&mut game, &mut st, "events", src, 0.6);
+    // The zombie was there when the script looked: no ChildAdded for it. A
+    // skeleton comes, whole, and goes.
+    let mut skeleton = zombie(9, 8.5, -6.0);
+    skeleton.kind = "minecraft:skeleton".into();
+    game.entities.push(skeleton);
+    run_for(&mut st, &mut game, 0.1);
+    game.entities.remove(1);
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.command("log"));
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(
+        printed(&st, "events"),
+        ["added Skeleton true, destroying Skeleton, removed Skeleton nil    4"]
+    );
+}
+
+#[test]
+fn mob_health_fires_health_changed_and_died_before_it_goes() {
+    let mut game = FakeGame::new("rbxw-health");
+    game.entities = vec![zombie(5, 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local z = workspace:WaitForChild("Zombie")
+        local hum = z.Humanoid
+        local log = {}
+        hum.HealthChanged:Connect(function(h) table.insert(log, "health " .. h) end)
+        hum.Died:Connect(function() table.insert(log, "died " .. hum:GetState().Name) end)
+        z.Destroying:Connect(function() table.insert(log, "destroying") end)
+        command("log", function() print(table.concat(log, ", ")) end)
+    "#;
+    load(&mut game, &mut st, "health", src, 0.6);
+    game.entities[0].health = 10.0;
+    run_for(&mut st, &mut game, 0.1);
+    // Dying, it stays as long as the game keeps it, and Died fires once.
+    game.entities[0].health = 0.0;
+    run_for(&mut st, &mut game, 0.3);
+    game.entities.clear();
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.command("log"));
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(printed(&st, "health"), ["health 50, health 0, died Dead, destroying"]);
+}
+
+#[test]
+fn a_changed_kind_rebuilds_the_mirror() {
+    let mut game = FakeGame::new("rbxw-kind");
+    game.entities = vec![zombie(5, 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local first = workspace:WaitForChild("Zombie")
+        command("check", function()
+            local now = workspace:FindFirstChild("Skeleton")
+            print(first.Parent, workspace:FindFirstChild("Zombie"), now ~= nil, now and now:GetAttribute("EntityId"))
+        end)
+    "#;
+    load(&mut game, &mut st, "kind", src, 0.6);
+    // The same id, another type of entity (the game gave it out again).
+    game.entities[0].kind = "minecraft:skeleton".into();
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.command("check"));
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(printed(&st, "kind"), ["nil    nil    true    5"]);
+}
+
+#[test]
+fn mirrors_are_locked_but_take_children() {
+    let mut game = FakeGame::new("rbxw-locked");
+    game.entities = vec![zombie(5, 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{FMT}{}",
+        r#"
+        local z = workspace:WaitForChild("Zombie")
+        local root = z.HumanoidRootPart
+        print(pcall(function() z:Destroy() end))
+        print(pcall(function() z.Parent = nil end))
+        print(pcall(function() root.Parent = workspace end))
+        local tag = Instance.new("Folder", z)
+        root.CFrame = CFrame.new(0, 100, 0)
+        print(tag.Parent == z, v(root.Position))
+        command("check", function() print(v(root.Position), tag.Parent) end)
+    "#
+    );
+    load(&mut game, &mut st, "locked", &src, 0.6);
+    assert!(st.command("check"));
+    run_for(&mut st, &mut game, 0.05);
+    game.entities.clear();
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.command("check"));
+    run_for(&mut st, &mut game, 0.05);
+    let p = printed(&st, "locked");
+    for line in &p[0..3] {
+        assert!(line.starts_with("false") && line.contains("locked"), "{line}");
+    }
+    assert_eq!(p[3], "true    0.000 100.000 0.000");
+    // The game's place again on the next frame.
+    assert_eq!(p[4], "12.500 64.745 -3.250    Zombie");
+    // The script's folder went with the zombie.
+    assert_eq!(p[5], "12.500 64.745 -3.250    nil");
+}
+
+#[test]
+fn the_world_is_mirrored_once_looked_at() {
+    let mut game = FakeGame::new("rbxw-lazy");
+    game.entities = vec![zombie(5, 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    // A UI script: its GUI, the camera's size, the player and their character.
+    let ui = r#"
+        local Players = game:GetService("Players")
+        local gui = Instance.new("ScreenGui")
+        gui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+        local size = workspace.CurrentCamera.ViewportSize
+        local char = Players.LocalPlayer.Character
+        print(size.X, char.Humanoid.Health, workspace.Gravity, workspace.Terrain.Name)
+    "#;
+    load(&mut game, &mut st, "ui", ui, 0.6);
+    assert_eq!(printed(&st, "ui"), ["960    100    32    Terrain"]);
+    assert_eq!(game.entity_asks, 0, "a UI script doesn't have the world mirrored");
+    // A look: the zombie is there at once, and ChildAdded doesn't fire for it.
+    let src = r#"
+        workspace.ChildAdded:Connect(function(c) print("added", c.Name) end)
+        print(workspace:FindFirstChild("Zombie") ~= nil)
+    "#;
+    load(&mut game, &mut st, "look", src, 0.6);
+    let asks = game.entity_asks;
+    assert!(asks > 0);
+    run_for(&mut st, &mut game, 0.5);
+    assert_eq!(game.entity_asks, asks + 10, "asked once a frame");
+    assert_eq!(printed(&st, "look"), ["true"]);
+    // Once the script that looked stops, the game isn't asked, and the mirror goes.
+    let i = mod_index(&st, "look");
+    st.unload(&mut game, i);
+    run_for(&mut st, &mut game, 0.1);
+    let asks = game.entity_asks;
+    run_for(&mut st, &mut game, 0.5);
+    assert_eq!(game.entity_asks, asks);
+    let ws = st.s.rbx.workspace;
+    assert!(st.s.rbx.child_named(ws, "Zombie").is_none());
+}
+
+#[test]
+fn game_descendants_and_getinstances_see_the_world() {
+    let find = r#"
+        local function has(list) for _, i in list do if i.Name == "Zombie" then return true end end return false end
+    "#;
+    let checks = [
+        "print(has(game:GetDescendants()))",
+        "print(game:FindFirstChild('Zombie', true) ~= nil)",
+        "print(has(getinstances()))",
+    ];
+    for (n, check) in checks.iter().enumerate() {
+        let mut game = FakeGame::new(&format!("rbxw-desc{n}"));
+        game.entities = vec![zombie(5, 12.5, -3.25)];
+        let mut st = studio(&mut game);
+        load(&mut game, &mut st, "desc", &format!("{find}{check}"), 0.6);
+        assert_eq!(printed(&st, "desc"), ["true"], "{check}");
+    }
+}
+
+#[test]
+fn a_console_look_lapses_once_nothing_listens() {
+    let mut game = FakeGame::new("rbxw-console");
+    game.entities = vec![zombie(5, 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    let lines = st.run_chunk(&mut game, "print(#workspace:GetChildren())", false);
+    assert_eq!(lines[0].1, "4");
+    let asks_after = |st: &mut Studio, game: &mut FakeGame, seconds: f64| {
+        run_for(st, game, seconds);
+        let asks = game.entity_asks;
+        run_for(st, game, 1.0);
+        game.entity_asks - asks
+    };
+    assert!(asks_after(&mut st, &mut game, 30.0) > 0, "mirrored half a minute on");
+    // A minute after the line looked, its look lapses.
+    assert_eq!(asks_after(&mut st, &mut game, 30.0), 0);
+    // A handler of the console's keeps it while it listens.
+    st.run_chunk(&mut game, "workspace.ChildAdded:Connect(function() end)", false);
+    assert!(asks_after(&mut st, &mut game, 70.0) > 0);
+}
+
+#[test]
+fn mirrors_outlive_a_mod_reload() {
+    let mut game = FakeGame::new("rbxw-reload");
+    game.entities = vec![zombie(5, 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    let src = r#"
+        workspace.ChildAdded:Connect(function(c) print("added", c.Name) end)
+        print(workspace:WaitForChild("Zombie"):GetDebugId())
+    "#;
+    load(&mut game, &mut st, "keep", src, 0.6);
+    let i = mod_index(&st, "keep");
+    st.load_and_dependents(&mut game, i);
+    run_for(&mut st, &mut game, 0.3);
+    let p = printed(&st, "keep");
+    assert_eq!(p.len(), 2, "{p:?}");
+    assert_eq!(p[0], p[1], "the same zombie, and no ChildAdded for it");
+}
+
+#[test]
+fn entities_about_the_cut_off_keep_their_mirrors() {
+    let mut game = FakeGame::new("rbxw-cap");
+    game.entities = (0..300)
+        .map(|i| zombie(100 + i, 10.5 + f64::from(i) * 0.1, 0.0))
+        .collect();
+    let mut st = studio(&mut game);
+    let src = r#"
+        local added = 0
+        workspace.ChildAdded:Connect(function() added += 1 end)
+        command("count", function() print(#workspace:GetChildren(), added) end)
+    "#;
+    load(&mut game, &mut st, "cap", src, 0.6);
+    // As they move, neighbours in the game's list swap places, back and
+    // forth: the 256th and the 257th among them.
+    for _ in 0..100 {
+        for i in (1..299).step_by(2) {
+            game.entities.swap(i, i + 1);
+        }
+        game.ticks += 1;
+        st.frame(&mut game, 0.05);
+    }
+    assert!(st.command("count"));
+    run_for(&mut st, &mut game, 0.05);
+    // The 256 nearest, the camera, the terrain and the character: none came or went.
+    assert_eq!(printed(&st, "cap"), ["259    0"]);
+}
+
+#[test]
+fn another_dimension_or_leaving_the_world_clears_the_mirrors() {
+    let mut game = FakeGame::new("rbxw-dim");
+    game.entities = vec![zombie(5, 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local log = {}
+        local first = workspace:WaitForChild("Zombie")
+        workspace.ChildAdded:Connect(function(c) table.insert(log, "added " .. c.Name) end)
+        workspace.ChildRemoved:Connect(function(c) table.insert(log, "removed " .. c.Name) end)
+        command("log", function()
+            print(table.concat(log, ", "), first.Parent, workspace:FindFirstChild("Zombie") ~= first)
+        end)
+    "#;
+    load(&mut game, &mut st, "dim", src, 0.6);
+    // Another dimension: the same id is another zombie.
+    game.player.as_mut().unwrap().dimension = "minecraft:the_nether".into();
+    run_for(&mut st, &mut game, 0.1);
+    // Out of the world (a disconnect), no entities; back, they come again.
+    let saved = game.player.take();
+    run_for(&mut st, &mut game, 0.1);
+    game.player = saved;
+    run_for(&mut st, &mut game, 0.1);
+    assert!(st.command("log"));
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(
+        printed(&st, "dim"),
+        ["removed Zombie, added Zombie, removed Zombie, added Zombie    nil    true"]
     );
 }

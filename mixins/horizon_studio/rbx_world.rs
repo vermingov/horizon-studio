@@ -6,12 +6,21 @@
 // game's speeds and how they move. Moving the root part teleports the player
 // with /tp, and Humanoid:MoveTo walks them with the agent's goto.
 // hstudio_rbx_draw's sync hands the player over to it every frame.
+//
+// Once a script looks at the world (the Workspace's children, its events,
+// a raycast, the Mouse's target), the game's entities near the player are
+// mirrored in the Workspace while it runs: mobs as Models with a Humanoid,
+// dropped items and experience orbs as Parts. Each frame they follow the
+// game, and they come and go with Roblox's events. A UI script that never
+// looks costs the game nothing.
 
-use super::hstudio::{GameApi, PlayerInfo, PlayerPose, Reply};
+use super::hstudio::{EntityInfo, GameApi, Owner, PlayerInfo, PlayerPose, Reply};
 use super::hstudio_lua::Value;
 use super::hstudio_rbx::{Env, Id, Rbx};
 use super::hstudio_rbx_types::{CFrame, Vector3};
 use super::hstudio_rbx_values::{as_cf, cf, enum_item, enum_value, v3};
+use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 /// A pixel of the player's model: the model is 15/16 the size of a
@@ -37,6 +46,18 @@ const WALKING: f64 = 0.5;
 pub const MOVE_TIMEOUT: f64 = 8.0;
 /// The LocalPlayer's name until the game says the player's.
 pub const NO_NAME: &str = "Player1";
+/// The most entities mirrored at once: the other players' first, then the
+/// nearest.
+pub const MAX_MIRRORED: usize = 256;
+/// A mirrored entity stays until it is farther down the game's list than
+/// this, so that entities near the cut-off don't come and go as they move.
+pub const KEEP_RANK: usize = MAX_MIRRORED + 32;
+/// How long the console's look at the world lasts without another, in
+/// seconds, once nothing of the console's listens on the layer.
+pub const CONSOLE_LOOK: f64 = 60.0;
+/// The entity types the layer tells apart.
+const PLAYER: &str = "minecraft:player";
+const ORB: &str = "minecraft:experience_orb";
 
 // ---------------------------------------------------------------- state
 
@@ -61,6 +82,15 @@ pub struct World {
     pub running: f64,
     /// Humanoid:MoveTo's walk, while it goes.
     pub walk: Option<Walk>,
+    /// The scripts that looked at the world: while one of them runs, the
+    /// game's entities are mirrored. The console's look lapses (`lapse`).
+    pub lookers: Vec<Owner>,
+    /// When the console last looked.
+    pub console_looked: f64,
+    /// The entities mirrored, by the game's entity id.
+    pub mirrors: BTreeMap<u32, Mirror>,
+    /// The dimension the mirrored entities are in.
+    pub dimension: String,
 }
 
 impl Default for World {
@@ -76,8 +106,31 @@ impl Default for World {
             on_ground: true,
             running: 0.0,
             walk: None,
+            lookers: Vec::new(),
+            console_looked: 0.0,
+            mirrors: BTreeMap::new(),
+            dimension: String::new(),
         }
     }
+}
+
+/// An entity's mirror: its Model (a mob's) or its Part (an item's, an
+/// orb's), the parts and Humanoid in it, and what the game last said of it,
+/// so that only a change of the game's is passed on.
+pub struct Mirror {
+    pub kind: String,
+    pub model: Id,
+    pub root: Id,
+    pub head: Option<Id>,
+    pub humanoid: Option<Id>,
+    pub name: String,
+    pub health: f32,
+    pub max_health: f32,
+    pub speed: f64,
+    pub state: &'static str,
+    pub count: u32,
+    /// The width, height and eyes its boxes were made for.
+    pub shape: (f64, f64, f64),
 }
 
 /// A walk Humanoid:MoveTo started: its Humanoid, where to and when; whether
@@ -139,6 +192,14 @@ pub fn build_character(rbx: &mut Rbx, name: &str) -> Rig {
 }
 
 fn rig_part(rbx: &mut Rbx, model: Id, name: &str, size: Vector3) -> Id {
+    let part = invisible_part(rbx, name, size);
+    let _ = rbx.set_parent(part, Some(model));
+    part
+}
+
+/// A Part for something the game draws itself: invisible, anchored, and
+/// touching nothing. Not in the Workspace yet.
+fn invisible_part(rbx: &mut Rbx, name: &str, size: Vector3) -> Id {
     let part = rbx.make("Part", None);
     rbx.inst_mut(part).name = name.into();
     rbx.raw_set(part, "Size", v3(size));
@@ -147,18 +208,20 @@ fn rig_part(rbx: &mut Rbx, model: Id, name: &str, size: Vector3) -> Id {
     rbx.raw_set(part, "CanCollide", Value::Bool(false));
     rbx.raw_set(part, "CanTouch", Value::Bool(false));
     rbx.raw_set(part, "Massless", Value::Bool(true));
-    let _ = rbx.set_parent(part, Some(model));
     part
 }
 
 // ---------------------------------------------------------------- each frame
 
-/// The world brought up to the game, each frame: the local player.
+/// The world brought up to the game, each frame: the local player, and the
+/// entities near them while a script looks.
 pub fn sync(rbx: &mut Rbx, game: &mut dyn GameApi) {
-    if let Some(p) = game.player() {
+    let player = game.player();
+    if let Some(p) = &player {
         let pose = game.pose();
-        sync_local(rbx, &p, pose.as_ref());
+        sync_local(rbx, p, pose.as_ref());
     }
+    sync_world(rbx, game, player.as_ref());
 }
 
 /// The LocalPlayer is the player, and its character follows them: its root
@@ -370,6 +433,384 @@ fn respawn(rbx: &mut Rbx) {
     rbx.fire(player, "CharacterAppearanceLoaded", vec![cv]);
 }
 
+// ---------------------------------------------------------------- the world's entities
+
+/// A script looked at the world: while it runs, the game's entities near the
+/// player are mirrored in the Workspace. The first look mirrors them at once,
+/// so the script finds them there already, and its ChildAdded handlers fire
+/// for those that come after.
+pub fn look(env: &mut dyn Env) {
+    let (owner, now) = (env.owner(), env.now());
+    let (rbx, game) = env.rbx_and_game();
+    if owner == Owner::Console {
+        rbx.world.console_looked = now;
+    }
+    if rbx.world.lookers.contains(&owner) {
+        return;
+    }
+    let first = rbx.world.lookers.is_empty();
+    rbx.world.lookers.push(owner);
+    if !rbx.active {
+        // The layer's first use (an executor function's can be): it wakes up
+        // with the game as it is, the world with it.
+        rbx.active = true;
+        rbx.now = now;
+        super::hstudio_rbx_draw::sync(rbx, game);
+    } else if first {
+        let player = game.player();
+        sync_world(rbx, game, player.as_ref());
+    }
+}
+
+/// A script stopped: it looks no more.
+pub fn forget(rbx: &mut Rbx, owner: Owner) {
+    rbx.world.lookers.retain(|o| *o != owner);
+}
+
+/// The console's look lapses a minute after its last, once none of its
+/// handlers, waiting threads or render steps is left on the layer: a line
+/// typed to see the world doesn't keep it mirrored for the whole session.
+fn lapse(rbx: &mut Rbx) {
+    let console = Owner::Console;
+    if !rbx.world.lookers.contains(&console) || rbx.now - rbx.world.console_looked < CONSOLE_LOOK {
+        return;
+    }
+    let listens = rbx.insts.values().any(|i| i.conns.iter().any(|c| c.owner == console))
+        || rbx.waiters.iter().any(|w| w.owner == console)
+        || rbx.render_steps.iter().any(|r| r.2 == console);
+    if listens {
+        rbx.world.console_looked = rbx.now;
+    } else {
+        forget(rbx, console);
+    }
+}
+
+/// The mirrors brought up to the game while a script looks. Out of a world
+/// there are none, in another dimension the entities are others (the game
+/// gives their ids out again), and once no script looks they go.
+fn sync_world(rbx: &mut Rbx, game: &mut dyn GameApi, p: Option<&PlayerInfo>) {
+    lapse(rbx);
+    let Some(p) = p.filter(|_| !rbx.world.lookers.is_empty()) else {
+        clear(rbx);
+        return;
+    };
+    if p.dimension != rbx.world.dimension {
+        clear(rbx);
+        rbx.world.dimension = p.dimension.clone();
+    }
+    sync_entities(rbx, game);
+}
+
+/// Every mirror goes, in the order of their entities' ids.
+fn clear(rbx: &mut Rbx) {
+    let ids: Vec<u32> = rbx.world.mirrors.keys().copied().collect();
+    for id in ids {
+        remove_mirror(rbx, id);
+    }
+}
+
+/// The entities as the game lists them now: a mirror for each one chosen
+/// (`choose`), made for those new, brought up to the game for the rest, and
+/// gone for those no longer chosen. An id that comes back as another type of
+/// entity gets a new mirror.
+fn sync_entities(rbx: &mut Rbx, game: &mut dyn GameApi) {
+    let list = game.entities(KEEP_RANK);
+    let chosen = choose(&rbx.world.mirrors, &list);
+    let keep: BTreeSet<u32> = chosen.iter().map(|e| e.id).collect();
+    let gone: Vec<u32> = rbx
+        .world
+        .mirrors
+        .keys()
+        .copied()
+        .filter(|id| !keep.contains(id))
+        .collect();
+    for id in gone {
+        remove_mirror(rbx, id);
+    }
+    for e in chosen {
+        match rbx.world.mirrors.get(&e.id) {
+            Some(m) if m.kind == e.kind => update_mirror(rbx, e, false),
+            Some(_) => {
+                remove_mirror(rbx, e.id);
+                build_mirror(rbx, e);
+            }
+            None => build_mirror(rbx, e),
+        }
+    }
+}
+
+/// Which of the game's entities (the other players first, then the nearest)
+/// to mirror, in its order: those mirrored already while the list has them
+/// (it runs to KEEP_RANK), then new ones while fewer than MAX_MIRRORED are.
+/// Another player's entity always finds room, the farthest mob's mirror
+/// making way. So entities about the cut-off keep their mirrors as they
+/// move, rather than coming and going every frame.
+fn choose<'a>(mirrors: &BTreeMap<u32, Mirror>, list: &'a [EntityInfo]) -> Vec<&'a EntityInfo> {
+    let mut seen = BTreeSet::new();
+    let list: Vec<&EntityInfo> = list.iter().filter(|e| seen.insert(e.id)).collect();
+    let mut chosen: Vec<usize> = (0..list.len()).filter(|&i| mirrors.contains_key(&list[i].id)).collect();
+    for i in (0..list.len()).filter(|&i| !mirrors.contains_key(&list[i].id)) {
+        if chosen.len() < MAX_MIRRORED {
+            chosen.push(i);
+        } else if list[i].kind == PLAYER
+            && let Some(at) = chosen.iter().rposition(|&c| list[c].kind != PLAYER)
+        {
+            chosen.remove(at);
+            chosen.push(i);
+        }
+    }
+    chosen.sort_unstable();
+    chosen.into_iter().map(|i| list[i]).collect()
+}
+
+/// A new entity's mirror, made whole and put in place before it goes into
+/// the Workspace, so ChildAdded's handlers see it so. A mob is a Model named
+/// after it (its custom name, else its type: "Cave Spider") holding a
+/// HumanoidRootPart, a Head and a Humanoid; a dropped item is a Part named
+/// after the item with ItemId and Count attributes, and an orb a Part
+/// "Experience Orb" with its Value. Each has EntityId and EntityType
+/// attributes. Like the character, a mirror is the studio's own and locked:
+/// scripts can put things in it, but not take it out of the Workspace.
+fn build_mirror(rbx: &mut Rbx, e: &EntityInfo) {
+    let name = mirror_name(e);
+    let (model, root, head, humanoid) = match &e.item {
+        Some((item, n)) => {
+            let part = invisible_part(rbx, &name, Vector3::ONE);
+            if e.kind == ORB {
+                set_attribute(rbx, part, "Value", Value::Num(f64::from(*n)));
+            } else {
+                set_attribute(rbx, part, "ItemId", Value::str(item));
+                set_attribute(rbx, part, "Count", Value::Num(f64::from(*n)));
+            }
+            (part, part, None, None)
+        }
+        None if e.kind == PLAYER => {
+            let rig = build_character(rbx, &name);
+            (rig.model, rig.root, Some(rig.head), Some(rig.humanoid))
+        }
+        None => {
+            let model = rbx.make("Model", None);
+            rbx.inst_mut(model).name = name.clone();
+            let root = rig_part(rbx, model, "HumanoidRootPart", Vector3::ONE);
+            let head = rig_part(rbx, model, "Head", Vector3::ONE);
+            let humanoid = rbx.make("Humanoid", None);
+            let root_v = rbx.value(root);
+            rbx.raw_set(humanoid, "RootPart", root_v.clone());
+            rbx.raw_set(humanoid, "DisplayName", Value::str(&name));
+            rbx.raw_set(humanoid, "RigType", enum_value(enum_item("HumanoidRigType", "R6")));
+            // The root part stands on the ground: no legs under it.
+            rbx.raw_set(humanoid, "HipHeight", Value::Num(0.0));
+            rbx.raw_set(humanoid, "JumpPower", Value::Num(0.42 * TICKS));
+            rbx.raw_set(humanoid, "JumpHeight", Value::Num(jump_height(0.42)));
+            let _ = rbx.set_parent(humanoid, Some(model));
+            rbx.raw_set(model, "PrimaryPart", root_v);
+            set_attribute(rbx, model, "Baby", Value::Bool(e.baby));
+            (model, root, Some(head), Some(humanoid))
+        }
+    };
+    set_attribute(rbx, model, "EntityId", Value::Num(f64::from(e.id)));
+    set_attribute(rbx, model, "EntityType", Value::str(&e.kind));
+    let mut tree = vec![model];
+    tree.extend(rbx.descendants(model));
+    for id in tree {
+        rbx.inst_mut(id).locked = true;
+    }
+    rbx.world.mirrors.insert(
+        e.id,
+        Mirror {
+            kind: e.kind.clone(),
+            model,
+            root,
+            head,
+            humanoid,
+            name,
+            health: e.health,
+            max_health: e.max_health,
+            speed: e.speed,
+            state: entity_state(e),
+            count: e.item.as_ref().map_or(0, |i| i.1),
+            shape: (0.0, 0.0, 0.0),
+        },
+    );
+    update_mirror(rbx, e, true);
+    let ws = rbx.workspace;
+    let _ = rbx.set_parent(model, Some(ws));
+}
+
+/// A mirror brought up to its entity: its parts where the game draws it
+/// (set quietly, as Roblox's physics moves parts, with no Changed) and its
+/// velocity; and as the game's own change, its name, its Humanoid's health
+/// (HealthChanged, and Died once as it reaches nothing), most health, speed
+/// and state (StateChanged), and an item's count or an orb's value. A
+/// script's own changes to them stay until the game's change.
+fn update_mirror(rbx: &mut Rbx, e: &EntityInfo, fresh: bool) {
+    let Some(m) = rbx.world.mirrors.get(&e.id) else {
+        return;
+    };
+    let (model, root, head, humanoid) = (m.model, m.root, m.head, m.humanoid);
+    let (name, health, max_health, speed, state, count, shape) = (
+        m.name.clone(),
+        m.health,
+        m.max_health,
+        m.speed,
+        m.state,
+        m.count,
+        m.shape,
+    );
+    place(rbx, e, root, head, shape != (e.width, e.height, e.eye));
+    let v = v3(Vector3::new(e.velocity[0], e.velocity[1], e.velocity[2]));
+    rbx.quiet_set(root, "AssemblyLinearVelocity", v.clone());
+    rbx.quiet_set(root, "Velocity", v);
+    let now_name = mirror_name(e);
+    if !fresh && now_name != name {
+        rename(rbx, model, &now_name);
+        if let Some(h) = humanoid {
+            rbx.raw_set(h, "DisplayName", Value::str(&now_name));
+        }
+    }
+    let now_state = entity_state(e);
+    if let Some(h) = humanoid {
+        if fresh || e.max_health != max_health {
+            rbx.raw_set(h, "MaxHealth", Value::Num(f64::from(e.max_health) * HEALTH_SCALE));
+        }
+        let hp = f64::from(e.health) * HEALTH_SCALE;
+        if fresh {
+            rbx.raw_set(h, "Health", Value::Num(hp));
+        } else if e.health != health {
+            rbx.raw_set(h, "Health", Value::Num(hp));
+            rbx.fire(h, "HealthChanged", vec![Value::Num(hp)]);
+            if e.health <= 0.0 && health > 0.0 {
+                rbx.fire(h, "Died", Vec::new());
+            }
+        }
+        if fresh || e.speed != speed {
+            rbx.raw_set(h, "WalkSpeed", Value::Num(e.speed * SPEED_SCALE));
+        }
+        if !fresh && now_state != state {
+            let item = |s: &str| enum_value(enum_item("HumanoidStateType", s));
+            rbx.fire(h, "StateChanged", vec![item(state), item(now_state)]);
+        }
+    }
+    if let Some((_, n)) = &e.item
+        && *n != count
+    {
+        let key = if e.kind == ORB { "Value" } else { "Count" };
+        set_attribute(rbx, model, key, Value::Num(f64::from(*n)));
+    }
+    if let Some(m) = rbx.world.mirrors.get_mut(&e.id) {
+        m.name = now_name;
+        m.health = e.health;
+        m.max_health = e.max_health;
+        m.speed = e.speed;
+        m.state = now_state;
+        m.count = e.item.as_ref().map_or(0, |i| i.1);
+        m.shape = (e.width, e.height, e.eye);
+    }
+}
+
+/// Where a mirror's parts are this frame, from its entity's feet, box and
+/// facing: another player's character as the local one is placed; a mob's
+/// root part from its feet up to its head, a cube at its eyes; an item's or
+/// an orb's part over its box. Their sizes are set when the box changes.
+fn place(rbx: &mut Rbx, e: &EntityInfo, root: Id, head: Option<Id>, resize: bool) {
+    let feet = Vector3::new(e.pos[0], e.pos[1], e.pos[2]);
+    let body = facing(e.body_yaw, 0.0);
+    let look = facing(e.head_yaw, e.pitch);
+    let up = |y: f64| feet + Vector3::new(0.0, y, 0.0);
+    let (root_at, head_at) = match head {
+        _ if e.kind == PLAYER => (up(TORSO_Y * e.height / HEIGHT), up(e.eye)),
+        Some(head) => {
+            let (r, s) = mob_boxes(e.width, e.height, e.eye);
+            if resize {
+                rbx.raw_set(root, "Size", v3(Vector3::new(e.width, r, e.width)));
+                rbx.raw_set(head, "Size", v3(Vector3::new(s, s, s)));
+            }
+            (up(r / 2.0), up(r + s / 2.0))
+        }
+        None => {
+            if resize {
+                rbx.raw_set(root, "Size", v3(Vector3::new(e.width, e.height, e.width)));
+            }
+            (up(e.height / 2.0), feet)
+        }
+    };
+    rbx.quiet_set(
+        root,
+        "CFrame",
+        cf(CFrame::look_at(root_at, root_at + body, Vector3::Y_AXIS)),
+    );
+    if let Some(head) = head {
+        rbx.quiet_set(
+            head,
+            "CFrame",
+            cf(CFrame::look_at(head_at, head_at + look, Vector3::Y_AXIS)),
+        );
+    }
+}
+
+/// An entity that went: its mirror is destroyed (Destroying, then
+/// DescendantRemoving and ChildRemoved; what scripts put in it goes too),
+/// and what no script still holds of it is let go at once, rather than at
+/// the layer's next sweep.
+fn remove_mirror(rbx: &mut Rbx, id: u32) {
+    let Some(m) = rbx.world.mirrors.remove(&id) else {
+        return;
+    };
+    let mut tree = vec![m.model];
+    tree.extend(rbx.descendants(m.model));
+    rbx.destroy(m.model);
+    loop {
+        let free: Vec<Id> = tree
+            .iter()
+            .copied()
+            .filter(|&i| {
+                rbx.try_inst(i).is_some_and(|inst| {
+                    inst.destroyed && matches!(&inst.value, Value::Userdata(u) if Rc::strong_count(u) == 1)
+                })
+            })
+            .collect();
+        if free.is_empty() {
+            break;
+        }
+        for i in free {
+            rbx.insts.remove(&i);
+        }
+    }
+}
+
+/// What a mirror is called: a player's name or a mob's custom name, else its
+/// type's ("minecraft:cave_spider" is "Cave Spider"); a dropped item after
+/// the item, an orb "Experience Orb".
+fn mirror_name(e: &EntityInfo) -> String {
+    match &e.item {
+        _ if !e.name.is_empty() => e.name.clone(),
+        Some(_) if e.kind == ORB => "Experience Orb".into(),
+        Some((item, _)) => title(item),
+        None => title(&e.kind),
+    }
+}
+
+/// A mob's Humanoid state, from the game: Dead with no health, Freefall off
+/// the ground, else Running.
+fn entity_state(e: &EntityInfo) -> &'static str {
+    if e.health <= 0.0 {
+        "Dead"
+    } else if !e.on_ground {
+        "Freefall"
+    } else {
+        "Running"
+    }
+}
+
+/// A mob's two boxes, in blocks: its root part's height, from its feet to
+/// under its head, and the side of its head, a cube on the root part at its
+/// eyes. Together they cover its box, and each can be hit on its own.
+pub fn mob_boxes(width: f64, height: f64, eye: f64) -> (f64, f64) {
+    let side = width.min(0.5).min(height / 2.0).max(0.05);
+    let root = (eye - side / 2.0).max(height / 2.0);
+    (root, side)
+}
+
 // ---------------------------------------------------------------- what scripts read and do
 
 /// Members that are read, not kept as properties: game.LocalPlayer,
@@ -386,14 +827,70 @@ pub fn member(rbx: &Rbx, id: Id, key: &str) -> Option<Value> {
     }
 }
 
-/// What a read of `key` on `id` needs from the game first: the local
+/// What a read of `key` on `id` needs from the game first: the Mouse's Hit,
+/// Target, UnitRay and Origin are worked out where it points; the local
 /// Humanoid's FloorMaterial is the block under the player, looked up only
-/// when a script asks.
+/// when a script asks; and a read that reaches the world's entities
+/// (`reaches_world`) has them mirrored.
 pub fn before_read(env: &mut dyn Env, id: Id, key: &str) {
+    if id == env.rbx().mouse {
+        if matches!(key, "Hit" | "Target" | "UnitRay" | "Origin") {
+            super::hstudio_rbx_draw::mouse_refresh(env);
+        }
+        return;
+    }
     if key == "FloorMaterial" && id == env.rbx().humanoid {
         let (rbx, game) = env.rbx_and_game();
         let m = floor(rbx, game);
         rbx.quiet_set(id, "FloorMaterial", enum_value(enum_item("Material", m)));
+    }
+    if reaches_world(env.rbx(), id, key) {
+        look(env);
+    }
+}
+
+/// Whether reading `key` of `id` reaches the world's entities: the
+/// Workspace's ChildAdded, ChildRemoved and descendant events and a child by
+/// its name, and game's descendant events. Its CurrentCamera, Terrain,
+/// Gravity and the like don't, so a UI script never has the world mirrored.
+fn reaches_world(rbx: &Rbx, id: Id, key: &str) -> bool {
+    if id == rbx.game {
+        matches!(key, "DescendantAdded" | "DescendantRemoving")
+    } else if id == rbx.workspace {
+        matches!(
+            key,
+            "ChildAdded" | "ChildRemoved" | "DescendantAdded" | "DescendantRemoving"
+        ) || !super::hstudio_rbx::is_member(rbx.inst(id).class, key)
+    } else {
+        false
+    }
+}
+
+/// What a call of `name` on `id` needs first: the world's entities mirrored,
+/// when the call reaches them. On the Workspace, the methods that list or
+/// find its children and its raycast; on game, those that search all of it.
+pub fn before_call(env: &mut dyn Env, id: Id, name: &str, args: &[Value]) {
+    let rbx = env.rbx();
+    let reaches = if id == rbx.workspace {
+        matches!(
+            name,
+            "GetChildren"
+                | "GetDescendants"
+                | "FindFirstChild"
+                | "FindFirstChildOfClass"
+                | "FindFirstChildWhichIsA"
+                | "FindFirstDescendant"
+                | "WaitForChild"
+                | "Raycast"
+        )
+    } else if id == rbx.game {
+        matches!(name, "GetDescendants" | "FindFirstDescendant")
+            || name.starts_with("FindFirstChild") && args.get(2).is_some_and(Value::truthy)
+    } else {
+        false
+    };
+    if reaches {
+        look(env);
     }
 }
 
@@ -419,11 +916,14 @@ fn floor(rbx: &Rbx, game: &mut dyn GameApi) -> &'static str {
     "Air"
 }
 
-/// A Humanoid's state: the local one's as the game has the player, and
-/// another's from its health.
+/// A Humanoid's state: the local one's as the game has the player, a
+/// mirrored mob's as the game has it, and another's from its health.
 pub fn state_of(rbx: &Rbx, humanoid: Id) -> &'static str {
     if humanoid == rbx.humanoid {
         return rbx.world.state;
+    }
+    if let Some(m) = rbx.world.mirrors.values().find(|m| m.humanoid == Some(humanoid)) {
+        return m.state;
     }
     if rbx.raw_get(humanoid, "Health").to_num().is_some_and(|h| h <= 0.0) {
         "Dead"
@@ -546,6 +1046,28 @@ pub fn rename(rbx: &mut Rbx, id: Id, name: &str) {
     if let Some(p) = rbx.inst(id).parent {
         rbx.child_arrived(p, id);
     }
+}
+
+/// The way a yaw and a pitch in degrees look, as the game turns them (yaw 0
+/// looks south, +Z; a positive pitch looks down).
+fn facing(yaw: f32, pitch: f32) -> Vector3 {
+    let (yaw, pitch) = (f64::from(yaw).to_radians(), f64::from(pitch).to_radians());
+    Vector3::new(-yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos())
+}
+
+/// A game id as a name: "minecraft:cave_spider" is "Cave Spider".
+pub fn title(id: &str) -> String {
+    let name = id.rsplit(':').next().unwrap_or(id);
+    name.split('_')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            chars
+                .next()
+                .map_or(String::new(), |c| c.to_uppercase().chain(chars).collect())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Sets an attribute as SetAttribute does, with its events when it changes.
