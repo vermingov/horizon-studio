@@ -289,6 +289,18 @@ pub enum ApplyStrokeMode {
     Border,
 }
 
+/// Enum.TextTruncate: how text that doesn't fit ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TextTruncate {
+    /// Drawn whole, past its area.
+    #[default]
+    None,
+    /// Cut where the line and "..." still fit.
+    AtEnd,
+    /// Cut after the last whole word that fits with "...".
+    SplitWord,
+}
+
 /// Where along a length an alignment puts things: 0 start, 0.5 middle, 1 end.
 fn h_fraction(a: HorizontalAlignment) -> f64 {
     match a {
@@ -343,6 +355,9 @@ pub struct Node {
     pub line_height: f64,
     pub text_x_alignment: TextXAlignment,
     pub text_y_alignment: TextYAlignment,
+    pub text_truncate: TextTruncate,
+    /// The characters drawn, from the start; -1 draws them all.
+    pub max_visible_graphemes: i32,
 
     // ScrollingFrame
     pub canvas_size: UDim2,
@@ -441,6 +456,8 @@ impl Node {
             line_height: 1.0,
             text_x_alignment: TextXAlignment::Center,
             text_y_alignment: TextYAlignment::Center,
+            text_truncate: TextTruncate::None,
+            max_visible_graphemes: -1,
             canvas_size: UDim2::new(0.0, 0.0, 2.0, 0.0),
             canvas_position: Vector2::ZERO,
             automatic_canvas_size: AutomaticSize::None,
@@ -681,6 +698,9 @@ pub struct TextLine {
     /// Its top-left corner.
     pub position: Vector2,
     pub width: f64,
+    /// The byte offset in the node's text of its first character (the
+    /// spaces a wrap breaks at belong to no line).
+    pub start: usize,
 }
 
 /// A text object's text, laid out in its content area.
@@ -692,7 +712,10 @@ pub struct TextLayout {
     pub bounds: Vector2,
     /// TextFits: whether that fits the content area.
     pub fits: bool,
-    /// The lines drawn; a wrapped text drops those below its area.
+    /// The lines drawn; a wrapped text drops those below its area. A
+    /// TextTruncate ends the lines that don't fit with "...", and
+    /// MaxVisibleGraphemes keeps only the characters it shows, each line
+    /// where it is for the whole text.
     pub lines: Vec<TextLine>,
 }
 
@@ -1477,7 +1500,7 @@ impl<'a> Pass<'a> {
         } else {
             node.text_size
         };
-        let (lines, bounds) = self.wrap(text, size, font, line_height, width);
+        let (mut lines, bounds) = self.wrap(text, size, font, line_height, width);
         let fits = bounds.x <= content.w && bounds.y <= content.h;
         let step = size * line_height;
         let drawn = if wrapped && step > 0.0 {
@@ -1485,6 +1508,11 @@ impl<'a> Pass<'a> {
         } else {
             lines.len()
         };
+        if node.text_truncate != TextTruncate::None {
+            let cut_below = drawn < lines.len();
+            lines.truncate(drawn);
+            self.truncate(&mut lines, cut_below, content.w, size, font, node.text_truncate);
+        }
         let fx = match x_align {
             TextXAlignment::Left => 0.0,
             TextXAlignment::Center => 0.5,
@@ -1496,16 +1524,20 @@ impl<'a> Pass<'a> {
             TextYAlignment::Bottom => 1.0,
         };
         let top = content.y + (content.h - drawn as f64 * step) * fy;
-        let lines = lines
+        let mut lines: Vec<TextLine> = lines
             .into_iter()
             .take(drawn)
             .enumerate()
-            .map(|(i, (text, w))| TextLine {
+            .map(|(i, (text, w, start))| TextLine {
                 text,
                 position: ctx.point(Vector2::new(content.x + (content.w - w) * fx, top + i as f64 * step)),
                 width: w * ctx.k,
+                start,
             })
             .collect();
+        if let Ok(max) = usize::try_from(node.max_visible_graphemes) {
+            self.visible(&mut lines, text, max, size, font, ctx.k);
+        }
         TextLayout {
             size: size * ctx.k,
             bounds: bounds * ctx.k,
@@ -1515,8 +1547,8 @@ impl<'a> Pass<'a> {
     }
 
     /// Text broken into lines (at "\n", and at spaces, or inside a word too
-    /// long for a line, when `width` is given), each with its width, and
-    /// the bounds of them all.
+    /// long for a line, when `width` is given), each with its width and
+    /// the byte offset in `text` it starts at, and the bounds of them all.
     fn wrap(
         &mut self,
         text: &str,
@@ -1524,19 +1556,21 @@ impl<'a> Pass<'a> {
         font: &Font,
         line_height: f64,
         width: Option<f64>,
-    ) -> (Vec<(String, f64)>, Vector2) {
+    ) -> (Vec<(String, f64, usize)>, Vector2) {
         let mut lines = Vec::new();
+        let mut at = 0;
         for paragraph in text.split('\n') {
             match width {
-                None => lines.push(paragraph.to_string()),
-                Some(w) => self.wrap_paragraph(paragraph, size, font, w, &mut lines),
+                None => lines.push((paragraph.to_string(), at)),
+                Some(w) => self.wrap_paragraph(paragraph, at, size, font, w, &mut lines),
             }
+            at += paragraph.len() + 1;
         }
-        let measured: Vec<(String, f64)> = lines
+        let measured: Vec<(String, f64, usize)> = lines
             .into_iter()
-            .map(|line| {
+            .map(|(line, start)| {
                 let w = (self.measure)(&line, size, font);
-                (line, w)
+                (line, w, start)
             })
             .collect();
         let widest = measured.iter().map(|l| l.1).fold(0.0, f64::max);
@@ -1544,34 +1578,129 @@ impl<'a> Pass<'a> {
         (measured, bounds)
     }
 
-    fn wrap_paragraph(&mut self, paragraph: &str, size: f64, font: &Font, width: f64, lines: &mut Vec<String>) {
+    /// A paragraph that starts at byte `at` of its text, wrapped to `width`:
+    /// its lines and where each starts.
+    fn wrap_paragraph(
+        &mut self,
+        paragraph: &str,
+        at: usize,
+        size: f64,
+        font: &Font,
+        width: f64,
+        lines: &mut Vec<(String, usize)>,
+    ) {
         let mut line = String::new();
+        let mut start = at;
+        let mut word_at = at;
         for word in paragraph.split(' ') {
+            let here = word_at;
+            word_at += word.len() + 1;
             if !line.is_empty() {
                 let candidate = format!("{line} {word}");
                 if (self.measure)(&candidate, size, font) <= width {
                     line = candidate;
                     continue;
                 }
-                lines.push(std::mem::take(&mut line));
+                lines.push((std::mem::take(&mut line), start));
             }
             if (self.measure)(word, size, font) <= width {
                 line = word.to_string();
+                start = here;
                 continue;
             }
             // A word wider than the line breaks where it must.
-            for ch in word.chars() {
+            for (i, ch) in word.char_indices() {
                 let mut candidate = line.clone();
                 candidate.push(ch);
                 if !line.is_empty() && (self.measure)(&candidate, size, font) > width {
-                    lines.push(std::mem::take(&mut line));
+                    lines.push((std::mem::take(&mut line), start));
                     line.push(ch);
+                    start = here + i;
                 } else {
+                    if line.is_empty() {
+                        start = here + i;
+                    }
                     line = candidate;
                 }
             }
         }
-        lines.push(line);
+        lines.push((line, start));
+    }
+
+    /// TextTruncate: each line too wide for `width`, and the last one when
+    /// lines below it are cut off, ends in "..." where that still fits.
+    fn truncate(
+        &mut self,
+        lines: &mut [(String, f64, usize)],
+        cut_below: bool,
+        width: f64,
+        size: f64,
+        font: &Font,
+        how: TextTruncate,
+    ) {
+        let last = lines.len().saturating_sub(1);
+        for (i, line) in lines.iter_mut().enumerate() {
+            if line.1 > width + 1e-9 || (cut_below && i == last) {
+                let cut = self.ellipsis(&line.0, width, size, font, how);
+                line.1 = (self.measure)(&cut, size, font);
+                line.0 = cut;
+            }
+        }
+    }
+
+    /// The longest start of `line` that fits `width` with "..." after it
+    /// (at a word's end for SplitWord, unless the first word is too long).
+    fn ellipsis(&mut self, line: &str, width: f64, size: f64, font: &Font, how: TextTruncate) -> String {
+        let ends: Vec<usize> = line
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(line.len()))
+            .collect();
+        let mut fits = |end: usize| (self.measure)(&format!("{}...", line[..end].trim_end()), size, font) <= width;
+        // The first end that doesn't fit: the starts get wider as they get longer.
+        let (mut lo, mut hi) = (0, ends.len());
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if fits(ends[mid]) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        let Some(best) = lo.checked_sub(1) else {
+            // Not even "..." fits: as many of its dots as do.
+            let mut dots = String::from("...");
+            while !dots.is_empty() && (self.measure)(&dots, size, font) > width {
+                dots.pop();
+            }
+            return dots;
+        };
+        let mut end = ends[best];
+        let mid_word = end > 0 && !line[..end].ends_with(' ') && line[end..].starts_with(|c: char| c != ' ');
+        if how == TextTruncate::SplitWord
+            && mid_word
+            && let Some(space) = line[..end].rfind(' ')
+        {
+            end = space;
+        }
+        format!("{}...", line[..end].trim_end())
+    }
+
+    /// MaxVisibleGraphemes: only the first `max` characters of `text` stay
+    /// in the lines, which keep their places.
+    fn visible(&mut self, lines: &mut Vec<TextLine>, text: &str, max: usize, size: f64, font: &Font, k: f64) {
+        let end = text.char_indices().nth(max).map_or(text.len(), |(i, _)| i);
+        lines.retain(|l| l.start < end);
+        for line in lines.iter_mut() {
+            let mut keep = (end - line.start).min(line.text.len());
+            while !line.text.is_char_boundary(keep) {
+                keep -= 1;
+            }
+            if keep < line.text.len() {
+                line.text.truncate(keep);
+                line.width = (self.measure)(&line.text, size, font) * k;
+            }
+        }
     }
 
     /// The drawn GuiObjects, bottom first: ScreenGuis by DisplayOrder, and in

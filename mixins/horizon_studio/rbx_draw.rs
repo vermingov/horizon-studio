@@ -117,6 +117,12 @@ fn fill(node: &mut layout::Node, inst: &super::hstudio_rbx::Inst, focused: bool)
             "Bottom" => TextYAlignment::Bottom,
             _ => TextYAlignment::Center,
         };
+        node.text_truncate = match enum_name(&inst.get("TextTruncate")) {
+            "AtEnd" => layout::TextTruncate::AtEnd,
+            "SplitWord" => layout::TextTruncate::SplitWord,
+            _ => layout::TextTruncate::None,
+        };
+        node.max_visible_graphemes = num(inst, "MaxVisibleGraphemes").clamp(-1.0, f64::from(i32::MAX)) as i32;
     }
     match c.name {
         "ScrollingFrame" => {

@@ -8,8 +8,8 @@
 
 use horizon_studio::game::hstudio_rbx_layout::{
     AspectType, AutomaticSize, Class, DominantAxis, FillDirection, HorizontalAlignment, Layout, Node, NodeId,
-    ScrollBarInset, SizeConstraint, SortOrder, StartCorner, TOP_BAR, TextXAlignment, TextYAlignment, Tree,
-    VerticalAlignment, Viewport, ZIndexBehavior,
+    ScrollBarInset, SizeConstraint, SortOrder, StartCorner, TOP_BAR, TextTruncate, TextXAlignment, TextYAlignment,
+    Tree, VerticalAlignment, Viewport, ZIndexBehavior,
 };
 use horizon_studio::game::hstudio_rbx_types::{Font, UDim, UDim2, Vector2};
 
@@ -722,6 +722,115 @@ fn wrapped_text_drops_lines_below_its_area() {
     let t = l.get(word).unwrap().text.clone().unwrap();
     let lines: Vec<&str> = t.lines.iter().map(|t| t.text.as_str()).collect();
     assert_eq!(lines, ["abcdef", "ghij"]);
+}
+
+/// A label's lines as drawn: (text, x, y, width, start).
+fn text_lines(l: &Layout, id: NodeId) -> Vec<(String, f64, f64, f64, usize)> {
+    let t = l.get(id).unwrap().text.clone().unwrap();
+    t.lines
+        .into_iter()
+        .map(|l| (l.text, l.position.x, l.position.y, l.width, l.start))
+        .collect()
+}
+
+#[test]
+fn lines_know_where_they_start() {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    // 10 characters a line; the space a line breaks at belongs to neither.
+    let label = add(&mut tree, Class::TextLabel, gui, px(0.0, 0.0), px(50.0, 100.0));
+    tree[label].text = " aaaa bbbb cccc\nabcdefghijkl".into();
+    tree[label].text_size = 10.0;
+    tree[label].text_wrapped = true;
+    tree[label].text_y_alignment = TextYAlignment::Top;
+    let starts: Vec<(String, usize)> = text_lines(&run(&tree), label).into_iter().map(|l| (l.0, l.4)).collect();
+    let want = [("aaaa bbbb", 1), ("cccc", 11), ("abcdefghij", 16), ("kl", 26)];
+    let want: Vec<(String, usize)> = want.iter().map(|(t, s)| (t.to_string(), *s)).collect();
+    assert_eq!(starts, want);
+    // Unwrapped, each line is a paragraph.
+    tree[label].text_wrapped = false;
+    let starts: Vec<usize> = text_lines(&run(&tree), label).iter().map(|l| l.4).collect();
+    assert_eq!(starts, [0, 16]);
+}
+
+#[test]
+fn text_truncate_at_end_and_split_word() {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    // 55 wide: 11 characters of 5.
+    let label = add(&mut tree, Class::TextLabel, gui, px(0.0, 0.0), px(55.0, 20.0));
+    tree[label].text = "Hello world wide".into();
+    tree[label].text_size = 10.0;
+    tree[label].text_x_alignment = TextXAlignment::Left;
+    let drawn = |tree: &Tree| -> Vec<String> { text_lines(&run(tree), label).into_iter().map(|l| l.0).collect() };
+    assert_eq!(drawn(&tree), ["Hello world wide"], "None draws it all");
+    tree[label].text_truncate = TextTruncate::AtEnd;
+    let l = run(&tree);
+    let lines = text_lines(&l, label);
+    assert_eq!((lines[0].0.as_str(), lines[0].3), ("Hello wo...", 55.0));
+    let t = l.get(label).unwrap().text.clone().unwrap();
+    assert!(!t.fits);
+    assert_eq!(t.bounds, v(80.0, 10.0), "the bounds are the whole text's");
+    tree[label].text_truncate = TextTruncate::SplitWord;
+    assert_eq!(drawn(&tree), ["Hello..."]);
+    // A centred line is centred as cut.
+    tree[label].text_x_alignment = TextXAlignment::Center;
+    let lines = text_lines(&run(&tree), label);
+    assert_eq!(lines[0].1, (55.0 - 40.0) / 2.0);
+    // Text that fits is left alone.
+    tree[label].text = "Hello".into();
+    assert_eq!(drawn(&tree), ["Hello"]);
+    // Wrapped text cut off by its height ends its last line with "...".
+    tree[label].text = "aaaa bbbb cccc".into();
+    tree[label].text_wrapped = true;
+    tree[label].size = px(50.0, 15.0);
+    tree[label].text_truncate = TextTruncate::AtEnd;
+    assert_eq!(drawn(&tree), ["aaaa bb..."]);
+    tree[label].text_truncate = TextTruncate::SplitWord;
+    assert_eq!(drawn(&tree), ["aaaa..."]);
+    // A first word too long for the line is cut inside it; too narrow for "..." leaves what dots fit.
+    tree[label].text = "abcdefghijklmnop".into();
+    tree[label].text_wrapped = false;
+    assert_eq!(drawn(&tree), ["abcdefg..."]);
+    tree[label].size = px(12.0, 15.0);
+    assert_eq!(drawn(&tree), [".."]);
+}
+
+#[test]
+fn max_visible_graphemes_shows_the_start() {
+    let mut tree = Tree::new();
+    let gui = screen(&mut tree);
+    let label = add(&mut tree, Class::TextLabel, gui, px(0.0, 0.0), px(200.0, 50.0));
+    tree[label].text = "Hello\nWorld".into();
+    tree[label].text_size = 10.0;
+    let whole = text_lines(&run(&tree), label);
+    tree[label].max_visible_graphemes = 7;
+    let l = run(&tree);
+    let lines = text_lines(&l, label);
+    // "Hello", the line break, then "W", each where the whole text has it.
+    assert_eq!(lines.len(), 2);
+    assert_eq!(
+        (lines[0].0.as_str(), lines[0].1, lines[0].2),
+        ("Hello", whole[0].1, whole[0].2)
+    );
+    assert_eq!(
+        (lines[1].0.as_str(), lines[1].1, lines[1].2),
+        ("W", whole[1].1, whole[1].2)
+    );
+    assert_eq!(lines[1].3, 5.0);
+    let t = l.get(label).unwrap().text.clone().unwrap();
+    assert_eq!(t.bounds, v(25.0, 20.0), "the bounds are the whole text's");
+    tree[label].max_visible_graphemes = 3;
+    let lines = text_lines(&run(&tree), label);
+    assert_eq!(lines.iter().map(|l| l.0.as_str()).collect::<Vec<_>>(), ["Hel"]);
+    tree[label].max_visible_graphemes = 0;
+    assert!(text_lines(&run(&tree), label).is_empty());
+    tree[label].max_visible_graphemes = -1;
+    assert_eq!(text_lines(&run(&tree), label), whole);
+    // Characters, not bytes.
+    tree[label].text = "héllo".into();
+    tree[label].max_visible_graphemes = 2;
+    assert_eq!(text_lines(&run(&tree), label)[0].0, "hé");
 }
 
 // ---------------------------------------------------------------- scrolling and clipping

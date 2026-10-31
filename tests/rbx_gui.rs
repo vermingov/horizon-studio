@@ -236,3 +236,38 @@ fn kept_classes_take_any_property() {
         ]
     );
 }
+
+/// The texts drawn, in order.
+fn texts(drawn: &[String]) -> Vec<String> {
+    drawn
+        .iter()
+        .filter_map(|d| d.strip_prefix("text "))
+        .map(|d| d.split(" @").next().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn text_truncates_and_shows_its_first_graphemes() {
+    let mut game = FakeGame::new("rbx-truncate");
+    let mut st = studio(&mut game);
+    // The fake game's characters are 6 dp wide: 66 holds 11.
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local cut = Instance.new("TextLabel", gui)
+        cut.Size = UDim2.fromOffset(66, 20)
+        cut.Text = "Hello world wide"
+        cut.TextTruncate = Enum.TextTruncate.AtEnd
+        local typed = Instance.new("TextLabel", gui)
+        typed.Position = UDim2.fromOffset(0, 100)
+        typed.Size = UDim2.fromOffset(200, 20)
+        typed.Text = "Typewriter"
+        typed.MaxVisibleGraphemes = 4
+        command("more", function() typed.MaxVisibleGraphemes = -1 end)
+    "#;
+    load(&mut game, &mut st, "truncate", src, 0.6);
+    let drawn = hud(&mut st, &mut game);
+    assert_eq!(texts(&drawn), ["Hello wo...", "Type"], "{drawn:#?}");
+    assert!(st.command("more"));
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(texts(&hud(&mut st, &mut game)), ["Hello wo...", "Typewriter"]);
+}
