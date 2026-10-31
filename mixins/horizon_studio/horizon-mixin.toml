@@ -62,6 +62,12 @@ name = "hstudio_rbx_draw"
 source = "rbx_draw.rs"
 
 [[module]]
+id = "rbx_world"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_world"
+source = "rbx_world.rs"
+
+[[module]]
 id = "crypt"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_crypt"

@@ -1595,38 +1595,13 @@ pub fn step(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64, dt: f64, frame_no: 
     super::hstudio_sunc::poll_network(rbx);
 }
 
-/// The DataModel brought up to the game: the character, the Camera and the
-/// time of day.
+/// The DataModel brought up to the game: the world (hstudio_rbx_world: the
+/// player and their character), the Camera and the time of day.
 pub fn sync(rbx: &mut Rbx, game: &mut dyn GameApi) {
     let now = rbx.now;
     let ws = rbx.workspace;
     rbx.quiet_set(ws, "DistributedGameTime", Value::Num(now));
-    if let Some(p) = game.player() {
-        let yaw = f64::from(p.yaw).to_radians();
-        let pitch = f64::from(p.pitch).to_radians();
-        let feet = Vector3::new(p.x, p.y, p.z);
-        let flat = Vector3::new(-yaw.sin(), 0.0, yaw.cos());
-        let look = Vector3::new(-yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos());
-        let root = feet + Vector3::new(0.0, 0.9, 0.0);
-        let head = feet + Vector3::new(0.0, 1.62, 0.0);
-        let rp = rbx.root_part;
-        let hd = rbx.head;
-        // Kept quiet so a script's teleport isn't undone by the player's own place.
-        rbx.quiet_set(rp, "CFrame", cf(CFrame::look_at(root, root + flat, Vector3::Y_AXIS)));
-        rbx.fire(rp, "prop:CFrame", Vec::new());
-        rbx.quiet_set(hd, "CFrame", cf(CFrame::look_at(head, head + look, Vector3::Y_AXIS)));
-        let hum = rbx.humanoid;
-        rbx.raw_set(hum, "MaxHealth", Value::Num(f64::from(p.max_health) * 5.0));
-        let health = f64::from(p.health) * 5.0;
-        if rbx.last_health.is_none_or(|h| h != p.health) {
-            rbx.raw_set(hum, "Health", Value::Num(health));
-            rbx.fire(hum, "HealthChanged", vec![Value::Num(health)]);
-            if p.health <= 0.0 && rbx.last_health.is_some_and(|h| h > 0.0) {
-                rbx.fire(hum, "Died", Vec::new());
-            }
-            rbx.last_health = Some(p.health);
-        }
-    }
+    super::hstudio_rbx_world::sync(rbx, game);
     if let Some(cam) = game.camera() {
         let c = rbx.camera;
         rbx.quiet_set(c, "CFrame", cf(camera_cframe(&cam)));

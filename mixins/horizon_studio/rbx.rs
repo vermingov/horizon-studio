@@ -1161,6 +1161,8 @@ pub struct Rbx {
     pub layout: Option<super::hstudio_rbx_draw::Frame>,
     /// The player as the last frame saw it.
     pub last_health: Option<f32>,
+    /// The world as the layer follows it (hstudio_rbx_world).
+    pub world: super::hstudio_rbx_world::World,
     /// A script has used the layer: until then it costs the game nothing.
     pub active: bool,
     /// gethui's container: a Folder outside the DataModel whose ScreenGuis draw.
@@ -1274,6 +1276,7 @@ impl Rbx {
             now: 0.0,
             layout: None,
             last_health: None,
+            world: super::hstudio_rbx_world::World::default(),
             active: false,
             hui: 0,
             http: Vec::new(),
@@ -1333,40 +1336,21 @@ impl Rbx {
                 self.player_gui = c;
             }
         }
-        // The character: a model with a root part, a head and a humanoid.
-        let character = self.make("Model", None);
-        self.inst_mut(character).name = "Player1".into();
-        self.character = character;
-        for (name, size) in [("HumanoidRootPart", (2.0, 2.0, 1.0)), ("Head", (2.0, 1.0, 1.0))] {
-            let part = self.make("Part", None);
-            self.inst_mut(part).name = name.into();
-            self.raw_set(part, "Size", v3(Vector3::new(size.0, size.1, size.2)));
-            self.raw_set(part, "Transparency", Value::Num(1.0));
-            self.raw_set(part, "Anchored", Value::Bool(true));
-            let _ = self.set_parent(part, Some(character));
-            if name == "HumanoidRootPart" {
-                self.root_part = part;
-            } else {
-                self.head = part;
-            }
-        }
-        let humanoid = self.make("Humanoid", None);
-        self.humanoid = humanoid;
-        let root_v = self.value(self.root_part);
-        self.raw_set(humanoid, "RootPart", root_v);
-        self.raw_set(humanoid, "DisplayName", Value::str("Player1"));
-        let _ = self.set_parent(humanoid, Some(character));
-        let root_v = self.value(self.root_part);
-        self.raw_set(character, "PrimaryPart", root_v);
-        let _ = self.set_parent(character, Some(self.workspace));
-        let cv = self.value(character);
+        // The character: an R6 rig that follows the player (hstudio_rbx_world).
+        let rig = super::hstudio_rbx_world::build_character(self, "Player1");
+        self.character = rig.model;
+        self.root_part = rig.root;
+        self.head = rig.head;
+        self.humanoid = rig.humanoid;
+        let _ = self.set_parent(rig.model, Some(self.workspace));
+        let cv = self.value(rig.model);
         self.raw_set(player, "Character", cv);
-        let sub = self.value(humanoid);
+        let sub = self.value(rig.humanoid);
         self.raw_set(camera, "CameraSubject", sub);
         let mouse = self.make("PlayerMouse", None);
         self.inst_mut(mouse).name = "Instance".into();
         self.mouse = mouse;
-        for id in [character, self.root_part, self.head, humanoid, camera, mouse] {
+        for id in [camera, mouse] {
             self.lock(id);
         }
         let hui = self.make("Folder", None);
@@ -2455,7 +2439,7 @@ impl Rbx {
             (_, "CFrame") if id == self.root_part => {
                 let at = as_cf(&self.raw_get(id, "CFrame")).unwrap_or_default().position();
                 self.sends
-                    .push(format!("tp @s {:.3} {:.3} {:.3}", at.x, at.y - 0.9, at.z));
+                    .push(format!("tp @s {:.3} {:.3} {:.3}", at.x, at.y - self.world.root_y, at.z));
             }
             ("TextBox", "Text") => {}
             _ => {}
