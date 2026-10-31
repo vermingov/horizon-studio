@@ -612,6 +612,8 @@ pub struct Ui {
     pub agent_input: LineEdit,
     pub(crate) problem_sel: usize,
     pub agent: AgentPane,
+    /// What AI agents do in the editor, live (`hstudio_coach`).
+    pub coach: super::hstudio_coach::Coach,
     /// The pointer, in dp.
     pub mouse: (f32, f32),
     /// Whether the left and right buttons are held (over a script screen).
@@ -983,11 +985,15 @@ impl Editor {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
             Err(e) => (String::new(), Some(e.to_string())),
         };
+        // The revision goes on rising from file to file, so whatever follows
+        // the buffer (an agent's edit being typed in) sees that it changed.
+        let revision = self.revision + 1;
         *self = Editor {
             path: Some(path.to_path_buf()),
             title: title.to_owned(),
             problem,
             disk: disk_stamp(path),
+            revision,
             ..Editor::default()
         };
         self.set_text(&text);
@@ -1070,6 +1076,79 @@ impl Editor {
         self.removed = false;
         self.disk = disk_stamp(&path);
         Ok(path)
+    }
+    /// Text as the buffer holds it: Windows line ends as `\n`, tabs as the
+    /// indent (what `insert` and `set_text` do to what they are given).
+    pub fn normal(s: &str) -> String {
+        s.replace("\r\n", "\n").replace('\t', INDENT)
+    }
+    /// A place (row, byte of the row) kept inside the buffer, on a char boundary.
+    fn clamp_pos(&self, (row, col): (usize, usize)) -> (usize, usize) {
+        let row = row.min(self.lines.len() - 1);
+        let line = &self.lines[row];
+        let mut col = col.min(line.len());
+        while !line.is_char_boundary(col) {
+            col -= 1;
+        }
+        (row, col)
+    }
+    /// A place as a byte of `text()`.
+    pub fn offset_of(&self, pos: (usize, usize)) -> usize {
+        let (row, col) = self.clamp_pos(pos);
+        self.lines[..row].iter().map(|l| l.len() + 1).sum::<usize>() + col
+    }
+    /// A byte of `text()` as a place (past the end: the end).
+    pub fn pos_at(&self, offset: usize) -> (usize, usize) {
+        let mut left = offset;
+        for (row, line) in self.lines.iter().enumerate() {
+            if left <= line.len() {
+                return self.clamp_pos((row, left));
+            }
+            left -= line.len() + 1;
+        }
+        let row = self.lines.len() - 1;
+        (row, self.lines[row].len())
+    }
+    /// An agent's change begins: one undo step for all of it, however long
+    /// it takes to type in (its splices take none of their own).
+    pub fn agent_begin(&mut self) {
+        self.begin(EditKind::Other);
+    }
+    /// Puts `text` (already `normal`) in place of `from..to` and returns
+    /// where it ends, taking no undo step of its own. The cursor and the
+    /// selection's other end keep their place in the text: before `from`
+    /// they stay, inside the range they go to its start, after it they move
+    /// with the text after it; and the view doesn't jump to them. Places
+    /// outside the buffer count as its nearest.
+    pub fn splice(&mut self, from: (usize, usize), to: (usize, usize), text: &str) -> (usize, usize) {
+        let (from, to) = {
+            let (a, b) = (self.clamp_pos(from), self.clamp_pos(to));
+            if b < a { (b, a) } else { (a, b) }
+        };
+        let joined = format!("{}{text}{}", &self.lines[from.0][..from.1], &self.lines[to.0][to.1..]);
+        let end = match text.rfind('\n') {
+            Some(i) => (from.0 + text.matches('\n').count(), text.len() - i - 1),
+            None => (from.0, from.1 + text.len()),
+        };
+        self.lines.splice(from.0..=to.0, joined.split('\n').map(str::to_owned));
+        let moved = |p: (usize, usize)| {
+            if p < from {
+                p
+            } else if p < to {
+                from
+            } else if p.0 == to.0 {
+                (end.0, end.1 + p.1 - to.1)
+            } else {
+                (p.0 - to.0 + end.0, p.1)
+            }
+        };
+        (self.row, self.col) = self.clamp_pos(moved((self.row, self.col)));
+        self.anchor = self.anchor.map(|a| self.clamp_pos(moved(a)));
+        self.dirty = true;
+        self.revision += 1;
+        self.followed = Some((self.row, self.col, self.revision));
+        self.scroll = self.scroll.min(self.lines.len() - 1);
+        end
     }
     fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -1833,11 +1912,13 @@ pub use super::hstudio_look::{code_line, draw, draw_screen};
 // ----------------------------------------------------------------- input
 
 pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult {
+    let before = super::hstudio_coach::before_input(st, &input);
     let revision = st.s.editor.revision;
     let out = handle_input(st, game, input);
     if st.s.editor.revision != revision {
         st.s.editor.edited_at = st.s.now;
     }
+    super::hstudio_coach::after_input(st, before);
     out
 }
 

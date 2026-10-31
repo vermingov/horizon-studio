@@ -170,6 +170,12 @@ name = "hstudio_agent"
 source = "agent.rs"
 
 [[module]]
+id = "coach"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_coach"
+source = "coach.rs"
+
+[[module]]
 id = "link"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_link"
