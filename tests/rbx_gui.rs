@@ -1,7 +1,10 @@
 // The Roblox layer's GUIs on a fake game, beyond tests/roblox.rs: enums and
 // properties scripts set and read (ElasticBehavior, ContentText, GuiState,
 // the Transparency alias, an ImageButton's hover and pressed images,
-// IsLoaded), and classes that stay lenient.
+// IsLoaded), classes that stay lenient, TextTruncate and
+// MaxVisibleGraphemes, layout values fresh when read, TextBox editing
+// through the GUI's screen, ScrollingFrames' directions and bars, the
+// services scripts ask for, and right clicks on the GUI's screen.
 
 mod common;
 
@@ -832,4 +835,31 @@ fn services_scripts_ask_for_exist() {
         "{}",
         p[1]
     );
+}
+
+#[test]
+fn right_clicks_reach_the_gui_through_its_screen() {
+    // Whatever the studio does with right clicks elsewhere, one on the GUI's
+    // own screen is the GUI's MouseButton2.
+    let mut game = FakeGame::new("rbx-right");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local b = Instance.new("TextButton", gui)
+        b.Size = UDim2.fromOffset(100, 40)
+        b.Modal = true
+        b.MouseButton2Down:Connect(function() print("down") end)
+        b.MouseButton2Up:Connect(function() print("up") end)
+        b.MouseButton2Click:Connect(function() print("click") end)
+    "#;
+    load(&mut game, &mut st, "right", src, 0.6);
+    hud(&mut st, &mut game);
+    st.frame(&mut game, 0.016);
+    assert!(st.accept_screen(), "the Modal button asked for the pointer");
+    handle_screen(&mut st, &mut game, Input::Mouse(50.0, 20.0));
+    for down in [true, false] {
+        handle_screen(&mut st, &mut game, Input::Button { left: false, down });
+    }
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(printed(&st, "right"), ["down", "up", "click"]);
 }
