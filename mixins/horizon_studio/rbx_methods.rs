@@ -953,6 +953,10 @@ pub fn step_tweens(rbx: &mut Rbx, dt: f64) {
     for (id, prop, v) in sets {
         if rbx.try_inst(id).is_some_and(|i| !i.destroyed) {
             rbx.raw_set(id, prop, v);
+            // A tween of the player's root part moves the player.
+            if id == rbx.root_part && prop == "CFrame" {
+                super::hstudio_rbx_world::root_moved(rbx);
+            }
         }
     }
     for (tid, callback) in done {
@@ -996,7 +1000,8 @@ pub fn pivot(rbx: &Rbx, id: Id) -> CFrame {
     CFrame::from_position(sum / parts.len() as f64)
 }
 
-/// Moves a model (every part in it) or a part to `target`, keeping their offsets.
+/// Moves a model (every part in it) or a part to `target`, keeping their
+/// offsets. Moving the player's root part moves the player.
 fn move_to(rbx: &mut Rbx, id: Id, target: CFrame) {
     let from = pivot(rbx, id);
     let delta = target * from.inverse();
@@ -1007,6 +1012,9 @@ fn move_to(rbx: &mut Rbx, id: Id, target: CFrame) {
             && let Some(c) = as_cf(&rbx.raw_get(d, "CFrame"))
         {
             rbx.raw_set(d, "CFrame", cf(delta * c));
+            if d == rbx.root_part {
+                super::hstudio_rbx_world::root_moved(rbx);
+            }
         }
     }
     if rbx.inst(id).class.name == "Model" {

@@ -1149,7 +1149,7 @@ pub struct Rbx {
     pub pointer: Pointer,
     /// Warnings for the console (an infinite WaitForChild).
     pub warnings: Vec<String>,
-    /// Chat lines and commands the layer sends (Player:Chat, teleports).
+    /// Chat lines and commands the layer sends (teleports go as Rbx.world's).
     pub sends: Vec<String>,
     /// Sounds to play: id, place, volume, pitch.
     pub sounds: Vec<(String, Option<[f64; 3]>, f32, f32)>,
@@ -2442,11 +2442,7 @@ impl Rbx {
         let class = self.inst(id).class.name;
         match (class, prop) {
             ("Sound", "Playing") if self.raw_get(id, "Playing").truthy() => self.play_sound(id),
-            (_, "CFrame") if id == self.root_part => {
-                let at = as_cf(&self.raw_get(id, "CFrame")).unwrap_or_default().position();
-                self.sends
-                    .push(format!("tp @s {:.3} {:.3} {:.3}", at.x, at.y - self.world.root_y, at.z));
-            }
+            (_, "CFrame") if id == self.root_part => super::hstudio_rbx_world::root_moved(self),
             ("TextBox", "Text") => {}
             _ => {}
         }

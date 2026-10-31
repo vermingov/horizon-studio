@@ -5,7 +5,7 @@
 mod common;
 
 use common::{FakeGame, log, mod_index, run_for, studio};
-use horizon_studio::game::hstudio::{ModState, Studio};
+use horizon_studio::game::hstudio::{ModState, PlayerPose, Studio};
 use horizon_studio::headless::{Run, Source, run_steps};
 use serde_json::json;
 
@@ -160,4 +160,106 @@ fn a_headless_test_names_the_player() {
         ],
     );
     assert_eq!(report["ok"], true, "{report:#}");
+}
+
+/// Runs a mod's command and a frame or two after: what the game was sent.
+fn sent_by(st: &mut Studio, game: &mut FakeGame, cmd: &str) -> Vec<String> {
+    let mark = game.sent.len();
+    assert!(st.command(cmd), "no command {cmd}");
+    run_for(st, game, 0.1);
+    game.sent[mark..].to_vec()
+}
+
+#[test]
+fn moving_the_root_part_teleports_with_tp() {
+    let mut game = FakeGame::new("rbxw-tp");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local char = game.Players.LocalPlayer.Character
+        local root = char.HumanoidRootPart
+        command("set", function() root.CFrame = CFrame.new(1, 70, 2) end)
+        command("pos", function() root.Position = Vector3.new(3, 71, 4) end)
+        command("pivot", function() char:PivotTo(CFrame.new(5, 72, 6)) end)
+        command("primary", function() char:SetPrimaryPartCFrame(CFrame.new(7, 73, 8)) end)
+        command("moveto", function() char:MoveTo(Vector3.new(9, 74, 10)) end)
+        command("partpivot", function() root:PivotTo(CFrame.new(11, 75, 12)) end)
+        command("twice", function()
+            root.CFrame = CFrame.new(0, 80, 0)
+            root.CFrame = CFrame.new(1, 81, 1)
+        end)
+        command("stay", function() char:PivotTo(char:GetPivot()) end)
+        command("where", function() print(string.format("%.3f", root.Position.Y)) end)
+        command("others", function()
+            local m = Instance.new("Model", workspace)
+            local p = Instance.new("Part", m)
+            m.PrimaryPart = p
+            m:PivotTo(CFrame.new(50, 50, 50))
+            p.CFrame = CFrame.new(1, 2, 3)
+            char.Head.CFrame = CFrame.new(1, 2, 3)
+        end)
+    "#;
+    load(&mut game, &mut st, "tp", src, 0.7);
+    // The feet go where the root part's centre is, less the 1.05 blocks it stands above them.
+    assert_eq!(sent_by(&mut st, &mut game, "set"), ["/tp @s 1.000 68.945 2.000"]);
+    assert_eq!(sent_by(&mut st, &mut game, "pos"), ["/tp @s 3.000 69.945 4.000"]);
+    assert_eq!(sent_by(&mut st, &mut game, "pivot"), ["/tp @s 5.000 70.945 6.000"]);
+    assert_eq!(sent_by(&mut st, &mut game, "primary"), ["/tp @s 7.000 71.945 8.000"]);
+    assert_eq!(sent_by(&mut st, &mut game, "moveto"), ["/tp @s 9.000 72.945 10.000"]);
+    assert_eq!(
+        sent_by(&mut st, &mut game, "partpivot"),
+        ["/tp @s 11.000 73.945 12.000"]
+    );
+    // One teleport a frame: the last move's.
+    assert_eq!(sent_by(&mut st, &mut game, "twice"), ["/tp @s 1.000 79.945 1.000"]);
+    // Moving the character where it is sends the player where they are.
+    assert_eq!(sent_by(&mut st, &mut game, "stay"), ["/tp @s 10.500 64.000 -3.250"]);
+    // Crouching, the root part is lower, and the teleport still lands the feet where they are.
+    game.pose = Some(PlayerPose {
+        pose: "crouching".into(),
+        on_ground: true,
+        ..PlayerPose::default()
+    });
+    run_for(&mut st, &mut game, 0.05);
+    assert!(sent_by(&mut st, &mut game, "where").is_empty());
+    assert_eq!(sent_by(&mut st, &mut game, "stay"), ["/tp @s 10.500 64.000 -3.250"]);
+    // A script's own parts, and the head, move nothing.
+    assert!(sent_by(&mut st, &mut game, "others").is_empty());
+    assert_eq!(printed(&st, "tp"), ["64.879"]);
+    // Never a chat line.
+    assert!(game.sent.iter().all(|l| l.starts_with("/tp @s ")), "{:?}", game.sent);
+}
+
+#[test]
+fn a_tween_of_the_root_part_teleports_and_a_teleport_waits_for_a_send() {
+    let mut game = FakeGame::new("rbxw-tween");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local root = game.Players.LocalPlayer.Character.HumanoidRootPart
+        local TweenService = game:GetService("TweenService")
+        command("glide", function()
+            TweenService:Create(root, TweenInfo.new(0.5, Enum.EasingStyle.Linear), { CFrame = CFrame.new(20, 70, 20) }):Play()
+        end)
+        command("busy", function()
+            for i = 1, 10 do pcall(chat.say, "hi " .. i) end
+            root.CFrame = CFrame.new(1, 70, 2)
+        end)
+    "#;
+    load(&mut game, &mut st, "tween", src, 0.7);
+    let mark = game.sent.len();
+    assert!(st.command("glide"));
+    run_for(&mut st, &mut game, 1.5);
+    let tps = &game.sent[mark..];
+    assert!(tps.len() >= 2, "{tps:?}");
+    assert!(tps.iter().all(|l| l.starts_with("/tp @s ")), "{tps:?}");
+    assert_eq!(tps.last().unwrap(), "/tp @s 20.000 68.945 20.000");
+    // With every send used by chat, the teleport waits for the next one.
+    run_for(&mut st, &mut game, 3.0);
+    let mark = game.sent.len();
+    assert!(st.command("busy"));
+    run_for(&mut st, &mut game, 0.05);
+    let now: Vec<&String> = game.sent[mark..].iter().filter(|l| l.starts_with('/')).collect();
+    assert!(now.is_empty(), "{now:?}");
+    run_for(&mut st, &mut game, 0.5);
+    let later: Vec<&String> = game.sent[mark..].iter().filter(|l| l.starts_with('/')).collect();
+    assert_eq!(later, ["/tp @s 1.000 68.945 2.000"]);
 }

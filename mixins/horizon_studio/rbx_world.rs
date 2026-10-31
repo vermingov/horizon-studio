@@ -2,14 +2,15 @@
 // Minecraft world. Players.LocalPlayer is the player playing, and its
 // Character follows them each frame: an R6 rig as Roblox's, in blocks (a
 // stud is a block), whose HumanoidRootPart is the torso's box, whose Head
-// is at the eyes and whose Humanoid is the player's. hstudio_rbx_draw's
-// sync hands the player over to it every frame.
+// is at the eyes and whose Humanoid is the player's. Moving the root part
+// teleports the player with /tp. hstudio_rbx_draw's sync hands the player
+// over to it every frame.
 
-use super::hstudio::{GameApi, PlayerInfo};
+use super::hstudio::{GameApi, PlayerInfo, PlayerPose};
 use super::hstudio_lua::Value;
 use super::hstudio_rbx::{Id, Rbx};
 use super::hstudio_rbx_types::{CFrame, Vector3};
-use super::hstudio_rbx_values::{cf, enum_item, enum_value, v3};
+use super::hstudio_rbx_values::{as_cf, cf, enum_item, enum_value, v3};
 
 /// A pixel of the player's model: the model is 15/16 the size of a
 /// block-sized one, whose pixel is 1/16 of a block.
@@ -19,6 +20,8 @@ const PX: f64 = 0.9375 / 16.0;
 pub const TORSO_Y: f64 = 18.0 * PX;
 /// The eyes above the feet of a player standing.
 pub const EYES_Y: f64 = 1.62;
+/// The player's box, standing.
+pub const HEIGHT: f64 = 1.8;
 /// Health in the layer is the game's times this (the game's 20 is 100).
 pub const HEALTH_SCALE: f64 = 5.0;
 /// The LocalPlayer's name until the game says the player's.
@@ -31,6 +34,9 @@ pub struct World {
     /// The profile name and UUID the LocalPlayer was last given.
     pub name: String,
     pub uuid: u128,
+    /// Where the last move of the root part this frame puts the player's
+    /// feet: the /tp to send.
+    pub teleport: Option<Vector3>,
 }
 
 impl Default for World {
@@ -39,8 +45,36 @@ impl Default for World {
             root_y: TORSO_Y,
             name: NO_NAME.into(),
             uuid: 0,
+            teleport: None,
         }
     }
+}
+
+/// The player's box height and eyes for a pose, as the game has them.
+fn body(pose: Option<&PlayerPose>) -> (f64, f64) {
+    match pose.map(|p| p.pose.as_str()) {
+        Some("crouching") => (1.5, 1.27),
+        Some("swimming" | "gliding" | "spin_attack") => (0.6, 0.4),
+        Some("sleeping") => (0.2, 0.2),
+        _ => (HEIGHT, EYES_Y),
+    }
+}
+
+/// The local root part was moved (its CFrame or Position set, PivotTo, a
+/// tween): the player goes there, their feet as far under its centre as
+/// this frame's pose has them, with a /tp at the end of the frame. A later
+/// move takes the earlier's place.
+pub fn root_moved(rbx: &mut Rbx) {
+    let at = as_cf(&rbx.raw_get(rbx.root_part, "CFrame"))
+        .unwrap_or_default()
+        .position();
+    rbx.world.teleport = Some(at - Vector3::new(0.0, rbx.world.root_y, 0.0));
+}
+
+/// The teleport to send, as the game's command: never as a chat line.
+pub fn take_teleport(rbx: &mut Rbx) -> Option<String> {
+    let to = rbx.world.teleport.take()?;
+    Some(format!("/tp @s {:.3} {:.3} {:.3}", to.x, to.y, to.z))
 }
 
 /// Members Roblox and Horizon have under other names: game.LocalPlayer,
@@ -180,23 +214,25 @@ fn rig_part(rbx: &mut Rbx, model: Id, name: &str, size: Vector3) -> Id {
 /// The world brought up to the game, each frame: the local player.
 pub fn sync(rbx: &mut Rbx, game: &mut dyn GameApi) {
     if let Some(p) = game.player() {
-        sync_local(rbx, &p);
+        let pose = game.pose();
+        sync_local(rbx, &p, pose.as_ref());
     }
 }
 
 /// The LocalPlayer is the player, and its character follows them: its root
-/// part on the torso, its head at the eyes facing where they look, its
-/// Humanoid's health.
-fn sync_local(rbx: &mut Rbx, p: &PlayerInfo) {
+/// part on the torso, its head at the eyes facing where they look (both as
+/// low as the pose has them), its Humanoid's health.
+fn sync_local(rbx: &mut Rbx, p: &PlayerInfo, pose: Option<&PlayerPose>) {
     identity(rbx, p);
     let yaw = f64::from(p.yaw).to_radians();
     let pitch = f64::from(p.pitch).to_radians();
     let feet = Vector3::new(p.x, p.y, p.z);
     let flat = Vector3::new(-yaw.sin(), 0.0, yaw.cos());
     let look = Vector3::new(-yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos());
-    rbx.world.root_y = TORSO_Y;
-    let root = feet + Vector3::new(0.0, TORSO_Y, 0.0);
-    let head = feet + Vector3::new(0.0, EYES_Y, 0.0);
+    let (height, eyes) = body(pose);
+    rbx.world.root_y = TORSO_Y * height / HEIGHT;
+    let root = feet + Vector3::new(0.0, rbx.world.root_y, 0.0);
+    let head = feet + Vector3::new(0.0, eyes, 0.0);
     let (rp, hd, hum) = (rbx.root_part, rbx.head, rbx.humanoid);
     // Kept quiet so a script's teleport isn't undone by the player's own place.
     rbx.quiet_set(rp, "CFrame", cf(CFrame::look_at(root, root + flat, Vector3::Y_AXIS)));

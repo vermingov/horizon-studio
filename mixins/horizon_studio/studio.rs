@@ -2268,6 +2268,14 @@ impl Studio {
                 game.send(&line);
             }
         }
+        // A script's teleport is the game's /tp command, never chat; it waits
+        // for a send rather than being dropped.
+        if self.s.send_tokens >= 1.0
+            && let Some(line) = super::hstudio_rbx_world::take_teleport(rbx)
+        {
+            self.s.send_tokens -= 1.0;
+            game.send(&line);
+        }
         for cmd in std::mem::take(&mut rbx.agent) {
             let _ = game.agent(&cmd);
         }
