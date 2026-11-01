@@ -3033,21 +3033,24 @@ pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -
     };
     say(st, by, in_run, did.clone(), Some(jump));
     // The Agent pane shows its steps' explanations, at its place (its group
-    // shown), unless it would cover the pane the player has the keys in or
-    // a prompt or a menu is up; the Editor tab comes forward when another
-    // file could open. While the player holds something (a drag, sizing
-    // from the keys) or presses in this frame, the groups stay where they
-    // are: the pane comes to the front of its group only while that group
-    // is shown, as showing a hidden one would move the others under the
-    // pointer (and end what it holds).
+    // shown), unless it would cover the code, where the steps are, or the
+    // pane the player has the keys in, or a prompt or a menu is up (the
+    // note has the explanation then); the Editor tab comes forward when
+    // another file could open. While the player holds something (a drag,
+    // sizing from the keys) or presses in this frame, the groups stay where
+    // they are: the pane comes to the front of its group only while that
+    // group is shown, as showing a hidden one would move the others under
+    // the pointer (and end what it holds).
     let now = st.s.now;
     let (prompt, held) = (prompted(st), view_held(st));
     let busy = prompt || using(st);
     let still = holding(&st.s.ui) || st.s.ui.coach.press_coming;
     let ui = &mut st.s.ui;
+    let covered = ui.dock.covers(Pane::Agent);
     if ui.look.theme().layout == super::hstudio_theme::Layout::Studio
         && !prompt
-        && !(ui.dock.covers(Pane::Agent) == Some(ui.focus) && ui.focus.takes_keys())
+        && covered != Some(Pane::Code)
+        && !(covered == Some(ui.focus) && ui.focus.takes_keys())
         && (!still || ui.dock.shown(Pane::Agent))
     {
         if !ui.dock.is_front(Pane::Agent) {

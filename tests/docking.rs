@@ -1206,6 +1206,62 @@ fn a_lesson_shows_the_agent_pane_unless_it_would_cover_the_keys() {
 }
 
 #[test]
+fn a_lesson_never_covers_the_code_its_steps_are_in() {
+    // The Agent among the code's tabs, the code at the front, the keys in
+    // the console's input. A lesson comes a moment after the player clicked
+    // there, or while they hold the script list's bar however long, or once
+    // they paused: the Agent pane stays behind the code, where the step is,
+    // and the step's note (with the explanation) is drawn.
+    for case in ["used a moment ago", "a bar held", "paused"] {
+        let (mut game, mut st) = with_sum(&format!("dock-lesson-code-{case}"));
+        assert!(st.s.ui.dock.move_pane(
+            Pane::Agent,
+            DropAt::Into {
+                anchor: Pane::Code,
+                at: 1,
+            },
+        ));
+        st.s.ui.dock.activate(Pane::Code);
+        game_frame(&mut st, &mut game);
+        let field = text_at(&game, "Click to run Lua here.");
+        click(&mut st, &mut game, (field.0 + 2.0, field.1 + 4.0));
+        assert_eq!(st.s.ui.focus, Pane::Console, "{case}");
+        match case {
+            "used a moment ago" => st.s.now += 1.0,
+            "a bar held" => {
+                game_frame(&mut st, &mut game);
+                let row = bar(&st, 1);
+                let at = (row.rect[0] + 4.0, row.rect[1] + 100.0);
+                hold(&mut st, &mut game, at, &[(at.0 + 16.0, at.1)]);
+                st.s.now += 5.0;
+            }
+            _ => st.s.now += 5.0,
+        }
+        game_frame(&mut st, &mut game);
+        let steps = json!([{ "start_line": 2, "note": "Two is b.", "explain": "Explained in the note." }]);
+        let r = coach::call(
+            &mut st,
+            &mut game,
+            &agent(),
+            "lesson",
+            &json!({ "title": "Sums", "steps": steps }),
+        )
+        .unwrap();
+        assert_eq!(r["ok"], true, "{case}: {r}");
+        game_frame(&mut st, &mut game);
+        game_frame(&mut st, &mut game);
+        assert!(
+            st.s.ui.dock.is_front(Pane::Code),
+            "{case}: the Agent pane covers the code"
+        );
+        assert!(st.s.ui.dock_front[Pane::Code.index()], "{case}");
+        assert!(in_bubble(&st, &game, "Two is b."), "{case}: the step's note");
+        assert!(in_bubble(&st, &game, "Explained in the note."), "{case}");
+        assert_eq!(st.s.ui.focus, Pane::Console, "{case}: the keys stay");
+    }
+}
+
+#[test]
 fn an_agent_opening_a_file_never_takes_the_keys() {
     let (mut game, mut st) = with_sum("dock-agent-open");
     // The player is typing a question in the Agent pane.
