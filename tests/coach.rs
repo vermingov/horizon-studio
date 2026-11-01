@@ -937,6 +937,66 @@ fn the_players_cursor_keeps_its_place_and_the_view_follows_the_agent() {
 }
 
 #[test]
+fn the_view_follows_the_agent_as_the_game_draws() {
+    // In the game the studio draws before each frame types more of an edit
+    // in, and the link's requests come between: the view goes to an edit
+    // away from the player's cursor, or stays where the wheel left it over
+    // one in view, and follows it until it is in, as it does a change on
+    // disk typed in.
+    let src = numbered(200) + "\n";
+    // Each frame drawn until the edit is in: the view's first line stays in
+    // `rows`, and the view follows the edit.
+    let follows = |st: &mut Studio, game: &mut FakeGame, rows: std::ops::RangeInclusive<usize>| {
+        let mut n = 0;
+        while st.s.ui.coach.typing.is_some() {
+            n += 1;
+            assert!(n < 100, "it never was in");
+            game_frame(st, game);
+            let scroll = st.s.editor.scroll;
+            assert!(rows.contains(&scroll), "the view on the edit: {scroll}");
+            assert!(st.s.ui.coach.typing.as_ref().is_none_or(|t| !t.free), "it follows");
+        }
+    };
+    // Line 151, the player's cursor on line 40.
+    let (mut game, mut st) = editing("coach-follow-drawn", "long", &src);
+    st.s.editor.click(39, 3, false);
+    redraw(&mut st, &mut game);
+    assert!(st.s.editor.scroll < 39, "line 40 in view");
+    let edit = json!({ "start_line": 151, "end_line": 150, "new_text": "a = 1\nb = 2\nc = 3" });
+    ask(&mut st, &mut game, "edit", edit).unwrap();
+    follows(&mut st, &mut game, 121..=150);
+    assert_eq!(st.s.editor.lines[150..153], ["a = 1", "b = 2", "c = 3"]);
+    assert_eq!((st.s.editor.row, st.s.editor.col), (39, 3), "the player's cursor stays");
+    // Line 104, in the view the wheel took to line 100, the cursor on line 1.
+    let (mut game, mut st) = editing("coach-follow-wheel", "long", &src);
+    let at = text_at(&game, "line");
+    handle(&mut st, &mut game, Input::Mouse(at.0 + 2.0, at.1 + 2.0));
+    handle(&mut st, &mut game, Input::Wheel(-33.0));
+    assert_eq!(st.s.editor.scroll, 99);
+    game_frame(&mut st, &mut game);
+    let edit = json!({ "start_line": 104, "end_line": 103, "new_text": "d = 4" });
+    ask(&mut st, &mut game, "edit", edit).unwrap();
+    follows(&mut st, &mut game, 99..=99);
+    assert_eq!(st.s.editor.lines[103], "d = 4");
+    assert_eq!((st.s.editor.row, st.s.editor.col), (0, 0));
+    // Line 151 changed on disk, the cursor on line 40.
+    let (mut game, mut st) = editing("coach-follow-disk", "long", &src);
+    st.s.editor.click(39, 3, false);
+    redraw(&mut st, &mut game);
+    let path = game.mods_dir().join("long.lua");
+    std::fs::write(&path, src.replace("line 151\n", "line 151, and more\n")).unwrap();
+    let mut n = 0;
+    while st.s.ui.coach.typing.is_none() {
+        n += 1;
+        assert!(n < 20, "never typed in");
+        game_frame(&mut st, &mut game);
+    }
+    follows(&mut st, &mut game, 121..=150);
+    assert_eq!(st.s.editor.lines[150], "line 151, and more");
+    assert_eq!((st.s.editor.row, st.s.editor.col), (39, 3));
+}
+
+#[test]
 fn a_cursor_at_the_end_of_what_an_edit_replaces_ends_after_the_new_text() {
     // "55" becomes "1000": what goes is columns 10-12 of line 1, typed in
     // as the player watches or put in at once, to the same end.
