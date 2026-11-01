@@ -1,5 +1,5 @@
 {
-  "version": "0.5.2",
+  "version": "0.6.0",
   "game": "26.3",
   "horizon_repository": "https://github.com/horizon-rust/horizon",
   "horizon_revision": "baa379d71777f06a95b4e7650b2209a3d4209033",
