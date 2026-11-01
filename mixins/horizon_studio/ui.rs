@@ -1552,9 +1552,19 @@ impl Editor {
         (row, self.lines[row].len())
     }
     /// An agent's change begins: one undo step for all of it, however long
-    /// it takes to type in (its splices take none of their own).
+    /// it takes to type in (its splices take none of their own). It changes
+    /// neither the text nor the cursor, so a view that had followed the
+    /// cursor still has (it stays where the agent's change puts it), and
+    /// the rows as drawn are still the text's.
     pub fn agent_begin(&mut self) {
+        let rev = self.revision;
         self.begin(EditKind::Other);
+        if self.followed == Some((self.row, self.col, rev)) {
+            self.followed = Some((self.row, self.col, self.revision));
+        }
+        if let Some(d) = self.drawn.as_mut().filter(|d| d.rev == rev) {
+            d.rev = self.revision;
+        }
     }
     /// Puts `text` (already `normal`) in place of `from..to` and returns
     /// where it ends, taking no undo step of its own. The cursor and the
