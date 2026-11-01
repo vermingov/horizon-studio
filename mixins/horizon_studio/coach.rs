@@ -820,6 +820,13 @@ pub fn console_open_refused(st: &Studio, what: &str) -> Option<String> {
     unsaved_refusal(st, what, "")
 }
 
+/// Whether what an agent asks would bring the code forward only when the
+/// player isn't using the studio, and they are now (or have a prompt or a
+/// menu up): as open_script leaves the file open already where it is then.
+pub fn switch_waiting(st: &Studio) -> bool {
+    switch_waits(st).is_some()
+}
+
 /// The rows the code shows: in the studio's own layout, as the dock has its
 /// panes now, laid out in the Editor tab's room (a pane shown or hidden, or
 /// the code brought to the front, a moment ago counts before the next draw

@@ -3397,6 +3397,11 @@ impl Studio {
         if agent {
             requests.retain(|r| {
                 let what = match r {
+                    // The file open already: nothing opens or is read again,
+                    // so, as for open_script, nothing refuses it (its code
+                    // comes forward only while the player isn't using the
+                    // studio, below).
+                    Request::Edit(id, file) if self.edit_is_open(id, file.as_deref()) => return true,
                     Request::Edit(..) => "edit()",
                     Request::New(..) => "new()",
                     Request::Reload(_) => return true,
@@ -3439,10 +3444,15 @@ impl Studio {
                         self.save_before_switch(game, Some(&path));
                         // The file open already isn't read again: the
                         // player's unsaved edits in it stay, with their undo.
-                        if self.s.editor.path.as_deref() != Some(path.as_path()) {
+                        let open = self.s.editor.path.as_deref() == Some(path.as_path());
+                        if !open {
                             self.open_file(&path);
                         }
-                        super::hstudio_ui::reveal_code(self);
+                        // An agent's brings it forward as open_script does:
+                        // not while the player is using the studio.
+                        if !(agent && open && super::hstudio_coach::switch_waiting(self)) {
+                            super::hstudio_ui::reveal_code(self);
+                        }
                     }
                 }
                 Request::New(name, module) => {
@@ -3472,6 +3482,13 @@ impl Studio {
             (Some(rel), Some(folder)) => path_in(folder, rel),
             _ => m.main.clone(),
         })
+    }
+
+    /// Whether console code's edit() of mod `id` (`file` of a module) is of
+    /// the file the editor has open.
+    fn edit_is_open(&self, id: &str, file: Option<&str>) -> bool {
+        self.edit_path(id, file)
+            .is_some_and(|p| self.s.editor.path.as_deref() == Some(p.as_path()))
     }
 
     /// Saves the editor's file if it has unsaved edits (the scan then reloads

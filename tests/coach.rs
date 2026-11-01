@@ -1383,6 +1383,83 @@ fn an_agents_console_code_opens_no_file_while_the_player_uses_the_studio() {
 }
 
 #[test]
+fn an_agents_console_edit_of_the_file_open_is_never_refused() {
+    // edit() of the file open already opens nothing anew (its unsaved
+    // edits stay, with their undo), so an agent's run_lua edit() of it is
+    // refused over no unsaved edits, the agent's own or the player's, nor
+    // while the player uses the studio, as open_script isn't: the code
+    // comes forward, unless the player is using the studio, which leaves
+    // them on the tab they are on. Another file still waits and refuses.
+    use horizon_studio::game::hstudio::LogKind;
+    let (mut game, mut st) = editing("coach-agent-console-edit-open", "greet", GREET);
+    game.write_mod("hello.lua", "print('hello')\n");
+    st.scan(&mut game);
+    let errors = |lines: &[(LogKind, String)]| -> Vec<String> {
+        lines
+            .iter()
+            .filter(|(k, _)| *k == LogKind::Error)
+            .map(|(_, t)| t.clone())
+            .collect()
+    };
+    // The agent's own unsaved edit, the player paused on the Library tab.
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "print('hi')", "new_text": "print('agent')", "typing": false }),
+    )
+    .unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    st.s.now += 5.0;
+    st.s.ui.tab = Tab::Library;
+    let lines = st.run_chunk(&mut game, "edit('greet')", false);
+    assert_eq!(errors(&lines), Vec::<String>::new());
+    let ed = &st.s.editor;
+    assert_eq!((ed.title.as_str(), ed.dirty), ("greet.lua", true));
+    assert_eq!(ed.lines[1], "print('agent')", "the agent's edit stays");
+    assert_eq!(st.s.ui.tab, Tab::Editor, "the code comes forward");
+    // The player's unsaved edit too, and the wheel a moment ago, on the
+    // Library tab: nothing refused, and the tab stays theirs.
+    st.s.editor.click(0, 0, false);
+    handle(&mut st, &mut game, Input::Text("-- mine\n".into()));
+    st.s.ui.tab = Tab::Library;
+    handle(&mut st, &mut game, Input::Wheel(-1.0));
+    let lines = st.run_chunk(&mut game, "edit('greet')", false);
+    assert_eq!(errors(&lines), Vec::<String>::new());
+    assert_eq!(
+        st.s.ui.tab,
+        Tab::Library,
+        "the player's tab stays while they use the studio"
+    );
+    // A prompt up: the same.
+    st.s.now += 5.0;
+    st.s.ui.naming = Some(Default::default());
+    let lines = st.run_chunk(&mut game, "edit('greet')", false);
+    assert_eq!(errors(&lines), Vec::<String>::new());
+    assert_eq!(st.s.ui.tab, Tab::Library, "not under a prompt");
+    st.s.ui.naming = None;
+    // Paused: the code comes forward, every edit still there.
+    let lines = st.run_chunk(&mut game, "edit('greet')", false);
+    assert_eq!(errors(&lines), Vec::<String>::new());
+    assert_eq!(st.s.ui.tab, Tab::Editor);
+    let ed = &st.s.editor;
+    assert_eq!((ed.title.as_str(), ed.dirty), ("greet.lua", true));
+    assert_eq!(&ed.lines[..3], ["-- mine", "local n = 0", "print('agent')"]);
+    // Another file opens over none of it.
+    let lines = st.run_chunk(&mut game, "edit('hello')", false);
+    let said = errors(&lines);
+    assert!(
+        said.iter()
+            .any(|e| e.contains("the player has unsaved edits in greet.lua")),
+        "{said:?}"
+    );
+    assert_eq!(st.s.editor.title, "greet.lua");
+    // Ctrl+Z still takes the player's edit back: nothing was read again.
+    handle(&mut st, &mut game, key(Key::Char('z'), CTRL));
+    assert_eq!(st.s.editor.lines[0], "local n = 0");
+}
+
+#[test]
 fn a_change_over_all_the_view_shows_leaves_the_view_at_its_line() {
     // While the view is the player's (they typed and saved a moment ago,
     // drag a selection, or press in the change's frame), or nobody sees it
