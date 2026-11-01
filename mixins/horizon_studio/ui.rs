@@ -279,10 +279,13 @@ pub enum MenuCmd {
     Models,
     /// The Docs tab as Markdown, to the clipboard.
     CopyDocs,
-    /// A place in the editor's text selected (a problem's, a name's
-    /// definition): its row and the bytes from and to, in the file open, or
-    /// in this file of the module, opened first.
-    GoTo(Option<PathBuf>, usize, usize, usize),
+    /// A place in the file open selected (a problem's, a name's
+    /// definition): its row and the bytes from and to.
+    GoTo(usize, usize, usize),
+    /// A name's definition in another file of the module: that file opened,
+    /// and the definition selected where its text has it then, which an
+    /// agent's edit on disk may have moved since the menu opened.
+    Define(PathBuf, String),
     /// The Docs tab at this function's entry.
     Docs(String),
     /// The agent asked this (None: its input takes the keys, for a

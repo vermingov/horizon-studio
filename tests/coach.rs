@@ -937,6 +937,53 @@ fn a_menu_about_the_code_goes_when_the_code_changes_under_it() {
 }
 
 #[test]
+fn go_to_definition_in_another_file_finds_it_where_an_edit_moved_it() {
+    // kit/main.lua calls helper, defined in kit/lib/util.lua. The player
+    // opens helper's menu and pauses, and an agent's edit puts three lines
+    // in at the top of lib/util.lua, on disk (the editor doesn't have it
+    // open, so its own text stays as it was): Go to definition opens
+    // lib/util.lua at the definition, where it is now.
+    let mut game = FakeGame::new("coach-sibling-definition");
+    let mut st = studio(&mut game);
+    let kit = game.mods_dir().join("kit");
+    std::fs::create_dir_all(kit.join("lib")).unwrap();
+    std::fs::write(kit.join("main.lua"), "require('lib.util')\nprint(helper())\n").unwrap();
+    std::fs::write(kit.join("lib/util.lua"), "function helper()\n  return 2\nend\n").unwrap();
+    st.scan(&mut game);
+    st.open_file(&kit.join("main.lua"));
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    st.s.now = 10.0;
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "helper");
+    handle(&mut st, &mut game, Input::Mouse(at.0 + 2.0, at.1 + 4.0));
+    for down in [true, false] {
+        handle(&mut st, &mut game, Input::Button { left: false, down });
+    }
+    let menu = st.s.ui.menu.as_ref().expect("helper's menu");
+    assert!(menu.items.iter().any(|i| i.label == "Go to definition"));
+    st.s.now += 5.0;
+    let lines = "-- one\n-- two\n-- three";
+    let edit = json!({ "id": "kit", "file": "lib/util.lua", "start_line": 1, "end_line": 0, "new_text": lines });
+    let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+    assert_eq!(
+        r["written"].as_str().map(|p| p.ends_with("util.lua")),
+        Some(true),
+        "{r}"
+    );
+    run_for(&mut st, &mut game, 0.05);
+    redraw(&mut st, &mut game);
+    assert!(st.s.ui.menu.is_some(), "main.lua didn't change");
+    // Go to definition's letter, then a space, picks it.
+    handle(&mut st, &mut game, Input::Text("g".into()));
+    handle(&mut st, &mut game, Input::Text(" ".into()));
+    let ed = &st.s.editor;
+    assert_eq!(ed.title, "kit/lib/util.lua");
+    assert_eq!(ed.row, 3, "{:?}", ed.lines);
+    assert_eq!(ed.selected_text().as_deref(), Some("helper"));
+}
+
+#[test]
 fn the_editors_suggestions_stay_with_the_players_word_through_an_edit() {
     let start = |st: &Studio| st.s.ui.suggest.as_ref().map(|s| s.start);
     // The player types after "local x = 1": the list opens at their word.

@@ -175,11 +175,12 @@ last), Enter or Space does it, a letter goes to the next item that starts with i
 outside it, closes it. A menu taller than the screen scrolls. Items that can't do anything now are greyed out, and
 each shows its shortcut.
 
-- **The code**: Go to definition (in the file, or in a module's other files, which it opens), Open the library an
-  `import("...")` names or the file a `require("...")` loads, Show the function in the Docs; Cut, Copy, Paste, Select
-  all; Toggle comment, Indent, Outdent, Duplicate line; with an agent found, Ask it, Explain the selection (or the
-  line), and Fix with it when the line has a problem; Run the selection, Run and Save. A right click puts the cursor
-  there, unless that is in the selection, which stays. Go to definition reads the file as written, without scopes.
+- **The code**: Go to definition (in the file, or in a module's other files, which it opens and finds it in as they
+  are then), Open the library an `import("...")` names or the file a `require("...")` loads, Show the function in the
+  Docs; Cut, Copy, Paste, Select all; Toggle comment, Indent, Outdent, Duplicate line; with an agent found, Ask it,
+  Explain the selection (or the line), and Fix with it when the line has a problem; Run the selection, Run and Save. A
+  right click puts the cursor there, unless that is in the selection, which stays. Go to definition reads the file as
+  written, without scopes.
 - **The file's name** (and Synapse's tab): Save, Save as a script for scratch code, Revert to saved (one edit: Ctrl+Z
   brings yours back), Rename, Show in folder, Copy path.
 - **A mod** (a row of the script list, of Synapse's list, of the Library): Open or Edit (a module's New file and its
