@@ -7,9 +7,10 @@ it reads a bundle folder or a registry-style one (horizon-native.json beside mix
 which horizon-mixins commit goes in a build's name, its profile and its Rust. install.sh must
 put the game where each one looks, so that its native-build only selects it, never compiles:
 
-- old: the launcher at the pinned Horizon (horizon-mixins a2af5c0, always the release profile,
-  no --profile option);
-- new: a later one (another horizon-mixins, the fast profile by default, --profile);
+- old: a launcher from before build profiles (Horizon baa379d's: always the release profile, no
+  --profile option), with the pinned horizon-mixins a2af5c0 as its own;
+- new: one with them, as the launcher at the pinned Horizon is (the fast profile by default,
+  --profile), here with another horizon-mixins as its own;
 - new with another Rust: the name takes the launcher's own Rust.
 
 install.ps1 runs the same cases where there is a PowerShell (pwsh), on any system: told it is
