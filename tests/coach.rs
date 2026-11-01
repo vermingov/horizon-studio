@@ -1126,6 +1126,86 @@ fn lines_put_in_at_the_views_top_under_a_hold_off_the_code_show_there() {
 }
 
 #[test]
+fn a_window_rolled_up_then_made_full_screen_shows_its_code() {
+    // The studio in a window, rolled up from its title bar's menu, then
+    // made full screen from it: a full-screen studio isn't rolled up, and
+    // its code is seen. An agent's edit types in as the player watches; and
+    // lines put in at the view's first line under a drag of the code's text
+    // go in above the text it shows, so the drag goes on in its lines.
+    let src: String = (1..=80).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-rolled-full", "rf", &src);
+    st.s.ui.look.window = true;
+    for _ in 0..10 {
+        game_frame(&mut st, &mut game);
+    }
+    // An item of the window's menu (a right click on its title).
+    let window_menu = |st: &mut Studio, game: &mut FakeGame, item: &str| {
+        let (x, y) = text_at(game, "Horizon Studio");
+        handle(st, game, Input::Mouse(x + 4.0, y + 4.0));
+        for down in [true, false] {
+            handle(st, game, Input::Button { left: false, down });
+        }
+        game_frame(st, game);
+        let at = *texts_at(game, item)
+            .last()
+            .unwrap_or_else(|| panic!("{item:?} on the menu"));
+        click(st, game, (at.0 + 2.0, at.1 + 4.0));
+        for _ in 0..10 {
+            game_frame(st, game);
+        }
+    };
+    window_menu(&mut st, &mut game, "Roll up");
+    assert!(st.s.ui.collapsed, "rolled up");
+    window_menu(&mut st, &mut game, "Full screen");
+    assert!(!st.s.ui.look.windowed(), "full screen");
+    assert!(texts_at(&game, "v1").len() == 1, "the code drawn");
+    let edit = json!({ "start_line": 3, "end_line": 3, "new_text": "local v3 = 300" });
+    let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+    let id = r["typing"].as_u64().unwrap_or_else(|| panic!("typed in: {r}"));
+    typed_in(&mut st, &mut game, id);
+    assert_eq!(st.s.editor.lines[2], "local v3 = 300");
+    // A drag from v35 to v36, the view at line 30; five lines put in at
+    // line 30.
+    st.s.now += 5.0;
+    st.s.editor.scroll = 29;
+    for _ in 0..20 {
+        game_frame(&mut st, &mut game);
+    }
+    let (x, y35) = text_at(&game, "v35");
+    let (_, y36) = text_at(&game, "v36");
+    handle(&mut st, &mut game, Input::Mouse(x + 1.0, y35 + 2.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    handle(&mut st, &mut game, Input::Mouse(x + 1.0, y36 + 2.0));
+    for _ in 0..10 {
+        game_frame(&mut st, &mut game);
+    }
+    let block: Vec<String> = (1..=5).map(|i| format!("-- note {i}")).collect();
+    let edit = json!({ "start_line": 30, "end_line": 29, "new_text": block.join("\n") });
+    let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+    assert_eq!(r["animated"], false, "{r}");
+    for _ in 0..5 {
+        game_frame(&mut st, &mut game);
+        assert_eq!(text_at(&game, "v35").1, y35, "v35 stays where it is drawn");
+        handle(&mut st, &mut game, Input::Mouse(x + 1.0, y36 + 2.0));
+    }
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    assert_eq!(st.s.editor.scroll, 34);
+    let ed = &st.s.editor;
+    let ((r1, _), (r2, _)) = ed.selection().expect("a selection");
+    assert_eq!(
+        (ed.lines[r1].as_str(), ed.lines[r2].as_str()),
+        ("local v35 = 35", "local v36 = 36")
+    );
+}
+
+#[test]
 fn a_change_over_all_the_view_shows_leaves_the_view_at_its_line() {
     // While the view is the player's (they typed and saved a moment ago,
     // drag a selection, or press in the change's frame), or nobody sees it

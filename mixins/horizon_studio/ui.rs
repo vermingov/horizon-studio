@@ -4387,6 +4387,10 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
         }
         Action::Windowed(on) => {
             st.s.ui.look.window = on;
+            // Full screen, it isn't rolled up (nor is the window it goes back to).
+            if !on {
+                st.s.ui.collapsed = false;
+            }
             st.s.ui.look.save(&st.s.dir);
         }
         Action::Accent(i) => {
