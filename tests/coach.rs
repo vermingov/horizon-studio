@@ -860,6 +860,133 @@ fn a_press_in_a_requests_frame_keeps_the_view_under_it() {
 }
 
 #[test]
+fn an_edit_nobody_sees_at_the_views_first_line_leaves_the_view_there() {
+    // While nobody sees the editor (the studio closed, or on another tab)
+    // an agent's edit lands at once, and lines it puts in or takes out
+    // above the view move the view with them, so it shows what it showed.
+    // An edit that begins on the view's first line leaves the view where it
+    // is, so what it put there is in view, caret and all, when the player
+    // looks again: lines put in at the top of a script, the script written
+    // anew, the view's lines through the end replaced. (Only a view the
+    // player holds on screen, with a drag or a press, moves for lines put in
+    // at the very start of its first line: they go in above the text under
+    // the pointer.) The studio draws while it is open, as in the game.
+    let top = "local greeting = 'hello'\nlocal times = 3";
+    let anew: String = std::iter::once("-- Counts things for the player\n".to_owned())
+        .chain((1..=30).map(|i| format!("local v{i} = {i} * 2\n")))
+        .collect();
+    let tail = "total = 0\nreturn total";
+    // The script's lines, the view's first line and the cursor, how the
+    // player looks away, the edit, what it puts on the view's first line,
+    // and the view's first line after it.
+    let cases = [
+        // Two lines put in at line 1 of five, the studio closed.
+        (
+            5,
+            0,
+            (0, 0),
+            "closed",
+            json!({ "start_line": 1, "end_line": 0, "new_text": top }),
+            "greeting",
+            0,
+        ),
+        // The script written anew, on the Console tab.
+        (
+            12,
+            0,
+            (4, 3),
+            "on the Console tab",
+            json!({ "text": anew }),
+            "-- Counts things for the player",
+            0,
+        ),
+        // The view's lines through the end replaced, with a press on the
+        // Console tab in the edit's frame (a press there isn't one for the code).
+        (
+            80,
+            29,
+            (35, 0),
+            "pressing on the Console tab",
+            json!({ "start_line": 30, "end_line": 80, "new_text": tail }),
+            "total",
+            29,
+        ),
+        // Two lines put in above the view: it moves down with what it shows.
+        (
+            80,
+            29,
+            (35, 0),
+            "on the Console tab",
+            json!({ "start_line": 2, "end_line": 1, "new_text": "-- a\n-- b" }),
+            "v30",
+            31,
+        ),
+    ];
+    for (n, scroll, (row, col), away, edit, first, after) in cases {
+        let case = format!("{n} lines, the view at line {}, {away}: {first:?}", scroll + 1);
+        let src: String = (1..=n).map(|i| format!("local v{i} = {i}\n")).collect();
+        let (mut game, mut st) = editing(&format!("coach-unseen-first-{n}-{after}"), "un", &src);
+        st.s.editor.click(row, col, false);
+        st.s.editor.scroll = scroll;
+        for _ in 0..20 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, scroll, "{case}: the view as set");
+        let y = text_at(&game, &format!("v{}", scroll + 1)).1;
+        // The player looks away a few seconds. Then the edit's frame, in the
+        // game's order: the studio draws while it is open, its frame runs,
+        // the input is noted, the request comes, then the input.
+        if away == "closed" {
+            st.s.ui.open = false;
+        } else {
+            st.s.ui.tab = Tab::Console;
+        }
+        let frame = |st: &mut Studio, game: &mut FakeGame| {
+            if st.s.ui.open {
+                redraw(st, game);
+            }
+            run_for(st, game, 0.05);
+        };
+        for _ in 0..61 {
+            frame(&mut st, &mut game);
+        }
+        let inputs = if away.starts_with("pressing") {
+            vec![
+                Input::Mouse(240.0, 160.0),
+                Input::Button { left: true, down: true },
+                Input::Button {
+                    left: true,
+                    down: false,
+                },
+            ]
+        } else {
+            Vec::new()
+        };
+        coach::input_coming(&mut st, &inputs);
+        let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+        assert_eq!(r["animated"], false, "{case}: {r}");
+        for input in inputs {
+            handle(&mut st, &mut game, input);
+        }
+        assert_eq!(st.s.editor.scroll, after, "{case}: the view");
+        // The player looks again.
+        if away == "closed" {
+            st.s.ui.open = true;
+            st.s.ui.opened_at = st.s.now;
+        } else {
+            assert_eq!(st.s.ui.tab, Tab::Console, "{case}");
+            st.s.ui.tab = Tab::Editor;
+        }
+        for _ in 0..20 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, after, "{case}: the view");
+        assert_eq!(text_at(&game, first).1, y, "{case}: on the view's first line");
+        assert!(st.s.ui.caret_at.is_some(), "{case}: the caret in view");
+    }
+}
+
+#[test]
 fn a_file_the_editor_couldnt_read_is_never_read_changed_or_saved_through_it() {
     let mut game = FakeGame::new("coach-unreadable");
     let mut st = studio(&mut game);
