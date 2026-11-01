@@ -997,6 +997,9 @@ pub struct State {
     /// Bundled libraries installed once already (deleting one keeps it gone).
     pub seen: HashSet<String>,
     send_tokens: f64,
+    /// A Roblox script's teleports' own budget: what `send_tokens` can't
+    /// hold of its refill, one teleport's worth at most.
+    teleport_tokens: f64,
     next_timer: u32,
     /// The last id `model.attach` gave.
     pub next_model: u32,
@@ -1125,6 +1128,7 @@ impl Studio {
                 disabled: HashSet::new(),
                 seen: HashSet::new(),
                 send_tokens: SEND_BURST,
+                teleport_tokens: 1.0,
                 next_timer: 1,
                 next_model: 0,
                 queued_keys: Vec::new(),
@@ -2614,7 +2618,9 @@ impl Studio {
         super::hstudio_ui::agent_poll(self);
         // What AI agents do in the editor moves on (an edit typed in).
         super::hstudio_coach::step(self, game);
-        self.s.send_tokens = (self.s.send_tokens + dt * SEND_RATE).min(SEND_BURST);
+        let budget = self.s.send_tokens + dt * SEND_RATE;
+        self.s.send_tokens = budget.min(SEND_BURST);
+        self.s.teleport_tokens = (self.s.teleport_tokens + (budget - SEND_BURST).max(0.0)).min(1.0);
         self.s.particles = 0;
         self.s.sounds = 0;
         if self.s.now >= self.s.next_scan {
@@ -2733,13 +2739,14 @@ impl Studio {
             }
         }
         // A script's teleport is the game's /tp command, never chat; it waits
-        // for a send rather than being dropped. It goes only while half the
-        // burst is left, so a script that moves the player every frame
-        // leaves the mods' chat.say and game.run their sends.
-        if self.s.send_tokens >= SEND_BURST / 2.0
+        // for a send rather than being dropped. It takes only what the mods'
+        // chat.say and game.run leave (their budget's refill once it is
+        // full), so a script that moves the player every frame leaves them
+        // their whole burst, and all of them together send no more.
+        if self.s.teleport_tokens >= 1.0
             && let Some(line) = super::hstudio_rbx_world::take_teleport(rbx)
         {
-            self.s.send_tokens -= 1.0;
+            self.s.teleport_tokens -= 1.0;
             game.send(&line);
         }
         for cmd in std::mem::take(&mut rbx.agent) {
