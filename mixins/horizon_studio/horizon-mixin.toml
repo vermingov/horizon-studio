@@ -1,6 +1,6 @@
 [mod]
 id = "horizon_studio"
-version = "0.6.0"
+version = "0.7.0"
 priority = 100
 
 # Pinned: besides Horizon's native hook points, the studio hooks the window's
