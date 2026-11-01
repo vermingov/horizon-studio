@@ -691,16 +691,27 @@ fn busy(why: impl Into<String>) -> Json {
     json!({ "ok": false, "busy": true, "error": why.into() })
 }
 
+/// Whether the player is using the studio: they used it a moment ago, or
+/// hold the button down for a drag (selecting, the scroll bar, the panel's
+/// edge, the window), however long ago it began.
+fn using(st: &Studio) -> bool {
+    let ui = &st.s.ui;
+    ui.coach.player_busy(st.s.now) || (ui.open && ui.dragging_any())
+}
+
+/// Whether the player has a prompt or a menu open in the studio.
+fn prompted(st: &Studio) -> bool {
+    let ui = &st.s.ui;
+    ui.open && (ui.naming.is_some() || ui.menu.is_some())
+}
+
 /// Why another file can't open in the editor now, if it can't: the player
 /// is using the studio, or has a prompt or a menu open in it.
 fn switch_waits(st: &Studio) -> Option<Json> {
-    let ui = &st.s.ui;
-    if ui.open && (ui.naming.is_some() || ui.menu.is_some()) {
+    if prompted(st) {
         return Some(busy("the player has a prompt or a menu open in the studio"));
     }
-    ui.coach
-        .player_busy(st.s.now)
-        .then(|| busy("the player is using the studio"))
+    using(st).then(|| busy("the player is using the studio"))
 }
 
 /// Shows line `n` (from 1) a third of the way down the editor's view, with
@@ -729,7 +740,8 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let now = st.s.now;
     let already = st.s.editor.path.as_deref() == Some(t.path.as_path());
     if already {
-        if !st.s.ui.coach.player_busy(now) {
+        // Its tab comes forward when another file could open.
+        if switch_waits(st).is_none() {
             st.s.ui.tab = Tab::Editor;
         }
         // The view moves to the line; the player's cursor stays theirs.
@@ -2189,7 +2201,7 @@ pub fn mark(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     }
     if open {
         track(st);
-        if reveal && !st.s.ui.coach.player_busy(st.s.now) {
+        if reveal && !using(st) {
             reveal_rows(st, first, last);
         }
     }
@@ -2922,11 +2934,14 @@ pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -
     };
     say(st, by, in_run, did.clone(), Some(jump));
     // The Agent panel shows its steps' explanations, unless the player has
-    // the keys in another of the panel's tabs.
+    // the keys in another of the panel's tabs or a prompt or a menu is up;
+    // the Editor tab comes forward when another file could open.
     let now = st.s.now;
-    let (busy, editing) = (st.s.ui.coach.player_busy(now), st.s.ui.coach.player_editing(now));
+    let (prompt, editing) = (prompted(st), st.s.ui.coach.player_editing(now));
+    let busy = prompt || using(st);
     let ui = &mut st.s.ui;
     if ui.look.theme().layout == super::hstudio_theme::Layout::Studio
+        && !prompt
         && (!ui.panel_focus || ui.panel == super::hstudio_ui::Panel::Agent)
     {
         if ui.panel != super::hstudio_ui::Panel::Agent {

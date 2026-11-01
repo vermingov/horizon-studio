@@ -491,6 +491,53 @@ fn input_that_comes_in_a_requests_frame_is_the_player_using_the_studio() {
 }
 
 #[test]
+fn a_drag_held_or_a_prompt_up_keeps_the_players_file_and_tab() {
+    // The player selects lines with the mouse, slowly: long after the press
+    // they are still using the studio, and another file waits.
+    let src: String = (1..=12).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-drag", "dr", &src);
+    let (x, y) = text_at(&game, "v2");
+    let (_, y5) = text_at(&game, "v5");
+    handle(&mut st, &mut game, Input::Mouse(x + 1.0, y + 2.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    for k in 1..=30 {
+        st.s.now += 0.1;
+        handle(
+            &mut st,
+            &mut game,
+            Input::Mouse(x + 1.0, y + 2.0 + (y5 - y) * k as f32 / 30.0),
+        );
+    }
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "hello" })).unwrap();
+    assert_eq!(r["busy"], true, "{r}");
+    assert_eq!(st.s.editor.title, "dr.lua");
+    assert!(st.s.ui.dragging_any(), "the drag goes on");
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    st.s.now += 2.5;
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "hello" })).unwrap();
+    assert_eq!(r["did"], "Opened hello.lua", "{r}");
+    // In the Library with a prompt or a menu up, the file open already
+    // shown, or a lesson started in it, leaves the tab where it is (the
+    // Duplicate prompt's Enter would open the copy in the Editor tab).
+    st.s.now += 2.5;
+    st.s.ui.tab = Tab::Library;
+    st.s.ui.naming = Some(Default::default());
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "hello", "line": 1 })).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(st.s.ui.tab, Tab::Library);
+    let lesson = json!({ "title": "Hi", "steps": [{ "start_line": 1, "note": "It says hello." }] });
+    ask(&mut st, &mut game, "lesson", lesson).unwrap();
+    assert_eq!(st.s.ui.tab, Tab::Library);
+}
+
+#[test]
 fn a_file_the_editor_couldnt_read_is_never_read_changed_or_saved_through_it() {
     let mut game = FakeGame::new("coach-unreadable");
     let mut st = studio(&mut game);
