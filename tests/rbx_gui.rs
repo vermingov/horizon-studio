@@ -983,6 +983,43 @@ fn a_text_box_destroyed_while_edited_gives_the_keys_back() {
 }
 
 #[test]
+fn another_mod_reloading_leaves_the_gui_as_it_is() {
+    // Mod a's TextBox is being edited when mod b reloads (its file changed
+    // on disk): a's screen stays up through it, with the box's focus, so
+    // no key reaches the game; then a's Modal button held while b reloads
+    // again still clicks when it is let go.
+    let mut game = FakeGame::new("rbx-reload-other");
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{BOX}\nlocal ok = Instance.new('TextButton', gui) ok.Position = UDim2.fromOffset(0, 50) ok.Size = UDim2.fromOffset(50, 20) ok.Modal = true ok.Activated:Connect(function() print('ok') end)\n"
+    );
+    load(&mut game, &mut st, "a", &src, 0.6);
+    load(&mut game, &mut st, "b", "print('b')\n", 0.6);
+    focus_box(&mut st, &mut game);
+    typed(&mut st, &mut game, "hi");
+    // Each frame as the game has it: the studio's, then the GUI drawn.
+    let reload_b = |st: &mut Studio, game: &mut FakeGame, again: &str| {
+        game.write_mod("b.lua", &format!("print('{again}')\n"));
+        for _ in 0..12 {
+            st.frame(game, 0.05);
+            assert!(st.s.screen.is_some(), "a's screen stays up");
+            hud(st, game);
+        }
+        assert_eq!(printed(st, "b").last().map(String::as_str), Some(again), "b reloaded");
+    };
+    reload_b(&mut st, &mut game, "b again");
+    assert!(st.s.rbx.pointer.focus.is_some(), "the box keeps the focus");
+    typed(&mut st, &mut game, "!");
+    assert_eq!(say(&mut st, &mut game, "state"), "hi!|4|-1");
+    pointer_moved(&mut st.s.rbx, 10.0, 60.0);
+    pointer_button(&mut st.s.rbx, true, true);
+    reload_b(&mut st, &mut game, "b once more");
+    pointer_button(&mut st.s.rbx, true, false);
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(printed(&st, "a").last().map(String::as_str), Some("ok"));
+}
+
+#[test]
 fn up_and_down_move_a_drawn_line() {
     let mut game = FakeGame::new("rbx-lines");
     let mut st = studio(&mut game);
