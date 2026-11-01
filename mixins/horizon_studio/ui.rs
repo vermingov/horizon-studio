@@ -3780,6 +3780,8 @@ pub(crate) fn editor_pos(st: &Studio, game: &mut dyn GameApi, x: f32, y: f32, dr
     let scale = st.s.ui.look.scale;
     // While an agent's edit typed in, the rows were drawn before the frame
     // typed more: the place drawn under the pointer, where its text is now.
+    // (A splice since that replaced the text drawn there leaves nothing of
+    // it: the place is then the one under the pointer now, as below.)
     if let Some(d) = ed.drawn.as_ref().filter(|d| d.rev == ed.revision) {
         let row = ((at - d.moved).max(0.0).floor() as usize).min(d.count.saturating_sub(1));
         if let Some(line) = row.checked_sub(d.first).and_then(|i| d.lines.get(i)) {
@@ -3789,12 +3791,13 @@ pub(crate) fn editor_pos(st: &Studio, game: &mut dyn GameApi, x: f32, y: f32, dr
                 d.hscroll + column_at(game, line, d.hscroll, x - v.x, scale)
             };
             let byte = line.char_indices().nth(col).map_or(line.len(), |(i, _)| i);
-            let place = d
-                .splices
-                .iter()
-                .fold((row, byte), |p, &(a, b, e)| after_splice(p, a, b, e));
-            let (row, byte) = ed.clamp_pos(place);
-            return Some((row, ed.lines[row][..byte].chars().count()));
+            let place = d.splices.iter().try_fold((row, byte), |p, &(a, b, e)| {
+                (p < a || p >= b).then(|| after_splice(p, a, b, e))
+            });
+            if let Some(place) = place {
+                let (row, byte) = ed.clamp_pos(place);
+                return Some((row, ed.lines[row][..byte].chars().count()));
+            }
         }
     }
     let row = (at.floor() as usize).min(ed.lines.len() - 1);

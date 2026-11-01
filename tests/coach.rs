@@ -2452,6 +2452,87 @@ fn a_press_in_a_second_edits_frame_is_for_the_line_drawn_under_it() {
 }
 
 #[test]
+fn a_press_on_a_line_a_second_edit_replaces_is_for_the_line_under_it_now() {
+    // As above, a first change types in at line 33 in the view at line 30
+    // (or nothing does), and in the press's frame a second edit comes; but
+    // it replaces the line drawn under the press, with all the view showed
+    // (lines 2-79 written anew as 150). Nothing of the text drawn there is
+    // left, so the press is for the line under the pointer now, in the view
+    // the change left at its line, as when nothing typed in at the draw:
+    // not for where the second edit begins, far above the view.
+    let src: String = (1..=80).map(|i| format!("local v{i} = {i}\n")).collect();
+    let long = "local v33 = 'a line long enough to take a few frames to type in'";
+    let lines: Vec<String> = (1..=150).map(|i| format!("w{i} = make({i})")).collect();
+    for (first, left) in [
+        ("edit", true),
+        ("edit", false),
+        ("disk", true),
+        ("disk", false),
+        ("nothing", true),
+    ] {
+        let case = format!("first by {first}, left {left}");
+        let (mut game, mut st) = editing(&format!("coach-press-replaced-{first}-{left}"), "pr", &src);
+        st.s.ui
+            .dock
+            .set_hidden(horizon_studio::game::hstudio_ui::Pane::Console, true);
+        st.s.editor.click(30, 0, false);
+        st.s.editor.scroll = 29;
+        for _ in 0..10 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, 29, "{case}");
+        if first == "edit" {
+            let edit = json!({ "start_line": 33, "end_line": 33, "new_text": long });
+            let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+            assert!(r["typing"].is_u64(), "{case}: {r}");
+        } else if first == "disk" {
+            std::fs::write(game.mods_dir().join("pr.lua"), src.replace("local v33 = 33", long)).unwrap();
+        }
+        if first != "nothing" {
+            let mut n = 0;
+            while st.s.ui.coach.typing.as_ref().is_none_or(|t| t.phase != Phase::Typing) {
+                n += 1;
+                assert!(n < 30, "{case}: never typed in");
+                game_frame(&mut st, &mut game);
+            }
+            for _ in 0..3 {
+                game_frame(&mut st, &mut game);
+            }
+        }
+        // The press's frame, in the game's order: the studio draws (the
+        // first still typing), its frame runs, the input is noted, the
+        // second edit comes, then the input.
+        redraw(&mut st, &mut game);
+        assert_eq!(st.s.ui.coach.typing.is_some(), first != "nothing", "{case}");
+        let (x, y) = text_at(&game, "v35");
+        run_for(&mut st, &mut game, 0.05);
+        let inputs = [
+            Input::Mouse(x + 1.0, y + 2.0),
+            Input::Button { left, down: true },
+            Input::Button { left, down: false },
+        ];
+        coach::input_coming(&mut st, &inputs);
+        let second = json!({ "start_line": 2, "end_line": 79, "new_text": lines.join("\n") });
+        let r = ask(&mut st, &mut game, "edit", second).unwrap();
+        assert_eq!(r["animated"], false, "{case}: {r}");
+        for input in inputs {
+            handle(&mut st, &mut game, input);
+        }
+        assert_eq!(st.s.editor.scroll, 29, "{case}: the view at its line");
+        let ed = &st.s.editor;
+        assert_eq!(
+            ed.lines[ed.row], "w34 = make(34)",
+            "{case}: the line under the press now"
+        );
+        assert_eq!(st.s.ui.menu.is_some(), !left, "{case}: the right press's menu");
+        st.s.ui.menu = None;
+        game_frame(&mut st, &mut game);
+        assert_eq!(st.s.editor.scroll, 29, "{case}");
+        assert!(st.s.ui.caret_at.is_some(), "{case}: the caret in view");
+    }
+}
+
+#[test]
 fn a_menu_about_the_code_goes_when_the_code_changes_under_it() {
     // The player opens greet's menu in print(greet()) and pauses, and an
     // agent's edit puts a line in at the top: the menu's Go to
