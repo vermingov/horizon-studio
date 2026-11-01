@@ -57,6 +57,10 @@ pub struct Coach {
     pub player_at: f64,
     /// When they last pressed a key or a button, typed or turned the wheel.
     pub input_at: f64,
+    /// A press that put an edit being typed in whole: where the pointer
+    /// was, and the place (row, char column) drawn under it, which the edit
+    /// moved with its text. The press is for that place.
+    pub(crate) pressed: Option<((f32, f32), (usize, usize))>,
     /// The answers to the last requests that changed something, by the
     /// key their client gave: one sent again (after a timeout, on a new
     /// connection) gets the same answer and isn't done twice.
@@ -139,6 +143,7 @@ impl Default for Coach {
         Coach {
             player_at: f64::NEG_INFINITY,
             input_at: f64::NEG_INFINITY,
+            pressed: None,
             replies: VecDeque::new(),
             typing: None,
             flash: None,
@@ -278,15 +283,32 @@ pub struct Before {
 /// Before the player's input reaches the studio: it is noted, and a key, a
 /// typed character or a press puts the rest of an edit being typed in at
 /// once, so whatever the input does (type at the player's own caret, save,
-/// run, clear, open another file) finds the edit whole.
-pub fn before_input(st: &mut Studio, input: &Input) -> Before {
+/// run, clear, open another file) finds the edit whole. A press is for the
+/// text drawn under the pointer, wherever the rest of the edit moves it.
+pub fn before_input(st: &mut Studio, game: &mut dyn GameApi, input: &Input) -> Before {
     let why = match input {
         Input::Key { down: true, .. } | Input::Text(_) => Some("the player typed"),
         Input::Button { down: true, .. } => Some("the player clicked"),
         _ => None,
     };
     if let Some(why) = why {
+        let press = matches!(input, Input::Button { down: true, .. }) && st.s.ui.coach.typing.is_some();
+        let at = st.s.ui.mouse;
+        let drawn = st.s.ui.smooth[1];
+        let place = press
+            .then(|| super::hstudio_ui::editor_pos(st, game, at.0, at.1, drawn))
+            .flatten();
+        let ed = &mut st.s.editor;
+        ed.held = place.map(|(row, col)| {
+            let line = &ed.lines[row];
+            (row, line.char_indices().nth(col).map_or(line.len(), |(i, _)| i))
+        });
         finish_typing(st, why);
+        let ed = &mut st.s.editor;
+        st.s.ui.coach.pressed = ed.held.take().map(|(row, byte)| {
+            let col = ed.lines[row].char_indices().take_while(|(i, _)| *i < byte).count();
+            (at, (row, col))
+        });
     }
     if used(input) {
         st.s.ui.coach.input_at = st.s.now;
@@ -321,6 +343,7 @@ pub fn input_coming(st: &mut Studio, inputs: &[Input]) {
 /// After it: when it changed the code of the file that was open (not by
 /// opening another), the player is editing.
 pub fn after_input(st: &mut Studio, before: Before) {
+    st.s.ui.coach.pressed = None;
     let ed = &st.s.editor;
     if ed.revision != before.revision && ed.path == before.path {
         st.s.ui.coach.player_at = st.s.now;

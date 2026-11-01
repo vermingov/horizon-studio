@@ -784,6 +784,45 @@ fn an_edit_lands_at_once_when_the_player_types() {
 }
 
 #[test]
+fn a_press_while_an_edit_comes_in_is_for_the_line_drawn_under_it() {
+    // An agent's edit is typing four lines in at line 2 when the player
+    // presses a line below: the rest of the edit goes in at once, which
+    // moves that line down, and the press is still for that line, a right
+    // press's menu (which acts on the cursor) and a left press's cursor.
+    let src: String = (1..=14).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-press-mid-edit", "pm", &src);
+    let comment = "-- a comment long enough to take a moment to type in";
+    let new_text = [comment; 4].join("\n");
+    for left in [false, true] {
+        let edit = json!({ "start_line": 2, "end_line": 1, "new_text": new_text });
+        ask(&mut st, &mut game, "edit", edit).unwrap();
+        run_for(&mut st, &mut game, 1.0);
+        redraw(&mut st, &mut game);
+        assert!(st.s.ui.coach.typing.is_some(), "still typing");
+        // The lowest line the view shows.
+        let word = (1..=14)
+            .map(|i| format!("v{i}"))
+            .filter(|w| !texts_at(&game, w).is_empty())
+            .max_by(|a, b| text_at(&game, a).1.total_cmp(&text_at(&game, b).1))
+            .unwrap();
+        let (x, y) = text_at(&game, &word);
+        handle(&mut st, &mut game, Input::Mouse(x + 1.0, y + 2.0));
+        handle(&mut st, &mut game, Input::Button { left, down: true });
+        handle(&mut st, &mut game, Input::Button { left, down: false });
+        assert!(st.s.ui.coach.typing.is_none(), "put in whole");
+        let ed = &st.s.editor;
+        assert!(
+            ed.lines[ed.row].contains(&format!("{word} = ")),
+            "{left}: {:?}",
+            ed.lines[ed.row]
+        );
+        assert_eq!(st.s.ui.menu.is_some(), !left);
+        st.s.ui.menu = None;
+        st.s.ui.coach.player_at = f64::NEG_INFINITY;
+    }
+}
+
+#[test]
 fn the_editors_suggestions_stay_with_the_players_word_through_an_edit() {
     let start = |st: &Studio| st.s.ui.suggest.as_ref().map(|s| s.start);
     // The player types after "local x = 1": the list opens at their word.

@@ -1159,6 +1159,10 @@ pub struct Editor {
     pub col: usize,
     /// The other end of the selection.
     pub anchor: Option<(usize, usize)>,
+    /// A place (row, byte) that keeps its place in the text through a
+    /// splice as the cursor does: a press's, while an agent's edit is put
+    /// in whole under it.
+    pub held: Option<(usize, usize)>,
     pub scroll: usize,
     /// Chars of each line scrolled off to the left.
     pub hscroll: usize,
@@ -1204,6 +1208,7 @@ impl Default for Editor {
             row: 0,
             col: 0,
             anchor: None,
+            held: None,
             scroll: 0,
             hscroll: 0,
             followed: None,
@@ -1508,6 +1513,7 @@ impl Editor {
         };
         (self.row, self.col) = self.clamp_pos(moved((self.row, self.col)));
         self.anchor = self.anchor.map(|a| self.clamp_pos(moved(a)));
+        self.held = self.held.map(|h| self.clamp_pos(moved(h)));
         self.dirty = true;
         self.revision += 1;
         self.followed = Some((self.row, self.col, self.revision));
@@ -2366,7 +2372,7 @@ pub use super::hstudio_look::{code_line, draw, draw_screen};
 // ----------------------------------------------------------------- input
 
 pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult {
-    let before = super::hstudio_coach::before_input(st, &input);
+    let before = super::hstudio_coach::before_input(st, game, &input);
     let revision = st.s.editor.revision;
     let out = handle_input(st, game, input);
     if st.s.editor.revision != revision {
@@ -3004,6 +3010,13 @@ fn as_drawn(st: &Studio, action: Action) -> Option<Action> {
 /// row, not where it is going) says which, given as `drawn`. Left of the
 /// text (over the line numbers) it is the line's start.
 pub(crate) fn editor_pos(st: &Studio, game: &mut dyn GameApi, x: f32, y: f32, drawn: f32) -> Option<(usize, usize)> {
+    // A press that put an agent's edit in whole is for the text drawn under
+    // it, wherever the edit moved that.
+    if let Some((at, place)) = st.s.ui.coach.pressed
+        && at == (x, y)
+    {
+        return Some(place);
+    }
     let v = st.s.ui.view?;
     let ed = &st.s.editor;
     let at = drawn.max(0.0) + ((y - v.y) / code_line()).clamp(0.0, v.rows as f32);
