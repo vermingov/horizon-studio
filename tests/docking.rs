@@ -1771,6 +1771,50 @@ fn what_agents_show_is_in_the_rows_the_code_has_once_the_panes_change() {
 }
 
 #[test]
+fn an_agents_note_over_a_narrow_code_is_cut_to_fit() {
+    // The Docs beside the code, which is as narrow as it goes. An agent
+    // changes a file of the module the editor doesn't have open: the note
+    // over the code that says so is cut to the code's width, and Show on
+    // it opens the file.
+    let (mut game, mut st) = editing("dock-notice-narrow");
+    let kit = game.mods_dir().join("kit");
+    std::fs::create_dir_all(kit.join("lib")).unwrap();
+    std::fs::write(kit.join("main.lua"), "local u = require('lib.util')\nprint(u.two())\n").unwrap();
+    std::fs::write(
+        kit.join("lib/util.lua"),
+        "local M = {}\nfunction M.two() return 2 end\nreturn M\n",
+    )
+    .unwrap();
+    st.scan(&mut game);
+    st.open_file(&kit.join("main.lua"));
+    assert!(st.s.ui.dock.move_pane(
+        Pane::Docs,
+        DropAt::Beside {
+            anchor: Pane::Code,
+            side: Side::Right,
+        },
+    ));
+    st.s.ui.dock.set_ratio(6, 0.05);
+    game_frame(&mut st, &mut game);
+    let code = st.s.ui.coach.code_at.expect("the code drawn");
+    assert!(code[2] < 320.0, "the code as narrow as it goes: {code:?}");
+    st.s.now += 5.0;
+    game_frame(&mut st, &mut game);
+    let edit = json!({ "id": "kit", "file": "lib/util.lua", "old_text": "return 2", "new_text": "return 3" });
+    let r = coach::call(&mut st, &mut game, &agent(), "edit", &edit).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    game_frame(&mut st, &mut game);
+    let (label, at) = texts(&game)
+        .into_iter()
+        .find(|(t, _)| t.ends_with(" · Show"))
+        .expect("the note over the code");
+    assert!(label.starts_with("Claude Code changed "), "{label}");
+    assert!(inside(code, at), "{label:?} at {at:?} in the code {code:?}");
+    click(&mut st, &mut game, (at.0 + 4.0, at.1 + 4.0));
+    assert_eq!(st.s.editor.title, "kit/lib/util.lua");
+}
+
+#[test]
 fn the_wheel_scrolls_the_pane_under_the_pointer() {
     let (mut game, mut st) = editing("dock-wheel");
     for i in 0..50 {

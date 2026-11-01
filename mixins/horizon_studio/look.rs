@@ -3231,18 +3231,22 @@ fn agent_caret(
 
 /// At the bottom right of the code, a moment: an agent changed a file the
 /// editor doesn't show ("Claude Code changed lib/util.lua"); a click shows it.
+/// Cut to the code's width where that is narrow (a pane beside it), and
+/// not drawn where not even a few letters of it would fit.
 fn agent_notice(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     use super::hstudio_coach::NOTICE_SECS;
     let now = st.s.now;
     let Some((text, seq, at)) = st.s.ui.coach.notice.as_ref().map(|n| (n.text.clone(), n.seq, n.at)) else {
         return;
     };
-    let label = format!("{text} · Show");
-    let lw = p.measure(&label, 12.0, Font::Medium) + 30.0;
-    let r = [panel[0] + panel[2] - lw - 14.0, panel[1] + panel[3] - 36.0, lw, 24.0];
-    if panel[3] < 72.0 || r[0] < panel[0] + 10.0 {
+    let show = " · Show";
+    let room = panel[2] - 54.0 - p.measure(show, 12.0, Font::Medium);
+    if panel[3] < 72.0 || room <= 60.0 {
         return;
     }
+    let label = format!("{}{show}", p.fit(&text, room, 12.0, Font::Medium));
+    let lw = p.measure(&label, 12.0, Font::Medium) + 30.0;
+    let r = [panel[0] + panel[2] - lw - 14.0, panel[1] + panel[3] - 36.0, lw, 24.0];
     let age = now - at;
     let base = p.alpha;
     p.alpha = base * progress(now, at, QUICK) * (1.0 - ((age - (NOTICE_SECS - 0.6)) / 0.6).clamp(0.0, 1.0) as f32);
