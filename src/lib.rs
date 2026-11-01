@@ -80,6 +80,8 @@ pub mod game {
     pub mod hstudio_ui;
     #[path = "../../mixins/horizon_studio/via_picker.rs"]
     pub mod hstudio_via_picker;
+    #[path = "../../mixins/horizon_studio/voicechat.rs"]
+    pub mod hstudio_voicechat;
 }
 
 pub mod net {

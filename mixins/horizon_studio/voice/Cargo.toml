@@ -1,0 +1,25 @@
+# Horizon Studio's voice chat: a client for Simple Voice Chat (henkelmax's
+# mod and plugin) servers. A bundle crate ([[crate]] in horizon-mixin.toml):
+# Horizon's game crate depends on it, and its registry dependencies are only
+# crates Horizon's Cargo.lock already has (ring 0.17, cpal 0.16). Opus is
+# vendored (src/opus, rusty-opus 1.0.2).
+[package]
+name = "hstudio_voice"
+version = "0.7.3"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT AND BSD-3-Clause"
+publish = false
+description = "Horizon Studio's Simple Voice Chat client: protocol, Opus, mixing, the microphone and the network thread."
+
+[features]
+default = ["audio"]
+# The microphone and the speakers, through cpal (ALSA on Linux). Without it
+# the engine still connects, sends and decodes, through the `audio` module's
+# test devices; Horizon Studio's own tests build it so (no ALSA headers).
+audio = ["dep:cpal"]
+
+[dependencies]
+# AES-128-GCM for the voice packets, and the random IVs.
+ring = "0.17"
+cpal = { version = "0.16", optional = true }

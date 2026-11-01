@@ -1,0 +1,14 @@
+# The voice chat's Opus (rusty-opus, vendored in the voice crate) as a
+# command for tools/opus_interop.py, which checks it against the system's
+# libopus. Not part of the workspace (its lock is its own, and ignored).
+[package]
+name = "opus-interop"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+hstudio_voice = { path = "../../mixins/horizon_studio/voice", default-features = false }
+
+[profile.dev]
+opt-level = 2

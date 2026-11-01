@@ -404,6 +404,15 @@ pub trait GameApi {
         let _ = (enabled, version);
         Err("ViaHorizon isn't available here".into())
     }
+    /// The voice chat (Simple Voice Chat servers): where it is, what is heard.
+    fn voice(&self) -> VoiceInfo {
+        VoiceInfo::default()
+    }
+    /// Mutes, deafens, sets the volume...
+    fn voice_set(&mut self, change: VoiceChange) -> Result<(), String> {
+        let _ = change;
+        Err("voice chat isn't available here".into())
+    }
     /// A body part's frame this frame: of the player (`target` None) or of an
     /// entity by id. None where there is no such part, or no world.
     fn part_frame(&self, target: Option<u32>, part: &str) -> Option<PartFrame> {
@@ -493,6 +502,89 @@ pub struct ViaInfo {
     pub versions: Vec<(String, String)>,
     /// ViaProxy's last lines.
     pub log: Vec<String>,
+}
+
+/// The voice chat's state (Simple Voice Chat servers), for `voice.*` and the HUD.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VoiceInfo {
+    /// This game has voice chat at all (not headless).
+    pub available: bool,
+    /// "off" (no server), "asking", "none" (the server has none),
+    /// "incompatible", "connecting", "connected", "lost", "failed".
+    pub state: String,
+    pub connected: bool,
+    /// The server has voice chat, but it isn't working (the HUD says so).
+    pub unavailable: bool,
+    /// The microphone is sending.
+    pub talking: bool,
+    /// The microphone's level, in dBFS (-127 silent).
+    pub level_db: f32,
+    pub muted: bool,
+    pub deafened: bool,
+    /// "ptt" or "voice".
+    pub activation: String,
+    /// The push to talk key (`key.keyboard.caps.lock`), and whether it is held.
+    pub ptt_key: String,
+    pub ptt: bool,
+    /// 0 to 3; -40 to 24 dB; -127 to 0 dBFS.
+    pub volume: f32,
+    pub gain_db: f32,
+    pub threshold_db: f32,
+    /// Who is heard now: (name, whispering).
+    pub speakers: Vec<(String, bool)>,
+    /// The players with voice chat on this server.
+    pub players: Vec<String>,
+    /// The groups: (id, name, has a password), and the one joined.
+    pub groups: Vec<(String, String, bool)>,
+    pub group: Option<String>,
+    /// The compatibility version the server speaks (20 or 21).
+    pub compat: Option<i32>,
+    /// Why it isn't working, and the microphone's device or why there is none.
+    pub error: Option<String>,
+    pub mic: Option<String>,
+}
+
+/// No voice chat here (headless): off, with the settings' defaults.
+impl Default for VoiceInfo {
+    fn default() -> Self {
+        VoiceInfo {
+            available: false,
+            state: "off".into(),
+            connected: false,
+            unavailable: false,
+            talking: false,
+            level_db: -127.0,
+            muted: false,
+            deafened: false,
+            activation: "ptt".into(),
+            ptt_key: String::new(),
+            ptt: false,
+            volume: 1.0,
+            gain_db: 0.0,
+            threshold_db: -50.0,
+            speakers: Vec::new(),
+            players: Vec::new(),
+            groups: Vec::new(),
+            group: None,
+            compat: None,
+            error: None,
+            mic: None,
+        }
+    }
+}
+
+/// A change to the voice chat (`voice.*`, the settings).
+#[derive(Clone, Debug, PartialEq)]
+pub enum VoiceChange {
+    Mute(bool),
+    Deafen(bool),
+    Volume(f32),
+    Gain(f32),
+    Threshold(f32),
+    /// "ptt" or "voice".
+    Activation(String),
+    JoinGroup(String, Option<String>),
+    LeaveGroup,
 }
 
 /// Horizon's fonts: Geist and Geist Mono.
@@ -3214,6 +3306,8 @@ impl Studio {
         super::hstudio_rbx_draw::draw_adornments(&self.s.rbx, game);
         super::hstudio_sunc::draw_drawings(&self.s.rbx, game, &mut images);
         self.s.rbx.screen_images = images;
+        // The voice chat's microphone, its state and who is talking.
+        super::hstudio_voicechat::draw_hud(game);
         let panels: Vec<(Corner, Vec<String>)> = self
             .s
             .mods
@@ -4619,6 +4713,84 @@ pub const API: &[(&str, &str, u32, &str)] = &[
         "via.log(): ViaProxy's last lines, for when a join fails",
     ),
     (
+        "voice",
+        "status",
+        320,
+        "voice.status(): the voice chat's state (Simple Voice Chat servers): {state, connected, talking, muted, deafened, activation, volume, gain, threshold, level, compat, error, mic}",
+    ),
+    (
+        "voice",
+        "connected",
+        321,
+        "voice.connected(): whether this server's voice chat is connected",
+    ),
+    (
+        "voice",
+        "talking",
+        322,
+        "voice.talking(): whether the microphone is sending now",
+    ),
+    (
+        "voice",
+        "speakers",
+        323,
+        "voice.speakers(): who is heard now: {{name, whispering}, ...}",
+    ),
+    (
+        "voice",
+        "mute",
+        324,
+        "voice.mute([on]): mutes the microphone (true) or not; returns whether it is muted",
+    ),
+    (
+        "voice",
+        "deafen",
+        325,
+        "voice.deafen([on]): hears and sends nothing (true) or not; returns whether it is deafened",
+    ),
+    (
+        "voice",
+        "volume",
+        326,
+        "voice.volume([x]): the voices' volume, 0 to 3 (1 as they come); returns it",
+    ),
+    (
+        "voice",
+        "gain",
+        327,
+        "voice.gain([db]): the microphone's gain in dB, -40 to 24; returns it",
+    ),
+    (
+        "voice",
+        "threshold",
+        328,
+        "voice.threshold([db]): voice activation's threshold in dBFS, -127 to 0; returns it",
+    ),
+    (
+        "voice",
+        "activation",
+        329,
+        "voice.activation([mode]): \"ptt\" (push to talk) or \"voice\" (voice activation); returns it",
+    ),
+    (
+        "voice",
+        "groups",
+        330,
+        "voice.groups(): the server's voice groups: {{id, name, password, joined}, ...}",
+    ),
+    (
+        "voice",
+        "join_group",
+        331,
+        "voice.join_group(id[, password]): joins a voice group (its id from voice.groups())",
+    ),
+    (
+        "voice",
+        "leave_group",
+        332,
+        "voice.leave_group(): leaves the voice group",
+    ),
+    (
         "json",
         "encode",
         140,
@@ -5762,6 +5934,160 @@ impl Ctx<'_> {
                     }
                     _ => Ok(vec![Value::Num(f64::from(t.w)), Value::Num(f64::from(t.h))]),
                 }
+            }
+        }
+    }
+
+    /// `voice.*`: the voice chat, through the game.
+    fn voice(&mut self, lua: &Lua, id: u32, args: &[Value]) -> Res {
+        let names = [
+            "status",
+            "connected",
+            "talking",
+            "speakers",
+            "mute",
+            "deafen",
+            "volume",
+            "gain",
+            "threshold",
+            "activation",
+            "groups",
+            "join_group",
+            "leave_group",
+        ];
+        let fname = names[(id - 320) as usize];
+        let set = |game: &mut dyn GameApi, change: VoiceChange| {
+            game.voice_set(change)
+                .map_err(|e| lua.rt_error(format!("voice.{fname}: {e}")))
+        };
+        let given = !matches!(args.first(), None | Some(Value::Nil));
+        let num = |lo: f64, hi: f64| -> Result<Option<f32>, Throw> {
+            if !given {
+                return Ok(None);
+            }
+            let n = check_num(lua, args, 0, fname)?;
+            if !n.is_finite() {
+                return Err(bad_arg(lua, 0, fname, "a finite number expected"));
+            }
+            Ok(Some(n.clamp(lo, hi) as f32))
+        };
+        match id {
+            320 => {
+                let v = self.game.voice();
+                let mut t = Table::default();
+                t.set_str("state", Value::str(if v.available { &v.state } else { "off" }));
+                t.set_str("connected", Value::Bool(v.connected));
+                t.set_str("unavailable", Value::Bool(v.unavailable));
+                t.set_str("talking", Value::Bool(v.talking));
+                t.set_str("muted", Value::Bool(v.muted));
+                t.set_str("deafened", Value::Bool(v.deafened));
+                t.set_str(
+                    "activation",
+                    Value::str(if v.activation.is_empty() { "ptt" } else { &v.activation }),
+                );
+                t.set_str("ptt_key", Value::str(&v.ptt_key));
+                t.set_str("volume", Value::Num(f64::from(v.volume)));
+                t.set_str("gain", Value::Num(f64::from(v.gain_db)));
+                t.set_str("threshold", Value::Num(f64::from(v.threshold_db)));
+                t.set_str("level", Value::Num(f64::from(v.level_db)));
+                t.set_str("players", Value::Num(v.players.len() as f64));
+                if let Some(c) = v.compat {
+                    t.set_str("compat", Value::Num(f64::from(c)));
+                }
+                if let Some(e) = &v.error {
+                    t.set_str("error", Value::str(e));
+                }
+                if let Some(m) = &v.mic {
+                    t.set_str("mic", Value::str(m));
+                }
+                Ok(vec![Value::table(t)])
+            }
+            321 => Ok(vec![Value::Bool(self.game.voice().connected)]),
+            322 => Ok(vec![Value::Bool(self.game.voice().talking)]),
+            323 => {
+                let mut list = Table::default();
+                for (i, (name, whispering)) in self.game.voice().speakers.iter().enumerate() {
+                    let mut t = Table::default();
+                    t.set_str("name", Value::str(name));
+                    t.set_str("whispering", Value::Bool(*whispering));
+                    let _ = list.set(Value::Num(i as f64 + 1.0), Value::table(t));
+                }
+                Ok(vec![Value::table(list)])
+            }
+            324 | 325 => {
+                if given {
+                    let on = arg(args, 0).truthy();
+                    set(
+                        &mut *self.game,
+                        if id == 324 {
+                            VoiceChange::Mute(on)
+                        } else {
+                            VoiceChange::Deafen(on)
+                        },
+                    )?;
+                }
+                let v = self.game.voice();
+                Ok(vec![Value::Bool(if id == 324 { v.muted } else { v.deafened })])
+            }
+            326..=328 => {
+                let (lo, hi) = match id {
+                    326 => (0.0, 3.0),
+                    327 => (-40.0, 24.0),
+                    _ => (-127.0, 0.0),
+                };
+                if let Some(x) = num(lo, hi)? {
+                    let change = match id {
+                        326 => VoiceChange::Volume(x),
+                        327 => VoiceChange::Gain(x),
+                        _ => VoiceChange::Threshold(x),
+                    };
+                    set(&mut *self.game, change)?;
+                }
+                let v = self.game.voice();
+                let x = match id {
+                    326 => v.volume,
+                    327 => v.gain_db,
+                    _ => v.threshold_db,
+                };
+                Ok(vec![Value::Num(f64::from(x))])
+            }
+            329 => {
+                if given {
+                    let mode = check_text(lua, args, 0, fname)?;
+                    if mode != "ptt" && mode != "voice" {
+                        return Err(bad_arg(lua, 0, fname, "\"ptt\" or \"voice\" expected"));
+                    }
+                    set(&mut *self.game, VoiceChange::Activation(mode))?;
+                }
+                let v = self.game.voice();
+                Ok(vec![Value::str(if v.activation.is_empty() {
+                    "ptt"
+                } else {
+                    &v.activation
+                })])
+            }
+            330 => {
+                let v = self.game.voice();
+                let mut list = Table::default();
+                for (i, (gid, name, password)) in v.groups.iter().enumerate() {
+                    let mut t = Table::default();
+                    t.set_str("id", Value::str(gid));
+                    t.set_str("name", Value::str(name));
+                    t.set_str("password", Value::Bool(*password));
+                    t.set_str("joined", Value::Bool(v.group.as_deref() == Some(gid.as_str())));
+                    let _ = list.set(Value::Num(i as f64 + 1.0), Value::table(t));
+                }
+                Ok(vec![Value::table(list)])
+            }
+            331 => {
+                let gid = check_text(lua, args, 0, fname)?;
+                let password = opt_str(lua, args, 1, fname)?.map(|s| text_of(&s));
+                set(&mut *self.game, VoiceChange::JoinGroup(gid, password))?;
+                Ok(Vec::new())
+            }
+            _ => {
+                set(&mut *self.game, VoiceChange::LeaveGroup)?;
+                Ok(Vec::new())
             }
         }
     }
@@ -6952,6 +7278,7 @@ impl Host for Ctx<'_> {
                 none()
             }
             300..=312 => self.task(lua, id, args),
+            320..=332 => self.voice(lua, id, &args),
             super::hstudio_rbx::FIRST_ID..=super::hstudio_rbx::LAST_ID => super::hstudio_rbx::call(self, lua, id, args),
             super::hstudio_sunc::FIRST_ID..=super::hstudio_sunc::LAST_ID => self.sunc(lua, id, args),
             super::hstudio_rbx_api::FIRST_ID..=super::hstudio_rbx_api::LAST_ID => {

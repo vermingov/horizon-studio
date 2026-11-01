@@ -29,6 +29,10 @@ native Horizon mod that adds:
   `.bbmodel` files.
 - **3D drawing, sounds, particles and screens.** Scripts draw lines, boxes, beams and labels in the world, play
   sounds, spawn particles, and open screens of their own with buttons, toggles, sliders and text fields.
+- **Voice chat with Simple Voice Chat servers.** Talk to and hear the players of any server running SVC (the Fabric
+  or NeoForge mod, or the Paper plugin), their voices from where they stand: push to talk (or voice activation),
+  mute, deafen and the volume in Options → Mods, the microphone and who is talking on the HUD. See
+  [Voice chat](#voice-chat).
 - **ViaHorizon: join servers of any version.** Like ViaFabricPlus for Fabric: every join goes through
   [ViaProxy](https://github.com/ViaVersion/ViaProxy), which ViaHorizon downloads and runs beside the game, so you can
   play on 1.8, 1.12.2, 1.20 or Beta servers with Horizon's 26.3. You type the server's real address; pick the version
@@ -383,6 +387,32 @@ What ViaProxy translates is the protocol: blocks, items, entities, chat, the wor
 movement and combat into an old version's, as ViaFabricPlus's emulation does inside a Fabric client, so on a 1.8
 PvP server you move and hit as in 26.3, which some anticheats notice. Joining as 26.3 skips ViaProxy.
 
+## Voice chat
+
+On a server that runs [Simple Voice Chat](https://github.com/henkelmax/simple-voice-chat) (the Fabric or NeoForge mod,
+or the Paper plugin), Horizon Studio talks and listens as SVC's own client does: the other players' voices come from
+where they stand, quieter with distance (to the server's voice distance) and from their side, and yours goes to those
+near you. Both versions servers run are spoken: 2.6.x (compatibility 20, the stable line) and 2.7.x (21). It asks in 21
+first, then in 20 (after the server's "incompatible version" line, or four seconds without an answer), and remembers
+which one each server answered in, so the next join asks right away.
+
+- **Push to talk** is the default, on **Caps Lock** (SVC 2.6 and 2.7 leave it unbound until you choose one; Caps Lock is a key
+  the game leaves free). **M** mutes the microphone and **N** deafens (SVC's "disable voice chat": nothing heard, nothing sent),
+  as SVC's keys. Choose all three in Options → Mods → Horizon Studio.
+- **Options → Mods → Horizon Studio** also has its state and settings: push to talk or voice activation, mute,
+  deafen, the voices' volume (0 to 300%), the microphone's gain (dB) and voice activation's threshold (dB). They are
+  kept in `voice.txt` in the studio's folder.
+- **The HUD** shows the microphone (green while it sends), *Muted*, *Deafened* or *Voice chat unavailable* (the
+  server has voice chat but it can't connect), and the names of those talking. On a server without voice chat it
+  shows nothing.
+- **Groups**: their members' voices are heard; `voice.join_group` joins one.
+- Scripts have `voice.*` (see [the API](#api)).
+
+The microphone and the speakers are the system's default devices (through cpal). Opus is
+[rusty-opus](https://crates.io/crates/rusty-opus) 1.0.2 (BSD-3-Clause), vendored in the voice crate, which decodes as
+libopus does (checked against libopus 1.4: its packets decode the same, ours decode in it). The voice packets are
+AES-128-GCM with the server's secret, as SVC's.
+
 ## Natrium
 
 Natrium does for Horizon what Sodium and Lithium do for Java Minecraft: the same picture and the same game, with
@@ -620,6 +650,9 @@ In Roblox's style, each file of a module is also a ModuleScript under `script`: 
 | `gfx.measure(text[, size[, font]])`, `gfx.size()` | A text's width in dp; the screen's size in dp. |
 | `via.status()`, `via.versions()` | ViaHorizon: `{enabled, version, label, text, ready}`; the versions it joins as, newest first, `{id, label}`. |
 | `via.enable(on)`, `via.version(id)`, `via.log()` | Join through ViaProxy or straight; the version from the next join (`"1.8.x"`, `"auto"`...); ViaProxy's last lines. |
+| `voice.status()`, `voice.connected()`, `voice.talking()`, `voice.speakers()` | [Voice chat](#voice-chat): `{state, connected, talking, muted, deafened, activation, volume, gain, threshold, level, compat, ...}`; whether it is connected; whether the microphone sends; who is heard, `{name, whispering}`. |
+| `voice.mute([on])`, `voice.deafen([on])`, `voice.volume([x])`, `voice.gain([db])`, `voice.threshold([db])`, `voice.activation([mode])` | Set when given a value (`"ptt"` or `"voice"` for the mode), and return it. |
+| `voice.groups()`, `voice.join_group(id[, password])`, `voice.leave_group()` | The server's voice groups, `{id, name, password, joined}`; join one; leave it. |
 | `gfx.mouse()` | While the mod's screen shows: the pointer's x and y in dp, whether the left and right buttons are held. |
 
 The agent commands are those of Horizon's `horizon-ctl` ([agent control](https://github.com/horizon-rust/horizon/blob/main/docs/agent-control.md)),
@@ -938,6 +971,10 @@ from Adoptium when there is none (checked against Adoptium's checksum). They are
 not shipped here. ViaProxy runs as you, listening only on the loopback. Turn ViaHorizon off in Options → Mods →
 Horizon Studio to join servers directly and keep ViaProxy from starting.
 
+The voice chat opens the microphone only while it is connected to a server's voice chat and not deafened, and sends
+it only while you push to talk (or, with voice activation, while you are louder than the threshold), encrypted with
+the secret that server gave. Scripts can mute, deafen and see who is talking; they never get the audio.
+
 ## How it hooks into Horizon
 
 The bundle is `mixins/horizon_studio/`: `horizon-mixin.toml`, the studio's modules added to the game's `game.rs`,
@@ -982,6 +1019,9 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `natrium_flags.rs` (`horizon_core::natrium`) | In the core crate, which the renderer and the server both read: Natrium's switches and counts |
 | `natrium_particles.rs` (`particles::natrium_particles`) | In the renderer: Horizon's particle loop, with the view test first |
 | `natrium_items.rs`, `natrium_villagers.rs`, `natrium_paths.rs` | Next to the code they speed up: item merging, villagers' item pickup, swimmers' path search |
+| `voice/` (the crate `hstudio_voice`) | The voice chat's engine, a bundle crate (`[[crate]]`): SVC's protocol (compat 20 and 21), AES-GCM (ring), Opus (rusty-opus, vendored), the jitter buffer, distance and side, the mixer, the microphone and speakers (cpal), the connection's thread |
+| `voicechat.rs` (`hstudio_voicechat`) | The voice chat with the player's settings, keys, Options → Mods rows and HUD, without the game |
+| `voice_game.rs` (`hstudio_voice_game`) | The voice chat's side of Horizon: the server's packets, the camera and the players' places, the keys |
 
 The hooks, HEAD hooks but where it says otherwise (suggest, via-address, via-srv, via-recv, via-ping, via-pong and Natrium's
 particle, Video Settings, merge, pickup and swim hooks can answer in their function's place):
@@ -1012,6 +1052,8 @@ particle, Video Settings, merge, pickup and swim hooks can answer in their funct
 | natrium-video-rows | `horizon_client_render::options_ui::pairs` | after Video Settings' Preferences, Natrium's section |
 | natrium-video-search | `horizon_client_render::options_ui::OptionsUi::page` | the settings search's text, which the section follows |
 | natrium-merge, natrium-pickups, natrium-swim | `entities::merge_with_neighbours`, `game::villagers::Game::villager_pickups`, `mobs::path::Finder::swim_neighbors` | Natrium's versions in their place, while faster ticks are on |
+| voice-packet | `game::remote::Game::handle_packet` | the server's `voicechat:*` payloads (which the game drops) and the Login that starts the voice chat |
+| voice-frame, voice-key, voice-chat | `native_frame`, `native_key`, `game::remote::Game::chat_line` | the voice chat's frame (the places, its payloads out), its keys, the server's "incompatible version" line |
 | hud, key, command, zoom, list, settings, click | Horizon's [native hook points](https://github.com/horizon-rust/horizon/blob/main/crates/horizon-client/src/game/native_hooks.rs) | the HUD, keys, commands, `view.zoom`, the Options → Mods row and page |
 
 The first six, ViaHorizon's and Natrium's go beyond the stable hook points, so the bundle pins one Horizon commit (a Nightly's,
@@ -1024,8 +1066,12 @@ Moving to a new Nightly: change `horizon_revision` in `horizon-mixin.toml` and `
 
 ## Develop
 
-Everything but `bridge.rs` and `via_auth.rs` builds and tests without the game: `src/lib.rs` mounts the modules at
-the paths they have in the game (`tests/shim/horizon-protocol` stands in for the protocol crate ViaHorizon adds to).
+Everything but `bridge.rs`, `voice_game.rs` and `via_auth.rs` builds and tests without the game: `src/lib.rs` mounts
+the modules at the paths they have in the game (`tests/shim/horizon-protocol` stands in for the protocol crate
+ViaHorizon adds to). The voice crate is a member of this workspace; the tests build it without its `audio` feature
+(cpal, which needs ALSA's headers) and drive its mixer and microphone by hand, against a fake SVC server
+(`tests/voice_loopback.rs`). `cargo build -p hstudio_voice` builds it with the devices. `tools/svc_vectors/Vectors.java`
+writes the byte layouts `tests/voice_proto.rs` checks, as SVC's Java writes them.
 
 ```sh
 cargo test                           # the interpreter, the runtime and the screen, on a fake game

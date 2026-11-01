@@ -744,3 +744,67 @@ helper = "natrium_video_search.rs"
 bindings = [
   { name = "ui", ty = "&OptionsUi", value = "self" },
 ]
+
+# Voice chat with Simple Voice Chat servers (henkelmax's mod and plugin). Its
+# engine is the bundle's own crate (voice/: the protocol, Opus, the mixer,
+# the microphone and the connection's thread, on cpal and ring, which
+# Horizon's lock has); hstudio_voicechat holds it with the player's settings
+# and draws its HUD, hstudio_voice_game gives it Horizon's packets and world.
+# Written against Horizon 4aa6854 (Game::send, handle_packet, native_frame).
+[[crate]]
+id = "voice"
+path = "voice"
+
+[[module]]
+id = "voicechat"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_voicechat"
+source = "voicechat.rs"
+
+[[module]]
+id = "voice-game"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_voice_game"
+source = "voice_game.rs"
+
+# The server's packets as the game takes them: its `voicechat:*` payloads
+# (which the game would drop) and the Login that starts the voice chat.
+[[injection]]
+id = "voice-packet"
+kind = "HEAD"
+target = "horizon_client::game::remote::Game<'_>::handle_packet"
+helper = "voice_packet.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "packet", ty = "&horizon_protocol::packets::play::Clientbound", value = "&packet" },
+]
+
+[[injection]]
+id = "voice-frame"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_frame"
+helper = "voice_frame.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+[[injection]]
+id = "voice-key"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_key"
+helper = "voice_key.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "key", ty = "&str", value = "key" },
+  { name = "pressed", ty = "bool", value = "pressed" },
+]
+
+[[injection]]
+id = "voice-chat"
+kind = "HEAD"
+target = "horizon_client::game::remote::Game<'_>::chat_line"
+helper = "voice_chat.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "content", ty = "&horizon_client::text::Text", value = "&content" },
+]

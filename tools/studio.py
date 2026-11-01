@@ -171,12 +171,30 @@ def cmd_package(_):
         info.external_attr = 0o644 << 16
         return info
 
+    # The bundle's .rs and .toml files, and its crates' folders ([[crate]]: their sources,
+    # and the license files a crate folder carries at its top), as the registry allows them.
+    crates = {c["path"] for c in MANIFEST.get("crate", [])}
+
+    def files():
+        for f in sorted(BUNDLE.iterdir()):
+            if f.is_dir() and f.name in crates:
+                for g in sorted(f.rglob("*")):
+                    rel = g.relative_to(BUNDLE).as_posix()
+                    if g.is_dir() or "/target/" in f"/{rel}/" or g.name == "Cargo.lock":
+                        continue
+                    top_text = g.parent == f and g.name.startswith(("README", "LICENSE", "COPYING", "NOTICE"))
+                    if g.suffix not in (".rs", ".toml") and not top_text:
+                        sys.exit(f"{rel}: a native bundle's crate holds only .rs, .toml and its license files")
+                    yield rel, g
+            elif f.suffix in (".rs", ".toml"):
+                yield f.name, f
+            else:
+                sys.exit(f"{f.name}: a native bundle holds only .rs and .toml files (and its crates' folders)")
+
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(entry("horizon-native.json"), json.dumps(manifest, indent=2) + "\n")
-        for f in sorted(BUNDLE.iterdir()):
-            if f.suffix not in (".rs", ".toml"):
-                sys.exit(f"{f.name}: a native bundle holds only .rs and .toml files")
-            z.writestr(entry(f"mixins/{mod_id}/{f.name}"), f.read_bytes())
+        for rel, f in files():
+            z.writestr(entry(f"mixins/{mod_id}/{rel}"), f.read_bytes())
     print(path)
 
 
