@@ -3815,9 +3815,10 @@ fn on_text(v: &EditorView, (x, y): (f32, f32)) -> bool {
 /// Whether a press at `at` (the left button, or the right) lands on the
 /// code, by what the last frame drew, as `handle_input` and `right_press`
 /// take it: a left one puts the cursor in its text (no prompt or menu up,
-/// nothing else drawn there), a right one opens the code's menu there (no
-/// prompt up, nothing dragged, not on the menu up). It is for the line
-/// drawn under the pointer.
+/// nothing else drawn there) or takes one of the code's suggestions (which
+/// types at the cursor), a right one opens the code's menu there (no prompt
+/// up, nothing dragged, not on the menu up). It is for the line drawn under
+/// the pointer.
 pub(crate) fn press_on_code(ui: &Ui, at: (f32, f32), left: bool) -> bool {
     if ui.naming.is_some() || ui.tab != Tab::Editor {
         return false;
@@ -3826,9 +3827,14 @@ pub(crate) fn press_on_code(ui: &Ui, at: (f32, f32), left: bool) -> bool {
         let on_menu = ui.menu.as_ref().and_then(|m| m.rect).is_some_and(|r| inside(r, at));
         return !ui.dragging_any() && !on_menu && matches!(spot_at(ui, at), Some((Spot::Code, _)));
     }
-    ui.menu.is_none()
-        && matches!(hit_at(ui, at), None | Some(Action::Focus(Pane::Code)))
-        && ui.view.is_some_and(|v| on_text(&v, at))
+    if ui.menu.is_some() {
+        return false;
+    }
+    match hit_at(ui, at) {
+        Some(Action::Suggest(_)) => ui.suggest.as_ref().is_some_and(|sg| !sg.console),
+        None | Some(Action::Focus(Pane::Code)) => ui.view.is_some_and(|v| on_text(&v, at)),
+        _ => false,
+    }
 }
 
 /// A click or drag in the editor's text: moves the cursor there (a drag

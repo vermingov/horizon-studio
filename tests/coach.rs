@@ -906,6 +906,76 @@ fn a_press_in_a_requests_frame_keeps_the_view_under_it() {
 }
 
 #[test]
+fn a_click_on_the_codes_suggestions_in_a_requests_frame_keeps_the_view() {
+    // The code's own suggestions are drawn over it, and a click on one types
+    // at the player's caret: it is a press on the code. In a request's frame
+    // (the player paused after typing, so only the press holds the view) an
+    // agent's edit far below lands at once rather than taking the view
+    // there, and the suggestion goes in where the player sees it.
+    let src: String = (1..=200).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-suggest-press", "sg", &src);
+    st.s.ui.look.motion = true;
+    st.s.editor.click(5, 0, false);
+    handle(&mut st, &mut game, key(Key::End, NONE));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    for c in "x = pri".chars() {
+        handle(&mut st, &mut game, Input::Text(c.to_string()));
+    }
+    assert!(st.s.ui.suggest.is_some(), "the suggestions open");
+    for _ in 0..60 {
+        game_frame(&mut st, &mut game);
+    }
+    // The press's frame, in the game's order: the studio draws, its frame
+    // runs, the input is noted, the request comes, then the input.
+    redraw(&mut st, &mut game);
+    run_for(&mut st, &mut game, 0.05);
+    let label = st.s.ui.suggest.as_ref().expect("still open").items[0].label.clone();
+    let rest = format!("text {} @", &label["pri".len()..]);
+    let drawn = game
+        .drawn
+        .iter()
+        .rev()
+        .find(|d| d.starts_with(&rest))
+        .expect("its row drawn");
+    let at: Vec<f32> = drawn
+        .split(" @[")
+        .nth(1)
+        .unwrap()
+        .split(']')
+        .next()
+        .unwrap()
+        .split(", ")
+        .map(|v| v.parse().unwrap())
+        .collect();
+    let inputs = [
+        Input::Mouse(at[0] + 1.0, at[1] + 2.0),
+        Input::Button { left: true, down: true },
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    ];
+    coach::input_coming(&mut st, &inputs);
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "start_line": 151, "end_line": 150, "new_text": "a = 1\nb = 2\nc = 3" }),
+    )
+    .unwrap();
+    assert_eq!(r["animated"], false, "it lands at once: {r}");
+    for input in inputs {
+        handle(&mut st, &mut game, input);
+    }
+    assert_eq!(st.s.editor.lines[6], format!("x = {label}()"), "the suggestion taken");
+    for _ in 0..30 {
+        game_frame(&mut st, &mut game);
+        assert_eq!(st.s.editor.scroll, 0, "the view stays");
+    }
+    assert_eq!(st.s.editor.lines[150], "a = 1", "the edit at line 151");
+}
+
+#[test]
 fn a_press_off_the_code_in_a_requests_frame_leaves_the_view_to_the_agent() {
     // A press in a request's frame holds the view only when it lands on the
     // code (the line drawn under the pointer, or a right press's menu
