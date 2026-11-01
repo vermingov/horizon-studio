@@ -515,6 +515,28 @@ fn drops_that_change_nothing_are_refused() {
 }
 
 #[test]
+fn same_places_whatever_the_sizes_and_the_tabs_in_front() {
+    let default = Dock::default();
+    // Other ratios and other tabs in front: the same places.
+    let mut d = default.clone();
+    assert!(d.set_ratio(3, 0.4) && d.activate(Agent));
+    assert!(d.same_places(&default) && default.same_places(&d));
+    // A group hidden, a tab moved among its group's, a pane moved or
+    // docked: not.
+    let mut hidden = default.clone();
+    hidden.set_hidden(Agent, true);
+    let mut reordered = default.clone();
+    reordered.move_pane(Agent, DropAt::Into { anchor: Console, at: 0 });
+    let mut moved = default.clone();
+    moved.move_pane(Agent, DropAt::Into { anchor: Code, at: 1 });
+    let mut docked = default.clone();
+    docked.show(Docs);
+    for other in [hidden, reordered, moved, docked] {
+        assert!(!other.same_places(&default), "{}", other.to_text());
+    }
+}
+
+#[test]
 fn bars_stop_at_the_least_sizes() {
     let d = Dock::default();
     let (bars, _) = d.layout(FULL, Code);

@@ -546,9 +546,12 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
     // Back after a while (opened again): nothing glides from before.
     let fresh = now - st.s.ui.last_draw > 0.25;
     // Back since the last frame (opened again, or from a script's screen):
-    // what the left button held then has ended, its release gone elsewhere.
+    // what the left button held then has ended, its release gone elsewhere,
+    // and so has sizing from the keys (the game closes the studio without
+    // a key).
     if st.s.ui.opened_at > st.s.ui.last_draw {
         super::hstudio_ui::let_go(st);
+        super::hstudio_ui::end_sizing(st);
     }
     let dt = {
         let ui = &mut st.s.ui;
@@ -1502,7 +1505,7 @@ fn drop_preview(ui: &Ui, p: &mut P) {
 /// move is a plain gap: no grip, nothing to press.
 fn draw_bar(st: &mut Studio, p: &mut P, bar: &Bar, dt: f32) {
     use super::hstudio_ui::DockDrag;
-    if bar.hi - bar.lo < 16.0 {
+    if !bar.movable() {
         return;
     }
     let ui = &mut st.s.ui;

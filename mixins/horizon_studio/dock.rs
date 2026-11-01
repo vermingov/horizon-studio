@@ -45,6 +45,8 @@ pub const EDGE: f32 = 16.0;
 pub const STRIP: f32 = 32.0;
 /// The least height a pane's body is drawn at.
 pub const LEAST_BODY: f32 = 18.0;
+/// The least room a bar moves in for it to be held.
+pub const LEAST_TRAVEL: f32 = 16.0;
 
 /// The most of `layout.txt` that is read, the most of a dock's text, and
 /// how deep its splits may nest: a damaged file never builds a deep tree.
@@ -201,6 +203,14 @@ pub struct Placed {
     pub tabs: Vec<Pane>,
     pub active: Pane,
     pub collapsed: bool,
+}
+
+impl Bar {
+    /// Whether it has room to move: one with less than `LEAST_TRAVEL` is a
+    /// plain gap, with no grip to hold and none for Size... to light.
+    pub fn movable(&self) -> bool {
+        self.hi - self.lo >= LEAST_TRAVEL
+    }
 }
 
 impl Placed {
@@ -496,6 +506,28 @@ impl Dock {
         let mut d = self.clone();
         fronts(&mut d.root);
         d == Dock::default()
+    }
+
+    /// Whether `other` has the same splits and groups, each with the same
+    /// tabs and hidden or shown alike, whatever the ratios and the tabs at
+    /// the front: each bar's path names the same split in both, and each
+    /// pane is in the same group.
+    pub fn same_places(&self, other: &Dock) -> bool {
+        fn same(a: &Node, b: &Node) -> bool {
+            match (a, b) {
+                (Node::Leaf(x), Node::Leaf(y)) => x.tabs == y.tabs && x.hidden == y.hidden,
+                (
+                    Node::Split {
+                        row: r1, a: a1, b: b1, ..
+                    },
+                    Node::Split {
+                        row: r2, a: a2, b: b2, ..
+                    },
+                ) => r1 == r2 && same(a1, a2) && same(b1, b2),
+                _ => false,
+            }
+        }
+        same(&self.root, &other.root)
     }
 
     /// The tab as it always was.

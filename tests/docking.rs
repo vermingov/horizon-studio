@@ -28,6 +28,11 @@ const CTRL: Mods = Mods {
     shift: false,
     alt: false,
 };
+const SHIFT: Mods = Mods {
+    ctrl: false,
+    shift: true,
+    alt: false,
+};
 
 /// The strip's tip, until a tab or a bar is first moved.
 const TIP: &str = "Drag a tab to move it · right-click a tab for more";
@@ -720,6 +725,25 @@ fn the_bars_size_the_panes_and_are_kept() {
         },
     );
     assert_eq!(st.s.ui.dock.ratio(3), ratio);
+    // Nor does Size... light it: the console's group's bar is then the one
+    // beside it, at the script list's right, and Tab has no other to light.
+    redraw(&mut st, &mut game);
+    let at = middle(tab_of(&st, Pane::Console));
+    right_click(&mut st, &mut game, at);
+    choose(&mut st, &mut game, "Size...");
+    assert_eq!(st.s.ui.sizing, Some((Pane::Console, 1)));
+    press(&mut st, &mut game, Key::Tab, NONE);
+    assert_eq!(st.s.ui.sizing, Some((Pane::Console, 1)));
+    press(&mut st, &mut game, Key::Escape, NONE);
+    // An Editor area 456 wide leaves the script list's bar 8 units to move
+    // in, its only one: Size... is greyed on its menu.
+    st.s.ui.look.rect = Some([10.0, 10.0, 490.0, 500.0]);
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.ui.dock_ws.unwrap()[2], 456.0);
+    assert!(!bar(&st, 1).movable());
+    let at = middle(tab_of(&st, Pane::Scripts));
+    right_click(&mut st, &mut game, at);
+    assert!(!item(&st, "Size...").enabled);
 }
 
 #[test]
@@ -1245,6 +1269,78 @@ fn an_agent_opening_a_file_never_takes_the_keys() {
     )
     .unwrap();
     assert!(r.get("typing").is_some(), "typed in: {r}");
+}
+
+#[test]
+fn what_agents_do_leaves_what_the_player_holds() {
+    // The bar between the code and the panel held and moved up 40.
+    let (mut game, mut st) = with_sum("dock-agent-held");
+    let col = bar(&st, 3);
+    let at = (col.rect[0] + 300.0, col.rect[1] + 4.0);
+    hold(&mut st, &mut game, at, &[(at.0, at.1 - 40.0)]);
+    assert_eq!(st.s.ui.dock.ratio(3), Some(0.5));
+    // An agent opens the file open once the player pauses, the code at the
+    // front already: the bar still follows the pointer.
+    st.s.now += 5.0;
+    coach::call(&mut st, &mut game, &agent(), "open", &json!({ "id": "sum" })).unwrap();
+    point(&mut st, &mut game, (at.0, at.1 - 60.0));
+    assert_eq!(st.s.ui.dock.ratio(3), Some(0.45));
+    // A lesson brings the Agent pane to the front of the panel: the same,
+    // and the bar is written where it is let go.
+    lesson(&mut st, &mut game, "Explained.");
+    assert!(st.s.ui.dock.is_front(Pane::Agent));
+    point(&mut st, &mut game, (at.0, at.1 - 80.0));
+    assert_eq!(st.s.ui.dock.ratio(3), Some(0.4));
+    release(&mut st, &mut game);
+    assert!(layout_txt(&st).contains("col:0.400("), "{}", layout_txt(&st));
+    // The code's scroll bar held: a lesson bringing the Agent pane to the
+    // front of the panel lets it scroll on.
+    let (mut game, mut st) = editing("dock-agent-held-thumb");
+    let text: Vec<String> = (1..=300).map(|i| format!("local line{i} = {i}")).collect();
+    game.write_mod(
+        "sum.lua",
+        &format!("local a = 1\nlocal b = 2\nprint(a + b)\n{}\n", text.join("\n")),
+    );
+    st.scan(&mut game);
+    st.edit_mod(mod_index(&st, "sum"));
+    redraw(&mut st, &mut game);
+    let sb = st.s.ui.scrollbar.expect("the code's scroll bar");
+    hold(&mut st, &mut game, (sb.x, sb.at + 4.0), &[]);
+    st.s.now += 5.0;
+    lesson(&mut st, &mut game, "Explained.");
+    assert!(st.s.ui.dock.is_front(Pane::Agent));
+    let scroll = st.s.editor.scroll;
+    point(&mut st, &mut game, (sb.x, sb.at + 100.0));
+    assert!(st.s.editor.scroll > scroll, "the thumb still held");
+    release(&mut st, &mut game);
+    // A tab lifted over the script list's strip: an agent bringing the code
+    // to the front of its group (the Docs there in front of it) leaves it
+    // lifted, and it lands where it is let go.
+    let (mut game, mut st) = with_sum("dock-agent-held-tab");
+    st.s.ui.dock.move_pane(
+        Pane::Docs,
+        DropAt::Into {
+            anchor: Pane::Code,
+            at: 1,
+        },
+    );
+    redraw(&mut st, &mut game);
+    let strip = leaf(&st, Pane::Scripts).strip;
+    let from = middle(tab_of(&st, Pane::Agent));
+    hold(
+        &mut st,
+        &mut game,
+        from,
+        &[(strip[0] + strip[2] - 10.0, strip[1] + 16.0)],
+    );
+    assert_eq!(st.s.ui.lifted(), Some(Pane::Agent));
+    st.s.now += 5.0;
+    coach::call(&mut st, &mut game, &agent(), "open", &json!({ "id": "sum" })).unwrap();
+    assert!(st.s.ui.dock.is_front(Pane::Code));
+    assert_eq!(st.s.ui.lifted(), Some(Pane::Agent));
+    assert!(st.s.ui.dock_spot.is_some());
+    release(&mut st, &mut game);
+    assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Agent), [Pane::Scripts, Pane::Agent]);
 }
 
 #[test]
@@ -1793,6 +1889,74 @@ fn keys_alone_move_size_and_reset_panes() {
     choose(&mut st, &mut game, "Move");
     assert!(!item(&st, "Right of the code").enabled);
     assert!(item(&st, "With the code").enabled);
+}
+
+#[test]
+fn sizing_from_the_keys() {
+    let (mut game, mut st) = editing("dock-sizing");
+    redraw(&mut st, &mut game);
+    // Size... clicked on the code's tab's menu: the bar under the code is
+    // lit (its own split's comes first), and stays lit after the click.
+    let at = middle(tab_of(&st, Pane::Code));
+    right_click(&mut st, &mut game, at);
+    choose(&mut st, &mut game, "Size...");
+    assert_eq!(st.s.ui.sizing, Some((Pane::Code, 3)));
+    // Tab lights the next bar, the script list's; Shift+Tab the first again.
+    press(&mut st, &mut game, Key::Tab, NONE);
+    assert_eq!(st.s.ui.sizing, Some((Pane::Code, 1)));
+    press(&mut st, &mut game, Key::Tab, SHIFT);
+    assert_eq!(st.s.ui.sizing, Some((Pane::Code, 3)));
+    // Up and Down move a bar between groups stacked, 64 units at a press
+    // with Shift, else 16, each step written at once.
+    press(&mut st, &mut game, Key::Up, SHIFT);
+    redraw(&mut st, &mut game);
+    assert_eq!(leaf(&st, Pane::Code).rect[3], 176.0);
+    press(&mut st, &mut game, Key::Down, NONE);
+    redraw(&mut st, &mut game);
+    assert_eq!(leaf(&st, Pane::Code).rect[3], 192.0);
+    assert!(layout_txt(&st).contains("col:0.480("), "{}", layout_txt(&st));
+    // A key that only changes what others mean keeps it lit.
+    press(&mut st, &mut game, Key::Other, NONE);
+    assert_eq!(st.s.ui.sizing, Some((Pane::Code, 3)));
+    // Esc ends it, the studio staying open and the bar where it is.
+    assert_eq!(press(&mut st, &mut game, Key::Escape, NONE), UiResult::Used);
+    assert_eq!(st.s.ui.sizing, None);
+    assert!(layout_txt(&st).contains("col:0.480("));
+    // Again from the keys alone: a letter typed ends it and goes into the
+    // code.
+    let size = |st: &mut Studio, game: &mut FakeGame| {
+        press(st, game, Key::Menu, NONE);
+        choose_by_keys(st, game, "Layout");
+        choose_by_keys(st, game, "Size...");
+        assert_eq!(st.s.ui.sizing, Some((Pane::Code, 3)));
+    };
+    st.s.editor.set_text("");
+    size(&mut st, &mut game);
+    type_text(&mut st, &mut game, "q");
+    assert_eq!((st.s.ui.sizing, st.s.editor.text().as_str()), (None, "q"));
+    // Left isn't the way a bar between groups stacked moves: it ends sizing
+    // and moves the code's cursor.
+    size(&mut st, &mut game);
+    press(&mut st, &mut game, Key::Left, NONE);
+    assert_eq!((st.s.ui.sizing, st.s.editor.col), (None, 0));
+    // A press ends it.
+    size(&mut st, &mut game);
+    let code = leaf(&st, Pane::Code).rect;
+    click(&mut st, &mut game, middle(code));
+    assert_eq!(st.s.ui.sizing, None);
+    // So does the game closing the studio, which takes no key: opened
+    // again, Down moves the code's cursor, not the bar.
+    st.s.editor.set_text("a\nb\nc\n");
+    size(&mut st, &mut game);
+    st.s.ui.open = false;
+    st.s.now += 1.0;
+    st.s.ui.open = true;
+    st.s.ui.opened_at = st.s.now;
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.ui.sizing, None);
+    let ratio = st.s.ui.dock.ratio(3);
+    press(&mut st, &mut game, Key::Down, NONE);
+    assert_eq!((st.s.editor.row, st.s.ui.dock.ratio(3)), (1, ratio));
 }
 
 #[test]
@@ -2608,6 +2772,32 @@ fn the_console_library_and_docs_tabs_drag_into_the_editor() {
     point(&mut st, &mut game, (strip[0] + strip[2] - 10.0, strip[1] + 16.0));
     release(&mut st, &mut game);
     assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Console), [Pane::Scripts, Pane::Console]);
+    assert_eq!((st.s.ui.tab, st.s.ui.focus), (Tab::Editor, Pane::Console));
+    // Dropped at its own place in its group, behind the Agent there, it
+    // comes to the front, and its page is left behind all the same.
+    st.s.ui.dock = Dock::default();
+    press(&mut st, &mut game, Key::Char('2'), CTRL);
+    redraw(&mut st, &mut game);
+    let agent = middle(tab_of(&st, Pane::Agent));
+    click(&mut st, &mut game, agent);
+    assert!(layout_txt(&st).contains("[console,problems,agent*]"));
+    redraw(&mut st, &mut game);
+    let own = tab_of(&st, Pane::Console);
+    let tab = text_at(&game, "Console");
+    hold(
+        &mut st,
+        &mut game,
+        (tab.0 + 4.0, tab.1 + 4.0),
+        &[(tab.0 + 4.0, tab.1 + 40.0)],
+    );
+    redraw(&mut st, &mut game);
+    point(&mut st, &mut game, (own[0] + 4.0, own[1] + 13.0));
+    release(&mut st, &mut game);
+    assert_eq!(
+        st.s.ui.dock.leaf_tabs(Pane::Console),
+        [Pane::Console, Pane::Problems, Pane::Agent]
+    );
+    assert!(st.s.ui.dock.is_front(Pane::Console));
     assert_eq!((st.s.ui.tab, st.s.ui.focus), (Tab::Editor, Pane::Console));
     // The Settings tab doesn't drag: it is a page, and only shows.
     let before = st.s.ui.dock.clone();

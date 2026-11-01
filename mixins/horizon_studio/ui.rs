@@ -2432,11 +2432,12 @@ pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult
         st.s.editor.edited_at = st.s.now;
     }
     super::hstudio_coach::after_input(st, before);
-    // A menu goes with the studio, and so does what the left button holds:
-    // its release won't reach a studio closing.
+    // A menu goes with the studio, and so does what the left button holds
+    // (its release won't reach a studio closing) and sizing from the keys.
     if out == UiResult::Close {
         st.s.ui.menu = None;
         let_go(st);
+        end_sizing(st);
     }
     out
 }
@@ -2520,8 +2521,8 @@ fn dock_moved(ui: &Ui) -> bool {
 
 /// What every edit of the dock outside dock.rs ends with: the pane in use
 /// settles, `layout.txt` is written when it would change, and when the
-/// panes moved, what the button or the keys held on them ends (their bars
-/// and places may be others now) and a reset can no longer be undone.
+/// panes changed, a reset can no longer be undone and what the button or
+/// the keys held on them ends where it may be on others now (`end_held`).
 pub(crate) fn dock_changed(st: &mut Studio) {
     let ui = &mut st.s.ui;
     settle_focus(ui);
@@ -2530,16 +2531,60 @@ pub(crate) fn dock_changed(st: &mut Studio) {
         return;
     }
     let moved = dock_moved(ui);
+    let placed = written_dock(ui).is_some_and(|d| d.same_places(&ui.dock));
     super::hstudio_dock::save(&st.s.dir, &ui.dock, ui.dock_tips);
     ui.dock_text = text;
     if moved {
+        ui.dock_undo = None;
+        end_held(ui, placed);
+    }
+}
+
+/// The dock as `layout.txt` holds it (as it was loaded, or last written).
+fn written_dock(ui: &Ui) -> Option<Dock> {
+    ui.dock_text
+        .lines()
+        .find_map(|l| l.strip_prefix("dock="))
+        .and_then(Dock::parse)
+}
+
+/// What the button or the keys held on the panes, once the dock changed
+/// from what `layout.txt` held; `placed` when its groups are where they
+/// were and only the tabs at their front or their sizes changed (all that
+/// an agent or a lesson changes). Where groups moved, came, went or hid,
+/// it all ends: its bars, places and panes may be others now. Else a bar
+/// or a tab held and sizing from the keys go on (a bar's path names the
+/// same split, a tab the same pane, and a lifted tab's place is found
+/// again), and only what was held in a pane now behind another ends: the
+/// code's scroll bar and selection, a selection of the console's or the
+/// agent's lines.
+fn end_held(ui: &mut Ui, placed: bool) {
+    if !placed {
         ui.dock_drag = None;
         ui.dock_spot = None;
         ui.sizing = None;
         ui.scroll_drag = None;
         ui.dragging = false;
         ui.text_drag = false;
-        ui.dock_undo = None;
+        return;
+    }
+    // The executor styles draw their own panes, which the dock doesn't place.
+    if ui.look.theme().layout != super::hstudio_theme::Layout::Studio {
+        return;
+    }
+    if !ui.dock.is_front(Pane::Code) {
+        ui.scroll_drag = None;
+        ui.dragging = false;
+    }
+    let lines = match ui.text_sel {
+        Some(s) if s.area == AREA_AGENT => Pane::Agent,
+        _ => Pane::Console,
+    };
+    if ui.tab == Tab::Editor && !ui.dock.is_front(lines) {
+        ui.text_drag = false;
+    }
+    if let Some(pane) = ui.lifted() {
+        ui.dock_spot = drop_spot(ui, pane, ui.mouse);
     }
 }
 
@@ -2725,6 +2770,8 @@ fn undo_reset(st: &mut Studio) {
 
 /// The bars at the edges of `p`'s group as the last frame drew them, its own
 /// split's first, then the ones further out: what Size... lights in turn.
+/// A bar with no room to move is a plain gap, drawn with no grip, and isn't
+/// one of them.
 pub(crate) fn pane_bars(ui: &Ui, p: Pane) -> Vec<Bar> {
     let Some(l) = ui.dock_drawn.iter().find(|l| l.tabs.iter().any(|(t, _)| *t == p)) else {
         return Vec::new();
@@ -2735,6 +2782,7 @@ pub(crate) fn pane_bars(ui: &Ui, p: Pane) -> Vec<Bar> {
     let mut bars: Vec<Bar> = ui
         .dock_bars
         .iter()
+        .filter(|b| b.movable())
         .filter(|b| {
             let [bx, by, bw, bh] = b.rect;
             if b.row {
@@ -2761,7 +2809,7 @@ fn size_pane(st: &mut Studio, p: Pane) {
 }
 
 /// Sizing from the keys ends; the bar stays where it is, written.
-fn end_sizing(st: &mut Studio) {
+pub(crate) fn end_sizing(st: &mut Studio) {
     if st.s.ui.sizing.take().is_some() {
         dock_changed(st);
     }
@@ -2808,7 +2856,11 @@ fn sizing_key(st: &mut Studio, key: Key, mods: Mods) -> bool {
     let ratio = ui.dock.ratio(path).unwrap_or(0.5);
     let len = bar.len.max(1.0);
     let at = (bar.start + ratio * len + by).clamp(bar.lo, bar.hi);
-    ui.dock.set_ratio(path, (at - bar.start) / len);
+    // Written at each step, as each key's change is: the game can close
+    // the studio, and quit, while the bar is lit.
+    if ui.dock.set_ratio(path, (at - bar.start) / len) {
+        dock_changed(st);
+    }
     true
 }
 
@@ -2878,11 +2930,18 @@ fn drag_tab(st: &mut Studio, at: (f32, f32)) {
             ui.tab = Tab::Editor;
         }
     }
+    ui.dock_spot = drop_spot(ui, pane, at);
+}
+
+/// Where `pane`, its tab lifted to `at`, would land among the groups as the
+/// last frame drew them on the Editor tab: nowhere while another tab shows,
+/// or before the Editor tab is drawn.
+fn drop_spot(ui: &Ui, pane: Pane, at: (f32, f32)) -> Option<DropSpot> {
     let editor = ui.tab == Tab::Editor && ui.look.theme().layout == super::hstudio_theme::Layout::Studio;
-    ui.dock_spot = match ui.dock_ws {
+    match ui.dock_ws {
         Some(ws) if editor && !ui.dock_drawn.is_empty() => ui.dock.drop_at(ws, &ui.dock_drawn, pane, ui.focus, at),
         _ => None,
-    };
+    }
 }
 
 /// The front pane of the group under `at` as the last frame drew it, and
@@ -4213,6 +4272,9 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
             if st.s.ui.dock.move_pane(p, at) {
                 st.s.ui.shown_at[p.index()] = st.s.now;
                 st.s.ui.dock_tips = false;
+                // A drop ends its drag, so a tab from the top leaves its page
+                // behind, also where its group stays as it was.
+                st.s.ui.dock_drag = None;
                 focus_pane(st, p);
             }
         }
