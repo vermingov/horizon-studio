@@ -484,11 +484,11 @@ pub fn tools() -> Json {
               one function or block per call), start_line and new_text (whole lines from 1; end_line too; end_line = \
               start_line - 1 puts lines in before start_line, start_line one past the last line adds them at the end, \
               new_text \"\" removes them), or text (the whole file). It is one undo step for the player, and lands at \
-              once while they are typing or dragging a selection, or nobody sees the editor. It stays unsaved unless \
-              save is true (save_script saves it), but with the studio closed it is saved, unless the player has \
-              unsaved edits in the file. A file the editor doesn't have open is written to disk at once instead, and \
-              its mod reloads: open_script it first to type into it as the player watches. Returns the lines it \
-              covers and the live check's problems. Live only.",
+              once while they are typing, dragging (a selection, a pane) or sizing a pane, or nobody sees the code. \
+              It stays unsaved unless save is true (save_script saves it), but with the studio closed it is saved, \
+              unless the player has unsaved edits in the file. A file the editor doesn't have open is written to \
+              disk at once instead, and its mod reloads: open_script it first to type into it as the player watches. \
+              Returns the lines it covers and the live check's problems. Live only.",
             script_props(json!({
                 "old_text": { "type": "string", "description": "The code to replace, as it is now (read_script)." },
                 "new_text": { "type": "string", "description": "What comes in its place (or in start_line's)." },

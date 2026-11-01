@@ -5,7 +5,10 @@
 // list's "..." open too. ui.rs routes the keys, the text and the pointer to
 // the menu while it is open, and hands the item chosen to `run`. Items name
 // mods by id and files by path, never by their place in a list: a scan
-// between the menu opening and an item chosen can move them.
+// between the menu opening and an item chosen can move them. A pane's menu
+// (its tab's, its strip's) has the pane's own items, then where it is: Hide,
+// Close (the Library and the Docs), Move, Size..., Panes and Reset layout,
+// which the Menu key's menus on the Editor tab reach through Layout.
 
 use super::hstudio::{GameApi, ModState, Studio};
 use super::hstudio_assist::{definition, documented, module_at, name_at};
@@ -14,12 +17,13 @@ use super::hstudio_look::docs_markdown;
 use super::hstudio_modfiles::{path_in, rel_in, require_path};
 use super::hstudio_theme::{Layout, THEMES};
 use super::hstudio_ui::{
-    AREA_AGENT, AREA_LOG, Action, EditCmd, FIELD_AGENT, FIELD_CONSOLE, FieldCmd, Menu, MenuCmd, MenuItem, ModCmd,
-    NamingKind, Panel, ScriptRow, Spot, Tab, Target, UiResult, act, agent_ask, agent_busy, agent_choose, agent_id,
-    agent_list, agent_model, agent_name, agent_new_conversation, agent_rescan, agent_send, code_line, copy_text,
-    editor_pos, editor_siblings, file_in_module, in_text_selection, inside, make_module, menu_pick, model_choices,
-    model_items, model_label, notice, open_module, open_naming, open_path, run_console_line, selected_text,
-    set_agent_model, spot_at, target,
+    AREA_AGENT, AREA_LOG, Action, DropAt, EditCmd, FIELD_AGENT, FIELD_CONSOLE, FieldCmd, Menu, MenuCmd, MenuItem,
+    ModCmd, NamingKind, Pane, ScriptRow, Side, Spot, Tab, Target, Ui, UiResult, act, agent_ask, agent_busy,
+    agent_choose, agent_id, agent_list, agent_model, agent_name, agent_new_conversation, agent_rescan, agent_send,
+    code_line, copy_text, dock_changed, editor_pos, editor_siblings, file_in_module, focus_pane, group_name,
+    in_text_selection, inside, key_pane, make_module, menu_pick, model_choices, model_items, model_label, notice,
+    open_module, open_naming, open_path, pane_bars, run_console_line, selected_text, set_agent_model, show_code,
+    spot_at, target,
 };
 use std::path::Path;
 
@@ -46,14 +50,31 @@ pub fn right_press(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
 /// The Menu key (or Shift+F10): the menu of what has the keys, where it
 /// is: the code's at the cursor (its line's own menu, the cursor left
 /// where it is), an input line's under the line, the Library's chosen mod
-/// at its row (the list's own menu under its title while it lists none),
-/// the Problems' chosen problem at its row (the panel's own menu under its
-/// tab while it lists none); else the menu of what is under the pointer.
-/// Its first item is lit, for the keys.
+/// at its row (while it lists none, the list's own menu under its title,
+/// or docked the pane's own under its tab),
+/// the Problems' chosen problem at its row (the pane's own menu under its
+/// tab while it lists none); on the Editor tab with no pane taking the
+/// keys, or the Docs there, the pane's own menu under its tab; else the
+/// menu of what is under the pointer. On the Editor tab the menu ends with
+/// Layout, that pane's moves, so the keys alone place every pane. Its
+/// first item is lit, for the keys. Nothing opens while the left button
+/// drags something.
 pub fn key_menu(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
+    if st.s.ui.dragging_any() {
+        return UiResult::Used;
+    }
     st.s.ui.menu = None;
     let ui = &st.s.ui;
     let below = |r: [f32; 4]| ([r[0] + 12.0, r[1] + r[3]], r[3]);
+    let pane = key_pane(ui);
+    let docked = ui.tab == Tab::Editor && ui.look.theme().layout == Layout::Studio;
+    // What ends the menu of a pane with the keys on the Editor tab.
+    let more = |items: &mut Vec<MenuItem>| {
+        if let Some(p) = pane.filter(|_| docked) {
+            items.push(MenuItem::separator());
+            items.push(MenuItem::new("Layout", MenuCmd::Layout(p)).keys("›"));
+        }
+    };
     let opened = match target(ui) {
         Target::Editor => {
             // At the cursor, or the code's top left while it is off the view.
@@ -62,7 +83,8 @@ pub fn key_menu(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
                 .or_else(|| ui.view.map(|v| [v.x, v.y]))
                 .unwrap_or([ui.mouse.0, ui.mouse.1]);
             let ed = &st.s.editor;
-            let items = code_items(st, (ed.row, ed.col));
+            let mut items = code_items(st, (ed.row, ed.col));
+            more(&mut items);
             let opened = open(st, at, code_line(), items, None);
             about_code(st, opened)
         }
@@ -75,13 +97,14 @@ pub fn key_menu(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
             match spot_rect(st, Spot::Field(field)) {
                 Some(r) => {
                     let (at, h) = below(r);
-                    let items = field_items(st, field);
+                    let mut items = field_items(st, field);
+                    more(&mut items);
                     open(st, at, h, items, None)
                 }
                 None => false,
             }
         }
-        Target::Elsewhere if ui.tab == Tab::Library => {
+        Target::Elsewhere if pane == Some(Pane::Library) => {
             let i = ui.library_sel;
             let row =
                 st.s.mods
@@ -91,34 +114,54 @@ pub fn key_menu(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
             match row {
                 Some(r) => {
                     let (at, h) = below(r);
-                    let items = library_items(st, i);
+                    let mut items = library_items(st, i);
+                    more(&mut items);
                     open(st, at, h, items, Some(r))
                 }
-                // No mod's row: the list's own menu, under its title.
+                // No mod's row: docked, the pane's own menu (its layout
+                // too) under its tab; on the Library tab the list's own
+                // menu, under its title.
+                None if docked => {
+                    let spot = Spot::Pane(Pane::Library);
+                    match spot_rect(st, spot) {
+                        Some(r) => open_spot(st, game, spot, r, below(r).0),
+                        None => false,
+                    }
+                }
                 None => match spot_rect(st, Spot::Scripts) {
                     Some(r) => open_spot(st, game, Spot::Scripts, r, [r[0] + 12.0, r[1] + 30.0]),
                     None => false,
                 },
             }
         }
-        Target::Elsewhere if ui.tab == Tab::Editor && ui.panel == Panel::Problems => {
+        Target::Elsewhere if pane == Some(Pane::Problems) => {
             let k = ui.problem_sel;
             match spot_rect(st, Spot::Problem(k)) {
                 Some(r) => {
                     let (at, h) = below(r);
-                    let items = problem_items(st, k);
+                    let mut items = problem_items(st, k);
+                    more(&mut items);
                     let opened = open(st, at, h, items, Some(r));
                     about_code(st, opened)
                 }
-                // No problem's row: the panel's own menu, under its tab
-                // (the last of the panel's spots drawn).
+                // No problem's row: the pane's own menu, under its tab
+                // (the last of its spots drawn).
                 None => {
-                    let spot = Spot::Panel(Panel::Problems);
+                    let spot = Spot::Pane(Pane::Problems);
                     match spot_rect(st, spot) {
                         Some(r) => open_spot(st, game, spot, r, below(r).0),
                         None => false,
                     }
                 }
+            }
+        }
+        // The Docs pane, or no pane taking the keys: the pane in use's own
+        // menu, under its tab, which has its layout already.
+        Target::Elsewhere if docked => {
+            let spot = Spot::Pane(pane.unwrap_or(ui.focus));
+            match spot_rect(st, spot) {
+                Some(r) => open_spot(st, game, spot, r, below(r).0),
+                None => false,
             }
         }
         Target::Elsewhere => {
@@ -137,11 +180,11 @@ pub fn key_menu(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
 
 /// Opens the menu of `spot`, drawn at `rect`, with its top left at `at`
 /// (the pointer), after what a right click there does first: the code's
-/// cursor goes there unless that is in the selection, a Library row is
-/// chosen, the panel's input takes the keys. Text selected in the console
-/// or the agent's conversation stays only for a click in it (Ctrl+C would
-/// copy it, not what was clicked). False when the spot has no menu, or
-/// nothing in it can be chosen now.
+/// cursor goes there unless that is in the selection (and the code takes
+/// the keys), a Library row is chosen, a pane's input takes the keys. Text
+/// selected in the console or the agent's conversation stays only for a
+/// click in it (Ctrl+C would copy it, not what was clicked). False when
+/// the spot has no menu, or nothing in it can be chosen now.
 fn open_spot(st: &mut Studio, game: &mut dyn GameApi, spot: Spot, rect: [f32; 4], at: [f32; 2]) -> bool {
     let keep_text = matches!(spot, Spot::Text(area) if in_text_selection(&st.s.ui, area, (at[0], at[1])));
     if !keep_text {
@@ -163,24 +206,31 @@ fn open_spot(st: &mut Studio, game: &mut dyn GameApi, spot: Spot, rect: [f32; 4]
                     ed.followed = Some((ed.row, ed.col, ed.revision));
                 }
             }
-            st.s.ui.panel_focus = false;
+            if st.s.ui.look.theme().layout == Layout::Studio {
+                focus_pane(st, Pane::Code);
+            }
             (code_items(st, place), None)
         }
         Spot::Text(area) => (text_items(st, area), None),
         Spot::Field(field) => {
-            let ui = &mut st.s.ui;
-            if ui.tab == Tab::Editor {
-                ui.panel = if field == FIELD_AGENT {
-                    Panel::Agent
+            if st.s.ui.tab == Tab::Editor {
+                let pane = if field == FIELD_AGENT {
+                    Pane::Agent
                 } else {
-                    Panel::Console
+                    Pane::Console
                 };
-                ui.panel_focus = true;
+                focus_pane(st, pane);
             }
             (field_items(st, field), None)
         }
         Spot::File => (file_items(st), None),
-        Spot::Scripts => (scripts_items(st), None),
+        Spot::Scripts => {
+            let mut items = scripts_items(st);
+            if st.s.ui.tab == Tab::Library {
+                items.extend(dock_items(st, Pane::Library));
+            }
+            (items, None)
+        }
         Spot::Row(k) => (row_items(st, usize::from(k)), Some(rect)),
         Spot::Mod(k) => {
             let Some(i) = drawn_mod(st, k) else { return false };
@@ -188,17 +238,20 @@ fn open_spot(st: &mut Studio, game: &mut dyn GameApi, spot: Spot, rect: [f32; 4]
             (library_items(st, i), Some(rect))
         }
         Spot::Example(i) => (example_items(st, i), Some(rect)),
-        Spot::Panel(p) => (panel_items(st, p), None),
+        Spot::Pane(p) => (pane_items(st, p), None),
         Spot::Problem(k) => {
             st.s.ui.problem_sel = k;
             (problem_items(st, k), Some(rect))
         }
         Spot::Window => (window_items(st), None),
         Spot::Themes => (theme_items(st), None),
-        Spot::Docs => (
-            vec![MenuItem::new("Copy the docs as Markdown", MenuCmd::CopyDocs)],
-            None,
-        ),
+        Spot::Docs => {
+            let mut items = vec![MenuItem::new("Copy the docs as Markdown", MenuCmd::CopyDocs)];
+            if st.s.ui.tab == Tab::Docs {
+                items.extend(dock_items(st, Pane::Docs));
+            }
+            (items, None)
+        }
     };
     let opened = open(st, at, 0.0, items, target);
     match spot {
@@ -217,24 +270,48 @@ fn about_code(st: &mut Studio, opened: bool) -> bool {
     opened
 }
 
-// ----------------------------------------------------------------- the panel, the window, the themes
+/// What the Library's and the Docs' own pages add to their menus in the
+/// studio's own layout: Dock in the Editor (Show in the Editor once it is
+/// docked), which shows that pane in the Editor tab, with the keys.
+fn dock_items(st: &Studio, p: Pane) -> Vec<MenuItem> {
+    let ui = &st.s.ui;
+    if ui.look.theme().layout != Layout::Studio {
+        return Vec::new();
+    }
+    let label = if ui.dock.has(p) {
+        "Show in the Editor"
+    } else {
+        "Dock in the Editor"
+    };
+    vec![
+        MenuItem::separator(),
+        MenuItem::new(label, MenuCmd::Act(Action::ShowPane(p))),
+    ]
+}
 
-/// The menu of the bottom panel's tab `p` (its tab, its buttons, its empty
-/// space): the console's Copy all and Clear; the problems' Copy all
-/// problems; the agent's Stop, New conversation, Copy the conversation, the
-/// agents found (the one in use marked), Look for agents again and its
-/// model; then Hide the panel.
-fn panel_items(st: &mut Studio, p: Panel) -> Vec<MenuItem> {
+// ----------------------------------------------------------------- the panes, the window, the themes
+
+/// The menu of pane `p` (its tab, its group's strip and buttons, its body
+/// where nothing has a menu of its own): the console's Copy all and Clear;
+/// the problems' Copy all problems; the agent's Stop, New conversation,
+/// Copy the conversation, the agents found (the one in use marked), Look
+/// for agents again and its model; the code's file's; the script list's
+/// own (and the Library's); the Docs' copy; then where the pane is
+/// (`layout_items`).
+fn pane_items(st: &mut Studio, p: Pane) -> Vec<MenuItem> {
     let mut items = match p {
-        Panel::Console => vec![
+        Pane::Console => vec![
             MenuItem::new("Copy all", MenuCmd::CopyAll(AREA_LOG)).enabled(!st.s.log.is_empty()),
             clear_item(st, "Clear"),
         ],
-        Panel::Problems => vec![
+        Pane::Problems => vec![
             MenuItem::new("Copy all problems", MenuCmd::Copy(all_problems(st)))
                 .enabled(!st.s.editor.problems.is_empty()),
         ],
-        Panel::Agent => {
+        Pane::Code => file_items(st),
+        Pane::Scripts | Pane::Library => scripts_items(st),
+        Pane::Docs => vec![MenuItem::new("Copy the docs as Markdown", MenuCmd::CopyDocs)],
+        Pane::Agent => {
             let busy = agent_busy(st);
             let said = !st.s.ui.agent.lines.is_empty();
             let mut items = vec![
@@ -261,8 +338,127 @@ fn panel_items(st: &mut Studio, p: Panel) -> Vec<MenuItem> {
         }
     };
     items.push(MenuItem::separator());
-    items.push(MenuItem::new("Hide the panel", MenuCmd::HidePanel));
+    items.extend(layout_items(st, p));
     items
+}
+
+/// Where pane `p` is, for the pointer and the keys alike: its group hidden
+/// (named for what it hides; never the code's), the Library or the Docs
+/// closed, Move (the places it can go), Size... (its bars from the keys),
+/// Panes (every pane) and Reset layout (or, after one, its undo).
+pub(crate) fn layout_items(st: &Studio, p: Pane) -> Vec<MenuItem> {
+    let ui = &st.s.ui;
+    let tabs = ui.dock.leaf_tabs(p);
+    let mut items = Vec::new();
+    if !tabs.contains(&Pane::Code) {
+        let hide = MenuCmd::Act(Action::HideGroup(p));
+        let item = if tabs.contains(&Pane::Console) {
+            MenuItem::new("Hide the panel", hide).keys("Ctrl `")
+        } else if tabs.contains(&Pane::Scripts) {
+            MenuItem::new("Hide the script list", hide).keys("Ctrl B")
+        } else {
+            MenuItem::new(format!("Hide {}", group_name(tabs)), hide)
+        };
+        items.push(item.enabled(ui.dock.shown(p)));
+    }
+    if p.closable() {
+        items.push(MenuItem::new(
+            format!("Close {}", p.title()),
+            MenuCmd::Act(Action::ClosePane(p)),
+        ));
+    }
+    let moves = move_items(st, p).iter().any(|i| i.enabled);
+    items.push(MenuItem::new("Move", MenuCmd::Moves(p)).keys("›").enabled(moves));
+    items.push(MenuItem::new("Size...", MenuCmd::Act(Action::SizePane(p))).enabled(!pane_bars(ui, p).is_empty()));
+    items.push(MenuItem::new("Panes", MenuCmd::Panes).keys("›"));
+    items.push(reset_item(ui));
+    items
+}
+
+/// Reset layout (greyed at the default), or Undo reset layout after one.
+fn reset_item(ui: &Ui) -> MenuItem {
+    match ui.dock_undo {
+        Some(_) => MenuItem::new("Undo reset layout", MenuCmd::Act(Action::UndoReset)),
+        None => MenuItem::new("Reset layout", MenuCmd::Act(Action::ResetLayout)).enabled(!ui.dock.is_default()),
+    }
+}
+
+/// Every pane of the Editor tab, the Library and the Docs too (docked when
+/// chosen), each marked where its body is drawn at the front of its group
+/// (the tab laid out in the room it has now, so from any tab): choosing one
+/// shows it, with the keys.
+fn pane_list(st: &Studio) -> Vec<MenuItem> {
+    let ui = &st.s.ui;
+    let drawn = ui.dock_ws.map(|ws| ui.dock.bodies(ws, ui.focus));
+    super::hstudio_dock::PANES
+        .into_iter()
+        .map(|p| {
+            MenuItem::new(p.title(), MenuCmd::Act(Action::ShowPane(p))).checked(drawn.is_some_and(|d| d[p.index()]))
+        })
+        .collect()
+}
+
+/// The places pane `p` can move to: beside the code on any side or among
+/// its tabs, among another group's tabs (named by its front pane), along an
+/// edge of the tab. Each moves it as a drop there would, and is greyed
+/// where that changes nothing or would take a pane's place as the tab is.
+fn move_items(st: &Studio, p: Pane) -> Vec<MenuItem> {
+    let ui = &st.s.ui;
+    let mut places: Vec<(String, DropAt)> = Vec::new();
+    if p != Pane::Code {
+        for (label, side) in [
+            ("Left of the code", Side::Left),
+            ("Right of the code", Side::Right),
+            ("Above the code", Side::Top),
+            ("Below the code", Side::Bottom),
+        ] {
+            places.push((
+                label.into(),
+                DropAt::Beside {
+                    anchor: Pane::Code,
+                    side,
+                },
+            ));
+        }
+        let at = ui.dock.leaf_tabs(Pane::Code).iter().filter(|t| **t != p).count();
+        places.push(("With the code".into(), DropAt::Into { anchor: Pane::Code, at }));
+    }
+    for l in ui.dock.leaves() {
+        if l.tabs.contains(&Pane::Code) || l.tabs.contains(&p) {
+            continue;
+        }
+        let at = DropAt::Into {
+            anchor: l.tabs[0],
+            at: l.tabs.len(),
+        };
+        places.push((format!("With {}", l.active.title()), at));
+    }
+    for (label, side) in [
+        ("Along the left edge", Side::Left),
+        ("Along the right edge", Side::Right),
+        ("Along the bottom", Side::Bottom),
+    ] {
+        places.push((label.into(), DropAt::Edge(side)));
+    }
+    places
+        .into_iter()
+        .map(|(label, at)| MenuItem::new(label, MenuCmd::Act(Action::MovePane(p, at))).enabled(movable(ui, p, at)))
+        .collect()
+}
+
+/// Whether moving `p` to `at` changes the dock, and (where the Editor tab
+/// was drawn) leaves every pane shown its place and `p` a body, as a drop
+/// must.
+fn movable(ui: &Ui, p: Pane, at: DropAt) -> bool {
+    let mut after = ui.dock.clone();
+    if !after.move_pane(p, at) {
+        return false;
+    }
+    let Some(ws) = ui.dock_ws else {
+        return true;
+    };
+    let keep = if p.takes_keys() { p } else { after.settled(ui.focus) };
+    super::hstudio_dock::fits(&ui.dock, &after, ws, ui.focus, keep, p)
 }
 
 /// Every problem the live check found, a line each as "<file>:<line>: <message>".
@@ -302,7 +498,8 @@ fn problem_items(st: &mut Studio, k: usize) -> Vec<MenuItem> {
 
 /// The window's menu (its title bar, the studio's header): rolling it up,
 /// filling the screen and putting it back, full screen or a window (the
-/// studio's own layout), the themes, Settings and Close.
+/// studio's own layout), the themes, the Editor tab's panes and their
+/// default layout (the studio's own layout), Settings and Close.
 fn window_items(st: &Studio) -> Vec<MenuItem> {
     let ui = &st.s.ui;
     let look = &ui.look;
@@ -324,6 +521,10 @@ fn window_items(st: &Studio) -> Vec<MenuItem> {
         items.push(MenuItem::new(label, MenuCmd::Act(Action::Windowed(window))));
     }
     items.push(MenuItem::new("Theme", MenuCmd::Themes).keys("›"));
+    if look.theme().layout == Layout::Studio {
+        items.push(MenuItem::new("Panes", MenuCmd::Panes).keys("›"));
+        items.push(reset_item(ui));
+    }
     items.push(MenuItem::separator());
     items.push(MenuItem::new("Settings", MenuCmd::Act(Action::Tab(Tab::Settings))).keys("Ctrl 5"));
     items.push(MenuItem::new("Close", MenuCmd::Act(Action::Close)).keys("Esc"));
@@ -342,25 +543,23 @@ fn theme_items(st: &Studio) -> Vec<MenuItem> {
 }
 
 /// A list in the place of the menu chosen from (`place`, where it was
-/// drawn), its current choice lit, for the keys.
+/// drawn), its current choice lit (else its first), for the keys.
 fn replace(st: &mut Studio, place: [f32; 4], items: Vec<MenuItem>) {
     if open(st, [place[0], place[1]], 0.0, items, None)
         && let Some(menu) = st.s.ui.menu.as_mut()
     {
-        menu.sel = menu.items.iter().position(|i| i.checked);
+        menu.sel = (menu.items.iter().position(|i| i.checked)).or_else(|| menu.items.iter().position(|i| i.enabled));
     }
 }
 
 /// The editor's cursor to a place in the file open, selecting it (a row
-/// and its bytes from and to), and the editor in front with the keys.
+/// and its bytes from and to), and the code at the front with the keys.
 fn go_to(st: &mut Studio, place: Option<(usize, usize, usize)>) {
     if let Some((row, start, end)) = place {
         st.s.editor.select_span(row, start, end);
     }
-    let ui = &mut st.s.ui;
-    ui.tab = Tab::Editor;
-    ui.panel_focus = false;
-    ui.suggest = None;
+    show_code(st);
+    st.s.ui.suggest = None;
 }
 
 /// Whether `path`, a file a menu named when it opened, is gone since (an
@@ -519,20 +718,52 @@ fn name_items(st: &mut Studio, row: usize, byte: usize) -> Vec<MenuItem> {
     items
 }
 
-/// The agent's panel shown and the agent asked `text`, with what the editor
-/// has selected (None: its input takes the keys, for a question typed there).
+/// The Agent pane shown (its group too, the agent at its front) and the
+/// agent asked `text`, with what the editor has selected (None: its input
+/// takes the keys, for a question typed there; else the keys stay where
+/// they are, unless the pane now covers the one they were in).
 fn ask_agent(st: &mut Studio, text: Option<&str>) {
+    let now = st.s.now;
     let ui = &mut st.s.ui;
     ui.tab = Tab::Editor;
-    if ui.panel != Panel::Agent {
-        ui.panel_tab_at = st.s.now;
+    if !ui.dock.is_front(Pane::Agent) {
+        ui.shown_at[Pane::Agent.index()] = now;
     }
-    ui.panel = Panel::Agent;
-    ui.panel_hidden = false;
-    ui.panel_focus = text.is_none();
-    if let Some(text) = text {
-        agent_ask(st, text);
+    ui.dock.show(Pane::Agent);
+    match text {
+        None => focus_pane(st, Pane::Agent),
+        Some(text) => {
+            dock_changed(st);
+            agent_ask(st, text);
+        }
     }
+}
+
+/// Show in Docs: the docs at `name`'s entry. Docked in the Editor tab (the
+/// studio's own layout), the Docs pane comes to the front of its group
+/// there, its group shown, and the keys stay where they are, unless it now
+/// covers the pane that has them (it shares that pane's group), when it
+/// takes them as the Docs tab would. Where it would have no room, and while
+/// it isn't docked, the Docs tab.
+fn show_in_docs(st: &mut Studio, name: String) {
+    let now = st.s.now;
+    let ui = &mut st.s.ui;
+    ui.docs_find = Some(name);
+    let mut after = ui.dock.clone();
+    let docked = ui.look.theme().layout == Layout::Studio && after.has(Pane::Docs);
+    after.activate(Pane::Docs);
+    let keep = after.settled(ui.focus);
+    let room = ui.dock_ws.is_none_or(|ws| after.bodies(ws, keep)[Pane::Docs.index()]);
+    if !docked || !room {
+        ui.tab = Tab::Docs;
+        return;
+    }
+    ui.tab = Tab::Editor;
+    if !ui.dock.is_front(Pane::Docs) {
+        ui.shown_at[Pane::Docs.index()] = now;
+    }
+    ui.dock = after;
+    dock_changed(st);
 }
 
 /// The menu of the console's lines or the agent's conversation: copying
@@ -635,10 +866,8 @@ fn edit(st: &mut Studio, game: &mut dyn GameApi, cmd: EditCmd) {
         EditCmd::DuplicateLine => ed.duplicate_line(),
         EditCmd::RunSelection => st.run_selection(game),
     }
-    let ui = &mut st.s.ui;
-    ui.suggest = None;
-    ui.panel_focus = false;
-    ui.tab = Tab::Editor;
+    st.s.ui.suggest = None;
+    show_code(st);
 }
 
 /// An input line's command from its menu.
@@ -825,10 +1054,6 @@ pub fn run(st: &mut Studio, game: &mut dyn GameApi, cmd: MenuCmd, place: [f32; 4
         }
         MenuCmd::Agent(id) => agent_choose(st, &id),
         MenuCmd::FindAgents => agent_rescan(st),
-        MenuCmd::HidePanel => {
-            st.s.ui.panel_hidden = true;
-            st.s.ui.panel_focus = false;
-        }
         MenuCmd::Themes => {
             let items = theme_items(st);
             replace(st, place, items);
@@ -837,13 +1062,22 @@ pub fn run(st: &mut Studio, game: &mut dyn GameApi, cmd: MenuCmd, place: [f32; 4
             let items = model_items(st);
             replace(st, place, items);
         }
+        MenuCmd::Panes => {
+            let items = pane_list(st);
+            replace(st, place, items);
+        }
+        MenuCmd::Moves(p) => {
+            let items = move_items(st, p);
+            replace(st, place, items);
+        }
+        MenuCmd::Layout(p) => {
+            let items = layout_items(st, p);
+            replace(st, place, items);
+        }
         MenuCmd::CopyDocs => copy_text(st, game, &docs_markdown()),
         MenuCmd::GoTo(row, start, end) => go_to(st, Some((row, start, end))),
         MenuCmd::Define(path, name) => define(st, game, &path, &name),
-        MenuCmd::Docs(name) => {
-            st.s.ui.tab = Tab::Docs;
-            st.s.ui.docs_find = Some(name);
-        }
+        MenuCmd::Docs(name) => show_in_docs(st, name),
         MenuCmd::Ask(text) => ask_agent(st, text.as_deref()),
         MenuCmd::Explain => {
             if st.s.editor.selection().is_none() {

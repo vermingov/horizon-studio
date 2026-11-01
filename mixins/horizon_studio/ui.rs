@@ -4,8 +4,15 @@
 // with the game's own GUI font and rectangles through GameApi, in Horizon's
 // dark design tokens (docs/design-system.md): a veil over the world, plates
 // for the console and code, 1 px rules, one accent for the main action.
+// The Editor tab is panes the player sizes and moves, which the dock
+// (hstudio_dock) places: the script list, the code, the console, the
+// problems, the agent, and the Library and the Docs once docked. Here are
+// which of them has the keys (only ever one that is drawn), the drags of
+// their bars and tabs (the Console's, Library's and Docs' tabs at the top
+// too), sizing from the keys, and what their menus' items do.
 
 use super::hstudio::{API, CONSOLE_API, Font, GameApi, LogKind, Owner, Studio};
+pub use super::hstudio_dock::{Bar, Dock, DrawnLeaf, DropAt, DropSpot, Pane, Side};
 use super::hstudio_examples::EXAMPLES;
 use super::hstudio_lua::{TableRef, Value};
 use std::path::{Path, PathBuf};
@@ -153,12 +160,25 @@ pub enum Action {
     ClearEditor,
     /// A suggestion taken.
     Suggest(u8),
-    /// The editor's bottom panel: a tab of it, shown or hidden, sized from its
-    /// edge (a drag), focused; a problem's line.
-    PanelTab(Panel),
-    TogglePanel,
-    PanelResize,
-    FocusPanel,
+    /// The Editor tab's panes: a pane's tab pressed (it comes to the front
+    /// of its group), a press in a group where nothing else takes it, a
+    /// pane shown with the keys (the problems count, the Panes list), the
+    /// group holding a pane hidden (its ×) or shown and hidden from the keys
+    /// (Ctrl+`, Ctrl+J, Ctrl+B), a bar between groups (by its split's path),
+    /// the layout reset and the reset undone, the Library or the Docs
+    /// closed, a pane moved, and a pane's bars sized from the keys.
+    PaneTab(Pane),
+    Focus(Pane),
+    ShowPane(Pane),
+    HideGroup(Pane),
+    ToggleGroup(Pane),
+    DockBar(u16),
+    ResetLayout,
+    UndoReset,
+    ClosePane(Pane),
+    MovePane(Pane, DropAt),
+    SizePane(Pane),
+    /// A problem's line.
     Problem(usize),
     /// The editor's file changed on disk while edited: take that, or keep
     /// these; removed from disk while edited, let it go.
@@ -218,8 +238,9 @@ pub enum Spot {
     /// example's.
     Mod(usize),
     Example(usize),
-    /// The bottom panel (a tab of it, or the one shown), and a problem's row.
-    Panel(Panel),
+    /// A pane of the Editor tab (its tab, its group's strip, and its body
+    /// where nothing else has a menu), and a problem's row.
+    Pane(Pane),
     Problem(usize),
     /// The window's title bar, or the studio's header.
     Window,
@@ -272,11 +293,14 @@ pub enum MenuCmd {
     /// The agent: the one found with this id used, or agents looked for again.
     Agent(String),
     FindAgents,
-    /// The editor's bottom panel hidden.
-    HidePanel,
-    /// Another list in the menu's place: the themes, the agent's models.
+    /// Another list in the menu's place: the themes, the agent's models, the
+    /// Editor tab's panes, the places a pane moves to, and a pane's layout
+    /// items (the Menu key's Layout).
     Themes,
     Models,
+    Panes,
+    Moves(Pane),
+    Layout(Pane),
     /// The Docs tab as Markdown, to the clipboard.
     CopyDocs,
     /// A place in the file open selected (a problem's, a name's
@@ -592,15 +616,6 @@ pub struct Suggest {
     pub(crate) first: usize,
 }
 
-/// The editor's bottom panel, as in VS Code.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Panel {
-    #[default]
-    Console,
-    Problems,
-    Agent,
-}
-
 /// A window being moved or sized: how, from where the pointer was, and the
 /// window then.
 #[derive(Clone, Copy, Debug)]
@@ -609,6 +624,30 @@ pub(crate) struct WinDrag {
     from: (f32, f32),
     rect: [f32; 4],
 }
+
+/// What the left button holds on the Editor tab's panes: a bar between two
+/// groups, as the last frame drew it, and where the pointer is on it along
+/// its way (from its left or top edge); or a pane's tab, pressed where the
+/// pointer was, and lifted (`moving`) once dragged `TAB_LIFT` from there.
+/// A tab is a group's, or the Console, Library or Docs tab at the top
+/// (`page`), whose pane is dragged into the Editor tab.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DockDrag {
+    Bar {
+        bar: Bar,
+        grab: f32,
+    },
+    Tab {
+        pane: Pane,
+        from: (f32, f32),
+        moving: bool,
+        page: Option<Tab>,
+    },
+}
+
+/// How far a pressed tab is dragged before it lifts, so a click that moves
+/// a little only brings its pane to the front.
+const TAB_LIFT: f32 = 6.0;
 
 /// Where the editor's text was drawn, for the pointer.
 #[derive(Clone, Copy, Debug, Default)]
@@ -811,18 +850,39 @@ pub struct Ui {
     pub(crate) screen: (f32, f32),
     pub(crate) settings_scroll: f32,
     pub suggest: Option<Suggest>,
-    /// The editor's bottom panel: which tab, shown, focused (typing goes to
-    /// it), its share of the editor's height, being sized (from where).
-    pub panel: Panel,
-    pub panel_hidden: bool,
-    pub panel_focus: bool,
-    pub panel_h: f32,
-    pub(crate) panel_drag: Option<(f32, f32)>,
-    /// The height the panel's share is of, from the last frame.
-    pub(crate) panel_room: f32,
+    /// The Editor tab's panes (`layout.txt`), and the pane the keys go to
+    /// there (they reach it only while it is at the front, `key_pane`).
+    pub dock: Dock,
+    pub focus: Pane,
+    /// What the left button holds on the panes, and where a dragged tab
+    /// would land.
+    pub(crate) dock_drag: Option<DockDrag>,
+    pub dock_spot: Option<DropSpot>,
+    /// From the last frame (cleared with the hits): the bars between the
+    /// groups, the groups as drawn, and the panes whose body was drawn at the
+    /// front of their group (by `Pane::index`).
+    pub dock_bars: Vec<Bar>,
+    pub dock_drawn: Vec<DrawnLeaf>,
+    pub dock_front: [bool; 7],
+    /// The Editor tab's area as the last frame of the studio's own layout
+    /// had it, whichever tab showed (kept: what a change would do is laid
+    /// out there from any tab).
+    pub dock_ws: Option<[f32; 4]>,
+    /// When each pane came to the front (its content's arrival).
+    pub(crate) shown_at: [f64; 7],
+    /// What `layout.txt` holds (as read, or last written): only a change is
+    /// written.
+    pub(crate) dock_text: String,
+    /// The strip's tip that tabs can be dragged shows, until a tab or a bar
+    /// is first moved.
+    pub dock_tips: bool,
+    /// The layout a Reset layout replaced, until the next change.
+    pub(crate) dock_undo: Option<Dock>,
+    /// Sizing from the keys: the pane, and the path of its bar that is lit.
+    pub sizing: Option<(Pane, u16)>,
     /// What the agent is asked, typed in its panel.
     pub agent_input: LineEdit,
-    pub(crate) problem_sel: usize,
+    pub problem_sel: usize,
     pub agent: AgentPane,
     /// What AI agents do in the editor, live (`hstudio_coach`).
     pub coach: super::hstudio_coach::Coach,
@@ -846,8 +906,9 @@ pub struct Ui {
     pub hidden_until: f64,
     pub(crate) scroll_drag: Option<f32>,
     pub(crate) view: Option<EditorView>,
-    /// Lines the last frame could show, for Page Up/Down.
-    pub(crate) page: usize,
+    /// Lines each pane could show when last drawn (by `Pane::index`), for
+    /// Page Up/Down: the code's, the console's and the docs' are their own.
+    pub pages: [usize; 7],
     /// dp per GUI pixel, from the last frame drawn (the pointer arrives in GUI pixels).
     pub dp: f32,
     /// Motion: when the screen opened and began to close, when the tab
@@ -871,15 +932,11 @@ pub struct Ui {
     pub caret_at: Option<[f32; 2]>,
     /// When the editor's file was last looked at on disk.
     pub(crate) disk_at: f64,
-    /// Where the bottom panel was drawn (None: it wasn't), for the wheel.
-    pub(crate) panel_at: Option<[f32; 4]>,
     /// When each of the editor's problems first showed (its fade in).
     pub(crate) problem_at: std::collections::HashMap<u64, f64>,
     /// The window as drawn: it glides to where it is going (maximised,
     /// restored, the screen resized).
     pub(crate) win_shown: Option<[f32; 4]>,
-    /// When the bottom panel's tab last changed (its content's motion).
-    pub(crate) panel_tab_at: f64,
     pub(crate) naming_at: f64,
 }
 
@@ -889,13 +946,16 @@ impl Ui {
         if self.dp > 0.0 { self.dp } else { 1.0 }
     }
     /// Whether the left button is held for something: selecting code or
-    /// text, the scroll bar's thumb, the panel's edge or the window.
+    /// text, the scroll bar's thumb, a bar between panes or the window.
     pub fn dragging_any(&self) -> bool {
-        self.dragging
-            || self.text_drag
-            || self.scroll_drag.is_some()
-            || self.panel_drag.is_some()
-            || self.drag.is_some()
+        self.dragging || self.text_drag || self.scroll_drag.is_some() || self.dock_drag.is_some() || self.drag.is_some()
+    }
+    /// The pane whose tab is lifted, dragged to another place.
+    pub fn lifted(&self) -> Option<Pane> {
+        match self.dock_drag {
+            Some(DockDrag::Tab { pane, moving: true, .. }) => Some(pane),
+            _ => None,
+        }
     }
 }
 
@@ -2461,18 +2521,20 @@ pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult
         st.s.editor.edited_at = st.s.now;
     }
     super::hstudio_coach::after_input(st, before);
-    // A menu goes with the studio, and so does what the left button holds:
-    // its release won't reach a studio closing.
+    // A menu goes with the studio, and so does what the left button holds
+    // (its release won't reach a studio closing) and sizing from the keys.
     if out == UiResult::Close {
         st.s.ui.menu = None;
         let_go(st);
+        end_sizing(st);
     }
     out
 }
 
 /// The left button let go, or its release went elsewhere (the studio closed,
 /// a script's screen took the input): what it dragged ends, a window moved
-/// stays where it is, and a selection of no text goes.
+/// or a bar between panes stays where it is, a pane's tab moves nothing (a
+/// drop is the release's own, before this), and a selection of no text goes.
 pub(crate) fn let_go(st: &mut Studio) {
     let ui = &mut st.s.ui;
     ui.scroll_drag = None;
@@ -2481,10 +2543,10 @@ pub(crate) fn let_go(st: &mut Studio) {
         ui.text_sel = None;
     }
     ui.dragging = false;
-    ui.panel_drag = None;
     if ui.drag.take().is_some() {
         ui.look.save(&st.s.dir);
     }
+    end_dock_drag(st);
 }
 
 /// Where typing goes now.
@@ -2497,19 +2559,556 @@ pub enum Target {
 }
 
 pub fn target(ui: &Ui) -> Target {
+    match key_pane(ui) {
+        Some(Pane::Console) => Target::Console,
+        Some(Pane::Code) => Target::Editor,
+        Some(Pane::Agent) => Target::Agent,
+        _ => Target::Elsewhere,
+    }
+}
+
+// ----------------------------------------------------------------- the Editor tab's panes
+
+/// The pane the keys go to: the Console, Library and Docs tabs' own, the
+/// code on an executor style's Editor tab, and on the studio's own Editor
+/// tab the pane in use (`Ui::focus`) while it is at the front of a shown
+/// group and takes keys (the script list doesn't). None: they go nowhere
+/// but the studio's own shortcuts (Settings, or a pane covered or hidden).
+pub fn key_pane(ui: &Ui) -> Option<Pane> {
     match ui.tab {
-        Tab::Console => Target::Console,
-        Tab::Editor
-            if ui.panel_focus && !ui.panel_hidden && ui.look.theme().layout == super::hstudio_theme::Layout::Studio =>
-        {
-            match ui.panel {
-                Panel::Console => Target::Console,
-                Panel::Agent => Target::Agent,
-                Panel::Problems => Target::Elsewhere,
+        Tab::Console => Some(Pane::Console),
+        Tab::Editor if ui.look.theme().layout != super::hstudio_theme::Layout::Studio => Some(Pane::Code),
+        Tab::Editor => (ui.focus.takes_keys() && ui.dock.is_front(ui.focus)).then_some(ui.focus),
+        Tab::Library => Some(Pane::Library),
+        Tab::Docs => Some(Pane::Docs),
+        Tab::Settings => None,
+    }
+}
+
+/// The pane in use is `p` now; the suggestions, which belong to the pane
+/// they opened in, close when it changes.
+fn set_focus(ui: &mut Ui, p: Pane) {
+    if ui.focus != p {
+        ui.focus = p;
+        ui.suggest = None;
+    }
+}
+
+/// The pane in use where the dock has it now: there while it is at the
+/// front of a shown group, else what covers it, else (its group hidden)
+/// the front of the code's group. Each edit of the dock ends with it, and
+/// each frame of the Editor tab starts with it.
+pub fn settle_focus(ui: &mut Ui) {
+    let settled = ui.dock.settled(ui.focus);
+    set_focus(ui, settled);
+}
+
+/// Whether the dock isn't what `layout.txt` holds (the tip's line aside).
+fn dock_moved(ui: &Ui) -> bool {
+    !ui.dock_text.contains(&format!("dock={}\n", ui.dock.to_text()))
+}
+
+/// What every edit of the dock outside dock.rs ends with: the pane in use
+/// settles, `layout.txt` is written when it would change, and when the
+/// panes changed, a reset can no longer be undone and what the button or
+/// the keys held on them ends where it may be on others now (`end_held`).
+pub(crate) fn dock_changed(st: &mut Studio) {
+    let ui = &mut st.s.ui;
+    settle_focus(ui);
+    let text = super::hstudio_dock::file_text(&ui.dock, ui.dock_tips);
+    if text == ui.dock_text {
+        return;
+    }
+    let moved = dock_moved(ui);
+    let placed = written_dock(ui).is_some_and(|d| d.same_places(&ui.dock));
+    super::hstudio_dock::save(&st.s.dir, &ui.dock, ui.dock_tips);
+    ui.dock_text = text;
+    if moved {
+        ui.dock_undo = None;
+        end_held(ui, placed);
+    }
+}
+
+/// The dock as `layout.txt` holds it (as it was loaded, or last written).
+fn written_dock(ui: &Ui) -> Option<Dock> {
+    ui.dock_text
+        .lines()
+        .find_map(|l| l.strip_prefix("dock="))
+        .and_then(Dock::parse)
+}
+
+/// What the button or the keys held on the panes, once the dock changed
+/// from what `layout.txt` held; `placed` when its groups are where they
+/// were and only the tabs at their front or their sizes changed (all that
+/// an agent or a lesson changes). Where groups moved, came, went or hid,
+/// it all ends: its bars, places and panes may be others now. Else a bar
+/// or a tab held and sizing from the keys go on (a bar's path names the
+/// same split, a tab the same pane, and a lifted tab's place is found
+/// again), and only what was held in a pane now behind another ends: the
+/// code's scroll bar and selection, a selection of the console's or the
+/// agent's lines.
+fn end_held(ui: &mut Ui, placed: bool) {
+    if !placed {
+        ui.dock_drag = None;
+        ui.dock_spot = None;
+        ui.sizing = None;
+        ui.scroll_drag = None;
+        ui.dragging = false;
+        ui.text_drag = false;
+        return;
+    }
+    // The executor styles draw their own panes, which the dock doesn't place.
+    if ui.look.theme().layout != super::hstudio_theme::Layout::Studio {
+        return;
+    }
+    if !ui.dock.is_front(Pane::Code) {
+        ui.scroll_drag = None;
+        ui.dragging = false;
+    }
+    let lines = match ui.text_sel {
+        Some(s) if s.area == AREA_AGENT => Pane::Agent,
+        _ => Pane::Console,
+    };
+    if ui.tab == Tab::Editor && !ui.dock.is_front(lines) {
+        ui.text_drag = false;
+    }
+    if let Some(pane) = ui.lifted() {
+        ui.dock_spot = drop_spot(ui, pane, ui.mouse);
+    }
+}
+
+/// `p` to the front of its group (its content arriving), and the keys to
+/// it. The script list takes no keys: they stay where they are, unless it
+/// has no room beside the pane in use, when it becomes the pane in use
+/// (filling the room, the keys going nowhere) until a script opens or Esc.
+pub(crate) fn focus_pane(st: &mut Studio, p: Pane) {
+    let now = st.s.now;
+    let ui = &mut st.s.ui;
+    if !ui.dock.is_front(p) {
+        ui.shown_at[p.index()] = now;
+    }
+    ui.dock.activate(p);
+    if p.takes_keys() || ui.dock_ws.is_some_and(|ws| !ui.dock.bodies(ws, ui.focus)[p.index()]) {
+        set_focus(ui, p);
+    }
+    dock_changed(st);
+}
+
+/// `p` shown and given the keys: a closed Library or Docs comes back at its
+/// home, or among the code's tabs where that has no room. Where neither has
+/// room without taking a pane's place, its own page shows instead.
+pub(crate) fn show_pane(st: &mut Studio, p: Pane) {
+    let now = st.s.now;
+    let ui = &mut st.s.ui;
+    if !ui.dock.is_front(p) {
+        ui.shown_at[p.index()] = now;
+    }
+    let ws = ui.dock_ws;
+    let keep = ui.focus;
+    ui.dock.show_fitting(p, ws, keep);
+    if !ui.dock.has(p) {
+        no_room_for(st, p);
+        return;
+    }
+    focus_pane(st, p);
+}
+
+/// The Library's or the Docs' page, where the Editor tab has no room to
+/// dock it, and a notice saying so.
+fn no_room_for(st: &mut Studio, p: Pane) {
+    st.s.ui.tab = if p == Pane::Docs { Tab::Docs } else { Tab::Library };
+    notice(st, format!("No room for the {} in the Editor tab", p.title()));
+}
+
+/// The code at the front with the keys, for what the player does: a script
+/// opened, a problem gone to, Esc. (An executor style's Editor tab is its
+/// code: the panes stay as they are for the Horizon themes.)
+pub fn show_code(st: &mut Studio) {
+    st.s.ui.tab = Tab::Editor;
+    if st.s.ui.look.theme().layout == super::hstudio_theme::Layout::Studio {
+        focus_pane(st, Pane::Code);
+    } else {
+        set_focus(&mut st.s.ui, Pane::Code);
+    }
+}
+
+/// The code brought forward for what agents, scripts and the console do: the
+/// Editor tab, and the code at the front of its group unless that would
+/// cover the pane the player has the keys in. The keys stay where they are.
+pub fn reveal_code(st: &mut Studio) {
+    let now = st.s.now;
+    let ui = &mut st.s.ui;
+    ui.tab = Tab::Editor;
+    if ui.look.theme().layout != super::hstudio_theme::Layout::Studio {
+        return;
+    }
+    let covers_keys = ui.dock.covers(Pane::Code) == Some(ui.focus) && ui.focus.takes_keys();
+    if !covers_keys && !ui.dock.is_front(Pane::Code) {
+        ui.shown_at[Pane::Code.index()] = now;
+        ui.dock.activate(Pane::Code);
+    }
+    dock_changed(st);
+}
+
+/// The group holding `p` hidden, in place, and a notice of how it comes
+/// back. Never the code's group.
+fn hide_group(st: &mut Studio, p: Pane) {
+    let tabs = st.s.ui.dock.leaf_tabs(p).to_vec();
+    if !st.s.ui.dock.set_hidden(p, true) {
+        return;
+    }
+    dock_changed(st);
+    let say = if tabs.contains(&Pane::Console) {
+        "Panel hidden: Ctrl+` brings it back".to_owned()
+    } else if tabs.contains(&Pane::Scripts) {
+        "Script list hidden: Ctrl+B brings it back".to_owned()
+    } else {
+        format!("{} hidden: Panes › in a tab's menu brings it back", group_name(&tabs))
+    };
+    notice(st, say);
+}
+
+/// A group by its tabs' names: "Agent", "Library and Docs", "Console,
+/// Problems and Agent".
+pub(crate) fn group_name(tabs: &[Pane]) -> String {
+    let names: Vec<&str> = tabs.iter().map(|p| p.title()).collect();
+    match names.as_slice() {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// Ctrl+`, Ctrl+J (the panel: the group holding the console) and Ctrl+B
+/// (the script list's group), as VS Code's: hidden, it shows and its front
+/// pane takes the keys; shown but not in use, it takes them; in use, it
+/// hides. Sharing the code's group, it goes between the code and that pane
+/// instead. From another tab it shows, never hides; the executor styles'
+/// layouts are their own, so there it only goes to the Editor tab.
+fn toggle_group(st: &mut Studio, p: Pane) {
+    let ui = &mut st.s.ui;
+    let away = ui.tab != Tab::Editor;
+    ui.tab = Tab::Editor;
+    ui.suggest = None;
+    if ui.look.theme().layout != super::hstudio_theme::Layout::Studio {
+        return;
+    }
+    let with_code = ui.dock.leaf_tabs(p).contains(&Pane::Code);
+    if p == Pane::Scripts {
+        // The script list: drawn, it hides; not drawn (hidden, behind a
+        // tab, or with no room), it comes to the front, as the pane in use
+        // where it has no room beside it.
+        if !away && with_code && ui.dock.is_front(Pane::Scripts) {
+            show_code(st);
+        } else if !away && !with_code && ui.dock_front[Pane::Scripts.index()] {
+            hide_group(st, p);
+        } else {
+            ui.dock.set_hidden(p, false);
+            focus_pane(st, Pane::Scripts);
+        }
+        return;
+    }
+    // The panel: hidden, it shows with its front pane in use, whichever
+    // that is (the agent's, during a lesson), or the console where that
+    // pane takes no keys (the script list dropped there).
+    if !ui.dock.shown(p) {
+        ui.dock.set_hidden(p, false);
+        let front = panel_front(ui, p);
+        focus_pane(st, front);
+    } else if with_code {
+        if away || ui.dock.is_front(Pane::Code) {
+            focus_pane(st, p);
+        } else {
+            show_code(st);
+        }
+    } else if !away && ui.focus == panel_front(ui, p) {
+        hide_group(st, p);
+    } else {
+        let front = panel_front(ui, p);
+        focus_pane(st, front);
+    }
+}
+
+/// The pane of `p`'s group that Ctrl+` gives the keys: its front pane, or
+/// `p` itself where the front pane takes none.
+fn panel_front(ui: &Ui, p: Pane) -> Pane {
+    Some(ui.dock.settled(p)).filter(|f| f.takes_keys()).unwrap_or(p)
+}
+
+/// Settings' Reset layout and the menus': the default layout with the code
+/// in use, the one it replaced kept for Undo until the next change. (Not
+/// while the groups are the default's, whatever tabs are in front.)
+fn reset_layout(st: &mut Studio) {
+    if st.s.ui.dock.is_default() {
+        return;
+    }
+    let old = std::mem::take(&mut st.s.ui.dock);
+    set_focus(&mut st.s.ui, Pane::Code);
+    dock_changed(st);
+    st.s.ui.dock_undo = Some(old);
+    let say = if st.s.ui.look.theme().layout == super::hstudio_theme::Layout::Studio {
+        "Back to the default layout"
+    } else {
+        "The Horizon themes' panes are back to the default"
+    };
+    notice(st, say);
+}
+
+/// The layout a reset replaced, back.
+fn undo_reset(st: &mut Studio) {
+    let Some(old) = st.s.ui.dock_undo.take() else {
+        return;
+    };
+    st.s.ui.dock = old;
+    dock_changed(st);
+    notice(st, "Your layout is back");
+}
+
+/// The bars at the edges of `p`'s group as the last frame drew them, its own
+/// split's first, then the ones further out: what Size... lights in turn.
+/// A bar with no room to move is a plain gap, drawn with no grip, and isn't
+/// one of them.
+pub(crate) fn pane_bars(ui: &Ui, p: Pane) -> Vec<Bar> {
+    let Some(l) = ui.dock_drawn.iter().find(|l| l.tabs.iter().any(|(t, _)| *t == p)) else {
+        return Vec::new();
+    };
+    let [x, y, w, h] = l.rect;
+    let near = |a: f32, b: f32| (a - b).abs() < 1.0;
+    let overlaps = |a0: f32, a1: f32, b0: f32, b1: f32| a0.max(b0) < a1.min(b1);
+    let mut bars: Vec<Bar> = ui
+        .dock_bars
+        .iter()
+        .filter(|b| b.movable())
+        .filter(|b| {
+            let [bx, by, bw, bh] = b.rect;
+            if b.row {
+                (near(bx, x + w) || near(bx + bw, x)) && overlaps(by, by + bh, y, y + h)
+            } else {
+                (near(by, y + h) || near(by + bh, y)) && overlaps(bx, bx + bw, x, x + w)
+            }
+        })
+        .copied()
+        .collect();
+    // The deeper a split, the longer its path.
+    bars.sort_by_key(|b| std::cmp::Reverse(b.path.ilog2()));
+    bars
+}
+
+/// Size... for `p`: its first bar lit, which the arrows move.
+fn size_pane(st: &mut Studio, p: Pane) {
+    let Some(bar) = pane_bars(&st.s.ui, p).first().copied() else {
+        return;
+    };
+    st.s.ui.sizing = Some((p, bar.path));
+    st.s.ui.dock_tips = false;
+    dock_changed(st);
+}
+
+/// Sizing from the keys ends; the bar stays where it is, written.
+pub(crate) fn end_sizing(st: &mut Studio) {
+    if st.s.ui.sizing.take().is_some() {
+        dock_changed(st);
+    }
+}
+
+/// A key while a bar is lit for sizing: the arrows along its way move it
+/// (16 units, Shift 64), Tab lights the next of its pane's bars, Enter and
+/// Esc end it. True when the key was its; any other ends it first and goes
+/// on as usual (the keys that only change what others mean keep it).
+fn sizing_key(st: &mut Studio, key: Key, mods: Mods) -> bool {
+    let Some((pane, path)) = st.s.ui.sizing else {
+        return false;
+    };
+    let Some(bar) = st.s.ui.dock_bars.iter().find(|b| b.path == path).copied() else {
+        end_sizing(st);
+        return false;
+    };
+    let step = if mods.shift { 64.0 } else { 16.0 };
+    let by = match key {
+        Key::Left if bar.row => -step,
+        Key::Right if bar.row => step,
+        Key::Up if !bar.row => -step,
+        Key::Down if !bar.row => step,
+        Key::Tab => {
+            let bars = pane_bars(&st.s.ui, pane);
+            if let Some(i) = bars.iter().position(|b| b.path == path) {
+                let n = bars.len();
+                let next = if mods.shift { i + n - 1 } else { i + 1 };
+                st.s.ui.sizing = Some((pane, bars[next % n].path));
+            }
+            return true;
+        }
+        Key::Enter | Key::Escape => {
+            end_sizing(st);
+            return true;
+        }
+        Key::Other => return true,
+        _ => {
+            end_sizing(st);
+            return false;
+        }
+    };
+    let ui = &mut st.s.ui;
+    let ratio = ui.dock.ratio(path).unwrap_or(0.5);
+    let len = bar.len.max(1.0);
+    // From where the bar is drawn, as the dock lays it out: in an area
+    // smaller than when its ratio was set, the groups' least sizes can hold
+    // it from where the ratio would put it. A key that can't move it
+    // leaves the ratio as it is.
+    let now = (bar.start + (ratio * len).round()).clamp(bar.lo, bar.hi);
+    let at = (now + by).clamp(bar.lo, bar.hi);
+    if at == now {
+        return true;
+    }
+    // Written at each step, as each key's change is: the game can close
+    // the studio, and quit, while the bar is lit.
+    if ui.dock.set_ratio(path, (at - bar.start) / len) {
+        dock_changed(st);
+    }
+    true
+}
+
+/// What the left button held on the panes ends, nothing dropped: a bar stays
+/// where it is, written (the tip that tabs move goes once one did), and a
+/// tab moves nothing and writes nothing (a tab from the top lifted shows
+/// its page again).
+fn end_dock_drag(st: &mut Studio) {
+    let ui = &mut st.s.ui;
+    ui.dock_spot = None;
+    match ui.dock_drag.take() {
+        Some(DockDrag::Bar { .. }) => {
+            if dock_moved(ui) {
+                ui.dock_tips = false;
+            }
+            dock_changed(st);
+        }
+        Some(DockDrag::Tab {
+            page: Some(t),
+            moving: true,
+            ..
+        }) => ui.tab = t,
+        _ => {}
+    }
+}
+
+/// The page a tab at the top is, as a pane that can be dragged into the
+/// Editor tab: the Console's, the Library's and the Docs'. (The Editor is
+/// where they go, and Settings, which restyles everything, is never a pane.)
+fn page_pane(t: Tab) -> Option<Pane> {
+    match t {
+        Tab::Console => Some(Pane::Console),
+        Tab::Library => Some(Pane::Library),
+        Tab::Docs => Some(Pane::Docs),
+        Tab::Editor | Tab::Settings => None,
+    }
+}
+
+/// A pane's tab held with the pointer at `at`: it lifts once `TAB_LIFT`
+/// from where it was pressed (a tab at the top then goes to the Editor tab,
+/// its pane with it), and from then on `dock_spot` is where its pane would
+/// land among the groups as the last frame drew them on the Editor tab
+/// (nowhere while another tab shows, or before the Editor tab is drawn),
+/// so the preview and the release follow the pointer.
+fn drag_tab(st: &mut Studio, at: (f32, f32)) {
+    let ui = &mut st.s.ui;
+    let Some(DockDrag::Tab {
+        pane,
+        from,
+        moving,
+        page,
+    }) = ui.dock_drag
+    else {
+        return;
+    };
+    if !moving {
+        if (at.0 - from.0).hypot(at.1 - from.1) < TAB_LIFT {
+            return;
+        }
+        ui.dock_drag = Some(DockDrag::Tab {
+            pane,
+            from,
+            moving: true,
+            page,
+        });
+        if page.is_some() {
+            ui.tab = Tab::Editor;
+        }
+    }
+    ui.dock_spot = drop_spot(ui, pane, at);
+}
+
+/// Where `pane`, its tab lifted to `at`, would land among the groups as the
+/// last frame drew them on the Editor tab: nowhere while another tab shows,
+/// or before the Editor tab is drawn.
+fn drop_spot(ui: &Ui, pane: Pane, at: (f32, f32)) -> Option<DropSpot> {
+    let editor = ui.tab == Tab::Editor && ui.look.theme().layout == super::hstudio_theme::Layout::Studio;
+    match ui.dock_ws {
+        Some(ws) if editor && !ui.dock_drawn.is_empty() => ui.dock.drop_at(ws, &ui.dock_drawn, pane, ui.focus, at),
+        _ => None,
+    }
+}
+
+/// The front pane of the group under `at` as the last frame drew it, and
+/// whether `at` is on its strip; groups that are only their strip don't
+/// count.
+fn pane_under(ui: &Ui, at: (f32, f32)) -> Option<(Pane, bool)> {
+    let l = ui.dock_drawn.iter().find(|l| !l.collapsed && inside(l.rect, at))?;
+    Some((l.active, inside(l.strip, at)))
+}
+
+/// The wheel over a pane: `n` lines (or rows, or mods) up or down.
+fn pane_wheel(st: &mut Studio, game: &mut dyn GameApi, pane: Pane, n: usize, up: bool) {
+    let ui = &mut st.s.ui;
+    match pane {
+        Pane::Console if up => ui.log_scroll += n,
+        Pane::Console => ui.log_scroll = ui.log_scroll.saturating_sub(n),
+        Pane::Agent if up => ui.agent.scroll += n as f32,
+        Pane::Agent => ui.agent.scroll = (ui.agent.scroll - n as f32).max(0.0),
+        Pane::Problems => {
+            let last = st.s.editor.problems.len().saturating_sub(1);
+            ui.problem_sel = if up {
+                ui.problem_sel.saturating_sub(n / 3)
+            } else {
+                (ui.problem_sel + n / 3).min(last)
+            };
+        }
+        Pane::Scripts => {
+            ui.scripts_scroll = if up {
+                ui.scripts_scroll.saturating_sub(n / 3)
+            } else {
+                ui.scripts_scroll + n / 3
+            };
+        }
+        Pane::Library => {
+            let n = st.s.mods.len();
+            if up {
+                ui.library_sel = ui.library_sel.saturating_sub(1);
+            } else if n > 0 {
+                ui.library_sel = (ui.library_sel + 1).min(n - 1);
             }
         }
-        Tab::Editor => Target::Editor,
-        _ => Target::Elsewhere,
+        Pane::Docs => {
+            ui.docs_scroll = if up {
+                ui.docs_scroll.saturating_sub(n)
+            } else {
+                ui.docs_scroll + n
+            };
+        }
+        Pane::Code => {
+            let ed = &mut st.s.editor;
+            ed.scroll = if up {
+                ed.scroll.saturating_sub(n)
+            } else {
+                (ed.scroll + n).min(ed.lines.len().saturating_sub(1))
+            };
+            // The cursor and the selection stay where they are; a
+            // drag in progress follows the pointer onto the new lines.
+            if st.s.ui.dragging {
+                let (x, y) = st.s.ui.mouse;
+                let top = st.s.editor.scroll as f32;
+                editor_point(st, game, x, y, true, top);
+            }
+        }
     }
 }
 
@@ -2632,10 +3231,28 @@ pub fn refresh_suggest(st: &mut Studio) {
     };
 }
 
+/// Whether the suggestions open are for where the keys go now (the code's
+/// or the console's); a list left from another pane is dropped.
+fn suggest_here(ui: &mut Ui) -> bool {
+    let here = match target(ui) {
+        Target::Console => Some(true),
+        Target::Editor => Some(false),
+        _ => None,
+    };
+    let ok = ui.suggest.as_ref().is_some_and(|sg| Some(sg.console) == here);
+    if !ok {
+        ui.suggest = None;
+    }
+    ok
+}
+
 /// Takes suggestion `i`: it replaces the word typed; a function gets its
 /// brackets (the cursor in them), a library its dot (and its members).
 pub fn accept_suggestion(st: &mut Studio, i: usize) {
     use super::hstudio_assist::Kind;
+    if !suggest_here(&mut st.s.ui) {
+        return;
+    }
     let Some(sg) = st.s.ui.suggest.take() else { return };
     let Some(item) = sg.items.get(i).cloned() else { return };
     if sg.console {
@@ -2675,6 +3292,9 @@ pub fn accept_suggestion(st: &mut Studio, i: usize) {
 
 /// A key while suggestions show: true when it was theirs.
 fn suggest_key(st: &mut Studio, key: Key) -> bool {
+    if !suggest_here(&mut st.s.ui) {
+        return false;
+    }
     let Some(sg) = &mut st.s.ui.suggest else { return false };
     let n = sg.items.len().max(1);
     match key {
@@ -2728,9 +3348,18 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
             {
                 menu.sel = Some(usize::from(i));
             }
-            if let Some((from, h)) = st.s.ui.panel_drag {
-                let room = st.s.ui.panel_room.max(1.0);
-                st.s.ui.panel_h = (h + (from - y) / room).clamp(0.15, 0.8);
+            // A bar between panes follows the pointer, within its range; it
+            // is written when it is let go.
+            if let Some(DockDrag::Bar { bar, grab }) = st.s.ui.dock_drag {
+                let at = if bar.row { x } else { y };
+                let pos = (at - grab).clamp(bar.lo, bar.hi);
+                st.s.ui.dock.set_ratio(bar.path, (pos - bar.start) / bar.len.max(1.0));
+                return UiResult::Used;
+            }
+            // A pane's tab held: it lifts once dragged a little, and then
+            // where its pane would land follows the pointer.
+            if matches!(st.s.ui.dock_drag, Some(DockDrag::Tab { .. })) {
+                drag_tab(st, (x, y));
                 return UiResult::Used;
             }
             if let Some(grab) = st.s.ui.scroll_drag {
@@ -2768,6 +3397,10 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
             UiResult::Used
         }
         Input::Button { left, down } => {
+            // A press ends sizing from the keys.
+            if down {
+                end_sizing(st);
+            }
             if !left {
                 // A right press opens the menu of what is under the pointer; a
                 // right release does nothing (a drag of the left button goes on).
@@ -2778,6 +3411,13 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 };
             }
             if !down {
+                // A lifted tab let go where its pane would land moves it
+                // there (the move ends the drag, so a tab from the top
+                // leaves its page behind); anything else the button held
+                // just ends.
+                if let (Some(pane), Some(spot)) = (st.s.ui.lifted(), st.s.ui.dock_spot) {
+                    act(st, game, Action::MovePane(pane, spot.at));
+                }
                 let_go(st);
                 return UiResult::Used;
             }
@@ -2807,7 +3447,7 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
             // A press on the console's or the agent's text starts selecting it;
             // anywhere else, what was selected there is let go.
             st.s.ui.text_sel = None;
-            if matches!(hit, None | Some(Action::FocusPanel))
+            if matches!(hit, None | Some(Action::Focus(_)))
                 && let Some((area, pos)) = text_pos_at(&st.s.ui, at, None)
             {
                 st.s.ui.text_sel = Some(TextSel {
@@ -2847,12 +3487,67 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 scroll_to_thumb(st, at.1 - grab);
                 return UiResult::Used;
             }
-            if let Some(Action::PanelResize) = hit {
-                st.s.ui.panel_drag = Some((at.1, st.s.ui.panel_h));
+            // A bar between panes: held where it was pressed.
+            if let Some(Action::DockBar(path)) = hit {
+                if let Some(bar) = st.s.ui.dock_bars.iter().find(|b| b.path == path).copied() {
+                    let grab = if bar.row {
+                        at.0 - bar.rect[0]
+                    } else {
+                        at.1 - bar.rect[1]
+                    };
+                    st.s.ui.dock_drag = Some(DockDrag::Bar { bar, grab });
+                }
                 return UiResult::Used;
+            }
+            // A press in a pane's body gives it the keys, before what is
+            // there acts (a row, a button, a line); the code's suggestions
+            // are over other panes, and a group's strip acts by what is on
+            // it alone (its buttons leave the keys where they are).
+            if st.s.ui.tab == Tab::Editor
+                && st.s.ui.look.theme().layout == super::hstudio_theme::Layout::Studio
+                && !matches!(hit, Some(Action::Suggest(_)))
+                && let Some((front, false)) = pane_under(&st.s.ui, at)
+                && front.takes_keys()
+            {
+                focus_pane(st, front);
             }
             if !matches!(hit, Some(Action::Suggest(_))) {
                 st.s.ui.suggest = None;
+            }
+            // A pane's tab: its pane to the front with the keys, and the tab
+            // held, to be dragged to another place.
+            if let Some(Action::PaneTab(pane)) = hit {
+                act(st, game, Action::PaneTab(pane));
+                st.s.ui.dock_drag = Some(DockDrag::Tab {
+                    pane,
+                    from: at,
+                    moving: false,
+                    page: None,
+                });
+                return UiResult::Used;
+            }
+            // The Console, Library and Docs tabs at the top: their page, as
+            // ever, and the tab held, to drag its pane into the Editor tab.
+            if let Some(Action::Tab(t)) = hit
+                && st.s.ui.look.theme().layout == super::hstudio_theme::Layout::Studio
+                && let Some(pane) = page_pane(t)
+            {
+                act(st, game, Action::Tab(t));
+                st.s.ui.dock_drag = Some(DockDrag::Tab {
+                    pane,
+                    from: at,
+                    moving: false,
+                    page: Some(t),
+                });
+                return UiResult::Used;
+            }
+            let drawn = st.s.ui.smooth[1];
+            if let Some(Action::Focus(p)) = hit {
+                act(st, game, Action::Focus(p));
+                if p == Pane::Code && editor_point(st, game, at.0, at.1, false, drawn) {
+                    st.s.ui.dragging = true;
+                }
+                return UiResult::Used;
             }
             if let Some(action) = hit {
                 return match as_drawn(st, action) {
@@ -2860,10 +3555,10 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                     None => UiResult::Used,
                 };
             }
-            let drawn = st.s.ui.smooth[1];
+            // Nothing there: the code, where it is (an executor style's).
             if st.s.ui.tab == Tab::Editor && editor_point(st, game, at.0, at.1, false, drawn) {
                 st.s.ui.dragging = true;
-                st.s.ui.panel_focus = false;
+                set_focus(&mut st.s.ui, Pane::Code);
             }
             UiResult::Used
         }
@@ -2903,65 +3598,16 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 };
                 return UiResult::Used;
             }
-            if st.s.ui.tab == Tab::Editor
-                && let Some(r) = st.s.ui.panel_at
-                && inside(r, st.s.ui.mouse)
-            {
-                let ui = &mut st.s.ui;
-                match ui.panel {
-                    Panel::Console if up => ui.log_scroll += n,
-                    Panel::Console => ui.log_scroll = ui.log_scroll.saturating_sub(n),
-                    Panel::Agent if up => ui.agent.scroll += n as f32,
-                    Panel::Agent => ui.agent.scroll = (ui.agent.scroll - n as f32).max(0.0),
-                    Panel::Problems => {
-                        let last = st.s.editor.problems.len().saturating_sub(1);
-                        ui.problem_sel = if up {
-                            ui.problem_sel.saturating_sub(n / 3)
-                        } else {
-                            (ui.problem_sel + n / 3).min(last)
-                        };
-                    }
-                }
-                return UiResult::Used;
-            }
             match st.s.ui.tab {
-                Tab::Console => {
-                    st.s.ui.log_scroll = if up {
-                        st.s.ui.log_scroll + n
-                    } else {
-                        st.s.ui.log_scroll.saturating_sub(n)
-                    };
+                // The pane under the pointer (else the code's).
+                Tab::Editor if st.s.ui.look.theme().layout == super::hstudio_theme::Layout::Studio => {
+                    let pane = pane_under(&st.s.ui, mouse).map_or(Pane::Code, |(p, _)| p);
+                    pane_wheel(st, game, pane, n, up);
                 }
-                Tab::Editor => {
-                    let ed = &mut st.s.editor;
-                    ed.scroll = if up {
-                        ed.scroll.saturating_sub(n)
-                    } else {
-                        (ed.scroll + n).min(ed.lines.len().saturating_sub(1))
-                    };
-                    // The cursor and the selection stay where they are; a
-                    // drag in progress follows the pointer onto the new lines.
-                    if st.s.ui.dragging {
-                        let (x, y) = st.s.ui.mouse;
-                        let top = st.s.editor.scroll as f32;
-                        editor_point(st, game, x, y, true, top);
-                    }
-                }
-                Tab::Library => {
-                    let n = st.s.mods.len();
-                    if up {
-                        st.s.ui.library_sel = st.s.ui.library_sel.saturating_sub(1);
-                    } else if n > 0 {
-                        st.s.ui.library_sel = (st.s.ui.library_sel + 1).min(n - 1);
-                    }
-                }
-                Tab::Docs => {
-                    st.s.ui.docs_scroll = if up {
-                        st.s.ui.docs_scroll.saturating_sub(n)
-                    } else {
-                        st.s.ui.docs_scroll + n
-                    };
-                }
+                Tab::Console => pane_wheel(st, game, Pane::Console, n, up),
+                Tab::Editor => pane_wheel(st, game, Pane::Code, n, up),
+                Tab::Library => pane_wheel(st, game, Pane::Library, n, up),
+                Tab::Docs => pane_wheel(st, game, Pane::Docs, n, up),
                 Tab::Settings => {
                     let by = 40.0 * n as f32 / 3.0;
                     let s = &mut st.s.ui.settings_scroll;
@@ -2982,6 +3628,7 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
             if st.s.ui.menu.is_some() {
                 return super::hstudio_menus::menu_text(st, game, &t);
             }
+            end_sizing(st);
             // What opens or keeps suggestions: a name's letters, a dot, a
             // colon, a quote (events in on("...")).
             let suggests = t
@@ -3013,9 +3660,9 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 }
                 Target::Elsewhere => {}
             }
-            match st.s.ui.tab {
-                Tab::Console | Tab::Editor => {}
-                Tab::Library => match t.as_str() {
+            // The Library's letters, as a page or a pane.
+            if key_pane(&st.s.ui) == Some(Pane::Library) {
+                match t.as_str() {
                     " " => {
                         if let Some(m) = st.s.mods.get(st.s.ui.library_sel) {
                             let on = !m.enabled;
@@ -3051,9 +3698,7 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                         super::hstudio_menus::open_library_menu(st, i, at);
                     }
                     _ => {}
-                },
-                Tab::Docs => {}
-                Tab::Settings => {}
+                }
             }
             UiResult::Used
         }
@@ -3234,13 +3879,13 @@ pub(crate) fn menu_pick(st: &mut Studio, game: &mut dyn GameApi, i: usize) -> Ui
 }
 
 /// Opens a file in the editor (unsaved edits in the one open saved first),
-/// unless it is open already.
+/// unless it is open already, the code at the front with the keys.
 pub(crate) fn open_path(st: &mut Studio, game: &mut dyn GameApi, path: &Path) {
     st.save_before_switch(game, Some(path));
     if st.s.editor.path.as_deref() != Some(path) {
         st.open_file(path);
     }
-    st.s.ui.tab = Tab::Editor;
+    show_code(st);
 }
 
 /// Script `i` made a module, unfolded in the script list.
@@ -3435,7 +4080,7 @@ fn finish_naming(st: &mut Studio, game: &mut dyn GameApi) {
     match made {
         Ok(Some(path)) => {
             st.open_file(&path);
-            st.s.ui.tab = Tab::Editor;
+            show_code(st);
         }
         Ok(None) => {}
         Err(e) => {
@@ -3584,7 +4229,7 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
             let main = st.s.mods[i].main.clone();
             st.save_before_switch(game, Some(&main));
             st.open_file(&main);
-            st.s.ui.tab = Tab::Editor;
+            show_code(st);
         }
         Action::EditScratch => {
             let path = st.scratch_path();
@@ -3593,7 +4238,7 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
                 st.s.editor.open(&path, "scratch.lua");
                 st.s.editor.error_line = None;
             }
-            st.s.ui.tab = Tab::Editor;
+            show_code(st);
         }
         Action::SaveFile => {
             // Any file of a mod saves in place; scratch code asks for a name.
@@ -3741,32 +4386,36 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
             }
             accept_suggestion(st, usize::from(i));
         }
-        Action::PanelTab(p) => {
-            let ui = &mut st.s.ui;
-            if ui.panel != p {
-                ui.panel_tab_at = st.s.now;
-            }
-            ui.panel = p;
-            ui.panel_hidden = false;
-            ui.panel_focus = true;
-        }
-        Action::TogglePanel => {
-            let ui = &mut st.s.ui;
-            // As VS Code's: shown but not in use, it takes the keys; in use, it hides.
-            if ui.tab != Tab::Editor {
-                ui.tab = Tab::Editor;
-                ui.panel_hidden = false;
-            } else if ui.panel_hidden || ui.panel_focus {
-                ui.panel_hidden = !ui.panel_hidden;
-            }
-            ui.panel_focus = !ui.panel_hidden;
-            ui.suggest = None;
-        }
-        Action::PanelResize => {}
-        Action::FocusPanel => {
-            st.s.ui.panel_focus = true;
+        Action::PaneTab(p) => focus_pane(st, p),
+        Action::Focus(p) => {
+            focus_pane(st, p);
             st.s.ui.suggest = None;
         }
+        Action::ShowPane(p) => {
+            st.s.ui.tab = Tab::Editor;
+            show_pane(st, p);
+        }
+        Action::HideGroup(p) => hide_group(st, p),
+        Action::ToggleGroup(p) => toggle_group(st, p),
+        Action::DockBar(_) => {}
+        Action::ResetLayout => reset_layout(st),
+        Action::UndoReset => undo_reset(st),
+        Action::ClosePane(p) => {
+            if st.s.ui.dock.close(p) {
+                dock_changed(st);
+            }
+        }
+        Action::MovePane(p, at) => {
+            if st.s.ui.dock.move_pane(p, at) {
+                st.s.ui.shown_at[p.index()] = st.s.now;
+                st.s.ui.dock_tips = false;
+                // A drop ends its drag, so a tab from the top leaves its page
+                // behind, also where its group stays as it was.
+                st.s.ui.dock_drag = None;
+                focus_pane(st, p);
+            }
+        }
+        Action::SizePane(p) => size_pane(st, p),
         Action::Problem(i) => goto_problem(st, i),
         Action::ReloadFile => {
             let ed = &mut st.s.editor;
@@ -3788,6 +4437,16 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
         Action::MenuPick(i) => return menu_pick(st, game, i as usize),
         Action::ModelMenu => open_model_menu(st),
         Action::AgentJump(seq) => super::hstudio_coach::go(st, game, seq),
+        // The notes' or the lesson's chip clicked on the code's strip while
+        // the code is only its strip: the player asked to see the code, so
+        // it comes back with the keys, then shows the note or the step.
+        Action::NextMark | Action::LessonShow
+            if st.s.ui.look.theme().layout == super::hstudio_theme::Layout::Studio
+                && !st.s.ui.dock_front[Pane::Code.index()] =>
+        {
+            show_code(st);
+            super::hstudio_coach::act(st, game, action);
+        }
         Action::MarkOpen(_)
         | Action::MarkClose(_)
         | Action::MarkMore
@@ -3842,6 +4501,9 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
     if st.s.ui.menu.is_some() {
         return menu_key(st, game, key);
     }
+    if sizing_key(st, key, mods) {
+        return UiResult::Used;
+    }
     if key == Key::Menu {
         return super::hstudio_menus::key_menu(st, game);
     }
@@ -3855,8 +4517,19 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
     if key == Key::Escape && st.s.ui.suggest.take().is_some() {
         return UiResult::Used;
     }
-    if key == Key::Escape && st.s.ui.tab == Tab::Editor && st.s.ui.panel_focus {
-        st.s.ui.panel_focus = false;
+    // Esc lets go of what the button holds on the panes: a bar stays where
+    // it is, and a tab, lifted or not yet, moves nothing.
+    if key == Key::Escape && st.s.ui.dock_drag.is_some() {
+        end_dock_drag(st);
+        return UiResult::Used;
+    }
+    // Esc gives the code the keys (and its place at the front) back.
+    if key == Key::Escape
+        && st.s.ui.tab == Tab::Editor
+        && st.s.ui.look.theme().layout == super::hstudio_theme::Layout::Studio
+        && key_pane(&st.s.ui) != Some(Pane::Code)
+    {
+        show_code(st);
         return UiResult::Used;
     }
     if !mods.ctrl && suggest_key(st, key) {
@@ -3869,7 +4542,10 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
     match key {
         Key::Escape | Key::Toggle => return UiResult::Close,
         Key::Char('`' | 'j') if mods.ctrl => {
-            return act(st, game, Action::TogglePanel);
+            return act(st, game, Action::ToggleGroup(Pane::Console));
+        }
+        Key::Char('b') if mods.ctrl => {
+            return act(st, game, Action::ToggleGroup(Pane::Scripts));
         }
         Key::Char(' ') if mods.ctrl => {
             refresh_suggest(st);
@@ -3888,46 +4564,50 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
         _ => {}
     }
     let open = st.s.ui.suggest.is_some();
-    match target(&st.s.ui) {
-        Target::Console => console_key(st, game, key, mods),
-        Target::Editor => editor_key(st, game, key, mods),
-        Target::Agent => agent_key(st, game, key, mods),
-        Target::Elsewhere if st.s.ui.tab == Tab::Editor => problems_key(st, key),
-        Target::Elsewhere => {}
+    match key_pane(&st.s.ui) {
+        Some(Pane::Code) => editor_key(st, game, key, mods),
+        Some(Pane::Console) => console_key(st, game, key, mods),
+        Some(Pane::Agent) => agent_key(st, game, key, mods),
+        Some(Pane::Problems) => problems_key(st, key),
+        Some(Pane::Library) => library_key(st, game, key),
+        Some(Pane::Docs) => docs_key(st, key),
+        Some(Pane::Scripts) => {}
+        None if st.s.ui.tab == Tab::Settings => settings_key(st, key),
+        None => {}
     }
     // Deleting keeps the suggestions in step with the word.
     if open && matches!(key, Key::Backspace | Key::Delete) {
         refresh_suggest(st);
     }
-    match st.s.ui.tab {
-        Tab::Console | Tab::Editor => {}
-        Tab::Library => library_key(st, game, key),
-        Tab::Docs => {
-            let page = st.s.ui.page.max(1);
-            let s = &mut st.s.ui.docs_scroll;
-            match key {
-                Key::Up => *s = s.saturating_sub(1),
-                Key::Down => *s += 1,
-                Key::PageUp => *s = s.saturating_sub(page),
-                Key::PageDown => *s += page,
-                Key::Home => *s = 0,
-                _ => {}
-            }
-        }
-        Tab::Settings => {
-            let s = &mut st.s.ui.settings_scroll;
-            match key {
-                Key::Up => *s -= 40.0,
-                Key::Down => *s += 40.0,
-                Key::PageUp => *s -= 320.0,
-                Key::PageDown => *s += 320.0,
-                Key::Home => *s = 0.0,
-                _ => {}
-            }
-            *s = s.max(0.0);
-        }
-    }
     UiResult::Used
+}
+
+/// The Docs' keys: they scroll, a line or a page at a time.
+fn docs_key(st: &mut Studio, key: Key) {
+    let page = st.s.ui.pages[Pane::Docs.index()].max(1);
+    let s = &mut st.s.ui.docs_scroll;
+    match key {
+        Key::Up => *s = s.saturating_sub(1),
+        Key::Down => *s += 1,
+        Key::PageUp => *s = s.saturating_sub(page),
+        Key::PageDown => *s += page,
+        Key::Home => *s = 0,
+        _ => {}
+    }
+}
+
+/// Settings' keys: they scroll it.
+fn settings_key(st: &mut Studio, key: Key) {
+    let s = &mut st.s.ui.settings_scroll;
+    match key {
+        Key::Up => *s -= 40.0,
+        Key::Down => *s += 40.0,
+        Key::PageUp => *s -= 320.0,
+        Key::PageDown => *s += 320.0,
+        Key::Home => *s = 0.0,
+        _ => {}
+    }
+    *s = s.max(0.0);
 }
 
 /// The console's input line run, and emptied for the next.
@@ -3972,8 +4652,8 @@ fn console_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
                 st.s.ui.input.insert(&rest);
             }
         }
-        Key::PageUp => ui.log_scroll += ui.page.max(1),
-        Key::PageDown => ui.log_scroll = ui.log_scroll.saturating_sub(ui.page.max(1)),
+        Key::PageUp => ui.log_scroll += ui.pages[Pane::Console.index()].max(1),
+        Key::PageDown => ui.log_scroll = ui.log_scroll.saturating_sub(ui.pages[Pane::Console.index()].max(1)),
         Key::Char('l') if mods.ctrl => st.s.log.clear(),
         Key::Char('v') if mods.ctrl => {
             let clip = game.clipboard();
@@ -4372,7 +5052,7 @@ fn goto_problem(st: &mut Studio, i: usize) {
         let chars = ed.lines[row][..col].chars().count();
         ed.click(row, chars, false);
         st.s.ui.problem_sel = i;
-        st.s.ui.panel_focus = false;
+        show_code(st);
     }
 }
 
@@ -4444,7 +5124,7 @@ fn agent_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
 }
 
 fn editor_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
-    let page = st.s.ui.page.max(1) as isize;
+    let page = st.s.ui.pages[Pane::Code.index()].max(1) as isize;
     if mods.ctrl {
         match key {
             Key::Char('s') => return st.save_editor(game),
