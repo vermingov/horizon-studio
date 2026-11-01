@@ -38,6 +38,8 @@ pub struct FakeGame {
     pub no_marks: bool,
     /// The game can't draw images as such (no `dp_image`).
     pub no_images: bool,
+    /// The key in the atlas (its place there) of each image drawn.
+    pub image_keys: Vec<u32>,
     /// ViaHorizon, as the bridge reports it (the real one is the game's).
     pub via: ViaInfo,
     /// The player's pose (`pose`), if the game says.
@@ -109,6 +111,7 @@ impl FakeGame {
             shades: Vec::new(),
             no_marks: false,
             no_images: false,
+            image_keys: Vec::new(),
             via: ViaInfo {
                 enabled: true,
                 version: "auto".into(),
@@ -279,6 +282,7 @@ impl GameApi for FakeGame {
         if self.no_images {
             return false;
         }
+        self.image_keys.push(image.key);
         let first: String = image.rgba.iter().take(4).map(|b| format!("{b:02x}")).collect();
         self.drawn.push(format!(
             "image {}x{} #{first} {r:?} from {src:?} {argb:08x}",

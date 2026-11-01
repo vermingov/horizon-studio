@@ -674,9 +674,14 @@ pub fn draw_drawings(rbx: &Rbx, game: &mut dyn GameApi, textures: &mut ImageCach
 /// the game draws images, else as blocks of colour.
 #[derive(Default)]
 pub struct ImageCache {
+    /// Images decoded, and workspace files read with the key in `items` of
+    /// the image they hold; the least recently drawn first (`keep`).
     items: Vec<(u64, Rc<super::hstudio_meshes::Texture>)>,
-    /// Workspace files read, with the key in `items` of the image they hold.
     files: Vec<(PathBuf, Rc<Vec<u8>>, u64)>,
+    /// The key each image had in the game's atlas (its place there), by its
+    /// key in `items`: decoded again, it takes the same one, so the atlas
+    /// finds it where it is rather than placing it anew.
+    places: std::collections::HashMap<u64, u32>,
     /// Large images scaled down for the game's atlas, by the image's key.
     small: Vec<(u32, Rc<super::hstudio_meshes::Texture>)>,
     /// This frame (the studio's clock), and the images it put in the
@@ -701,6 +706,31 @@ const ATLAS_SIDE: u32 = 256;
 /// they share with the interface's glyphs; an image past them draws in
 /// blocks.
 const ATLAS_TEXELS: usize = 1 << 18;
+/// The images kept decoded and the workspace files kept read: as many as a
+/// big GUI draws in a frame (a shop's or an inventory's icons), within this
+/// many pixels and bytes in all. The least recently drawn go first.
+const KEPT: usize = 256;
+const KEPT_TEXELS: usize = 1 << 22;
+const KEPT_BYTES: usize = 32 << 20;
+/// The images whose place in the atlas is remembered.
+const PLACES: usize = 4096;
+
+/// Moves entry `i` of `kept` to its end (the most recently used) and
+/// returns it.
+fn touch<T>(kept: &mut Vec<T>, i: usize) -> &T {
+    let e = kept.remove(i);
+    kept.push(e);
+    &kept[kept.len() - 1]
+}
+
+/// Drops the least recently used of `kept` (its front) while it has more
+/// than KEPT entries or more than `budget` of `size` in all; the newest stays.
+fn keep<T>(kept: &mut Vec<T>, budget: usize, size: impl Fn(&T) -> usize) {
+    let mut total: usize = kept.iter().map(&size).sum();
+    while kept.len() > 1 && (kept.len() > KEPT || total > budget) {
+        total -= size(&kept.remove(0));
+    }
+}
 
 impl ImageCache {
     /// A workspace file's bytes (getcustomasset's images), read once.
@@ -714,15 +744,14 @@ impl ImageCache {
         if !p.starts_with(workspace) || rel.contains("..") {
             return None;
         }
-        if let Some((_, b, key)) = self.files.iter().find(|(q, _, _)| *q == p) {
+        if let Some(i) = self.files.iter().position(|(q, _, _)| *q == p) {
+            let (_, b, key) = touch(&mut self.files, i);
             return Some((b.clone(), *key));
         }
         let bytes = Rc::new(std::fs::read(&p).ok().filter(|b| b.len() <= MAX_FILE)?);
         let key = self.key(&bytes);
-        if self.files.len() >= 32 {
-            self.files.remove(0);
-        }
         self.files.push((p, bytes.clone(), key));
+        keep(&mut self.files, KEPT_BYTES, |(_, b, _)| b.len());
         Some((bytes, key))
     }
 
@@ -750,16 +779,20 @@ impl ImageCache {
         self.decoded(key, bytes)
     }
 
-    /// The image of `bytes`, found by their `key`, decoded once.
+    /// The image of `bytes`, found by their `key`, decoded once, in the
+    /// place in the game's atlas it had.
     fn decoded(&mut self, key: u64, bytes: &[u8]) -> Option<Rc<super::hstudio_meshes::Texture>> {
-        if let Some((_, t)) = self.items.iter().find(|(k, _)| *k == key) {
-            return Some(t.clone());
+        if let Some(i) = self.items.iter().position(|(k, _)| *k == key) {
+            return Some(touch(&mut self.items, i).1.clone());
         }
-        let t = Rc::new(super::hstudio_meshes::decode_png(bytes).ok()?);
-        if self.items.len() >= 32 {
-            self.items.remove(0);
+        let mut t = super::hstudio_meshes::decode_png(bytes).ok()?;
+        if self.places.len() >= PLACES && !self.places.contains_key(&key) {
+            self.places.clear();
         }
+        t.key = *self.places.entry(key).or_insert(t.key);
+        let t = Rc::new(t);
         self.items.push((key, t.clone()));
+        keep(&mut self.items, KEPT_TEXELS, |(_, t)| (t.w * t.h) as usize);
         Some(t)
     }
 

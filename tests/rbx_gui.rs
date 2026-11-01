@@ -2098,6 +2098,55 @@ fn an_image_is_found_once_however_it_is_cut() {
 }
 
 #[test]
+fn a_grid_of_many_images_is_read_once_and_keeps_its_places_in_the_atlas() {
+    // A shop's grid of 40 icons, each its own file, drawn every frame: each
+    // file is read, hashed and decoded once, and each image is drawn from
+    // the same place in the game's atlas (its key) frame after frame.
+    let mut game = FakeGame::new("rbx-grid");
+    let mut st = studio(&mut game);
+    let ws = st.s.rbx.workspace_dir.clone();
+    std::fs::create_dir_all(&ws).unwrap();
+    for i in 0..40u8 {
+        std::fs::write(ws.join(format!("icon{i}.png")), png(4, 4, &[[i, 9, 9, 255]; 16])).unwrap();
+    }
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        for i = 0, 39 do
+            local icon = Instance.new("ImageLabel", gui)
+            icon.Position = UDim2.fromOffset(20 * (i % 10), 20 * math.floor(i / 10))
+            icon.Size = UDim2.fromOffset(16, 16)
+            icon.Image = getcustomasset("icon" .. i .. ".png")
+        end
+    "#;
+    load(&mut game, &mut st, "grid", src, 0.6);
+    let mut places = Vec::new();
+    for _ in 0..3 {
+        run_for(&mut st, &mut game, 0.05);
+        game.image_keys.clear();
+        hud(&mut st, &mut game);
+        assert_eq!(game.image_keys.len(), 40);
+        if places.is_empty() {
+            places = game.image_keys.clone();
+        }
+        assert_eq!(game.image_keys, places, "the same places in the atlas");
+    }
+    assert_eq!(st.s.rbx.screen_images.hashed, 40);
+    // Even more files than are kept: each image comes back to its place.
+    let mut cache = horizon_studio::game::hstudio_sunc::ImageCache::default();
+    for i in 0..300u16 {
+        let px = [(i % 256) as u8, (i / 256) as u8, 1, 255];
+        std::fs::write(ws.join(format!("many{i}.png")), png(1, 1, &[px])).unwrap();
+    }
+    let keys = |cache: &mut horizon_studio::game::hstudio_sunc::ImageCache| -> Vec<u32> {
+        (0..300)
+            .map(|i| cache.file_image(&ws, &format!("many{i}.png")).flatten().unwrap().key)
+            .collect()
+    };
+    let first = keys(&mut cache);
+    assert_eq!(keys(&mut cache), first);
+}
+
+#[test]
 fn large_images_go_to_the_atlas_smaller_and_within_a_share() {
     // The game's atlas is shared with the interface's glyphs: an image
     // goes there at most 256 pixels a side, and a frame's images take at
