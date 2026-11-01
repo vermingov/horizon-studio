@@ -1335,7 +1335,7 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     complete(st, &mut typing);
     if !seen || hands_off {
         // What the player sees stays put: lines put in above the view move it with them.
-        keep_view(st, from, rows, seen && hands_off);
+        keep_view(st, &typing, rows, seen && hands_off);
     }
     let mut result = land(st, &typing, None);
     if save {
@@ -1350,23 +1350,45 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     Ok(result)
 }
 
-/// What the player sees stays put through a change put in at once that
-/// began at place `from` (row, byte) of a text of `rows` lines: lines put
-/// in or taken out above the view move it with them, and the view and the
-/// caret as drawn move as far, so nothing glides and a drag held goes on in
-/// the lines under the pointer. In a view the player holds on screen
-/// (`held`: they hold a drag, press in this frame, or changed the code a
-/// moment ago), a change that begins at the very start of the view's first
-/// line puts its lines in above the text under the pointer, and moves it
-/// too. In one nobody sees, a change that begins on the view's first line
-/// leaves the view there, so what it put in is in view when the player
-/// looks again: lines put in at the top of a script, or the script written
-/// anew.
-fn keep_view(st: &mut Studio, from: (usize, usize), rows: usize, held: bool) {
+/// What the player sees stays put through a change put in at once (`t`: it
+/// replaced the text from `from` to `old_to`, rows and bytes of a text of
+/// `rows` lines, and the text it put in ends at `at` now). A change that
+/// begins above the view and ends above its first line, or in it, moves
+/// the view as far as the lines it put in or took out, and the view and the
+/// caret as drawn move as far, so the text after it stays where it is
+/// drawn: nothing glides, and a drag held goes on in the lines under the
+/// pointer. One that takes in all the view showed (nothing but blank lines
+/// of it is left after the change) leaves the view at its line, by number:
+/// nothing of what it showed is left to keep in place, and the lines the
+/// change put in or took out may be thousands. In a view the player holds
+/// on screen (`held`: they hold a drag, press in this frame, or changed the
+/// code a moment ago), a change that begins at the very start of the
+/// view's first line counts as one above it: lines put in there go in
+/// above the text under the pointer. In one nobody sees, a change that
+/// begins on the view's first line leaves the view there, so what it put in
+/// is in view when the player looks again: lines put in at the top of a
+/// script, or the script written anew.
+fn keep_view(st: &mut Studio, t: &Typing, rows: usize, held: bool) {
+    let page = code_page(&st.s.ui).max(1);
     let ed = &mut st.s.editor;
+    let (from, old_to, at) = (t.from, t.old_to, t.at);
     let above = from.0 < ed.scroll || (held && from == (ed.scroll, 0));
     if !above {
         return;
+    }
+    if old_to > (ed.scroll, 0) {
+        // It ends in the view or below it: what the view showed after its
+        // end (now after `at`), down to the view's last row.
+        let shown = (ed.scroll + page).saturating_sub(old_to.0);
+        let kept = (at.0..(at.0 + shown).min(ed.lines.len())).any(|r| {
+            let line = &ed.lines[r];
+            let start = if r == at.0 { at.1.min(line.len()) } else { 0 };
+            !line[start..].trim().is_empty()
+        });
+        if !kept {
+            ed.scroll = ed.scroll.min(ed.lines.len() - 1);
+            return;
+        }
     }
     let moved = ed.lines.len() as isize - rows as isize;
     let scroll = (ed.scroll as isize + moved).clamp(0, ed.lines.len() as isize - 1) as usize;
@@ -3627,7 +3649,7 @@ pub fn sync_disk(st: &mut Studio) -> bool {
         // drag's ends in their places in the text.)
         complete(st, &mut typing);
         reloaded(st, &typing);
-        keep_view(st, from, count, held);
+        keep_view(st, &typing, count, held);
         return true;
     }
     // Where it changed, in view, unless the player moved the cursor since
