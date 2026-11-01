@@ -1,4 +1,6 @@
-# Horizon Studio
+<p align="center">
+  <img src="docs/brand/banner.png" alt="Horizon Studio: Lua mods for Horizon, written and run inside the game" width="100%">
+</p>
 
 Make mods for [Horizon](https://github.com/horizon-rust/horizon) in Lua, inside the game. Horizon Studio is a
 native Horizon mod that adds:

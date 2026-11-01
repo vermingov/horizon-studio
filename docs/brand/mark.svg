@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="112 112 288 288" width="288" height="288">
+  <title>Horizon Studio</title>
+    <!-- An H: its crossbar the horizon, the sun rising between its stems -->
+  <g fill="currentColor">
+    <rect x="124" y="124" width="52" height="264" rx="4"/>
+    <rect x="336" y="124" width="52" height="264" rx="4"/>
+    <rect x="170" y="272" width="172" height="40"/>
+  </g>
+  <path d="M190 260 A66 66 0 0 1 322 260 Z" fill="#9a86ff"/>
+</svg>
