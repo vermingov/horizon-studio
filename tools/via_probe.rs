@@ -13,6 +13,11 @@ use horizon_protocol::hstudio_via_net as wire;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// The client information a join sends: view distance 8, as the game's own test.
+fn info() -> horizon_protocol::packets::configuration::ClientInformation {
+    horizon_protocol::packets::configuration::ClientInformation::new(8)
+}
+
 fn fail(what: String) -> ! {
     println!("FAILED {what}");
     for line in via::log().iter().rev().take(25).rev() {
@@ -23,7 +28,7 @@ fn fail(what: String) -> ! {
 
 fn join(address: &str, name: &str) -> Result<String, String> {
     let lang = Arc::new(horizon_protocol::text::Language::default());
-    let session = Session::connect(address, name, None, 8, lang);
+    let session = Session::connect(address, name, None, info(), lang, std::path::PathBuf::new());
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(90) {
         for e in session.poll() {
@@ -84,7 +89,7 @@ fn main() {
         // in instead, as the game would with the player's session.
         let hashes = Arc::new(Mutex::new(Vec::<String>::new()));
         let lang = Arc::new(horizon_protocol::text::Language::default());
-        let session = Session::connect(online, "Tester", None, 8, lang);
+        let session = Session::connect(online, "Tester", None, info(), lang, std::path::PathBuf::new());
         let seen = hashes.clone();
         wire::set_join(move |hash| {
             seen.lock().unwrap().push(hash.to_owned());
@@ -111,7 +116,7 @@ fn main() {
         println!("SIGNED-IN {:?}", hashes.lock().unwrap());
         drop(session);
         // Not signed in: the join ends with Horizon's reason.
-        let refused = Session::connect(online, "Tester", None, 8, Arc::new(Default::default()));
+        let refused = Session::connect(online, "Tester", None, info(), Arc::new(Default::default()), std::path::PathBuf::new());
         let start = Instant::now();
         'wait: while start.elapsed() < Duration::from_secs(60) {
             for e in refused.poll() {
