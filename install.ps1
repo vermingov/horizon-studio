@@ -117,17 +117,106 @@ try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch { }
 
-$launcher = $env:HORIZON_LAUNCHER
-if (-not $launcher) {
-    $found = Get-Command horizon-launcher -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($found) {
-        $launcher = $found.Path
-    } elseif ($env:LOCALAPPDATA) {
-        foreach ($candidate in @(
-                [IO.Path]::Combine($env:LOCALAPPDATA, 'Horizon', 'horizon-launcher.exe'),
-                [IO.Path]::Combine($env:LOCALAPPDATA, 'Programs', 'Horizon', 'horizon-launcher.exe'))) {
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) { $launcher = $candidate; break }
+# The launcher comes as a zip that people unpack wherever they like (and it updates itself in
+# place), so it is looked for: HORIZON_LAUNCHER, the PATH, the launcher running now, the
+# shortcuts to it (the Desktop's and the Start menu's), then the folders people unpack into, a
+# few levels down. Failing those, the person is asked where it is.
+function Test-Launcher([string]$path) {
+    if (-not $path) { return $null }
+    $path = $path.Trim().Trim('"')
+    if (Test-Path -LiteralPath $path -PathType Container) {
+        $inside = Join-Path $path 'horizon-launcher.exe'
+        if (Test-Path -LiteralPath $inside -PathType Leaf) { return $inside }
+        $deeper = Get-ChildItem -LiteralPath $path -Filter 'horizon-launcher*.exe' -Recurse -Depth 3 -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($deeper) { return $deeper.FullName }
+        return $null
+    }
+    if (Test-Path -LiteralPath $path -PathType Leaf) { return (Resolve-Path -LiteralPath $path).Path }
+    return $null
+}
+
+function Find-Launcher {
+    $found = Test-Launcher $env:HORIZON_LAUNCHER
+    if ($found) { return $found }
+    $onPath = Get-Command horizon-launcher -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($onPath) { return $onPath.Path }
+    # The launcher open now.
+    $running = Get-Process -Name 'horizon-launcher*' -ErrorAction SilentlyContinue | Where-Object { $_.Path } | Select-Object -First 1
+    if ($running) { return $running.Path }
+    # Shortcuts: the launcher's own (an instance's Play shortcut runs the launcher) and any the
+    # person made.
+    $shell = $null
+    try { $shell = New-Object -ComObject WScript.Shell } catch { }
+    if ($shell) {
+        $places = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'),
+            [Environment]::GetFolderPath('StartMenu'), [Environment]::GetFolderPath('CommonStartMenu'),
+            [Environment]::GetFolderPath('Programs')) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+        foreach ($place in $places) {
+            foreach ($lnk in Get-ChildItem -LiteralPath $place -Filter '*.lnk' -Recurse -Depth 2 -File -ErrorAction SilentlyContinue) {
+                try {
+                    $target = $shell.CreateShortcut($lnk.FullName).TargetPath
+                    if ($target -and ([IO.Path]::GetFileName($target) -like 'horizon-launcher*.exe') -and (Test-Path -LiteralPath $target -PathType Leaf)) {
+                        return $target
+                    }
+                } catch { }
+            }
         }
+    }
+    # The folders people unpack into.
+    $userProfile = $env:USERPROFILE
+    $roots = @(
+        [IO.Path]::Combine($env:LOCALAPPDATA, 'Horizon'),
+        [IO.Path]::Combine($env:LOCALAPPDATA, 'Programs'),
+        (Join-Path $userProfile 'Downloads'),
+        [Environment]::GetFolderPath('Desktop'),
+        [Environment]::GetFolderPath('MyDocuments'),
+        $env:LOCALAPPDATA,
+        $env:APPDATA,
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)},
+        $userProfile
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+    foreach ($root in $roots) {
+        $depth = if ($root -eq $userProfile) { 2 } else { 4 }
+        $hit = Get-ChildItem -LiteralPath $root -Filter 'horizon-launcher*.exe' -Recurse -Depth $depth -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\(versions|cache|\.horizon-studio)\\' } | Select-Object -First 1
+        if ($hit) { return $hit.FullName }
+    }
+    # The roots of the drives (C:\Horizon, D:\Games\Horizon...).
+    foreach ($drive in Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue) {
+        $hit = Get-ChildItem -LiteralPath $drive.Root -Filter 'horizon-launcher*.exe' -Recurse -Depth 2 -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($hit) { return $hit.FullName }
+    }
+    # Asked, when there is someone to ask.
+    if ([Environment]::UserInteractive -and -not $env:CI) {
+        Say 'Could not find Horizon''s launcher (horizon-launcher.exe).'
+        for ($i = 0; $i -lt 3; $i++) {
+            $answer = Read-Host 'Paste the path to horizon-launcher.exe or its folder (Enter to stop)'
+            if (-not $answer) { break }
+            $found = Test-Launcher $answer
+            if ($found) { return $found }
+            Say "No horizon-launcher.exe at $answer."
+        }
+    }
+    return $null
+}
+
+$launcher = Find-Launcher
+if ($launcher) { Say "Horizon's launcher: $launcher" }
+
+# The launcher open while this installs would hold the files it changes: asked to close first.
+function Wait-LauncherClosed {
+    $open = @(Get-Process -Name 'horizon-launcher*' -ErrorAction SilentlyContinue)
+    if ($open.Count -eq 0) { return }
+    if (-not [Environment]::UserInteractive -or $env:CI) {
+        Say 'Horizon''s launcher is open: close it if the install fails.'
+        return
+    }
+    Say 'Horizon''s launcher is open. Close it (and the game), then press Enter.'
+    for ($i = 0; $i -lt 5; $i++) {
+        [void](Read-Host)
+        if (@(Get-Process -Name 'horizon-launcher*' -ErrorAction SilentlyContinue).Count -eq 0) { return }
+        Say 'It is still open: close it from its window (or the system tray), then press Enter.'
     }
 }
 
@@ -330,8 +419,9 @@ function Install-ByCompiling {
 
 try {
     if (-not $launcher) {
-        throw 'horizon-launcher not found: install Horizon''s launcher, or set HORIZON_LAUNCHER to horizon-launcher.exe.'
+        throw 'Horizon''s launcher (horizon-launcher.exe) was not found. Get it from https://github.com/horizon-rust/horizon/releases?q=launcher-v (horizon-launcher-windows-x64.zip), unpack it and open it once, then run this again; or set HORIZON_LAUNCHER to the path of horizon-launcher.exe.'
     }
+    Wait-LauncherClosed
     # The last value is Install-Prebuilt's answer.
     if (@(Install-Prebuilt)[-1] -ne $true) { Install-ByCompiling }
 } catch {
