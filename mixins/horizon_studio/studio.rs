@@ -3394,17 +3394,6 @@ impl Studio {
     /// only when open_script would).
     fn do_requests(&mut self, game: &mut dyn GameApi, agent: bool) {
         let mut requests = std::mem::take(&mut self.s.requests);
-        // Another file opening: an agent's edit being typed in is all in first.
-        let opens = |st: &Studio, r: &Request| match r {
-            Request::Edit(id, file) => st
-                .edit_path(id, file.as_deref())
-                .is_some_and(|p| st.s.editor.path.as_deref() != Some(p.as_path())),
-            Request::New(..) => true,
-            Request::Reload(_) => false,
-        };
-        if requests.iter().any(|r| opens(self, r)) {
-            super::hstudio_coach::finish_typing(self, "the console opened another file");
-        }
         if agent {
             requests.retain(|r| {
                 let what = match r {
@@ -3418,6 +3407,18 @@ impl Studio {
                 }
                 why.is_none()
             });
+        }
+        // Another file opening: an agent's edit being typed in is all in
+        // first (not for a request refused above: nothing opens then).
+        let opens = |st: &Studio, r: &Request| match r {
+            Request::Edit(id, file) => st
+                .edit_path(id, file.as_deref())
+                .is_some_and(|p| st.s.editor.path.as_deref() != Some(p.as_path())),
+            Request::New(..) => true,
+            Request::Reload(_) => false,
+        };
+        if requests.iter().any(|r| opens(self, r)) {
+            super::hstudio_coach::finish_typing(self, "the console opened another file");
         }
         for r in requests {
             match r {

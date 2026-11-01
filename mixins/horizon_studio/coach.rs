@@ -1210,12 +1210,15 @@ fn say(st: &mut Studio, by: &By, in_run: bool, text: impl Into<String>, jump: Op
     st.s.ui.agent.say_jump(AgentLineKind::Action, text, jump, now);
 }
 
-/// Whether the unsaved edits in the editor's file are an agent's alone.
+/// Whether the unsaved edits in the editor's file are an agent's alone
+/// (one still being typed in counts, over none of the player's).
 fn agents_only(st: &Studio) -> bool {
     let ed = &st.s.editor;
-    st.s.ui
-        .coach
-        .unsaved
+    let c = &st.s.ui.coach;
+    if let Some(t) = c.typing.as_ref().filter(|t| !t.reload && t.rev == ed.revision) {
+        return !t.player_edits;
+    }
+    c.unsaved
         .as_ref()
         .is_some_and(|u| ed.path.as_ref() == Some(&u.path) && u.rev == ed.revision && !u.player_edits)
 }

@@ -3195,22 +3195,27 @@ fn the_consoles_edit_finds_the_edit_whole() {
     assert_eq!((&r["ok"], &r["cut_short"]), (&json!(true), &Json::Null), "{r}");
     assert_eq!(st.s.editor.lines[1], "print('typed in whole')");
     // An agent's run_lua (run_chunk, out of the history), the player paused:
-    // its edit is all in, then edit() opens nothing over it, unsaved.
+    // edit() and new() open nothing over the edit's unsaved text, so the
+    // edit goes on typing in, whole, and isn't told it was cut short.
     let (mut game, mut st, id) = mid_edit("coach-mid-agent-console");
     let path = st.s.editor.path.clone().unwrap();
     st.s.now += 5.0;
-    let lines = st.run_chunk(&mut game, "edit('hello')", false);
-    let said: Vec<&String> = lines.iter().map(|(_, t)| t).collect();
-    assert!(
-        said.iter().any(|t| t.contains("your edits to greet.lua aren't saved")),
-        "{said:?}"
-    );
-    assert_eq!(st.s.editor.title, "greet.lua");
+    for code in ["edit('hello')", "new('fresh')"] {
+        let lines = st.run_chunk(&mut game, code, false);
+        let said: Vec<&String> = lines.iter().map(|(_, t)| t).collect();
+        assert!(
+            said.iter().any(|t| t.contains("your edits to greet.lua aren't saved")),
+            "{code}: {said:?}"
+        );
+        assert_eq!(st.s.editor.title, "greet.lua", "{code}");
+        assert!(st.s.ui.coach.typing.is_some(), "{code}: still typing in");
+    }
+    assert!(!game.mods_dir().join("fresh.lua").exists(), "nothing made");
+    let r = typed_in(&mut st, &mut game, id);
+    assert_eq!((&r["ok"], &r["cut_short"]), (&json!(true), &Json::Null), "{r}");
     assert_eq!(st.s.editor.lines[1], "print('typed in whole')");
     assert!(st.s.editor.dirty, "unsaved");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), GREET, "nothing saved");
-    let r = result_of(&mut st, &mut game, id);
-    assert_eq!(r["ok"], true, "{r}");
 }
 
 #[test]
