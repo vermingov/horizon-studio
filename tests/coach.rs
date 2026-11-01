@@ -1419,6 +1419,143 @@ fn a_change_over_all_the_view_shows_leaves_the_view_at_its_line() {
 }
 
 #[test]
+fn a_change_over_all_the_view_shows_that_ends_above_its_line_keeps_the_view_full() {
+    // As above, a change comes in at once that takes in every line the view
+    // shows, but the text it leaves is shorter than the view's line (51 of
+    // 80): lines 2-80 written anew as three lines, or as thirty, or the
+    // script as four. The view goes no further than the new text's last
+    // page, so the code shows it (all of it, from the top, when it is
+    // shorter than a page, with the cursor) rather than the file's last
+    // line alone; and a press in the change's frame lands on the line drawn
+    // under it now. So whether the player holds the view (they typed, saved
+    // or not, a moment ago, drag a selection, or press in the change's
+    // frame) or nobody sees it (the studio closed, the Console tab), and
+    // whether an agent's edit or a write on disk makes the change. The
+    // studio draws while it is open, as in the game.
+    use horizon_studio::game::hstudio_ui::Pane;
+    let src: String = (1..=80).map(|i| format!("local v{i} = {i}\n")).collect();
+    let three = "alpha\nbeta\ngamma";
+    let thirty = (1..=30).map(|i| format!("w{i}")).collect::<Vec<_>>().join("\n");
+    let script = "alpha\nbeta\ngamma\ndelta\n";
+    for (hold, how) in [
+        ("closed", "script"),
+        ("closed", "thirty"),
+        ("away", "edit"),
+        ("away", "disk"),
+        ("press", "edit"),
+        ("typed", "edit"),
+        ("saved", "disk"),
+        ("drag", "disk"),
+    ] {
+        let case = format!("{hold}, {how}");
+        let (mut game, mut st) = editing(&format!("coach-short-over-{hold}-{how}"), "so", &src);
+        st.s.editor.click(55, 0, false);
+        st.s.editor.scroll = 50;
+        for _ in 0..10 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, 50, "{case}: the view at line 51");
+        let page = st.s.ui.pages[Pane::Code.index()];
+        let (x, y) = text_at(&game, "v52");
+        match hold {
+            // The player types at line 56, and saves or not.
+            "typed" | "saved" => {
+                handle(&mut st, &mut game, Input::Text("x".into()));
+                game_frame(&mut st, &mut game);
+                if hold == "saved" {
+                    handle(&mut st, &mut game, key(Key::Char('s'), CTRL));
+                }
+            }
+            // A drag from line 52, held.
+            "drag" => {
+                handle(&mut st, &mut game, Input::Mouse(x + 1.0, y + 2.0));
+                handle(&mut st, &mut game, Input::Button { left: true, down: true });
+                game_frame(&mut st, &mut game);
+            }
+            "away" => {
+                st.s.ui.tab = Tab::Console;
+                game_frame(&mut st, &mut game);
+            }
+            "closed" => st.s.ui.open = false,
+            _ => {}
+        }
+        let new = match how {
+            "script" => script.to_owned(),
+            "thirty" => format!("local v1 = 1\n{thirty}\n"),
+            _ => format!("local v1 = 1\n{three}\n"),
+        };
+        if how == "disk" {
+            std::fs::write(game.mods_dir().join("so.lua"), &new).unwrap();
+        } else {
+            let edit = match how {
+                "script" => json!({ "text": script }),
+                "thirty" => json!({ "start_line": 2, "end_line": 80, "new_text": thirty }),
+                _ => json!({ "start_line": 2, "end_line": 80, "new_text": three }),
+            };
+            // The edit's frame, in the game's order: the studio draws while
+            // it is open, its frame runs, the input is noted, the request
+            // comes, then the input (a click on line 52).
+            if st.s.ui.open {
+                redraw(&mut st, &mut game);
+            }
+            run_for(&mut st, &mut game, 0.05);
+            let press = [
+                Input::Mouse(x + 1.0, y + 2.0),
+                Input::Button { left: true, down: true },
+                Input::Button {
+                    left: true,
+                    down: false,
+                },
+            ];
+            let inputs: &[Input] = if hold == "press" { &press } else { &[] };
+            coach::input_coming(&mut st, inputs);
+            let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+            assert_eq!(r["animated"], false, "{case}: {r}");
+            for input in inputs {
+                handle(&mut st, &mut game, input.clone());
+            }
+        }
+        // The player looks again.
+        if hold == "closed" {
+            st.s.ui.open = true;
+            st.s.ui.opened_at = st.s.now;
+        } else if hold == "away" {
+            st.s.ui.tab = Tab::Editor;
+        }
+        for _ in 0..20 {
+            game_frame(&mut st, &mut game);
+        }
+        let ed = &st.s.editor;
+        assert_eq!(ed.text(), Editor::normal(&new), "{case}");
+        assert_eq!(
+            ed.scroll,
+            ed.lines.len().saturating_sub(page),
+            "{case}: the view on the new text's last page"
+        );
+        let shown: &[&str] = if how == "thirty" { &["w30"] } else { &["alpha", "gamma"] };
+        for word in shown {
+            text_at(&game, word);
+        }
+        if how != "thirty" {
+            assert!(st.s.ui.caret_at.is_some(), "{case}: the caret in view");
+        }
+        if hold == "press" {
+            assert_eq!(ed.lines[ed.row], "alpha", "{case}: the line drawn under the press");
+        }
+        if hold == "drag" {
+            handle(
+                &mut st,
+                &mut game,
+                Input::Button {
+                    left: true,
+                    down: false,
+                },
+            );
+        }
+    }
+}
+
+#[test]
 fn a_script_written_anew_under_a_hold_at_its_top_leaves_the_view_there() {
     // A view at the top of a script, the player's (a press in the change's
     // frame, a drag held, or typing and saving a moment ago), and the script

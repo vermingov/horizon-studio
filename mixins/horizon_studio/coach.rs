@@ -1424,40 +1424,50 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
 /// pointer. One that takes in all the view showed (nothing but blank lines
 /// of it is left after the change) leaves the view at its line, by number:
 /// nothing of what it showed is left to keep in place, and the lines the
-/// change put in or took out may be thousands. In a view the player holds
-/// on screen by the code itself (`held`, `code_held`: a selection dragged
-/// in it, a press on it in this frame, their change to it a moment ago), a
-/// change that begins at the very start of the view's first line counts as
-/// one above it: lines put in there go in above the text under the pointer.
-/// In one nobody sees, or held by something else (a tab, a bar, the
-/// console's text), a change that begins on the view's first line leaves
-/// the view there, so what it put in is in view when the player looks:
-/// lines put in at the top of a script, or the script written anew.
+/// change put in or took out may be thousands. It goes no further than the
+/// new text's last page, though, so a text left shorter than the view's
+/// line still fills the view (all of it, from the top, if it is shorter
+/// than a page), the view and the caret as drawn going as far. In a view
+/// the player holds on screen by the code itself (`held`, `code_held`: a
+/// selection dragged in it, a press on it in this frame, their change to it
+/// a moment ago), a change that begins at the very start of the view's
+/// first line counts as one above it: lines put in there go in above the
+/// text under the pointer. In one nobody sees, or held by something else (a
+/// tab, a bar, the console's text), a change that begins on the view's
+/// first line leaves the view there, so what it put in is in view when the
+/// player looks: lines put in at the top of a script, or the script written
+/// anew.
 fn keep_view(st: &mut Studio, t: &Typing, rows: usize, held: bool) {
     let page = code_page(&st.s.ui).max(1);
     let ed = &mut st.s.editor;
     let (from, old_to, at) = (t.from, t.old_to, t.at);
-    let above = from.0 < ed.scroll || (held && from == (ed.scroll, 0));
+    // The view's first line before the change (its splices keep the view
+    // inside the text, so a text left shorter took it up already).
+    let view = t.scroll;
+    let above = from.0 < view || (held && from == (view, 0));
     if !above {
         return;
     }
-    if old_to > (ed.scroll, 0) {
-        // It ends in the view or below it: what the view showed after its
-        // end (now after `at`), down to the view's last row.
-        let shown = (ed.scroll + page).saturating_sub(old_to.0);
-        let kept = (at.0..(at.0 + shown).min(ed.lines.len())).any(|r| {
+    // Something of what the view showed is left: all of it, when the change
+    // ends above the view's first line; else what it showed after the
+    // change's end (now after `at`), down to its last row, if not blank.
+    let kept = old_to <= (view, 0) || {
+        let shown = (view + page).saturating_sub(old_to.0);
+        (at.0..(at.0 + shown).min(ed.lines.len())).any(|r| {
             let line = &ed.lines[r];
             let start = if r == at.0 { at.1.min(line.len()) } else { 0 };
             !line[start..].trim().is_empty()
-        });
-        if !kept {
-            ed.scroll = ed.scroll.min(ed.lines.len() - 1);
-            return;
-        }
-    }
-    let moved = ed.lines.len() as isize - rows as isize;
-    let scroll = (ed.scroll as isize + moved).clamp(0, ed.lines.len() as isize - 1) as usize;
-    let by = scroll as f32 - ed.scroll as f32;
+        })
+    };
+    let scroll = if kept {
+        let moved = ed.lines.len() as isize - rows as isize;
+        (view as isize + moved).clamp(0, ed.lines.len() as isize - 1) as usize
+    } else {
+        // Nothing of it left: its line, by number, as far as the new text's
+        // last page goes (a text shorter than its line shows that page).
+        view.min(ed.lines.len().saturating_sub(page))
+    };
+    let by = scroll as f32 - view as f32;
     ed.scroll = scroll;
     let ui = &mut st.s.ui;
     let was = ui.smooth[1];
@@ -3652,7 +3662,7 @@ pub fn sync_disk(st: &mut Studio) -> bool {
     let held = shown && view_held(st);
     let ed = &st.s.editor;
     if !(seen || held) || ed.dirty || ed.conflict || ed.removed {
-        return st.s.editor.sync_disk();
+        return read_again(st);
     }
     let Some(path) = ed.path.clone() else {
         return false;
@@ -3662,13 +3672,13 @@ pub fn sync_disk(st: &mut Studio) -> bool {
         return false;
     }
     let Ok(read) = std::fs::read_to_string(&path) else {
-        return st.s.editor.sync_disk();
+        return read_again(st);
     };
     let new: Vec<String> = Editor::normal(&read).split('\n').map(str::to_owned).collect();
     let change = changed_rows(&hashes(&ed.lines), &hashes(&new));
     let rows = (change.old_end - change.start).max(change.new_end - change.start);
     if rows == 0 || (rows > TYPED_RELOAD && !held) {
-        return st.s.editor.sync_disk();
+        return read_again(st);
     }
     // What differs: all between what the two texts share at their start
     // and at their end.
@@ -3743,6 +3753,20 @@ pub fn sync_disk(st: &mut Studio) -> bool {
     typing.scroll = ed.scroll;
     c.typing = Some(typing);
     false
+}
+
+/// The editor's file read again at once when it changed on disk
+/// (`Editor::sync_disk`, which keeps the view at its line): a text left
+/// shorter than that shows its last page, not its last line alone.
+fn read_again(st: &mut Studio) -> bool {
+    let page = code_page(&st.s.ui).max(1);
+    let rows = st.s.editor.lines.len();
+    let read = st.s.editor.sync_disk();
+    let ed = &mut st.s.editor;
+    if read && ed.lines.len() < rows {
+        ed.scroll = ed.scroll.min(ed.lines.len().saturating_sub(page));
+    }
+    read
 }
 
 /// A file read again, all typed in: the buffer is the file again, with no
