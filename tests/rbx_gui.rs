@@ -928,6 +928,61 @@ fn escape_beside_a_modal_button_lets_go_of_the_box_first() {
 }
 
 #[test]
+fn a_text_box_destroyed_while_edited_gives_the_keys_back() {
+    // Destroyed with the focus, it loses it as it goes: FocusLost says so,
+    // and the screen goes, as nothing else wants the pointer.
+    let mut game = FakeGame::new("rbx-box-destroyed");
+    let mut st = studio(&mut game);
+    let src = format!("{BOX}\ncommand('gone', function() box:Destroy() end)\n");
+    load(&mut game, &mut st, "gone", &src, 0.6);
+    focus_box(&mut st, &mut game);
+    typed(&mut st, &mut game, "hi");
+    say(&mut st, &mut game, "gone");
+    hud(&mut st, &mut game);
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(st.s.rbx.pointer.focus, None);
+    assert!(st.s.screen.is_none(), "the game has its keys back");
+    let lost: Vec<String> = printed(&st, "gone")
+        .into_iter()
+        .filter(|l| l.starts_with("lost"))
+        .collect();
+    assert_eq!(lost, ["lost    false    hi"]);
+    // A box on a mob's name tag, being edited when the mob goes (its
+    // mirror goes with it): no script destroys it, and it lets go too.
+    let mut game = FakeGame::new("rbx-box-mob");
+    game.entities = vec![EntityInfo {
+        id: 5,
+        kind: "minecraft:zombie".into(),
+        pos: [10.5, 64.0, -13.25],
+        width: 0.6,
+        height: 1.95,
+        eye: 1.74,
+        health: 20.0,
+        max_health: 20.0,
+        on_ground: true,
+        ..EntityInfo::default()
+    }];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local board = Instance.new("BillboardGui", workspace:WaitForChild("Zombie").Head)
+        board.Size = UDim2.fromOffset(100, 40)
+        board.Active = true
+        local name = Instance.new("TextBox", board)
+        name.Size = UDim2.fromScale(1, 1)
+        name.FocusLost:Connect(function(enter) print("lost", enter) end)
+        command("focus", function() name:CaptureFocus() end)
+    "#;
+    load(&mut game, &mut st, "mob", src, 0.6);
+    focus_box(&mut st, &mut game);
+    game.entities.clear();
+    hud(&mut st, &mut game);
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(st.s.rbx.pointer.focus, None);
+    assert!(st.s.screen.is_none(), "the game has its keys back");
+    assert_eq!(printed(&st, "mob"), ["lost    false"]);
+}
+
+#[test]
 fn up_and_down_move_a_drawn_line() {
     let mut game = FakeGame::new("rbx-lines");
     let mut st = studio(&mut game);

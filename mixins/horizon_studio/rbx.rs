@@ -1862,12 +1862,17 @@ impl Rbx {
         Ok(())
     }
 
-    /// Destroys `id` and everything under it, as Instance:Destroy.
+    /// Destroys `id` and everything under it, as Instance:Destroy. A TextBox
+    /// being edited loses the focus as it goes (FocusLost), so the GUI lets
+    /// go of the keys and the pointer.
     pub fn destroy(&mut self, id: Id) {
         if self.insts.get(&id).is_none_or(|i| i.destroyed) {
             return;
         }
         self.fire(id, "Destroying", Vec::new());
+        if self.pointer.focus == Some(id) {
+            super::hstudio_rbx_draw::unfocus(self, false);
+        }
         // Destroying's handlers are deferred: they still get the instance.
         if self.inst(id).parent.is_some() {
             self.inst_mut(id).locked = false;
