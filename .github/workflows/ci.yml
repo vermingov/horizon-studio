@@ -17,7 +17,8 @@ jobs:
       - run: cargo test --locked
       - name: examples.rs is up to date
         run: python3 tools/gen_examples.py && git diff --exit-code mixins/horizon_studio/examples.rs
-      - name: install.sh puts the prebuilt game where old and new launchers find it
+      # install.ps1 too, with the runner's pwsh, installing the Windows prebuilt game.
+      - name: install.sh and install.ps1 put the prebuilt game where old and new launchers find it
         run: python3 tools/install_e2e.py
 
   # Applies the bundle to the pinned Horizon and type-checks the modded game.
@@ -35,7 +36,7 @@ jobs:
             target/game
           key: game-${{ hashFiles('compatibility.json') }}
       - run: python3 tools/studio.py check
-      - name: install.sh names the prebuilt game as the launcher does
+      - name: install.sh and install.ps1 (the runner's pwsh) name the prebuilt game as the launcher does
         run: python3 tools/studio.py native-key
       - run: python3 tools/studio.py package
       - uses: actions/upload-artifact@v4

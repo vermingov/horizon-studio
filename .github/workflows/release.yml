@@ -1,8 +1,8 @@
 name: Release
 
 # horizon-studio-mcp for each platform and the game with Horizon Studio built in
-# (Linux x86_64, macOS Apple silicon), with SHA256SUMS, on a release tag
-# (v0.1.0...): what mcp/install.sh, mcp/install.ps1 and install.sh download. Run by hand
+# (Linux x86_64, macOS Apple silicon, Windows x64), with SHA256SUMS, on a release tag
+# (v0.1.0...): what mcp/install.sh, mcp/install.ps1, install.sh and install.ps1 download. Run by hand
 # (Actions > Release > Run workflow) with a tag, it publishes that release
 # from the branch it runs on; without one it only builds.
 on:
@@ -72,7 +72,9 @@ jobs:
           path: horizon-studio-mcp-${{ matrix.target }}.*
 
   # The modded game, built as the launcher builds it (its Rust, the release profile, the same
-  # horizon-mixins and bundle), for install.sh to put in place instead of compiling it.
+  # horizon-mixins and bundle), for install.sh (install.ps1 on Windows) to put in place instead
+  # of compiling it. Windows: MSVC with the C runtime linked in, as Horizon's own Windows game is
+  # built (studio.py sets it), packed as a .zip.
   game:
     strategy:
       fail-fast: false
@@ -80,9 +82,17 @@ jobs:
         include:
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
           - { os: macos-15, target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, python: python }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
     steps:
+      # The bundle's files as committed (LF): they are hashed into the build's name and shipped
+      # with the game, and Git for Windows would check them out with CRLF.
+      - if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -100,18 +110,21 @@ jobs:
             target/horizon-mixins
             target/game
           key: prebuilt-${{ matrix.target }}-${{ hashFiles('compatibility.json') }}
-      - name: The launcher's name for this build, checked against install.sh's
-        run: python3 tools/studio.py native-key
+      # install.sh's (not on Windows) and install.ps1's (with the runner's pwsh).
+      - name: The launcher's name for this build, checked against the installers'
+        run: ${{ matrix.python || 'python3' }} tools/studio.py native-key
       - name: Build and pack
-        run: python3 tools/studio.py prebuilt --target ${{ matrix.target }}
+        run: ${{ matrix.python || 'python3' }} tools/studio.py prebuilt --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: game-${{ matrix.target }}
-          path: target/horizon-studio-game-${{ matrix.target }}.tar.gz
+          # .tar.gz, or .zip for Windows.
+          path: target/horizon-studio-game-${{ matrix.target }}.*
+          if-no-files-found: error
 
   release:
     needs: [mcp, game]
-    # Published with the MCP server even if a game build failed: install.sh compiles where there is none.
+    # Published with the MCP server even if a game build failed: install.sh and install.ps1 compile where there is none.
     if: always() && needs.mcp.result == 'success' && (startsWith(github.ref, 'refs/tags/') || inputs.tag != '')
     runs-on: ubuntu-latest
     steps:
@@ -127,7 +140,7 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
           NOTES: ${{ inputs.notes }}
         run: |
-          notes="${NOTES:-Horizon Studio, built into the game for Linux and macOS (install.sh), and horizon-studio-mcp, its MCP server for AI agents. Install: see the README.}"
+          notes="${NOTES:-Horizon Studio, built into the game for Linux and macOS (install.sh) and Windows (install.ps1: irm https://raw.githubusercontent.com/vermingov/horizon-studio/main/install.ps1 | iex, in PowerShell), and horizon-studio-mcp, its MCP server for AI agents. Install: see the README.}"
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Horizon Studio $TAG" --notes "$notes" \
             || gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber

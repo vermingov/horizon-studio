@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""install.sh end to end, against fake launchers that name and find native builds as Horizon's do.
+"""install.sh (and install.ps1) end to end, against fake launchers that name and find native builds as Horizon's do.
 
 The prebuilt game (packed by tools/studio.py, with a stand-in program) is served from a local
 web server. Each fake launcher follows the real launcher/src/native_mods.rs of its time: how
@@ -12,9 +12,14 @@ put the game where each one looks, so that its native-build only selects it, nev
 - new: a later one (another horizon-mixins, the fast profile by default, --profile);
 - new with another Rust: the name takes the launcher's own Rust.
 
-Run: python3 tools/install_e2e.py (Linux on x86_64, or macOS on Apple silicon: the platforms
-with a prebuilt game).
+install.ps1 runs the same cases where there is a PowerShell (pwsh), on any system: told it is
+on a 64-bit Windows (PROCESSOR_ARCHITECTURE), it installs the Windows prebuilt game (a .zip, with
+horizon-client.exe) in the same fake launchers.
+
+Run: python3 tools/install_e2e.py (install.sh: Linux on x86_64, or macOS on Apple silicon, the
+platforms with a prebuilt game it installs; install.ps1: wherever pwsh is).
 """
+import argparse
 import hashlib
 import http.server
 import json
@@ -26,6 +31,8 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+
+WINDOWS = "x86_64-pc-windows-msvc"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import studio  # noqa: E402
@@ -169,42 +176,62 @@ def prepared(data, tag, game):
     (v / ".installed").write_text("")
 
 
-def run_install(env, state, mode, rust):
-    """install.sh against the fake launcher in `mode`, which notes what it did in `state`."""
+def run_install(installer, env, state, mode, rust):
+    """`installer` (install.sh, or install.ps1 through pwsh) against the fake launcher in `mode`,
+    which notes what it did in `state`."""
     state.mkdir()
     run_env = dict(env, FAKE_MODE=mode, FAKE_STATE=str(state), FAKE_RUST=rust)
-    return subprocess.run(["sh", str(ROOT / "install.sh")], env=run_env, capture_output=True, text=True)
+    if installer == "install.sh":
+        cmd = ["sh", str(ROOT / "install.sh")]
+    else:
+        cmd = [shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-File", str(ROOT / "install.ps1")]
+        # A 64-bit Windows, as far as install.ps1 asks; its cache in this home.
+        run_env.update(PROCESSOR_ARCHITECTURE="AMD64", LOCALAPPDATA=str(Path(env["HOME"]) / "local"))
+        run_env.pop("PROCESSOR_ARCHITEW6432", None)
+    return subprocess.run(cmd, env=run_env, capture_output=True, text=True)
 
 
 def main():
     target = platform_target()
-    if not target:
+    # Each installer, the target whose prebuilt game it installs, and that game's program.
+    installers = []
+    if target:
+        installers.append(("install.sh", target, "horizon-client"))
+    if shutil.which("pwsh"):
+        installers.append(("install.ps1", WINDOWS, "horizon-client.exe"))
+    else:
+        print("install_e2e: no pwsh here; install.ps1 not run")
+    if not installers:
         print("install_e2e: no prebuilt game for this platform; skipped")
         return
     work = Path(tempfile.mkdtemp(prefix="hstudio-install-"))
     failures = []
     try:
-        # The release: the game packed as the release workflow packs it, with a stand-in program.
+        # The release: the games packed as the release workflow packs them, with a stand-in program.
         rel = work / "rel"
         rel.mkdir()
-        exe = work / "horizon-client"
-        exe.write_text("#!/bin/sh\necho horizon studio\n")
         src = work / "horizon-src"
         src.mkdir()
         (src / "LICENSE").write_text("Horizon's license\n")
         consts = {"rust": "1.99.1", "profile": "release", "features": "horizon-client/mods"}
         studio.TARGET = rel
-        packed = studio.pack_prebuilt(exe, target, src, consts)
-        digest = hashlib.sha256(packed.read_bytes()).hexdigest()
-        (rel / "SHA256SUMS").write_text(f"{digest}  {packed.name}\n")
+        sums = []
+        for _, packed_for, program in installers:
+            exe = work / program
+            exe.write_text("#!/bin/sh\necho horizon studio\n")
+            packed = studio.pack_prebuilt(exe, packed_for, src, consts)
+            sums.append(f"{hashlib.sha256(packed.read_bytes()).hexdigest()}  {packed.name}\n")
+        (rel / "SHA256SUMS").write_text("".join(sums))
         server = serve(rel)
         url = f"http://127.0.0.1:{server.server_address[1]}"
 
         fake = work / "horizon-launcher"
         fake.write_text(FAKE)
         fake.chmod(0o755)
-        for mode, rust in [("old", "1.99.1"), ("new", "1.99.1"), ("new", "1.100.0")]:
-            home = work / f"home-{mode}-{rust}"
+        cases = [(i, m, r) for i in installers for m, r in [("old", "1.99.1"), ("new", "1.99.1"), ("new", "1.100.0")]]
+        for (installer, _, program), mode, rust in cases:
+            exe = work / program
+            home = work / f"home-{installer}-{mode}-{rust}"
             data = home / "data"
             prepared(data, "0.2.80", studio.COMPAT["game"])
             env = dict(os.environ, HOME=str(home), XDG_CACHE_HOME=str(home / "cache"),
@@ -214,23 +241,24 @@ def main():
             # The second run finds the game installed already and only selects it again.
             for attempt in (1, 2):
                 state = home / f"state{attempt}"
-                out = run_install(env, state, mode, rust)
-                label = f"{mode} launcher, Rust {rust}, run {attempt}"
+                out = run_install(installer, env, state, mode, rust)
+                said = out.stderr + out.stdout
+                label = f"{installer}, {mode} launcher, Rust {rust}, run {attempt}"
                 compiled = (state / "compiled").read_text() if (state / "compiled").exists() else ""
                 selected = (state / "selected").read_text() if (state / "selected").exists() else ""
                 if out.returncode != 0:
-                    failures.append(f"{label}: install.sh failed ({out.returncode}):\n{out.stderr}")
+                    failures.append(f"{label}: {installer} failed ({out.returncode}):\n{said}")
                     continue
                 if compiled:
-                    failures.append(f"{label}: the launcher compiled {compiled.strip()} instead of finding the game:\n{out.stderr}")
+                    failures.append(f"{label}: the launcher compiled {compiled.strip()} instead of finding the game:\n{said}")
                     continue
-                if "Done:" not in out.stderr:
-                    failures.append(f"{label}: no Done line:\n{out.stderr}")
+                if "Done:" not in said:
+                    failures.append(f"{label}: no Done line:\n{said}")
                 seeded = data / "versions" / selected
                 if not selected or not (seeded / ".installed").is_file():
                     failures.append(f"{label}: nothing selected ({selected!r})")
                     continue
-                client = seeded / "horizon-client"
+                client = seeded / program
                 if not client.is_file() or client.read_text() != exe.read_text():
                     failures.append(f"{label}: {selected} plays something else than the prebuilt game")
                     continue
@@ -249,4 +277,5 @@ def main():
 
 
 if __name__ == "__main__":
+    argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter).parse_args()
     main()

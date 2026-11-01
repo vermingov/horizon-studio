@@ -1,5 +1,7 @@
 // Updating horizon-studio-mcp (net::hstudio_mcp_update) and a running
 // server switching to a new binary (mcp::serve).
+// The archive and server tests run Unix scripts: elsewhere their helpers go unused.
+#![cfg_attr(not(unix), allow(unused))]
 
 use horizon_studio::net::hstudio_mcp_update::{install_archive, installed, newer, note_installed};
 use std::io::{BufRead, BufReader, Write};
