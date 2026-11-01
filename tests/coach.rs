@@ -1098,6 +1098,50 @@ fn the_view_follows_the_agent_as_the_game_draws() {
 }
 
 #[test]
+fn a_change_on_disk_after_a_key_leaves_the_view_with_the_cursor() {
+    // In the game the studio draws, and looks at the file on disk, after a
+    // frame's input: a change on disk can begin to type in before the draw
+    // has followed a cursor the player's keys just moved. The view stays
+    // the player's then, with the cursor where they see it, rather than
+    // going to the change and being pulled back to the cursor's line at its
+    // edge.
+    let src: String = (1..=200).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-keys-disk", "long", &src);
+    st.s.editor.click(39, 3, false);
+    let scroll = 35;
+    st.s.editor.scroll = scroll;
+    for _ in 0..5 {
+        game_frame(&mut st, &mut game);
+    }
+    // Lines 40 and 41, where the keys move the cursor, well inside the view.
+    assert_eq!(st.s.editor.scroll, scroll);
+    for v in ["v39", "v42"] {
+        assert!(!texts_at(&game, v).is_empty(), "{v} drawn");
+    }
+    let path = game.mods_dir().join("long.lua");
+    let changed = "local v151 = 151 -- and more";
+    std::fs::write(&path, src.replace("local v151 = 151", changed)).unwrap();
+    // Down and Up, one a frame (the game hands the studio its input after
+    // the frame), until the change begins to type in; then until it is in.
+    let mut n = 0;
+    while st.s.ui.coach.typing.is_none() {
+        n += 1;
+        assert!(n < 30, "never typed in");
+        let down = n % 2 == 1;
+        handle(&mut st, &mut game, key(if down { Key::Down } else { Key::Up }, NONE));
+        assert_eq!(st.s.editor.row, if down { 40 } else { 39 });
+        game_frame(&mut st, &mut game);
+        assert_eq!(st.s.editor.scroll, scroll, "the view stays the player's");
+    }
+    while st.s.ui.coach.typing.is_some() {
+        game_frame(&mut st, &mut game);
+        assert_eq!(st.s.editor.scroll, scroll, "the view stays the player's");
+    }
+    assert_eq!(st.s.editor.lines[150], changed);
+    assert!(!st.s.editor.dirty);
+}
+
+#[test]
 fn a_cursor_at_the_end_of_what_an_edit_replaces_ends_after_the_new_text() {
     // "55" becomes "1000": what goes is columns 10-12 of line 1, typed in
     // as the player watches or put in at once, to the same end.

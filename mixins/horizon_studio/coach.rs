@@ -3516,6 +3516,9 @@ pub fn sync_disk(st: &mut Studio) -> bool {
     let ed = &mut st.s.editor;
     let (from, old_to) = (ed.pos_at(a), ed.pos_at(b));
     let count = ed.lines.len();
+    // Whether the view has followed the cursor where it is now (the draw
+    // follows one the player's keys moved since it last drew).
+    let drawn = ed.followed == Some((ed.row, ed.col, ed.revision));
     // One undo step for all of it, as when the editor reads a file again
     // (it reads now: what it couldn't read before is past).
     ed.agent_begin();
@@ -3563,8 +3566,12 @@ pub fn sync_disk(st: &mut Studio) -> bool {
         keep_view(st, from, count);
         return true;
     }
-    // Where it changed, in view.
-    if from.0 < ed.scroll || from.0 >= ed.scroll + page {
+    // Where it changed, in view, unless the player moved the cursor since
+    // the last draw: the view stays theirs then, and the draw follows the
+    // cursor from where they had it.
+    if !drawn {
+        typing.free = true;
+    } else if from.0 < ed.scroll || from.0 >= ed.scroll + page {
         ed.scroll = from.0.saturating_sub(page / 3);
         typing.show_old = SHOW_OLD_SCROLLED;
     }
