@@ -61,6 +61,10 @@ pub struct Coach {
     /// was, and the place (row, char column) drawn under it, which the edit
     /// moved with its text. The press is for that place.
     pub(crate) pressed: Option<((f32, f32), (usize, usize))>,
+    /// A press comes in this frame's input, which the game hands the studio
+    /// after the link's requests: it is for what is drawn under the pointer,
+    /// so the view is the player's for those requests.
+    pub(crate) press_coming: bool,
     /// The answers to the last requests that changed something, by the
     /// key their client gave: one sent again (after a timeout, on a new
     /// connection) gets the same answer and isn't done twice.
@@ -144,6 +148,7 @@ impl Default for Coach {
             player_at: f64::NEG_INFINITY,
             input_at: f64::NEG_INFINITY,
             pressed: None,
+            press_coming: false,
             replies: VecDeque::new(),
             typing: None,
             flash: None,
@@ -332,18 +337,21 @@ fn used(input: &Input) -> bool {
 /// handled (the game handles them first, then the input): what of it
 /// reaches the studio counts as the player using it now, so a request that
 /// would open another file waits rather than have their keys, aimed at the
-/// file they see, land in another.
+/// file they see, land in another; and a press in it, aimed at what is
+/// drawn under the pointer, keeps the view where it is.
 pub fn input_coming(st: &mut Studio, inputs: &[Input]) {
     let reaches = st.s.ui.open && st.s.screen.is_none() && st.s.ui.closing_at.is_none();
     if reaches && inputs.iter().any(used) {
         st.s.ui.coach.input_at = st.s.now;
     }
+    st.s.ui.coach.press_coming = reaches && inputs.iter().any(|i| matches!(i, Input::Button { down: true, .. }));
 }
 
 /// After it: when it changed the code of the file that was open (not by
 /// opening another), the player is editing.
 pub fn after_input(st: &mut Studio, before: Before) {
     st.s.ui.coach.pressed = None;
+    st.s.ui.coach.press_coming = false;
     let ed = &st.s.editor;
     if ed.revision != before.revision && ed.path == before.path {
         st.s.ui.coach.player_at = st.s.now;
@@ -723,14 +731,15 @@ fn using(st: &Studio) -> bool {
 }
 
 /// Whether the view is the player's: they changed the code a moment ago,
-/// or hold the button down for a drag (selecting, the scroll bar, the
-/// panel's edge, the window), however long ago it began. An agent's edit
-/// (or a change on disk to the file open) then lands at once, and nothing
-/// an agent asks moves the view: a drag would go on selecting in the lines
-/// it moved to.
+/// press a button in this frame's input (still to come, after the link's
+/// requests), or hold the button down for a drag (selecting, the scroll
+/// bar, the panel's edge, the window), however long ago it began. An
+/// agent's edit (or a change on disk to the file open) then lands at once,
+/// and nothing an agent asks moves the view: a drag would go on selecting
+/// in the lines it moved to, and a click would leave the cursor out of it.
 fn view_held(st: &Studio) -> bool {
     let ui = &st.s.ui;
-    ui.coach.player_editing(st.s.now) || (ui.open && ui.dragging_any())
+    ui.coach.player_editing(st.s.now) || ui.coach.press_coming || (ui.open && ui.dragging_any())
 }
 
 /// Whether the player has a prompt or a menu open in the studio.

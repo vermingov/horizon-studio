@@ -781,6 +781,80 @@ fn a_drag_held_or_typing_keeps_the_view_through_a_change_on_disk() {
 }
 
 #[test]
+fn a_press_in_a_requests_frame_keeps_the_view_under_it() {
+    // In the game the link's requests come after the studio's frame and
+    // before the frame's input, which coach::input_coming notes first. A
+    // press in a request's frame is for the line drawn under the pointer:
+    // an agent's edit far below, open_script of a line there and a lesson
+    // there leave the view where it is, so a drag from the press selects
+    // the lines the player sees, and a click, or a right press's menu,
+    // leaves the cursor in view.
+    let src: String = (1..=200).map(|i| format!("local v{i} = {i}\n")).collect();
+    let requests = [
+        (
+            "edit",
+            json!({ "start_line": 151, "end_line": 150, "new_text": "a = 1\nb = 2\nc = 3" }),
+        ),
+        ("open", json!({ "id": "pr", "line": 153 })),
+        (
+            "lesson",
+            json!({ "title": "Down", "steps": [{ "start_line": 153, "note": "Down here." }] }),
+        ),
+    ];
+    for (method, params) in requests {
+        // A left press dragged on, a left click, and a right press.
+        for (left, drag) in [(true, true), (true, false), (false, false)] {
+            let name = format!("coach-press-request-{method}-{left}-{drag}");
+            let (mut game, mut st) = editing(&name, "pr", &src);
+            for _ in 0..5 {
+                game_frame(&mut st, &mut game);
+            }
+            let (x, y5) = text_at(&game, "v5");
+            let (_, y6) = text_at(&game, "v6");
+            // The press's frame, in the game's order: the studio draws, its
+            // frame runs, the input is noted, the request comes, then the input.
+            redraw(&mut st, &mut game);
+            run_for(&mut st, &mut game, 0.05);
+            let press = Input::Button { left, down: true };
+            coach::input_coming(&mut st, &[Input::Mouse(x + 1.0, y5 + 2.0), press]);
+            ask(&mut st, &mut game, method, params.clone()).unwrap();
+            handle(&mut st, &mut game, Input::Mouse(x + 1.0, y5 + 2.0));
+            handle(&mut st, &mut game, Input::Button { left, down: true });
+            let release = |st: &mut Studio, game: &mut FakeGame| {
+                handle(st, game, Input::Button { left, down: false });
+            };
+            if !drag {
+                release(&mut st, &mut game);
+            }
+            for k in 1..=30 {
+                game_frame(&mut st, &mut game);
+                if drag {
+                    handle(
+                        &mut st,
+                        &mut game,
+                        Input::Mouse(x + 1.0, y5 + 2.0 + (y6 - y5) * k as f32 / 30.0),
+                    );
+                }
+            }
+            let case = format!("{method}, left {left}, drag {drag}");
+            assert_eq!(st.s.editor.scroll, 0, "{case}: the view stays");
+            assert_eq!(text_at(&game, "v5").1, y5, "{case}: v5 stays where it is drawn");
+            if drag {
+                release(&mut st, &mut game);
+            }
+            let ed = &st.s.editor;
+            let cursor = if drag { "local v6 = 6" } else { "local v5 = 5" };
+            assert_eq!(ed.lines[ed.row], cursor, "{case}");
+            let selection = ed
+                .selection()
+                .map(|((r1, _), (r2, _))| (ed.lines[r1].as_str(), ed.lines[r2].as_str()));
+            assert_eq!(selection, drag.then_some(("local v5 = 5", "local v6 = 6")), "{case}");
+            assert_eq!(st.s.ui.menu.is_some(), !left, "{case}: the right press's menu");
+        }
+    }
+}
+
+#[test]
 fn a_file_the_editor_couldnt_read_is_never_read_changed_or_saved_through_it() {
     let mut game = FakeGame::new("coach-unreadable");
     let mut st = studio(&mut game);
