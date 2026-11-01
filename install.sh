@@ -3,6 +3,9 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/vermingov/horizon-studio/main/install.sh | sh
 #
+# On Windows, install.ps1 does the same in PowerShell (its key computation is this key_of's twin):
+#   irm https://raw.githubusercontent.com/vermingov/horizon-studio/main/install.ps1 | iex
+#
 # Horizon Studio is a native mod: the launcher compiles it into the game (10 to 30 minutes).
 # Each release also carries that game already built, for Linux (x86_64) and macOS (Apple
 # silicon), built the way the launcher builds it. This script puts it in the launcher's

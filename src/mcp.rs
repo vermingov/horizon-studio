@@ -66,7 +66,12 @@ pub fn mods_dir(given: Option<&str>) -> Result<PathBuf, String> {
         return Ok(d);
     }
     let home = std::env::var_os("HORIZON_HOME").map(PathBuf::from).or_else(|| {
-        let h = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
+        // Horizon's game folder on Windows: %APPDATA%\horizon (horizon-client-render's game_home).
+        if cfg!(windows) {
+            let d = std::env::var_os("APPDATA").filter(|d| !d.is_empty())?;
+            return Some(PathBuf::from(d).join("horizon"));
+        }
+        let h = std::env::var_os("HOME")?;
         Some(PathBuf::from(h).join(".local").join("share").join("horizon"))
     });
     if let Some(home) = home {

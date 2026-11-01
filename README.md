@@ -84,15 +84,24 @@ On Linux or macOS, one line installs it, and the same line updates it (close the
 curl -fsSL https://raw.githubusercontent.com/vermingov/horizon-studio/main/install.sh | sh
 ```
 
-On Linux (x86_64) and macOS (Apple silicon) this takes seconds: each release carries the game with Horizon
-Studio already built in, made the way the launcher makes it, and [install.sh](install.sh) puts it where the
+On Windows, the same in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/vermingov/horizon-studio/main/install.ps1 | iex
+```
+
+On Linux (x86_64), macOS (Apple silicon) and Windows (x64) this takes seconds: each release carries the game with
+Horizon Studio already built in, made the way the launcher makes it, and [install.sh](install.sh) (on Windows
+[install.ps1](install.ps1), which does the same steps) puts it where the
 launcher keeps its builds (checked against the release's SHA256SUMS) and has the launcher select it. It hands the
 launcher the mod as Horizon's registry ships one (`horizon-native.json` beside the bundle), pinning the
 horizon-mixins commit the game was built with, so a launcher that updated since names the build as the release
 did instead of compiling it again. Elsewhere, or with `HORIZON_STUDIO_BUILD=1`, the launcher compiles it as
 before, with settings that compile several times faster (no whole-program optimisation). It finds
-`horizon-launcher` on your PATH or in `/Applications/Horizon.app`; set `HORIZON_LAUNCHER` to point at it
-otherwise. Horizon must be installed and prepared in the launcher first.
+`horizon-launcher` on your PATH or in `/Applications/Horizon.app` (on Windows, `horizon-launcher.exe` on your
+PATH or in `%LOCALAPPDATA%\Horizon`); set `HORIZON_LAUNCHER` to point at it otherwise, and `HORIZON_LAUNCHER_HOME`
+if the launcher keeps its data elsewhere than its default (`%APPDATA%\horizon-launcher` on Windows). Horizon must
+be installed and prepared in the launcher first.
 
 Then press **Play** in the launcher: it plays the instance the build was selected for (older launchers make a
 **Native mods** instance for it). Or, by hand:
@@ -1026,7 +1035,9 @@ cargo run --bin horizon-studio-mcp   # the MCP server, from source (src/mcp.rs, 
 `tests/mcp.rs` speaks MCP to the server, tests mods headless, and has an agent drive a game (the studio on a fake game,
 its AI link polled each frame as the bridge does) through the real socket: writing a mod, Lua in the console,
 commands, live test steps. A `v*` tag makes the release workflow build `horizon-studio-mcp` for Linux (x86_64,
-aarch64), macOS (Apple silicon, Intel) and Windows, with `SHA256SUMS`.
+aarch64), macOS (Apple silicon, Intel) and Windows, and the modded game for Linux (x86_64), macOS (Apple silicon)
+and Windows (x64; `python tools/studio.py prebuilt --target x86_64-pc-windows-msvc` packs it as a `.zip`), with
+`SHA256SUMS`.
 
 `tools/via_e2e.py` builds `tools/via_probe.rs` inside the staged game and joins two fake 1.8 servers
 (`tools/fake_server_1_8.py`, offline and online mode) through the real ViaProxy, as 1.8.x and with Auto detect,
