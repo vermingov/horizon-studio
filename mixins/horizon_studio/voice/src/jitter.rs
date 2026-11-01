@@ -244,8 +244,10 @@ impl<D: FrameDecoder, M> Speaker<D, M> {
             if raw {
                 let pcm = p
                     .data
-                    .chunks_exact(2)
-                    .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32768.0)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|b| f32::from(i16::from_le_bytes(*b)) / 32768.0)
                     .collect();
                 out.push(Played::Frames(vec![pcm], p.meta));
                 continue;

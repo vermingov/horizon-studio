@@ -360,7 +360,7 @@ fn talk_and_listen(compat: i32) {
     // Alex talks: his voice reaches the mixer, from the left, and he is listed.
     let mut enc = encoder(Codec::Voip);
     let mut buf = [0u8; 1275];
-    for (seq, f) in voice(12).chunks_exact(FRAME_SIZE).enumerate() {
+    for (seq, f) in voice(12).as_chunks::<FRAME_SIZE>().0.iter().enumerate() {
         let n = enc.encode(f, FRAME_SIZE, &mut buf).unwrap();
         server.send(&Udp::PlayerSound {
             channel: ALEX,

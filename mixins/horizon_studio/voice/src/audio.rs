@@ -219,7 +219,8 @@ mod system {
                                 } else {
                                     stereo.fill(0.0);
                                 }
-                                let (l, r): (Vec<f32>, Vec<f32>) = stereo.chunks_exact(2).map(|f| (f[0], f[1])).unzip();
+                                let (l, r): (Vec<f32>, Vec<f32>) =
+                                    stereo.as_chunks::<2>().0.iter().map(|&[l, r]| (l, r)).unzip();
                                 left.process(&l, &mut l_out);
                                 right.process(&r, &mut r_out);
                             }

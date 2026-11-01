@@ -53,7 +53,7 @@ fn opus_encodes_and_decodes_a_voice() {
     let mut dec = Opus::new();
     let mut out = Vec::new();
     let mut buf = [0u8; MAX_OPUS_PAYLOAD];
-    for frame in input.chunks_exact(FRAME_SIZE) {
+    for frame in input.as_chunks::<FRAME_SIZE>().0 {
         let n = enc.encode(frame, FRAME_SIZE, &mut buf).unwrap();
         assert!(n > 2 && n <= MAX_OPUS_PAYLOAD);
         // SILK or hybrid (TOC configs 0 to 15), as libopus codes a voice in VOIP.
