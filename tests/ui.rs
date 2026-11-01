@@ -3177,7 +3177,8 @@ fn library_rows_have_the_mods_menu() {
     right_click(&mut st, &mut game, (clock.0 + 2.0, clock.1 + 2.0));
     choose(&mut st, &mut game, "Install");
     assert!(st.s.mods.iter().any(|m| m.id == "clock"));
-    // The list's own menu, off its rows.
+    // The list's own menu, off its rows (the page's pane docks in the
+    // Editor tab from it).
     redraw(&mut st, &mut game);
     let title = text_at(&game, "Script mods");
     right_click(&mut st, &mut game, (title.0 + 2.0, title.1 + 2.0));
@@ -3188,7 +3189,9 @@ fn library_rows_have_the_mods_menu() {
             "New module...",
             "",
             "Reload all",
-            "Open the mods folder"
+            "Open the mods folder",
+            "",
+            "Dock in the Editor"
         ]
     );
 }

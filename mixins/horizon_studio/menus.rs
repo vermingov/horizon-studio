@@ -209,7 +209,13 @@ fn open_spot(st: &mut Studio, game: &mut dyn GameApi, spot: Spot, rect: [f32; 4]
             (field_items(st, field), None)
         }
         Spot::File => (file_items(st), None),
-        Spot::Scripts => (scripts_items(st), None),
+        Spot::Scripts => {
+            let mut items = scripts_items(st);
+            if st.s.ui.tab == Tab::Library {
+                items.extend(dock_items(st, Pane::Library));
+            }
+            (items, None)
+        }
         Spot::Row(k) => (row_items(st, usize::from(k)), Some(rect)),
         Spot::Mod(k) => {
             let Some(i) = drawn_mod(st, k) else { return false };
@@ -224,12 +230,34 @@ fn open_spot(st: &mut Studio, game: &mut dyn GameApi, spot: Spot, rect: [f32; 4]
         }
         Spot::Window => (window_items(st), None),
         Spot::Themes => (theme_items(st), None),
-        Spot::Docs => (
-            vec![MenuItem::new("Copy the docs as Markdown", MenuCmd::CopyDocs)],
-            None,
-        ),
+        Spot::Docs => {
+            let mut items = vec![MenuItem::new("Copy the docs as Markdown", MenuCmd::CopyDocs)];
+            if st.s.ui.tab == Tab::Docs {
+                items.extend(dock_items(st, Pane::Docs));
+            }
+            (items, None)
+        }
     };
     open(st, at, 0.0, items, target)
+}
+
+/// What the Library's and the Docs' own pages add to their menus in the
+/// studio's own layout: Dock in the Editor (Show in the Editor once it is
+/// docked), which shows that pane in the Editor tab, with the keys.
+fn dock_items(st: &Studio, p: Pane) -> Vec<MenuItem> {
+    let ui = &st.s.ui;
+    if ui.look.theme().layout != Layout::Studio {
+        return Vec::new();
+    }
+    let label = if ui.dock.has(p) {
+        "Show in the Editor"
+    } else {
+        "Dock in the Editor"
+    };
+    vec![
+        MenuItem::separator(),
+        MenuItem::new(label, MenuCmd::Act(Action::ShowPane(p))),
+    ]
 }
 
 // ----------------------------------------------------------------- the panes, the window, the themes
@@ -326,13 +354,14 @@ fn reset_item(ui: &Ui) -> MenuItem {
     }
 }
 
-/// Every pane of the Editor tab, each marked where its body is drawn at the
-/// front of its group (the tab laid out as it was last drawn, so from any
-/// tab): choosing one shows it, with the keys.
+/// Every pane of the Editor tab, the Library and the Docs too (docked when
+/// chosen), each marked where its body is drawn at the front of its group
+/// (the tab laid out as it was last drawn, so from any tab): choosing one
+/// shows it, with the keys.
 fn pane_list(st: &Studio) -> Vec<MenuItem> {
     let ui = &st.s.ui;
     let drawn = ui.dock_ws.map(|ws| ui.dock.bodies(ws, ui.focus));
-    [Pane::Scripts, Pane::Code, Pane::Console, Pane::Problems, Pane::Agent]
+    super::hstudio_dock::PANES
         .into_iter()
         .map(|p| {
             MenuItem::new(p.title(), MenuCmd::Act(Action::ShowPane(p))).checked(drawn.is_some_and(|d| d[p.index()]))
@@ -648,6 +677,33 @@ fn ask_agent(st: &mut Studio, text: Option<&str>) {
     }
 }
 
+/// Show in Docs: the docs at `name`'s entry. Docked in the Editor tab (the
+/// studio's own layout), the Docs pane comes to the front of its group
+/// there, its group shown, and the keys stay where they are, unless it now
+/// covers the pane that has them (it shares that pane's group), when it
+/// takes them as the Docs tab would. Where it would have no room, and while
+/// it isn't docked, the Docs tab.
+fn show_in_docs(st: &mut Studio, name: String) {
+    let now = st.s.now;
+    let ui = &mut st.s.ui;
+    ui.docs_find = Some(name);
+    let mut after = ui.dock.clone();
+    let docked = ui.look.theme().layout == Layout::Studio && after.has(Pane::Docs);
+    after.activate(Pane::Docs);
+    let keep = after.settled(ui.focus);
+    let room = ui.dock_ws.is_none_or(|ws| after.bodies(ws, keep)[Pane::Docs.index()]);
+    if !docked || !room {
+        ui.tab = Tab::Docs;
+        return;
+    }
+    ui.tab = Tab::Editor;
+    if !ui.dock.is_front(Pane::Docs) {
+        ui.shown_at[Pane::Docs.index()] = now;
+    }
+    ui.dock = after;
+    dock_changed(st);
+}
+
 /// The menu of the console's lines or the agent's conversation: copying
 /// what is selected there or all of it, then clearing the console (or
 /// stopping the agent, a new conversation).
@@ -954,10 +1010,7 @@ pub fn run(st: &mut Studio, game: &mut dyn GameApi, cmd: MenuCmd, place: [f32; 4
         }
         MenuCmd::CopyDocs => copy_text(st, game, &docs_markdown()),
         MenuCmd::GoTo(path, row, start, end) => go_to(st, game, path.as_deref(), row, start, end),
-        MenuCmd::Docs(name) => {
-            st.s.ui.tab = Tab::Docs;
-            st.s.ui.docs_find = Some(name);
-        }
+        MenuCmd::Docs(name) => show_in_docs(st, name),
         MenuCmd::Ask(text) => ask_agent(st, text.as_deref()),
         MenuCmd::Explain => {
             if st.s.editor.selection().is_none() {

@@ -960,13 +960,15 @@ fn holds(node: &Node, p: Pane) -> bool {
 }
 
 /// The least room `node` takes across a row (its width) or down a
-/// column: nothing hidden, a group its largest pane's, a split along its
-/// own way both sides and the bar between (one side when the other is
-/// hidden), across it the larger side.
+/// column: nothing hidden, a group its largest pane's (and across, what
+/// its strip's tabs take), a split along its own way both sides and the
+/// bar between (one side when the other is hidden), across it the larger
+/// side.
 fn least(node: &Node, row: bool) -> f32 {
     match node {
         Node::Leaf(l) if l.hidden => 0.0,
-        Node::Leaf(l) => l.tabs.iter().map(|p| p.least()[usize::from(!row)]).fold(0.0, f32::max),
+        Node::Leaf(l) if row => l.tabs.iter().map(|p| p.least()[0]).fold(strip_least(&l.tabs), f32::max),
+        Node::Leaf(l) => l.tabs.iter().map(|p| p.least()[1]).fold(0.0, f32::max),
         Node::Split { row: r, a, b, .. } => match (shows(a), shows(b)) {
             (false, false) => 0.0,
             (true, false) => least(a, row),
@@ -975,6 +977,24 @@ fn least(node: &Node, row: bool) -> f32 {
             (true, true) => least(a, row).max(least(b, row)),
         },
     }
+}
+
+/// The width a group's strip takes with each tab at its least (its label
+/// cut to 28 units, its padding, the gap after it, and what follows the
+/// label: the problems' count, the agent's busy dot, the code's unsaved
+/// dot), its margins and its × (none on the code's group or the script
+/// list's alone): so a group of many tabs keeps them on its strip.
+fn strip_least(tabs: &[Pane]) -> f32 {
+    let marks: f32 = tabs
+        .iter()
+        .map(|p| match p {
+            Pane::Problems => 30.0,
+            Pane::Agent | Pane::Code => 14.0,
+            _ => 0.0,
+        })
+        .sum();
+    let cross = !tabs.contains(&Pane::Code) && tabs != [Pane::Scripts];
+    16.0 + 54.0 * tabs.len() as f32 + marks + if cross { 30.0 } else { 0.0 }
 }
 
 /// The part of `r` from `pos`, `len` long, across a row or down a column.

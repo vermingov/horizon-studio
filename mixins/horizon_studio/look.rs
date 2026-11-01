@@ -4324,7 +4324,7 @@ fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let card_h = 98.0;
     let grid_h = THEMES.len().div_ceil(cols) as f32 * (card_h + gap);
     let row_h = 46.0;
-    let total = 30.0 + grid_h + 14.0 + row_h * 7.0;
+    let total = 30.0 + grid_h + 14.0 + row_h * 8.0;
     let ui = &mut st.s.ui;
     ui.settings_scroll = ui.settings_scroll.clamp(0.0, (total - h).max(0.0));
     smooth(&mut ui.smooth[3], ui.settings_scroll, dt);
@@ -4352,7 +4352,16 @@ fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     }
     cy += grid_h + 14.0;
     let vx = x + if cw < 460.0 { 110.0 } else { 170.0 };
-    let rows: [&str; 7] = ["Window", "Accent", "Size", "Backdrop", "Code size", "Animations", ""];
+    let rows: [&str; 8] = [
+        "Window",
+        "Accent",
+        "Size",
+        "Backdrop",
+        "Code size",
+        "Animations",
+        "Layout",
+        "",
+    ];
     for (n, label) in rows.into_iter().enumerate() {
         let r = [x, cy, cw, row_h];
         let mid = cy + row_h / 2.0;
@@ -4360,7 +4369,7 @@ fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         if !shown(r) {
             continue;
         }
-        if n > 0 && n < 6 {
+        if n > 0 && n < 7 {
             p.rect([x, r[1], cw, 1.0], 0.0, fade(pal().rule, 0.6));
         }
         p.text(label, x, top(mid, 14.0), 14.0, Font::Regular, pal().ink);
@@ -4444,12 +4453,70 @@ fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
                 );
                 ui.hits.push(([vx - 4.0, mid - 15.0, 48.0, 30.0], Action::Motion));
             }
+            6 => layout_row(st, p, [vx, mid, x + cw], dt),
             _ => {
-                let t = p.fit("Kept in look.txt, in the studio's folder.", cw, 12.0, Font::Regular);
+                let t = p.fit(
+                    "Kept in look.txt and layout.txt, in the studio's folder.",
+                    cw,
+                    12.0,
+                    Font::Regular,
+                );
                 p.text(&t, x, top(mid, 12.0), 12.0, Font::Regular, pal().muted);
             }
         }
     }
+}
+
+/// Settings' Layout row, from `vx` on its middle `mid`, up to `right`: Reset
+/// layout (greyed, taking no click, while the panes are where they start),
+/// or Undo reset layout after one. An executor style keeps its own layout,
+/// as its row says, and its Reset the panes is for when a Horizon theme is
+/// chosen again.
+fn layout_row(st: &mut Studio, p: &mut P, [vx, mid, right]: [f32; 3], dt: f32) {
+    let ui = &mut st.s.ui;
+    let studio = ui.look.theme().layout == Layout::Studio;
+    let (label, action) = match ui.dock_undo {
+        Some(_) => ("Undo reset layout", Action::UndoReset),
+        None if studio => ("Reset layout", Action::ResetLayout),
+        None => ("Reset the panes", Action::ResetLayout),
+    };
+    let mut bx = vx;
+    if !studio {
+        let say = "This style keeps its own layout; the panes move in the Horizon themes";
+        let room = right - vx - p.measure(label, 13.0, Font::Medium) - 40.0;
+        // On two lines where one is too short, the second cut to fit.
+        let lines = match p.wrap(say, room, 13.0, Font::Regular).as_slice() {
+            [first, rest @ ..] if !rest.is_empty() => {
+                vec![first.clone(), p.fit(&rest.join(" "), room, 13.0, Font::Regular)]
+            }
+            lines => lines.to_vec(),
+        };
+        let mut widest: f32 = 0.0;
+        for (i, line) in lines.iter().enumerate() {
+            let ly = mid + (i as f32 - (lines.len() as f32 - 1.0) / 2.0) * 17.0;
+            widest = widest.max(p.text(line, bx, top(ly, 13.0), 13.0, Font::Regular, pal().muted));
+        }
+        bx += widest + 12.0;
+    }
+    let idle = action == Action::ResetLayout && ui.dock.is_default();
+    let alpha = p.alpha;
+    if idle {
+        p.alpha = alpha * 0.45;
+    }
+    let action = if idle { Action::Block } else { action };
+    pill(
+        ui,
+        p,
+        "reset-layout",
+        label,
+        bx,
+        mid - 14.0,
+        28.0,
+        Style::Quiet,
+        action,
+        dt,
+    );
+    p.alpha = alpha;
 }
 
 /// A theme to pick: a small picture of it and its name.

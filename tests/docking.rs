@@ -520,6 +520,30 @@ fn pane_bodies_are_clipped_to_their_place() {
     redraw(&mut st, &mut game);
     assert!(game.drawn.len() > 20);
     assert!(clips(&game).is_empty(), "{:?}", clips(&game));
+    // A Library pane in a group shorter than it is (in use in a 330 x 230
+    // window): its pills are drawn past the group, and their clicks are
+    // cut with them, so a click where New mod was drawn opens no prompt.
+    let (mut game, mut st) = editing("dock-clips-library");
+    st.s.ui.look.window = true;
+    st.s.ui.look.rect = Some([10.0, 10.0, 330.0, 230.0]);
+    st.s.ui.dock.show(Pane::Library);
+    st.s.ui.focus = Pane::Library;
+    redraw(&mut st, &mut game);
+    redraw(&mut st, &mut game);
+    let library = leaf(&st, Pane::Library);
+    assert!(!library.collapsed);
+    let under = [
+        library.rect[0],
+        library.rect[1] + 32.0,
+        library.rect[2],
+        library.rect[3] - 32.0,
+    ];
+    assert!(clips(&game).iter().any(|c| c.2 == under), "{:?}", clips(&game));
+    let new = text_at(&game, "New mod");
+    let at = (new.0 + 2.0, new.1 + 4.0);
+    assert!(!inside(library.rect, at), "{at:?} is past {library:?}");
+    click(&mut st, &mut game, at);
+    assert!(st.s.ui.naming.is_none(), "no New prompt");
 }
 
 #[test]
@@ -1313,10 +1337,14 @@ fn a_panes_menu_has_its_items_then_the_layouts() {
     assert_eq!(items[0], "Save");
     assert_eq!(items[items.len() - 3..], ["Move", "Size...", "Panes"]);
     assert!(!items.iter().any(|l| l.starts_with("Hide") || l.starts_with("Close")));
-    // Panes: every pane, those drawn at the front marked; one chosen comes to
-    // the front with the keys, nothing closed.
+    // Panes: every pane (the Library and the Docs too, which dock when
+    // chosen), those drawn at the front marked; one chosen comes to the
+    // front with the keys, nothing closed.
     choose(&mut st, &mut game, "Panes");
-    assert_eq!(menu_items(&st), ["Scripts", "Code", "Console", "Problems", "Agent"]);
+    assert_eq!(
+        menu_items(&st),
+        ["Scripts", "Code", "Console", "Problems", "Agent", "Library", "Docs"]
+    );
     let menu = st.s.ui.menu.clone().unwrap();
     let marked: Vec<&str> = menu
         .items
@@ -1473,9 +1501,24 @@ fn panes_fit_any_window() {
     ];
     let mut sizes: Vec<(f32, bool, Option<[f32; 4]>)> = rows.iter().map(|&(s, w, _)| (s, w, None)).collect();
     sizes.push((1.0, true, Some([10.0, 10.0, 330.0, 230.0])));
+    // Each pane in use (the Library and the Docs docked at their home), and
+    // each again with both of those docked.
+    let panes = [
+        Pane::Code,
+        Pane::Console,
+        Pane::Agent,
+        Pane::Problems,
+        Pane::Library,
+        Pane::Docs,
+    ];
+    let cases: Vec<(Pane, bool)> = panes
+        .iter()
+        .map(|&p| (p, false))
+        .chain(panes.iter().map(|&p| (p, true)))
+        .collect();
     for (scale, window, rect) in sizes {
-        for focus in [Pane::Code, Pane::Console, Pane::Agent, Pane::Problems] {
-            let what = format!("scale {scale}, window {window}, {rect:?}, {focus:?}");
+        for &(focus, both) in &cases {
+            let what = format!("scale {scale}, window {window}, {rect:?}, {focus:?}, both docked {both}");
             let (mut game, mut st) = editing("dock-fit");
             let text: Vec<String> = (1..=300).map(|i| format!("local line{i} = {i}")).collect();
             st.s.editor
@@ -1486,7 +1529,11 @@ fn panes_fit_any_window() {
             st.s.ui.look.scale = scale;
             st.s.ui.look.window = window;
             st.s.ui.look.rect = rect;
-            st.s.ui.dock.activate(focus);
+            if both {
+                st.s.ui.dock.show(Pane::Docs);
+                st.s.ui.dock.show(Pane::Library);
+            }
+            st.s.ui.dock.show(focus);
             st.s.ui.focus = focus;
             redraw(&mut st, &mut game);
             redraw(&mut st, &mut game);
@@ -1532,10 +1579,13 @@ fn panes_fit_any_window() {
                         "{what}: no console input"
                     ),
                     Pane::Agent => assert!(drawn(&game, "No agent found."), "{what}: no agent's input"),
+                    Pane::Library => assert!(drawn(&game, "Script mods"), "{what}: no Library"),
+                    Pane::Docs => assert!(st.s.ui.pages[Pane::Docs.index()] >= 1, "{what}: no line of the docs"),
                     _ => {}
                 }
             }
             if focus == Pane::Code
+                && !both
                 && rect.is_none()
                 && let Some(&(_, _, want)) = rows.iter().find(|r| r.0 == scale && r.1 == window)
             {
@@ -2107,4 +2157,476 @@ fn drops_and_shows_never_take_a_panes_place() {
     release(&mut st, &mut game);
     assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Code), [Pane::Code, Pane::Agent]);
     assert_eq!(st.s.ui.focus, Pane::Agent);
+    // A pane shown never takes a place either: Panes › Docs, whose column
+    // at the right would push the script list out here, joins the code's
+    // tabs, at the front with the keys, every group still drawn.
+    st.s.ui.dock = Dock::default();
+    press(&mut st, &mut game, Key::Escape, NONE);
+    redraw(&mut st, &mut game);
+    let at = px(middle(tab_of(&st, Pane::Code)));
+    right_click(&mut st, &mut game, at);
+    choose(&mut st, &mut game, "Panes");
+    choose(&mut st, &mut game, "Docs");
+    assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Code), [Pane::Code, Pane::Docs]);
+    assert!(st.s.ui.dock.is_front(Pane::Docs));
+    assert_eq!(st.s.ui.focus, Pane::Docs);
+    redraw(&mut st, &mut game);
+    assert_eq!(
+        groups(&st),
+        [(Pane::Scripts, false), (Pane::Console, true), (Pane::Docs, false)]
+    );
+    // Full screen there is room: a column of its own at the right.
+    st.s.ui.dock = Dock::default();
+    st.s.ui.look.window = false;
+    st.s.ui.look.scale = 1.0;
+    press(&mut st, &mut game, Key::Escape, NONE);
+    redraw(&mut st, &mut game);
+    let at = middle(tab_of(&st, Pane::Code));
+    right_click(&mut st, &mut game, at);
+    choose(&mut st, &mut game, "Panes");
+    choose(&mut st, &mut game, "Docs");
+    assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Docs), [Pane::Docs]);
+    redraw(&mut st, &mut game);
+    let ws = st.s.ui.dock_ws.unwrap();
+    let docs = leaf(&st, Pane::Docs).rect;
+    assert_eq!((docs[0] + docs[2], docs[1], docs[3]), (ws[0] + ws[2], ws[1], ws[3]));
+    assert_eq!(st.s.ui.dock_drawn.len(), 4, "every group still drawn");
+}
+
+/// The colour of the plate drawn just before `text` (a pill's), and its alpha.
+fn plate_alpha(game: &FakeGame, text: &str) -> u32 {
+    let i = drawn_index(game, text);
+    let plate = game.drawn[..i]
+        .iter()
+        .rev()
+        .find(|d| d.starts_with("rect "))
+        .expect("a plate before the label");
+    u32::from_str_radix(plate.rsplit(' ').next().unwrap(), 16).unwrap() >> 24
+}
+
+/// Settings, scrolled with Page Down until `text` is drawn.
+fn settings_until(st: &mut Studio, game: &mut FakeGame, text: &str) {
+    for _ in 0..8 {
+        redraw(st, game);
+        if drawn(game, text) {
+            return;
+        }
+        press(st, game, Key::PageDown, NONE);
+    }
+    panic!("{text:?} never drawn in Settings");
+}
+
+#[test]
+fn reset_layout_in_settings_brings_back_the_default() {
+    let (mut game, mut st) = editing("dock-settings-reset");
+    redraw(&mut st, &mut game);
+    // At the default there is nothing to reset: the pill is greyed (its
+    // plate fainter under the pointer) and takes no click.
+    press(&mut st, &mut game, Key::Char('5'), CTRL);
+    settings_until(
+        &mut st,
+        &mut game,
+        "Kept in look.txt and layout.txt, in the studio's folder.",
+    );
+    assert!(drawn(&game, "Layout") && drawn(&game, "Reset layout"));
+    let at = text_at(&game, "Reset layout");
+    point(&mut st, &mut game, (at.0 + 2.0, at.1 + 4.0));
+    redraw(&mut st, &mut game);
+    let idle = plate_alpha(&game, "Reset layout");
+    click(&mut st, &mut game, (at.0 + 2.0, at.1 + 4.0));
+    assert!(st.s.ui.notice.is_none());
+    press(&mut st, &mut game, Key::Home, NONE);
+    // A move and a hide, each from the panes' own ways.
+    press(&mut st, &mut game, Key::Char('2'), CTRL);
+    redraw(&mut st, &mut game);
+    let at = middle(tab_of(&st, Pane::Agent));
+    right_click(&mut st, &mut game, at);
+    choose(&mut st, &mut game, "Move");
+    choose(&mut st, &mut game, "Right of the code");
+    press(&mut st, &mut game, Key::Char('b'), CTRL);
+    let moved = st.s.ui.dock.clone();
+    assert!(!moved.shown(Pane::Scripts) && moved.leaf_tabs(Pane::Agent) == [Pane::Agent]);
+    assert!(layout_txt(&st).contains(&moved.to_text()));
+    // The Layout row is under the themes, below the screen at first; its
+    // pill now resets the panes, written, and offers its undo.
+    press(&mut st, &mut game, Key::Char('5'), CTRL);
+    redraw(&mut st, &mut game);
+    assert!(!drawn(&game, "Reset layout"), "below the screen");
+    settings_until(&mut st, &mut game, "Reset layout");
+    let at = text_at(&game, "Reset layout");
+    point(&mut st, &mut game, (at.0 + 2.0, at.1 + 4.0));
+    redraw(&mut st, &mut game);
+    assert!(plate_alpha(&game, "Reset layout") > idle, "not greyed now");
+    click(&mut st, &mut game, (at.0 + 2.0, at.1 + 4.0));
+    assert_eq!(st.s.ui.dock, Dock::default());
+    assert_eq!(st.s.ui.focus, Pane::Code);
+    assert_eq!(notice(&st), "Back to the default layout");
+    assert!(layout_txt(&st).contains(&format!("dock={}\n", Dock::default().to_text())));
+    redraw(&mut st, &mut game);
+    assert!(!drawn(&game, "Reset layout"));
+    let at = text_at(&game, "Undo reset layout");
+    click(&mut st, &mut game, (at.0 + 2.0, at.1 + 4.0));
+    assert_eq!(st.s.ui.dock, moved);
+    assert_eq!(notice(&st), "Your layout is back");
+    assert!(layout_txt(&st).contains(&moved.to_text()));
+    // An executor style keeps its own layout, and says so; its Reset the
+    // panes resets them for when a Horizon theme is chosen again.
+    st.s.ui.look = Look {
+        theme: synapse(),
+        motion: false,
+        ..Look::default()
+    };
+    settings_until(&mut st, &mut game, "Reset the panes");
+    let said: Vec<String> = texts(&game)
+        .into_iter()
+        .map(|(t, _)| t)
+        .skip_while(|t| t != "Layout")
+        .skip(1)
+        .take_while(|t| t != "Reset the panes")
+        .collect();
+    assert_eq!(
+        said.join(" "),
+        "This style keeps its own layout; the panes move in the Horizon themes"
+    );
+    let at = text_at(&game, "Reset the panes");
+    click(&mut st, &mut game, (at.0 + 2.0, at.1 + 4.0));
+    assert_eq!(st.s.ui.dock, Dock::default());
+    assert_eq!(notice(&st), "The Horizon themes' panes are back to the default");
+}
+
+#[test]
+fn library_and_docs_dock_beside_the_code_and_take_keys() {
+    let (mut game, mut st) = editing("dock-library-docs");
+    st.s.editor.set_text("local a = 1\n");
+    redraw(&mut st, &mut game);
+    // Panes › Docs: a column of its own at the right, drawing the docs,
+    // with the keys.
+    let at = middle(tab_of(&st, Pane::Console));
+    right_click(&mut st, &mut game, at);
+    choose(&mut st, &mut game, "Panes");
+    choose(&mut st, &mut game, "Docs");
+    assert_eq!(st.s.ui.focus, Pane::Docs);
+    assert!(layout_txt(&st).contains("[docs*]"), "{}", layout_txt(&st));
+    redraw(&mut st, &mut game);
+    let ws = st.s.ui.dock_ws.unwrap();
+    let docs = leaf(&st, Pane::Docs);
+    assert_eq!(docs.tabs.len(), 1);
+    assert_eq!(
+        (docs.rect[0] + docs.rect[2], docs.rect[1], docs.rect[3]),
+        (ws[0] + ws[2], ws[1], ws[3])
+    );
+    assert!(drawn(&game, "Script mods"), "the docs' first heading");
+    // Its keys page it, and the wheel over it scrolls it.
+    press(&mut st, &mut game, Key::PageDown, NONE);
+    let paged = st.s.ui.docs_scroll;
+    assert!(paged >= 10, "a page of {paged}");
+    redraw(&mut st, &mut game);
+    point(&mut st, &mut game, middle(docs.rect));
+    handle(&mut st, &mut game, Input::Wheel(-1.0));
+    assert!(st.s.ui.docs_scroll > paged);
+    assert_eq!(st.s.editor.text(), "local a = 1\n");
+    // Panes › Library joins it, at the front with the keys.
+    let at = middle(tab_of(&st, Pane::Docs));
+    right_click(&mut st, &mut game, at);
+    choose(&mut st, &mut game, "Panes");
+    choose(&mut st, &mut game, "Library");
+    assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Library), [Pane::Docs, Pane::Library]);
+    assert!(st.s.ui.dock.is_front(Pane::Library));
+    assert_eq!(st.s.ui.focus, Pane::Library);
+    // The keys back on the code, a click on a row of the Library pane
+    // chooses that mod and gives the Library the keys: a space turns it
+    // off, and nothing is typed into the code.
+    press(&mut st, &mut game, Key::Escape, NONE);
+    assert_eq!(st.s.ui.focus, Pane::Code);
+    redraw(&mut st, &mut game);
+    let kit = mod_index(&st, "uikit");
+    assert!(st.s.mods[kit].enabled);
+    let row = last_text_at(&game, "UI Kit");
+    click(&mut st, &mut game, (row.0 + 2.0, row.1 + 4.0));
+    assert_eq!((st.s.ui.library_sel, st.s.ui.focus), (kit, Pane::Library));
+    type_text(&mut st, &mut game, " ");
+    assert!(!st.s.mods[kit].enabled, "the space turned it off");
+    assert_eq!(st.s.editor.text(), "local a = 1\n");
+    // The Menu key opens the chosen mod's menu, ending with Layout.
+    redraw(&mut st, &mut game);
+    press(&mut st, &mut game, Key::Menu, NONE);
+    let items = menu_items(&st);
+    assert!(items.contains(&"Turn on".to_owned()), "{items:?}");
+    assert_eq!(items[items.len() - 2..], ["", "Layout"]);
+    press(&mut st, &mut game, Key::Escape, NONE);
+    // Enter opens it in the code, which takes the keys.
+    press(&mut st, &mut game, Key::Enter, NONE);
+    assert_eq!((st.s.editor.title.as_str(), st.s.ui.focus), ("uikit.lua", Pane::Code));
+    // At its least width its three pills are drawn whole, and each takes
+    // its click.
+    st.s.ui.dock.activate(Pane::Library);
+    redraw(&mut st, &mut game);
+    let library = leaf(&st, Pane::Library);
+    assert_eq!(library.rect[2], 350.0);
+    let right = library.rect[0] + library.rect[2] - 14.0;
+    for pill in ["New mod", "Reload all", "Open folder"] {
+        let at = text_at(&game, pill);
+        assert!(at.0 + 6.0 * pill.len() as f32 + 14.0 <= right, "{pill} cut");
+    }
+    let at = text_at(&game, "New mod");
+    click(&mut st, &mut game, (at.0 + 2.0, at.1 + 4.0));
+    assert!(st.s.ui.naming.is_some(), "the New prompt");
+    press(&mut st, &mut game, Key::Escape, NONE);
+    let at = text_at(&game, "Reload all");
+    click(&mut st, &mut game, (at.0 + 2.0, at.1 + 4.0));
+    assert!(common::log(&st).iter().any(|l| l.starts_with("Reloaded all")));
+    let at = text_at(&game, "Open folder");
+    click(&mut st, &mut game, (at.0 + 2.0, at.1 + 4.0));
+    assert_eq!(game.opened.last(), Some(&game.mods_dir()));
+    // Close on its tab's menu takes it out, the Docs staying.
+    redraw(&mut st, &mut game);
+    let at = middle(tab_of(&st, Pane::Library));
+    right_click(&mut st, &mut game, at);
+    choose(&mut st, &mut game, "Close Library");
+    assert!(!st.s.ui.dock.has(Pane::Library));
+    assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Docs), [Pane::Docs]);
+    assert!(!layout_txt(&st).contains("library"));
+}
+
+#[test]
+fn show_in_docs_goes_to_the_docked_docs() {
+    let (mut game, mut st) = editing("dock-show-in-docs");
+    st.s.editor.set_text("print(player.pos())\n");
+    st.s.editor.click(1, 0, false);
+    st.s.ui.dock.show(Pane::Docs);
+    redraw(&mut st, &mut game);
+    redraw(&mut st, &mut game);
+    let show = |st: &mut Studio, game: &mut FakeGame| {
+        redraw(st, game);
+        let pos = last_text_at(game, "pos");
+        right_click(st, game, (pos.0 + 2.0, pos.1 + 4.0));
+        choose(st, game, "Show player.pos in Docs");
+    };
+    // Docked at the right: the Editor tab stays, the Docs come to its entry,
+    // and the keys stay in the code.
+    show(&mut st, &mut game);
+    assert_eq!(st.s.ui.tab, Tab::Editor);
+    assert_eq!(st.s.ui.focus, Pane::Code);
+    redraw(&mut st, &mut game);
+    assert!(st.s.ui.docs_scroll > 0);
+    assert!(
+        game.drawn.iter().any(|d| d.starts_with("text player.pos(")),
+        "the entry is in the pane"
+    );
+    type_text(&mut st, &mut game, "x");
+    assert!(st.s.editor.text().contains('x') && st.s.editor.dirty);
+    st.s.editor.set_text("print(player.pos())\n");
+    // Among the code's tabs, behind the code: it comes to the front with
+    // the keys, as the Docs tab would.
+    st.s.ui.dock.move_pane(
+        Pane::Docs,
+        DropAt::Into {
+            anchor: Pane::Code,
+            at: 1,
+        },
+    );
+    st.s.ui.dock.activate(Pane::Code);
+    st.s.ui.docs_scroll = 0;
+    show(&mut st, &mut game);
+    assert_eq!(st.s.ui.tab, Tab::Editor);
+    assert!(st.s.ui.dock.is_front(Pane::Docs));
+    assert_eq!(st.s.ui.focus, Pane::Docs);
+    redraw(&mut st, &mut game);
+    assert!(st.s.ui.docs_scroll > 0);
+    // Docked where it has no room (a column beside the code in a narrow
+    // window): the Docs tab.
+    press(&mut st, &mut game, Key::Escape, NONE);
+    st.s.ui.dock = Dock::default();
+    st.s.ui.dock.show(Pane::Docs);
+    st.s.ui.look.window = true;
+    st.s.ui.look.rect = Some([10.0, 10.0, 560.0, 400.0]);
+    show(&mut st, &mut game);
+    assert_eq!(st.s.ui.tab, Tab::Docs);
+    assert!(!st.s.ui.dock_front[Pane::Docs.index()]);
+    // Closed: the Docs tab, as ever.
+    st.s.ui.dock = Dock::default();
+    st.s.ui.look.window = false;
+    st.s.ui.tab = Tab::Editor;
+    show(&mut st, &mut game);
+    assert_eq!(st.s.ui.tab, Tab::Docs);
+    assert!(!st.s.ui.dock.has(Pane::Docs));
+}
+
+#[test]
+fn the_console_library_and_docs_tabs_drag_into_the_editor() {
+    let (mut game, mut st) = editing("dock-top-tabs");
+    redraw(&mut st, &mut game);
+    let code = leaf(&st, Pane::Code).rect;
+    let quarter = (code[0] + code[2] - 30.0, code[1] + code[3] / 2.0);
+    // The Library's tab pressed shows its page, as ever; dragged, it goes
+    // to the Editor tab with its pane, which lands where it is let go.
+    let tab = text_at(&game, "Library");
+    let from = (tab.0 + 4.0, tab.1 + 4.0);
+    hold(&mut st, &mut game, from, &[]);
+    assert_eq!(st.s.ui.tab, Tab::Library);
+    point(&mut st, &mut game, (from.0 + 3.0, from.1));
+    assert_eq!(st.s.ui.tab, Tab::Library, "not lifted yet");
+    point(&mut st, &mut game, (from.0, from.1 + 8.0));
+    assert_eq!(st.s.ui.tab, Tab::Editor);
+    redraw(&mut st, &mut game);
+    point(&mut st, &mut game, quarter);
+    let spot = st.s.ui.dock_spot.expect("a place to land");
+    assert_eq!(
+        spot.at,
+        DropAt::Beside {
+            anchor: Pane::Code,
+            side: Side::Right
+        }
+    );
+    release(&mut st, &mut game);
+    assert_eq!(st.s.ui.tab, Tab::Editor, "its page left behind");
+    assert_eq!(st.s.ui.focus, Pane::Library);
+    redraw(&mut st, &mut game);
+    let (library, code) = (leaf(&st, Pane::Library).rect, leaf(&st, Pane::Code).rect);
+    assert_eq!(library[1], code[1]);
+    assert_eq!(library[0], code[0] + code[2] + 8.0);
+    assert!(layout_txt(&st).contains("[library*]"));
+    // The Docs' tab dragged, then Esc: its page again, nothing docked.
+    let docked = st.s.ui.dock.clone();
+    let tab = text_at(&game, "Docs");
+    hold(
+        &mut st,
+        &mut game,
+        (tab.0 + 4.0, tab.1 + 4.0),
+        &[(tab.0 + 4.0, tab.1 + 40.0)],
+    );
+    assert_eq!(st.s.ui.tab, Tab::Editor);
+    redraw(&mut st, &mut game);
+    let at = middle(leaf(&st, Pane::Code).rect);
+    point(&mut st, &mut game, at);
+    assert!(st.s.ui.dock_spot.is_some());
+    press(&mut st, &mut game, Key::Escape, NONE);
+    assert_eq!(st.s.ui.tab, Tab::Docs);
+    assert!(st.s.ui.dock_spot.is_none());
+    release(&mut st, &mut game);
+    assert_eq!(st.s.ui.dock, docked);
+    assert_eq!(st.s.ui.tab, Tab::Docs);
+    // Let go over nothing (a gap), the same.
+    press(&mut st, &mut game, Key::Char('2'), CTRL);
+    redraw(&mut st, &mut game);
+    let gap = bar(&st, 1).rect;
+    let tab = text_at(&game, "Docs");
+    hold(
+        &mut st,
+        &mut game,
+        (tab.0 + 4.0, tab.1 + 4.0),
+        &[(tab.0 + 4.0, tab.1 + 40.0)],
+    );
+    redraw(&mut st, &mut game);
+    point(&mut st, &mut game, middle(gap));
+    release(&mut st, &mut game);
+    assert_eq!((st.s.ui.tab, &st.s.ui.dock), (Tab::Docs, &docked));
+    // The Console's tab: its pane moves, here onto the script list's strip.
+    st.s.ui.dock = Dock::default();
+    press(&mut st, &mut game, Key::Char('2'), CTRL);
+    redraw(&mut st, &mut game);
+    let strip = leaf(&st, Pane::Scripts).strip;
+    let tab = text_at(&game, "Console");
+    hold(
+        &mut st,
+        &mut game,
+        (tab.0 + 4.0, tab.1 + 4.0),
+        &[(tab.0 + 4.0, tab.1 + 40.0)],
+    );
+    redraw(&mut st, &mut game);
+    point(&mut st, &mut game, (strip[0] + strip[2] - 10.0, strip[1] + 16.0));
+    release(&mut st, &mut game);
+    assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Console), [Pane::Scripts, Pane::Console]);
+    assert_eq!((st.s.ui.tab, st.s.ui.focus), (Tab::Editor, Pane::Console));
+    // The Settings tab doesn't drag: it is a page, and only shows.
+    let before = st.s.ui.dock.clone();
+    redraw(&mut st, &mut game);
+    let tab = text_at(&game, "Settings");
+    hold(
+        &mut st,
+        &mut game,
+        (tab.0 + 4.0, tab.1 + 4.0),
+        &[(tab.0 + 4.0, tab.1 + 120.0)],
+    );
+    assert_eq!(st.s.ui.tab, Tab::Settings);
+    release(&mut st, &mut game);
+    assert_eq!((st.s.ui.tab, &st.s.ui.dock), (Tab::Settings, &before));
+    // Dock in the Editor, in the Library list's own menu.
+    st.s.ui.dock = Dock::default();
+    st.s.ui.tab = Tab::Library;
+    redraw(&mut st, &mut game);
+    let title = text_at(&game, "Script mods");
+    right_click(&mut st, &mut game, (title.0 + 2.0, title.1 + 2.0));
+    choose(&mut st, &mut game, "Dock in the Editor");
+    assert_eq!((st.s.ui.tab, st.s.ui.focus), (Tab::Editor, Pane::Library));
+    assert!(st.s.ui.dock.is_front(Pane::Library));
+    // Docked, the page's menu shows it there instead.
+    st.s.ui.tab = Tab::Library;
+    redraw(&mut st, &mut game);
+    let title = text_at(&game, "Script mods");
+    right_click(&mut st, &mut game, (title.0 + 2.0, title.1 + 2.0));
+    assert_eq!(menu_items(&st).last().unwrap(), "Show in the Editor");
+}
+
+#[test]
+fn a_groups_tabs_stay_on_its_strip() {
+    // Four tabs in a group beside the code, its bar dragged as far as it
+    // goes: the group keeps room for them, left of its ×.
+    let (mut game, mut st) = editing("dock-tabs-fit");
+    st.s.ui.dock.move_pane(
+        Pane::Scripts,
+        DropAt::Into {
+            anchor: Pane::Console,
+            at: 3,
+        },
+    );
+    st.s.ui.dock.move_pane(
+        Pane::Console,
+        DropAt::Beside {
+            anchor: Pane::Code,
+            side: Side::Right,
+        },
+    );
+    st.s.ui.dock.move_pane(
+        Pane::Scripts,
+        DropAt::Into {
+            anchor: Pane::Console,
+            at: 1,
+        },
+    );
+    st.s.ui.dock.move_pane(
+        Pane::Problems,
+        DropAt::Into {
+            anchor: Pane::Console,
+            at: 2,
+        },
+    );
+    st.s.ui.dock.move_pane(
+        Pane::Agent,
+        DropAt::Into {
+            anchor: Pane::Console,
+            at: 3,
+        },
+    );
+    assert_eq!(
+        st.s.ui.dock.leaf_tabs(Pane::Console),
+        [Pane::Console, Pane::Scripts, Pane::Problems, Pane::Agent]
+    );
+    redraw(&mut st, &mut game);
+    let b = *st
+        .s
+        .ui
+        .dock_bars
+        .iter()
+        .find(|b| b.row)
+        .expect("the bar beside the code");
+    let from = middle(b.rect);
+    drag(&mut st, &mut game, from, (from.0 + 900.0, from.1));
+    redraw(&mut st, &mut game);
+    let group = leaf(&st, Pane::Console);
+    assert!(group.rect[2] < 320.0, "{group:?} as narrow as it goes");
+    let cross = group.strip[0] + group.strip[2] - 34.0;
+    for (p, r) in &group.tabs {
+        assert!(r[0] + r[2] <= cross, "{p:?}'s tab {r:?} runs past the × at {cross}");
+    }
 }

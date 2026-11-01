@@ -611,10 +611,20 @@ pub(crate) struct WinDrag {
 /// groups, as the last frame drew it, and where the pointer is on it along
 /// its way (from its left or top edge); or a pane's tab, pressed where the
 /// pointer was, and lifted (`moving`) once dragged `TAB_LIFT` from there.
+/// A tab is a group's, or the Console, Library or Docs tab at the top
+/// (`page`), whose pane is dragged into the Editor tab.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DockDrag {
-    Bar { bar: Bar, grab: f32 },
-    Tab { pane: Pane, from: (f32, f32), moving: bool },
+    Bar {
+        bar: Bar,
+        grab: f32,
+    },
+    Tab {
+        pane: Pane,
+        from: (f32, f32),
+        moving: bool,
+        page: Option<Tab>,
+    },
 }
 
 /// How far a pressed tab is dragged before it lifts, so a click that moves
@@ -2786,26 +2796,54 @@ fn sizing_key(st: &mut Studio, key: Key, mods: Mods) -> bool {
 
 /// What the left button held on the panes ends, nothing dropped: a bar stays
 /// where it is, written (the tip that tabs move goes once one did), and a
-/// tab moves nothing and writes nothing.
+/// tab moves nothing and writes nothing (a tab from the top lifted shows
+/// its page again).
 fn end_dock_drag(st: &mut Studio) {
     let ui = &mut st.s.ui;
     ui.dock_spot = None;
-    if let Some(DockDrag::Bar { .. }) = ui.dock_drag.take() {
-        if dock_moved(ui) {
-            ui.dock_tips = false;
+    match ui.dock_drag.take() {
+        Some(DockDrag::Bar { .. }) => {
+            if dock_moved(ui) {
+                ui.dock_tips = false;
+            }
+            dock_changed(st);
         }
-        dock_changed(st);
+        Some(DockDrag::Tab {
+            page: Some(t),
+            moving: true,
+            ..
+        }) => ui.tab = t,
+        _ => {}
+    }
+}
+
+/// The page a tab at the top is, as a pane that can be dragged into the
+/// Editor tab: the Console's, the Library's and the Docs'. (The Editor is
+/// where they go, and Settings, which restyles everything, is never a pane.)
+fn page_pane(t: Tab) -> Option<Pane> {
+    match t {
+        Tab::Console => Some(Pane::Console),
+        Tab::Library => Some(Pane::Library),
+        Tab::Docs => Some(Pane::Docs),
+        Tab::Editor | Tab::Settings => None,
     }
 }
 
 /// A pane's tab held with the pointer at `at`: it lifts once `TAB_LIFT`
-/// from where it was pressed, and from then on `dock_spot` is where its
-/// pane would land among the groups as the last frame drew them on the
-/// Editor tab (nowhere while another tab shows, or before the Editor tab is
-/// drawn), so the preview and the release follow the pointer.
+/// from where it was pressed (a tab at the top then goes to the Editor tab,
+/// its pane with it), and from then on `dock_spot` is where its pane would
+/// land among the groups as the last frame drew them on the Editor tab
+/// (nowhere while another tab shows, or before the Editor tab is drawn),
+/// so the preview and the release follow the pointer.
 fn drag_tab(st: &mut Studio, at: (f32, f32)) {
     let ui = &mut st.s.ui;
-    let Some(DockDrag::Tab { pane, from, moving }) = ui.dock_drag else {
+    let Some(DockDrag::Tab {
+        pane,
+        from,
+        moving,
+        page,
+    }) = ui.dock_drag
+    else {
         return;
     };
     if !moving {
@@ -2816,7 +2854,11 @@ fn drag_tab(st: &mut Studio, at: (f32, f32)) {
             pane,
             from,
             moving: true,
+            page,
         });
+        if page.is_some() {
+            ui.tab = Tab::Editor;
+        }
     }
     let editor = ui.tab == Tab::Editor && ui.look.theme().layout == super::hstudio_theme::Layout::Studio;
     ui.dock_spot = match ui.dock_ws {
@@ -3189,7 +3231,9 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
             }
             if !down {
                 // A lifted tab let go where its pane would land moves it
-                // there; anything else the button held just ends.
+                // there (the move ends the drag, so a tab from the top
+                // leaves its page behind); anything else the button held
+                // just ends.
                 if let (Some(pane), Some(spot)) = (st.s.ui.lifted(), st.s.ui.dock_spot) {
                     act(st, game, Action::MovePane(pane, spot.at));
                 }
@@ -3297,6 +3341,22 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                     pane,
                     from: at,
                     moving: false,
+                    page: None,
+                });
+                return UiResult::Used;
+            }
+            // The Console, Library and Docs tabs at the top: their page, as
+            // ever, and the tab held, to drag its pane into the Editor tab.
+            if let Some(Action::Tab(t)) = hit
+                && st.s.ui.look.theme().layout == super::hstudio_theme::Layout::Studio
+                && let Some(pane) = page_pane(t)
+            {
+                act(st, game, Action::Tab(t));
+                st.s.ui.dock_drag = Some(DockDrag::Tab {
+                    pane,
+                    from: at,
+                    moving: false,
+                    page: Some(t),
                 });
                 return UiResult::Used;
             }

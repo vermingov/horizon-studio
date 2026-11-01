@@ -538,6 +538,49 @@ fn bars_stop_at_the_least_sizes() {
 }
 
 #[test]
+fn a_group_keeps_room_for_its_tabs() {
+    // Each tab at its least: its label cut to 28 units, its padding and the
+    // gap after it (54), and what follows its label, the problems' count
+    // (30) and the agent's or the code's dot (14); then the strip's margins
+    // (16) and its × (30, which the code's group hasn't). Where that is more
+    // than its panes' least, the bar stops there.
+    let room = |text: &str, p: Pane| {
+        let d = Dock::parse(text).unwrap();
+        leaf_of(&d.layout(FULL, Code).1, p).rect[2]
+    };
+    assert_eq!(
+        room(
+            "row:0.950(row:0.500(-[scripts*],[code*]),[console*,problems,agent])",
+            Console
+        ),
+        252.0
+    );
+    assert_eq!(
+        room(
+            "row:0.950([code*],[console*,problems,agent,scripts,library,docs])",
+            Console
+        ),
+        414.0
+    );
+    assert_eq!(
+        room(
+            "row:0.050([code*,console,problems,agent,scripts],[library*,docs])",
+            Code
+        ),
+        344.0
+    );
+    assert_eq!(
+        room("row:0.950([code*],[agent*,scripts,console,problems])", Agent),
+        306.0
+    );
+    // Fewer tabs: the panes' own least.
+    assert_eq!(
+        room("row:0.950([code*,console,problems,agent],[library*,scripts])", Library),
+        350.0
+    );
+}
+
+#[test]
 fn a_cramped_split_keeps_the_pane_in_use_and_a_strip() {
     let d = Dock::default();
     let ws = [0.0, 0.0, 600.0, 200.0];
