@@ -3449,7 +3449,8 @@ impl Studio {
                             self.open_file(&path);
                         }
                         // An agent's brings it forward as open_script does:
-                        // not while the player is using the studio.
+                        // not while the player is using the studio or has a
+                        // prompt or a menu up.
                         if !(agent && open && super::hstudio_coach::switch_waiting(self)) {
                             super::hstudio_ui::reveal_code(self);
                         }

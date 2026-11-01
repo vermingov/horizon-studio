@@ -4362,7 +4362,7 @@ for id, state in pairs(mods()) do print(id, state) end
         r##"
 `edit(id[, file])`
 
-Console only. Opens a mod in the studio's Editor tab (after the console line): its main file, or with `file` another file of a module, by its path in the module (`"lib.lua"`, `"lib/util"`; the `.lua` may be left out). Unsaved edits in the file open before are saved first; the file open already stays as it is, unsaved edits and all. Run by an agent (`run_lua`), it opens no other file while the player is using the studio or has a prompt or a menu up, nor over unsaved edits in the file open: an error line says why, as `open_script` would wait or refuse. The file open already, as with `open_script`, is never refused: it comes forward unless the player is using the studio.
+Console only. Opens a mod in the studio's Editor tab (after the console line): its main file, or with `file` another file of a module, by its path in the module (`"lib.lua"`, `"lib/util"`; the `.lua` may be left out). Unsaved edits in the file open before are saved first; the file open already stays as it is, unsaved edits and all. Run by an agent (`run_lua`), it opens no other file while the player is using the studio or has a prompt or a menu up, nor over unsaved edits in the file open: an error line says why, as `open_script` would wait or refuse. The file open already, as with `open_script`, is never refused: it comes forward unless the player is using the studio or has a prompt or a menu up.
 
 - `id` (string): a mod id.
 - `file` (string, optional): a file of the module.
