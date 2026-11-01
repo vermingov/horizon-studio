@@ -474,6 +474,20 @@ bindings = [
   { name = "text", ty = "&str", value = "text" },
 ]
 
+# A login's resolving: a routed host connects to the local ViaProxy and keeps
+# its own name in the handshake (Horizon, as vanilla, otherwise sends the
+# redirect target's), which is how ViaProxy knows the server and version.
+[[injection]]
+id = "via-resolve"
+kind = "HEAD"
+cancellable = true
+target = "horizon_protocol::resolver::resolve"
+helper = "via_resolve.rs"
+bindings = [
+  { name = "host", ty = "&str", value = "host" },
+  { name = "port", ty = "u16", value = "port" },
+]
+
 [[injection]]
 id = "via-srv"
 kind = "HEAD"

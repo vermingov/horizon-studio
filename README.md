@@ -995,6 +995,7 @@ particle, Video Settings, merge, pickup and swim hooks can answer in their funct
 | chat | `game::remote::signed_chat_line` | `on("chat")`: the server's lines and the players' |
 | suggest | `game::remote::send_suggestion_request` | the chat's completion request: one for a script's command stays in the game and the studio answers it at the frame; any other is sent as before |
 | via-address | `horizon_protocol::servers::parse_address` | on the threads that join and ping servers, an address ViaHorizon routes parses as ViaProxy's internal host (the server and version, for ViaProxy to read from the handshake) |
+| via-resolve | `horizon_protocol::resolver::resolve` | a join to a routed host connects to the local ViaProxy and keeps that host in the login handshake (vanilla, and Horizon since 4aa6854, send the redirect target's), so ViaProxy knows the server and version |
 | via-srv | `horizon_protocol::resolver::srv_redirect` | that host's SRV lookup answers with the local ViaProxy, so the connection goes there |
 | via-recv | `horizon_protocol::connection::Connection::recv` | during login, ViaProxy's OpenAuthMod sign-in requests are answered |
 | via-ping | `horizon_protocol::connection::ConnReader::recv` | while the game draws no frames (a minimised or covered window: on Wayland its main thread then waits to present), the server's pings are answered on the network thread, as keep-alives are, after those the game still owes, so anticheats behind ViaProxy don't time the player out |
