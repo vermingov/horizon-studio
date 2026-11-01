@@ -725,8 +725,9 @@ fn using(st: &Studio) -> bool {
 /// Whether the view is the player's: they changed the code a moment ago,
 /// or hold the button down for a drag (selecting, the scroll bar, the
 /// panel's edge, the window), however long ago it began. An agent's edit
-/// then lands at once, and nothing an agent asks moves the view: a drag
-/// would go on selecting in the lines it moved to.
+/// (or a change on disk to the file open) then lands at once, and nothing
+/// an agent asks moves the view: a drag would go on selecting in the lines
+/// it moved to.
 fn view_held(st: &Studio) -> bool {
     let ui = &st.s.ui;
     ui.coach.player_editing(st.s.now) || (ui.open && ui.dragging_any())
@@ -3454,9 +3455,11 @@ fn disk_stamp(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
 /// in view, Motion on and no unsaved edits, a change of at most 60 lines is
 /// typed in as an agent's edit is, with no name on its caret (whoever wrote
 /// the file), so a file written to disk looks live too: one undo step takes
-/// it back, and any key or click puts the rest in at once. Otherwise it is
-/// read in at once, or with unsaved edits marked as a conflict, as before.
-/// True when it was read in at once.
+/// it back, and any key or click puts the rest in at once. While the view is
+/// the player's (they changed the code a moment ago, or hold a drag), it
+/// comes in at once, as an agent's edit does then, and what they see stays
+/// where it is. Otherwise it is read in at once, or with unsaved edits
+/// marked as a conflict, as before. True when it was read in at once.
 pub fn sync_disk(st: &mut Studio) -> bool {
     // A change read in already coming in goes first: the file is looked at
     // again after. (An agent's edit coming in has made the buffer one with
@@ -3494,8 +3497,10 @@ pub fn sync_disk(st: &mut Studio) -> bool {
     let ins = now_text[pre..now_text.len() - suf].to_owned();
     let now = st.s.now;
     let page = st.s.ui.page.max(1);
+    let held = view_held(st);
     let ed = &mut st.s.editor;
     let (from, old_to) = (ed.pos_at(a), ed.pos_at(b));
+    let count = ed.lines.len();
     // One undo step for all of it, as when the editor reads a file again
     // (it reads now: what it couldn't read before is past).
     ed.agent_begin();
@@ -3534,6 +3539,15 @@ pub fn sync_disk(st: &mut Studio) -> bool {
         player_edits: false,
         reload: true,
     };
+    if held {
+        // In at once, and what the player sees stays put: a drag would go on
+        // selecting in the lines the view moved to. (The splices keep the
+        // drag's ends in their places in the text.)
+        complete(st, &mut typing);
+        reloaded(st, &typing);
+        keep_view(st, from.0, count);
+        return true;
+    }
     // Where it changed, in view.
     if from.0 < ed.scroll || from.0 >= ed.scroll + page {
         ed.scroll = from.0.saturating_sub(page / 3);

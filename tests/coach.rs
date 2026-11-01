@@ -649,6 +649,116 @@ fn a_drag_held_keeps_the_view_under_it() {
 }
 
 #[test]
+fn a_drag_held_or_typing_keeps_the_view_through_a_change_on_disk() {
+    // The file open changes on disk (an agent's write_mod) while the player
+    // drags a selection, or right after they typed and saved: the change
+    // comes in at once, as an agent's edit does then, and what the player
+    // sees stays where it is, so the drag selects the lines they see. The
+    // studio draws throughout, as in the game, and looks at the file on
+    // disk as it draws.
+    let src: String = (1..=80).map(|i| format!("local v{i} = {i}\n")).collect();
+    // (Long enough that typing it in would take a few frames.)
+    let seventy = "local v70 = 'seventy, on a line that takes a moment to type in'";
+    // Line 70 changes while the drag goes from line 2 toward line 5.
+    let (mut game, mut st) = editing("coach-drag-disk", "dr", &src);
+    let (x, y) = text_at(&game, "v2");
+    let (_, y5) = text_at(&game, "v5");
+    let drag_to = |st: &mut Studio, game: &mut FakeGame, k: usize| {
+        game_frame(st, game);
+        game_frame(st, game);
+        handle(st, game, Input::Mouse(x + 1.0, y + 2.0 + (y5 - y) * k as f32 / 30.0));
+    };
+    handle(&mut st, &mut game, Input::Mouse(x + 1.0, y + 2.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    for k in 1..=25 {
+        drag_to(&mut st, &mut game, k);
+    }
+    let path = game.mods_dir().join("dr.lua");
+    std::fs::write(&path, src.replace("local v70 = 70", seventy)).unwrap();
+    for _ in 0..12 {
+        game_frame(&mut st, &mut game);
+        assert_eq!(st.s.editor.scroll, 0, "the view stays");
+        assert!(st.s.ui.coach.typing.is_none(), "it comes in at once");
+    }
+    assert_eq!(st.s.editor.lines[69], seventy);
+    assert!(!st.s.editor.dirty);
+    for k in 26..=30 {
+        drag_to(&mut st, &mut game, k);
+    }
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    let ((r1, _), (r2, _)) = st.s.editor.selection().expect("a selection");
+    assert_eq!((r1, r2), (1, 4), "lines 2 to 5");
+    // Five lines put in at line 2, above the view at line 30, while the
+    // player drags from v35 to v36: the view moves down with what it shows,
+    // as drawn too, so v35 and the caret stay where they are drawn.
+    let (mut game, mut st) = editing("coach-drag-disk-above", "dr", &src);
+    st.s.editor.scroll = 29;
+    for _ in 0..20 {
+        game_frame(&mut st, &mut game);
+    }
+    let (x, y35) = text_at(&game, "v35");
+    let (_, y36) = text_at(&game, "v36");
+    handle(&mut st, &mut game, Input::Mouse(x + 1.0, y35 + 2.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    handle(&mut st, &mut game, Input::Mouse(x + 1.0, y36 + 2.0));
+    for _ in 0..10 {
+        game_frame(&mut st, &mut game);
+    }
+    let caret = st.s.ui.caret_at;
+    assert!(caret.is_some(), "the caret drawn");
+    let block: String = (1..=5).map(|i| format!("-- note {i}\n")).collect();
+    let path = game.mods_dir().join("dr.lua");
+    std::fs::write(
+        &path,
+        src.replacen("local v2 = 2\n", &format!("{block}local v2 = 2\n"), 1),
+    )
+    .unwrap();
+    for _ in 0..12 {
+        game_frame(&mut st, &mut game);
+        assert_eq!(text_at(&game, "v35").1, y35, "v35 stays where it is drawn");
+        assert_eq!(st.s.ui.caret_at, caret, "the caret stays with it");
+        assert!(st.s.ui.coach.typing.is_none(), "it comes in at once");
+        handle(&mut st, &mut game, Input::Mouse(x + 1.0, y36 + 2.0));
+    }
+    assert_eq!(st.s.editor.lines[1], "-- note 1");
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    let ed = &st.s.editor;
+    let ((r1, _), (r2, _)) = ed.selection().expect("a selection");
+    assert_eq!(
+        (ed.lines[r1].as_str(), ed.lines[r2].as_str()),
+        ("local v35 = 35", "local v36 = 36")
+    );
+    // Line 70 changes right after the player typed at line 1 and saved.
+    let (mut game, mut st) = editing("coach-typed-disk", "dr", &src);
+    st.s.editor.click(0, 0, false);
+    handle(&mut st, &mut game, Input::Text("-".into()));
+    handle(&mut st, &mut game, key(Key::Char('s'), CTRL));
+    let path = game.mods_dir().join("dr.lua");
+    let saved = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, saved.replace("local v70 = 70", seventy)).unwrap();
+    for _ in 0..15 {
+        game_frame(&mut st, &mut game);
+        assert_eq!(st.s.editor.scroll, 0, "the view stays");
+        assert!(st.s.ui.coach.typing.is_none(), "it comes in at once");
+    }
+    assert_eq!(st.s.editor.lines[69], seventy);
+}
+
+#[test]
 fn a_file_the_editor_couldnt_read_is_never_read_changed_or_saved_through_it() {
     let mut game = FakeGame::new("coach-unreadable");
     let mut st = studio(&mut game);
@@ -3507,6 +3617,9 @@ fn a_change_on_disk_to_the_open_file_is_typed_in() {
     assert_eq!(st.s.editor.text(), TEN);
     st.save_editor(&mut game);
     // A key mid-way puts the rest in at once; the key is the player's.
+    // (Their Ctrl+Z goes past first: a change on disk right after the player
+    // changed the code comes in at once, as an agent's edit does.)
+    run_for(&mut st, &mut game, coach::HANDS_OFF);
     std::fs::write(&path, &changed).unwrap();
     look_at_disk(&mut st, &mut game);
     assert!(st.s.ui.coach.typing.is_some());
@@ -3523,6 +3636,8 @@ fn a_change_on_disk_to_the_open_file_is_typed_in() {
     handle(&mut st, &mut game, key(Key::Char('z'), CTRL));
     st.s.editor.conflict = false;
     st.save_editor(&mut game);
+    // (The Ctrl+Z goes past, as above.)
+    run_for(&mut st, &mut game, coach::HANDS_OFF);
     // More than 60 lines, or Motion off: read in at once, as before.
     let long: String = (1..=80).map(|i| format!("print({i})\n")).collect();
     std::fs::write(&path, &long).unwrap();
