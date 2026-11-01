@@ -445,7 +445,7 @@ shows the JSON). Then restart the agent.
 | `game_status`, `run_lua`, `send_chat`, `game_log`, `reload_mod` | The running game: its state and mods, Lua in the console, chat and commands, the console log |
 | `open_script`, `read_script`, `edit_script`, `save_script` | The player's editor, live: open any script, read it as they have it (unsaved edits too, numbered as edits count lines), type a change in as they watch (one undo step; a file that isn't open is written to disk instead), save it and say how the mod runs |
 | `mark_lines`, `clear_marks` | Point at code in the player's editor: lines highlighted in a colour with a note, which stay on their lines as the code changes |
-| `start_lesson`, `wait_for_player` | Teach in the player's editor: numbered steps they go through with Next and Back, with tasks to try; what they do (Check, a step, a message from the Agent panel), as it happens |
+| `start_lesson`, `wait_for_player` | Teach in the player's editor: numbered steps they go through with Next and Back, with tasks to try; what they do (Check, a step, a message from the Agent pane), as it happens |
 | `horizon_ctl` | Horizon's own `horizon-ctl` commands for a game started with `--control`: playing it, its widgets, screenshots |
 
 **Headless** tests run the studio itself (the interpreter, events, commands, timers, libraries, screens) on a
@@ -944,7 +944,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `ui.rs` (`hstudio_ui`) | The screen: console, editor, library, docs, settings; input, the window's moving and sizing, the Editor tab's panes (which has the keys, dragging and sizing them) |
 | `assist.rs` (`hstudio_assist`) | The editor's and console's suggestions, and the live check of a script (syntax, unknown names) |
 | `agent.rs` (`hstudio_agent`) | The in-game agent: finding Claude Code and omp, running one with the editor's context, reading its events |
-| `coach.rs` (`hstudio_coach`) | AI agents in the player's editor: which file a request means, reading and opening, edits typed in at the agent's own caret, saving, marks that follow their lines, lessons and what the player does for an agent waiting, the Agent panel's lines that go to the code |
+| `coach.rs` (`hstudio_coach`) | AI agents in the player's editor: which file a request means, reading and opening, edits typed in at the agent's own caret, saving, marks that follow their lines, lessons and what the player does for an agent waiting, the Agent pane's lines that go to the code |
 | `meshes.rs` (`hstudio_meshes`) | Textures and meshes: PNG and base64, `.obj` and `.bbmodel`, box UV, drawing them as textured triangles |
 | `look.rs` (`hstudio_look`) | How the screen draws: the studio's layout and the Editor tab's panes (their strips, bars and bodies kept to their place), Settings, the Windows 10 window, script screens |
 | `theme.rs` (`hstudio_theme`) | The themes' palettes, and the look chosen in Settings (`look.txt`) |

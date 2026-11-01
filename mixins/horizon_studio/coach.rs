@@ -132,7 +132,7 @@ fn run_id() -> u64 {
     h.finish() >> 11
 }
 
-/// A note over the code: what an agent changed elsewhere, its Agent panel
+/// A note over the code: what an agent changed elsewhere, its Agent pane
 /// line (whose jump shows it), and when.
 pub struct Notice {
     pub text: String,
@@ -177,7 +177,7 @@ impl Default for Coach {
     }
 }
 
-/// Some code an Agent panel line is about: a file and its rows (from 0),
+/// Some code an Agent pane line is about: a file and its rows (from 0),
 /// and the mark there, whose note opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Jump {
@@ -1122,7 +1122,7 @@ fn in_run(st: &mut Studio, by: &By) -> bool {
     super::hstudio_ui::agent_busy(st) && super::hstudio_ui::agent_name(st).is_some_and(|n| n == by.name)
 }
 
-/// A line in the Agent panel for what an agent did in the editor, which
+/// A line in the Agent pane for what an agent did in the editor, which
 /// jumps to the code; named after the agent unless it is the game's own,
 /// in its run (`in_run`).
 fn say(st: &mut Studio, by: &By, in_run: bool, text: impl Into<String>, jump: Option<Jump>) {
@@ -1546,7 +1546,7 @@ fn still_there(st: &Studio, t: &mut Typing) -> bool {
 
 /// An edit whose buffer changed under it (another file opened, the file
 /// read again, the text cleared): the rest isn't typed in, and its result
-/// and the Agent panel say so.
+/// and the Agent pane say so.
 fn cut_off(st: &mut Studio, t: Typing) {
     if t.reload {
         // Half read again and changed meanwhile: the editor asks the player
@@ -1771,7 +1771,7 @@ fn keep_result(st: &mut Studio, id: u64, result: &Json) {
 
 /// Saves the editor's file for an agent, unless the player is typing in it
 /// or the file on disk changed since the editor read it (the player
-/// chooses then); a line in the Agent panel says how its mod is. Returns
+/// chooses then); a line in the Agent pane says how its mod is. Returns
 /// the mod's state.
 fn save_now(st: &mut Studio, game: &mut dyn GameApi, by: &By, in_run: bool) -> Result<Json, String> {
     let ed = &st.s.editor;
@@ -1871,7 +1871,7 @@ fn end_turn(st: &mut Studio, game: &mut dyn GameApi, ok: bool) {
     st.s.ui.agent.say(AgentLineKind::Done, text, now);
 }
 
-/// The code Agent panel line number `seq` is about, shown: its file opens
+/// The code Agent pane line number `seq` is about, shown: its file opens
 /// (the one open saved first, as the script list does: it is the player's
 /// own click), its first line a third of the way down with the cursor on
 /// it, its lines lit a moment, and the keys go back to the code. A mark's
@@ -2584,7 +2584,7 @@ pub fn file_gone(st: &mut Studio, path: &Path) {
 /// A file the studio moved, or a folder with its files (a mod renamed, a
 /// module's file renamed, a script made a module), now at `to`, whether
 /// the editor shows it or not: its marks go along, a lesson's steps too,
-/// and so do the record of an agent's unsaved edits and the Agent panel's
+/// and so do the record of an agent's unsaved edits and the Agent pane's
 /// lines about it, named as the editor names the file now. Marks already
 /// at `to` are another file's, gone from there (a lesson's steps stay).
 pub fn file_moved(st: &mut Studio, from: &Path, to: &Path) {
@@ -2814,7 +2814,7 @@ pub struct Lesson {
     pub steps: Vec<Step>,
     /// The step showing, from 0.
     pub at: usize,
-    /// The steps whose explanation the Agent panel has had.
+    /// The steps whose explanation the Agent pane has had.
     seen: Vec<bool>,
 }
 
@@ -2876,7 +2876,7 @@ fn unsaved_refusal(st: &Studio, tool: &str, also: &str) -> Option<String> {
 
 /// The link's `lesson`: a lesson of numbered steps in the editor, each
 /// lines of a script with a note, what it explains at more length (the
-/// Agent panel shows it, or where there is none the step's bubble) and what
+/// Agent pane shows it, or where there is none the step's bubble) and what
 /// the player is to try. Its first step shows, its file opened as
 /// open_script opens one: not while the player is using the studio, nor
 /// over unsaved edits. The player then goes through it with Next and Back.
@@ -3074,7 +3074,7 @@ fn end_lesson(c: &mut Coach) {
 /// Shows step `i` of the lesson: its file opens (the one open saved first,
 /// as the script list does: it is the player's own step, or a file the
 /// lesson's start found clean), its note opens and, with `scroll`, its
-/// lines show. The first time a step shows, the Agent panel says which it
+/// lines show. The first time a step shows, the Agent pane says which it
 /// is and has its explanation.
 fn show_step(st: &mut Studio, game: &mut dyn GameApi, i: usize, scroll: bool) {
     let now = st.s.now;
@@ -3249,7 +3249,8 @@ fn lesson_check(st: &mut Studio) {
     }
 }
 
-/// The lesson's × (its bubble's, or the header chip's): it ends.
+/// The lesson's × (its bubble's, or its chip's on the code's tab strip): it
+/// ends.
 fn lesson_end(st: &mut Studio) {
     let Some(l) = &st.s.ui.coach.lesson else {
         return;
@@ -3285,7 +3286,7 @@ fn can_check(st: &mut Studio) -> bool {
 }
 
 /// Whether the game's own agent can check the player's try: found, not
-/// working, and in the studio's own layout, whose Agent panel shows what
+/// working, and in the studio's own layout, whose Agent pane shows what
 /// it says (an executor style has none, as the menus' agent items know).
 fn own_agent_checks(st: &mut Studio) -> bool {
     st.s.ui.look.theme().layout == super::hstudio_theme::Layout::Studio
@@ -3382,7 +3383,7 @@ fn expire_events(st: &mut Studio) {
 /// without it, the newest any agent had), or `none`. Each answer gives this
 /// run of the game: an `after` from another run (the game started again
 /// since) gets this run's events from its first. Asking keeps the agent
-/// waiting for the player a moment: the Agent panel says so, and Enter
+/// waiting for the player a moment: the Agent pane says so, and Enter
 /// there sends it what they write.
 pub fn player_event(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let after = match params.get("after") {
@@ -3421,7 +3422,7 @@ pub fn waiting(st: &Studio) -> bool {
     st.s.now < st.s.ui.coach.waiting_until
 }
 
-/// What the Agent panel says while an agent waits for the player: "Waiting
+/// What the Agent pane says while an agent waits for the player: "Waiting
 /// for you" for the game's own, in its run, else with the agent's name.
 pub fn waiting_label(st: &Studio) -> Option<String> {
     let (by, in_run) = st.s.ui.coach.waiting_by.as_ref().filter(|_| waiting(st))?;
@@ -3432,7 +3433,7 @@ pub fn waiting_label(st: &Studio) -> Option<String> {
     })
 }
 
-/// What the player wrote in the Agent panel while an agent waits for them:
+/// What the player wrote in the Agent pane while an agent waits for them:
 /// it goes to that agent, and shows as theirs.
 pub fn reply(st: &mut Studio, text: &str) {
     if text.is_empty() {

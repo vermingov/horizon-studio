@@ -199,7 +199,7 @@ pub enum Action {
     ModelMenu,
     /// Where a right click opens a menu; left clicks go to what is under it.
     Spot(Spot),
-    /// The code an Agent panel line is about (by the line's number), shown:
+    /// The code an Agent pane line is about (by the line's number), shown:
     /// what an agent did in the editor.
     AgentJump(u64),
     /// An agent's mark (by its number): its note opened, or its × pressed;
@@ -880,7 +880,7 @@ pub struct Ui {
     pub(crate) dock_undo: Option<Dock>,
     /// Sizing from the keys: the pane, and the path of its bar that is lit.
     pub sizing: Option<(Pane, u16)>,
-    /// What the agent is asked, typed in its panel.
+    /// What the agent is asked, typed in its pane.
     pub agent_input: LineEdit,
     pub problem_sel: usize,
     pub agent: AgentPane,
@@ -4673,7 +4673,7 @@ fn console_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
     }
 }
 
-/// One line of the Agent panel's conversation.
+/// One line of the Agent pane's conversation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentLine {
     pub kind: AgentLineKind,
@@ -4701,7 +4701,7 @@ pub enum AgentLineKind {
     Action,
 }
 
-/// The Agent panel: the conversation, the agent working, the conversation
+/// The Agent pane: the conversation, the agent working, the conversation
 /// to resume, which agent.
 #[derive(Default)]
 pub struct AgentPane {
@@ -5101,7 +5101,7 @@ pub fn agent_new_conversation(st: &mut Studio) {
     pane.say(AgentLineKind::Done, "New conversation.", now);
 }
 
-/// The Agent panel's input: Enter asks, the rest edits the line.
+/// The Agent pane's input: Enter asks, the rest edits the line.
 fn agent_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
     let _ = game;
     match key {

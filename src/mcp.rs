@@ -561,7 +561,7 @@ pub fn tools() -> Json {
                             "start_line": { "type": "integer", "description": "The step's first line, from 1." },
                             "end_line": { "type": "integer", "description": "Its last (default start_line)." },
                             "note": { "type": "string", "description": "What these lines do, in a sentence or two." },
-                            "explain": { "type": "string", "description": "More about it, for the Agent panel." },
+                            "explain": { "type": "string", "description": "More about it, for the Agent pane." },
                             "task": { "type": "string", "description": "Something to try here, such as: change 20 to 40." },
                             "tone": { "type": "string", "enum": ["note", "error", "warning", "good"] },
                             "id": { "type": "string", "description": "Another mod's file for this step." },
@@ -580,7 +580,7 @@ pub fn tools() -> Json {
               (default 30, 5 to 50): next or back (the lesson's step they went to), check (they want their try \
               of a step checked: its lines as they are now, the task and the live check's problems), done or \
               closed (the lesson ended), dismissed (they closed your notes), saved (they saved, with the mod's \
-              state), message (what they wrote to you in the Agent panel), or timeout: nothing yet, call it again \
+              state), message (what they wrote to you in the Agent pane), or timeout: nothing yet, call it again \
               to go on waiting. What they did while you weren't waiting comes first. While you wait the Agent \
               panel says so, and Enter there sends you their answer. Live only.",
             json!({
@@ -899,7 +899,7 @@ impl Server {
 
     /// wait_for_player: the next thing the player does in the editor (a
     /// lesson's Next, Back or Check, a note closed, a save, what they write
-    /// in the Agent panel), asked for every few frames for at most
+    /// in the Agent pane), asked for every few frames for at most
     /// `timeout_s` seconds (5 to 50, default 30), so the server is never
     /// held long: the agent calls again to go on waiting.
     fn wait_for_player(&mut self, args: &Json) -> Result<Json, String> {
