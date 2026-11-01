@@ -4,14 +4,14 @@
 // IsLoaded), classes that stay lenient, TextTruncate and
 // MaxVisibleGraphemes, layout values fresh when read, TextBox editing
 // through the GUI's screen, ScrollingFrames' directions and bars, the
-// services scripts ask for, right clicks on the GUI's screen, and the
-// drawing cut, turned and coloured once drawn (ClipsDescendants, Rotation,
-// UIGradient, CanvasGroup).
+// services scripts ask for, right clicks on the GUI's screen, input over
+// what went since the last frame, and the drawing cut, turned and coloured
+// once drawn (ClipsDescendants, Rotation, UIGradient, CanvasGroup).
 
 mod common;
 
 use common::{FakeGame, log, mod_index, run_for, studio};
-use horizon_studio::game::hstudio::{ModState, Studio};
+use horizon_studio::game::hstudio::{EntityInfo, ModState, Studio};
 use horizon_studio::game::hstudio_look::draw_screen;
 use horizon_studio::game::hstudio_rbx_draw::{
     OUTPUTS, PLACE, fresh_layout, fresh_output, lay_out, objects_at, pointer_button, pointer_moved, wheel,
@@ -1316,6 +1316,92 @@ fn a_held_scroll_bar_lets_go_with_the_screen() {
     assert!(st.s.screen.is_none(), "nothing wants the pointer");
     pointer_moved(&mut st.s.rbx, 195.0, 90.0);
     assert_eq!(say(&mut st, &mut game, "pos"), held);
+}
+
+#[test]
+fn input_over_what_went_since_the_last_frame_reaches_what_is_left() {
+    // A list's item destroys itself when clicked, and the layer lets it go
+    // at its next sweep while the pointer rests where it was: the wheel
+    // then scrolls the list (the pointer's hover still names the item).
+    let mut game = FakeGame::new("rbx-gone-under");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local list = Instance.new("ScrollingFrame", gui)
+        list.Size = UDim2.fromOffset(200, 100)
+        list.CanvasSize = UDim2.fromOffset(200, 300)
+        list.ScrollingDirection = Enum.ScrollingDirection.Y
+        local item = Instance.new("TextButton", list)
+        item.Size = UDim2.fromOffset(200, 30)
+        item.Activated:Connect(function() item:Destroy() end)
+        command("pos", function() return tostring(list.CanvasPosition) end)
+    "#;
+    load(&mut game, &mut st, "gone", src, 0.6);
+    st.s.rbx.pointer.free = true;
+    hud(&mut st, &mut game);
+    pointer_moved(&mut st.s.rbx, 50.0, 10.0);
+    pointer_button(&mut st.s.rbx, true, true);
+    pointer_button(&mut st.s.rbx, true, false);
+    let item = st.s.rbx.pointer.hover[0];
+    // Its handler runs, then the sweep (every 120 frames) lets it go.
+    run_for(&mut st, &mut game, 6.1);
+    assert!(st.s.rbx.try_inst(item).is_none(), "let go");
+    wheel(&mut st.s.rbx, -1.0);
+    assert_eq!(say(&mut st, &mut game, "pos"), "0, 40");
+    // A mob's clickable name tag, its mirror let go when the mob goes: the
+    // wheel and a click in that frame, before the GUI is drawn again (the
+    // last frame's layout has the tag), reach nothing that went.
+    let mut game = FakeGame::new("rbx-gone-mob");
+    game.entities = vec![EntityInfo {
+        id: 5,
+        kind: "minecraft:zombie".into(),
+        pos: [10.5, 64.0, -13.25],
+        width: 0.6,
+        height: 1.95,
+        eye: 1.74,
+        health: 20.0,
+        max_health: 20.0,
+        on_ground: true,
+        ..EntityInfo::default()
+    }];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local board = Instance.new("BillboardGui", workspace:WaitForChild("Zombie").Head)
+        board.Size = UDim2.fromOffset(100, 40)
+        board.Active = true
+        local tag = Instance.new("TextButton", board)
+        tag.Size = UDim2.fromScale(1, 1)
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local modal = Instance.new("TextButton", gui)
+        modal.Size = UDim2.fromOffset(50, 20)
+        modal.Modal = true
+        modal.Activated:Connect(function() print("clicked") end)
+    "#;
+    load(&mut game, &mut st, "tag", src, 0.6);
+    hud(&mut st, &mut game);
+    pointer_moved(&mut st.s.rbx, 480.0, 270.0);
+    let over: Vec<_> =
+        st.s.rbx
+            .pointer
+            .hover
+            .iter()
+            .map(|&i| st.s.rbx.inst(i).class.name)
+            .collect();
+    assert_eq!(over, ["TextButton"], "the tag");
+    game.entities.clear();
+    st.frame(&mut game, 0.016);
+    let tag = st.s.rbx.pointer.hover[0];
+    assert!(st.s.rbx.try_inst(tag).is_none(), "let go with the mirror");
+    wheel(&mut st.s.rbx, -1.0);
+    pointer_button(&mut st.s.rbx, true, true);
+    pointer_button(&mut st.s.rbx, true, false);
+    // The GUI goes on: its Modal button still takes a click.
+    hud(&mut st, &mut game);
+    pointer_moved(&mut st.s.rbx, 10.0, 10.0);
+    pointer_button(&mut st.s.rbx, true, true);
+    pointer_button(&mut st.s.rbx, true, false);
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(printed(&st, "tag"), ["clicked"]);
 }
 
 #[test]
