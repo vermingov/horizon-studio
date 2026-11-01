@@ -488,6 +488,19 @@ bindings = [
   { name = "port", ty = "u16", value = "port" },
 ]
 
+# A join that ViaHorizon ends (not signed in, its sign-in failing) ends with
+# its reason as it is written; Horizon words other failures as an "Internal
+# Exception".
+[[injection]]
+id = "via-reason"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::net::connection_lost"
+helper = "via_reason.rs"
+bindings = [
+  { name = "e", ty = "&horizon_protocol::Error", value = "&e" },
+]
+
 [[injection]]
 id = "via-srv"
 kind = "HEAD"
