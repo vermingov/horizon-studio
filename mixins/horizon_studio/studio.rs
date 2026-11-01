@@ -320,6 +320,36 @@ pub trait GameApi {
         let _ = (walk, jump);
         false
     }
+    /// Lights the world regardless of its light, 0 (the game's own) to 1
+    /// (fullbright, as night vision does).
+    fn set_fullbright(&mut self, strength: f32) {
+        let _ = strength;
+    }
+    /// The time of day the client shows, in Minecraft's ticks (None: the
+    /// server's).
+    fn set_time_of_day(&mut self, ticks: Option<i64>) {
+        let _ = ticks;
+    }
+    /// The fog's far end in blocks (None: the game's own).
+    fn set_fog_end(&mut self, blocks: Option<f32>) {
+        let _ = blocks;
+    }
+    /// The player's gravity as a multiple of the game's.
+    fn set_gravity_scale(&mut self, scale: f64) {
+        let _ = scale;
+    }
+    /// The field of view in degrees (None: the player's setting).
+    fn set_fov(&mut self, degrees: Option<f32>) {
+        let _ = degrees;
+    }
+    /// Turns the player to look this way (degrees; yaw 0 faces south).
+    fn set_look(&mut self, yaw: f32, pitch: f32) {
+        let _ = (yaw, pitch);
+    }
+    /// Turns the player's view by this much (degrees).
+    fn turn_player(&mut self, dyaw: f32, dpitch: f32) {
+        let _ = (dyaw, dpitch);
+    }
     /// The studio's own screens draw with Horizon's design system, in dp
     /// (the launcher's logical pixels): the screen in dp, and dp per GUI pixel.
     fn dp(&mut self) -> (f32, f32, f32);
@@ -1096,6 +1126,15 @@ impl State {
         }
         self.console_env = None;
         self.genv = None;
+        // The game's own lighting, sky, camera and gravity again.
+        self.rbx.world.effects = super::hstudio_rbx_world::Effects {
+            light: Some(0.0),
+            time: Some(None),
+            fog: Some(None),
+            gravity: Some(1.0),
+            fov: Some(None),
+            ..Default::default()
+        };
         ran
     }
     pub fn log(&mut self, kind: LogKind, text: impl Into<String>) {
@@ -2935,6 +2974,30 @@ impl Studio {
             rbx.world.noclip = noclip;
             game.set_noclip(noclip);
         }
+        // What scripts set of the game's lighting, sky, camera and gravity.
+        let fx = &mut rbx.world.effects;
+        if let Some(light) = fx.light.take() {
+            game.set_fullbright(light);
+        }
+        if let Some(time) = fx.time.take() {
+            game.set_time_of_day(time);
+        }
+        if let Some(fog) = fx.fog.take() {
+            game.set_fog_end(fog);
+        }
+        if let Some(g) = fx.gravity.take() {
+            game.set_gravity_scale(g);
+        }
+        if let Some(fov) = fx.fov.take() {
+            game.set_fov(fov);
+        }
+        if let Some((yaw, pitch)) = fx.look.take() {
+            game.set_look(yaw, pitch);
+        }
+        let (dyaw, dpitch) = std::mem::take(&mut fx.turn);
+        if dyaw != 0.0 || dpitch != 0.0 {
+            game.turn_player(dyaw, dpitch);
+        }
         if let Some(v) = super::hstudio_rbx_world::mover_velocity(rbx) {
             // Studs a second are blocks a second here; the game counts ticks.
             game.set_player_velocity([v.x / 20.0, v.y / 20.0, v.z / 20.0]);
@@ -3147,6 +3210,8 @@ impl Studio {
             super::hstudio_rbx_draw::lay_out(&mut self.s.rbx, game);
             super::hstudio_rbx_draw::draw(&self.s.rbx, game, now, &mut images, &ws);
         }
+        // Highlights and the other adornments, through walls.
+        super::hstudio_rbx_draw::draw_adornments(&self.s.rbx, game);
         super::hstudio_sunc::draw_drawings(&self.s.rbx, game, &mut images);
         self.s.rbx.screen_images = images;
         let panels: Vec<(Corner, Vec<String>)> = self

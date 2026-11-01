@@ -262,6 +262,27 @@ impl GameApi for FakeGame {
         self.moves.push(format!("speed {walk:.2} {jump:.2}"));
         true
     }
+    fn set_fullbright(&mut self, strength: f32) {
+        self.moves.push(format!("fullbright {strength:.2}"));
+    }
+    fn set_time_of_day(&mut self, ticks: Option<i64>) {
+        self.moves.push(format!("time {ticks:?}"));
+    }
+    fn set_fog_end(&mut self, blocks: Option<f32>) {
+        self.moves.push(format!("fog {blocks:?}"));
+    }
+    fn set_gravity_scale(&mut self, scale: f64) {
+        self.moves.push(format!("gravity {scale:.2}"));
+    }
+    fn set_fov(&mut self, degrees: Option<f32>) {
+        self.moves.push(format!("fov {degrees:?}"));
+    }
+    fn set_look(&mut self, yaw: f32, pitch: f32) {
+        self.moves.push(format!("look {yaw:.1} {pitch:.1}"));
+    }
+    fn turn_player(&mut self, dyaw: f32, dpitch: f32) {
+        self.moves.push(format!("turn {dyaw:.1} {dpitch:.1}"));
+    }
     fn dp(&mut self) -> (f32, f32, f32) {
         (960.0, 540.0, 1.0)
     }

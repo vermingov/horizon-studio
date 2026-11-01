@@ -375,3 +375,90 @@ fn saveinstance_writes_a_model_studio_and_the_reader_open() {
     assert!(animate.properties.iter().any(|(k, v)| k == "Source"
         && matches!(v, horizon_studio::game::hstudio_rbx_file::PropValue::String(s) if s.starts_with(b"local Character"))));
 }
+
+#[test]
+fn lighting_workspace_and_camera_reach_the_game() {
+    let mut game = FakeGame::new("compat-effects");
+    let mut st = studio(&mut game);
+    game.write_mod(
+        "t.lua",
+        r#"
+        local Lighting = game:GetService("Lighting")
+        command("fullbright", function()
+            -- Infinite Yield's fullbright.
+            Lighting.Brightness = 2
+            Lighting.ClockTime = 14
+            Lighting.FogEnd = 100000
+            Lighting.GlobalShadows = false
+            Lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+        end)
+        command("dark", function()
+            Lighting.Brightness = 1 Lighting.GlobalShadows = true
+            Lighting.OutdoorAmbient = Color3.fromRGB(70, 70, 70)
+            Lighting.FogEnd = 64
+        end)
+        command("gravity", function() workspace.Gravity = 0 end)
+        command("fov", function() workspace.CurrentCamera.FieldOfView = 100 end)
+        command("look", function()
+            local cam = workspace.CurrentCamera
+            cam.CFrame = CFrame.lookAt(Vector3.new(0, 0, 0), Vector3.new(1, 0, 0))
+        end)
+        command("turn", function() mousemoverel(100, 0) end)
+        "#,
+    );
+    run_for(&mut st, &mut game, 0.7);
+    let run = |st: &mut horizon_studio::game::hstudio::Studio, game: &mut FakeGame, cmd: &str| {
+        let mark = game.moves.len();
+        assert!(st.command(cmd), "{cmd}");
+        run_for(st, game, 0.2);
+        game.moves[mark..].to_vec()
+    };
+    let m = run(&mut st, &mut game, "fullbright");
+    assert!(m.contains(&"fullbright 1.00".to_owned()), "{m:?}");
+    assert!(m.contains(&"time Some(8000)".to_owned()), "{m:?}");
+    assert!(m.contains(&"fog None".to_owned()), "{m:?}");
+    let m = run(&mut st, &mut game, "dark");
+    assert!(m.contains(&"fullbright 0.00".to_owned()), "{m:?}");
+    assert!(m.contains(&"fog Some(64.0)".to_owned()), "{m:?}");
+    assert_eq!(run(&mut st, &mut game, "gravity"), ["gravity 0.00"]);
+    assert_eq!(run(&mut st, &mut game, "fov"), ["fov Some(100.0)"]);
+    // Looking along +x: Minecraft's yaw -90.
+    assert_eq!(run(&mut st, &mut game, "look"), ["look -90.0 0.0"]);
+    let m = run(&mut st, &mut game, "turn");
+    assert_eq!(m, ["turn 15.0 0.0"]);
+    assert!(game.sent.is_empty(), "{:?}", game.sent);
+}
+
+#[test]
+fn a_highlight_is_drawn_over_its_part() {
+    let mut game = FakeGame::new("compat-highlight");
+    let mut st = studio(&mut game);
+    game.write_mod(
+        "t.lua",
+        r#"
+        local p = Instance.new("Part")
+        p.Anchored = true
+        p.Size = Vector3.new(2, 2, 2)
+        p.CFrame = CFrame.new(10.5, 65.62, -13.25)
+        p.Parent = workspace
+        local h = Instance.new("Highlight")
+        h.FillColor = Color3.new(1, 0, 0)
+        h.OutlineColor = Color3.new(0, 1, 0)
+        h.Adornee = p
+        h.Parent = p
+        "#,
+    );
+    run_for(&mut st, &mut game, 0.7);
+    st.hud(&mut game);
+    let red = game
+        .drawn
+        .iter()
+        .filter(|l| l.starts_with("rect") && l.contains("ff0000"))
+        .count();
+    let green = game
+        .drawn
+        .iter()
+        .filter(|l| l.starts_with("rect") && l.contains("ff00"))
+        .count();
+    assert!(red >= 1 && green >= 4, "{:?}", game.drawn);
+}

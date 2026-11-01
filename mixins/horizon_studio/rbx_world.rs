@@ -18,7 +18,7 @@ use super::hstudio::{EntityInfo, GameApi, Owner, PlayerEntry, PlayerInfo, Player
 use super::hstudio_lua::{Lua, Res, Value, bad_arg, check_num, check_text};
 use super::hstudio_rbx::{Env, Id, Rbx};
 use super::hstudio_rbx_types::{CFrame, Vector3};
-use super::hstudio_rbx_values::{as_cf, cf, enum_item, enum_value, v3};
+use super::hstudio_rbx_values::{as_c3, as_cf, cf, enum_item, enum_value, v3};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -96,6 +96,9 @@ pub struct World {
     /// the game, and whether the player passes through blocks now.
     pub speed_request: Option<(f64, f64)>,
     pub noclip: bool,
+    /// What scripts asked of the game's own rendering and player, sent to
+    /// the game each frame (Studio::roblox_effects).
+    pub effects: Effects,
     /// The game's speeds the Humanoid was last given: a script's own
     /// WalkSpeed stays until the game's changes.
     pub speed: Option<f64>,
@@ -144,6 +147,7 @@ impl Default for World {
             teleport: None,
             speed_request: None,
             noclip: false,
+            effects: Effects::default(),
             speed: None,
             jump: None,
             state: "Running",
@@ -696,6 +700,106 @@ pub fn health_set(rbx: &mut Rbx) {
     rbx.respawn_at = Some(rbx.now + wait);
     set_state(rbx, "Dead", 0.0);
     rbx.fire(hum, "Died", Vec::new());
+}
+
+// ---------------------------------------------------------------- effects on the game
+
+/// The game's own lighting, sky, camera and player as Roblox scripts set
+/// them. Each request is taken by the frame that sends it to the game.
+#[derive(Default, Debug, Clone, PartialEq)]
+pub struct Effects {
+    /// How bright the world is lit regardless of its light, 0 (the game's
+    /// own) to 1 (fullbright, as night vision lights it).
+    pub light: Option<f32>,
+    /// The time of day the client shows (Minecraft's ticks), or None: the
+    /// server's.
+    pub time: Option<Option<i64>>,
+    /// The fog's far end, in blocks (None: the game's).
+    pub fog: Option<Option<f32>>,
+    /// The player's gravity, as a multiple of the game's.
+    pub gravity: Option<f64>,
+    /// The field of view, in degrees (None: the player's setting).
+    pub fov: Option<Option<f32>>,
+    /// Where the player looks (yaw, pitch in degrees), set outright.
+    pub look: Option<(f32, f32)>,
+    /// How far to turn the player's view (yaw, pitch in degrees).
+    pub turn: (f32, f32),
+}
+
+/// Roblox's default Workspace.Gravity, in studs per second squared.
+pub const ROBLOX_GRAVITY: f64 = 196.2;
+
+/// How brightly a Lighting lights the world past its own light (Effects::
+/// light): none while it has Roblox's shadows and default ambient light;
+/// full for the fullbright scripts' settings (GlobalShadows off with a
+/// light OutdoorAmbient, a light Ambient, or Brightness raised).
+pub fn lighting_strength(rbx: &Rbx) -> f32 {
+    let Some(l) = rbx.service("Lighting") else { return 0.0 };
+    let lum = |key: &str| as_c3(&rbx.raw_get(l, key)).map_or(0.0, |c| (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) as f32);
+    let shadows = rbx.raw_get(l, "GlobalShadows").truthy();
+    let brightness = rbx.raw_get(l, "Brightness").to_num().unwrap_or(2.0) as f32;
+    let exposure = rbx.raw_get(l, "ExposureCompensation").to_num().unwrap_or(0.0) as f32;
+    // Roblox's own defaults (70, 70, 70 ambient) light nothing extra.
+    let ambient = ((lum("Ambient") - 0.3) / 0.4).clamp(0.0, 1.0);
+    let outdoor = if shadows {
+        0.0
+    } else {
+        (lum("OutdoorAmbient") / 0.5).clamp(0.0, 1.0)
+    };
+    let bright = ((brightness - 2.0) / 3.0).clamp(0.0, 1.0);
+    let exposed = (exposure / 2.0).clamp(0.0, 1.0);
+    ambient.max(outdoor).max(bright).max(exposed)
+}
+
+/// Roblox's ClockTime (hours) as Minecraft's time of day (ticks; 0 is 6:00).
+pub fn clock_ticks(hours: f64) -> i64 {
+    (((hours - 6.0) * 1000.0).rem_euclid(24000.0)) as i64
+}
+
+/// A script set one of the properties that reach the game itself: the
+/// request for the next frame.
+pub fn effect_set(rbx: &mut Rbx, id: Id, prop: &str) {
+    let class = rbx.inst(id).class.name;
+    match (class, prop) {
+        ("Lighting", "Brightness" | "Ambient" | "OutdoorAmbient" | "GlobalShadows" | "ExposureCompensation") => {
+            rbx.world.effects.light = Some(lighting_strength(rbx));
+        }
+        ("Lighting", "ClockTime") => {
+            let h = rbx.raw_get(id, "ClockTime").to_num().unwrap_or(14.0);
+            rbx.world.effects.time = Some(Some(clock_ticks(h)));
+        }
+        ("Lighting", "TimeOfDay") => {
+            let text = rbx.raw_get(id, "TimeOfDay").as_text().unwrap_or_default();
+            let mut parts = text.split(':').map(|p| p.trim().parse::<f64>().unwrap_or(0.0));
+            let h = parts.next().unwrap_or(14.0)
+                + parts.next().unwrap_or(0.0) / 60.0
+                + parts.next().unwrap_or(0.0) / 3600.0;
+            rbx.world.effects.time = Some(Some(clock_ticks(h)));
+        }
+        ("Lighting", "FogEnd") => {
+            let end = rbx.raw_get(id, "FogEnd").to_num().unwrap_or(100000.0);
+            // Roblox's default (100000) is no fog at all: the game's own.
+            rbx.world.effects.fog = Some((end < 10000.0).then_some(end.max(0.0) as f32));
+        }
+        ("Workspace", "Gravity") => {
+            let g = rbx.raw_get(id, "Gravity").to_num().unwrap_or(ROBLOX_GRAVITY);
+            rbx.world.effects.gravity = Some((g / ROBLOX_GRAVITY).clamp(0.0, 10.0));
+        }
+        ("Camera", "FieldOfView") if id == rbx.camera => {
+            let fov = rbx.raw_get(id, "FieldOfView").to_num().unwrap_or(70.0);
+            rbx.world.effects.fov = Some(Some(fov.clamp(1.0, 120.0) as f32));
+        }
+        ("Camera", "CFrame") if id == rbx.camera => {
+            if let Some(cf) = as_cf(&rbx.raw_get(id, "CFrame")) {
+                let look = cf.look_vector();
+                // Minecraft's yaw: 0 faces +Z (south), 90 faces -X; pitch is down.
+                let yaw = (-look.x).atan2(look.z).to_degrees() as f32;
+                let pitch = (-look.y).clamp(-1.0, 1.0).asin().to_degrees() as f32 + 0.0;
+                rbx.world.effects.look = Some((yaw, pitch));
+            }
+        }
+        _ => {}
+    }
 }
 
 // ---------------------------------------------------------------- the world's entities

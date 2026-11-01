@@ -1213,6 +1213,8 @@ pub fn step_tweens(rbx: &mut Rbx, dt: f64) {
     for (id, prop, v) in sets {
         if rbx.try_inst(id).is_some_and(|i| !i.destroyed) {
             rbx.raw_set(id, prop, v);
+            // A tweened Lighting, camera or gravity reaches the game too.
+            super::hstudio_rbx_world::effect_set(rbx, id, prop);
             // A tween of the player's root part moves the player.
             if id == rbx.root_part && prop == "CFrame" {
                 super::hstudio_rbx_world::root_moved(rbx);

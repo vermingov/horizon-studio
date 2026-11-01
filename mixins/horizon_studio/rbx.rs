@@ -329,7 +329,9 @@ pub static CLASSES: &[C] = &[
         "Workspace",
         &[
             // Minecraft's, in blocks a second each second (0.08 a tick each tick).
-            p("Gravity", Num, N(32.0)),
+            // Roblox's, as scripts expect it (a fraction of it is the
+            // player's gravity: hstudio_rbx_world::effect_set).
+            p("Gravity", Num, N(196.2)),
             p("CurrentCamera", Obj, D::Nil),
             ro("Terrain", Obj, D::Nil),
             ro("DistributedGameTime", Num, N(0.0)),
@@ -3605,6 +3607,7 @@ pub fn hidden_default(class: &str, prop: &str) -> Option<f64> {
 impl Rbx {
     /// What a script's assignment does beyond storing the value.
     fn after_set(&mut self, id: Id, prop: &str) {
+        super::hstudio_rbx_world::effect_set(self, id, prop);
         let class = self.inst(id).class.name;
         match (class, prop) {
             ("Sound", "Playing") if self.raw_get(id, "Playing").truthy() => self.play_sound(id),

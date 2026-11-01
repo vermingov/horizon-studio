@@ -3421,3 +3421,234 @@ fn drawn_line_move(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id, cursor: usize,
     }
     Some(nearest(game, &t, j, x, scale, font))
 }
+
+// ---------------------------------------------------------------- adornments
+
+/// The adornments Roblox draws over what they adorn: Highlights (ESP),
+/// SelectionBoxes, and Box/Sphere/Cylinder handle adornments.
+const ADORNMENTS: &[&str] = &[
+    "Highlight",
+    "SelectionBox",
+    "SelectionSphere",
+    "BoxHandleAdornment",
+    "SphereHandleAdornment",
+    "CylinderHandleAdornment",
+];
+
+/// A property of a kept class: what a script set, else Roblox's default.
+fn adorn_prop(rbx: &Rbx, id: Id, name: &str) -> Value {
+    let inst = rbx.inst(id);
+    if let Some(v) = inst.props.iter().find(|(k, _)| **k == name).map(|(_, v)| v.clone()) {
+        return v;
+    }
+    if let Some(v) = inst.extra.get(name) {
+        return v.clone();
+    }
+    match super::hstudio_rbx_api::member(inst.class.name, name) {
+        Some((_, super::hstudio_rbx_api::Member::Prop { cat, ty, default, .. })) => {
+            super::hstudio_rbx_api::default_value(cat, ty, default)
+        }
+        _ => Value::Nil,
+    }
+}
+
+/// The adornments to draw, with their parts: (adornment, parts it covers).
+fn adornments(rbx: &Rbx) -> Vec<(Id, Vec<Id>)> {
+    let mut out = Vec::new();
+    for inst in rbx.insts.values() {
+        if inst.destroyed || !ADORNMENTS.contains(&inst.class.name) {
+            continue;
+        }
+        let id = inst.id;
+        let in_place = rbx.is_descendant_of(id, rbx.game) || rbx.is_descendant_of(id, rbx.hui);
+        if !in_place {
+            continue;
+        }
+        let on = if inst.class.name == "Highlight" {
+            adorn_prop(rbx, id, "Enabled").truthy()
+        } else {
+            adorn_prop(rbx, id, "Visible").truthy()
+        };
+        if !on {
+            continue;
+        }
+        // The Adornee, else (a Highlight's) the parent.
+        let target = rbx
+            .id_of(&adorn_prop(rbx, id, "Adornee"))
+            .or(if inst.class.name == "Highlight" {
+                inst.parent
+            } else {
+                None
+            });
+        let Some(target) = target.filter(|&t| rbx.try_inst(t).is_some_and(|i| !i.destroyed)) else {
+            continue;
+        };
+        let mut parts: Vec<Id> = Vec::new();
+        if is_a(rbx.inst(target).class, "BasePart") {
+            parts.push(target);
+        } else {
+            parts.extend(
+                rbx.descendants(target)
+                    .into_iter()
+                    .filter(|&d| is_a(rbx.inst(d).class, "BasePart")),
+            );
+        }
+        if !parts.is_empty() {
+            out.push((id, parts));
+        }
+    }
+    out.sort_by_key(|(id, _)| *id);
+    out
+}
+
+/// A box's corners (its frame and size).
+fn box_corners(frame: CFrame, size: Vector3) -> [Vector3; 8] {
+    let h = size * 0.5;
+    let mut out = [Vector3::ZERO; 8];
+    for (i, c) in out.iter_mut().enumerate() {
+        let sx = if i & 1 == 0 { -h.x } else { h.x };
+        let sy = if i & 2 == 0 { -h.y } else { h.y };
+        let sz = if i & 4 == 0 { -h.z } else { h.z };
+        *c = frame * Vector3::new(sx, sy, sz);
+    }
+    out
+}
+
+/// The screen rectangle (dp) a box covers, None when any of it is behind the
+/// camera or it is all off the screen.
+fn screen_rect(cam: &super::hstudio::Camera, w: f32, h: f32, corners: &[Vector3; 8]) -> Option<[f32; 4]> {
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for c in corners {
+        let (x, y, _) = cam.project([c.x, c.y, c.z], w, h)?;
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x);
+        y1 = y1.max(y);
+    }
+    if x1 < 0.0 || y1 < 0.0 || x0 > w || y0 > h {
+        return None;
+    }
+    let (x0, y0) = (x0.max(-w), y0.max(-h));
+    let (x1, y1) = (x1.min(2.0 * w), y1.min(2.0 * h));
+    Some([x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)])
+}
+
+fn outline(game: &mut dyn GameApi, r: [f32; 4], t: f32, c: u32) {
+    let [x, y, w, h] = r;
+    game.dp_rect([x - t, y - t, w + 2.0 * t, t], 0.0, c);
+    game.dp_rect([x - t, y + h, w + 2.0 * t, t], 0.0, c);
+    game.dp_rect([x - t, y, t, h], 0.0, c);
+    game.dp_rect([x + w, y, t, h], 0.0, c);
+}
+
+/// The adornments over everything (on the HUD, so through walls, as
+/// Roblox's Highlight with DepthMode AlwaysOnTop and AlwaysOnTop handle
+/// adornments draw).
+pub fn draw_adornments(rbx: &Rbx, game: &mut dyn GameApi) {
+    if !rbx.active {
+        return;
+    }
+    let list = adornments(rbx);
+    if list.is_empty() {
+        return;
+    }
+    let (w, h, _) = game.dp();
+    let Some(cam) = game.camera() else { return };
+    let c3_of = |id: Id, k: &str, or: Color3| as_c3(&adorn_prop(rbx, id, k)).unwrap_or(or);
+    let num_of = |id: Id, k: &str, or: f64| adorn_prop(rbx, id, k).to_num().unwrap_or(or);
+    let mut budget = 2000usize;
+    for (id, parts) in list {
+        let class = rbx.inst(id).class.name;
+        let rects: Vec<[f32; 4]> = parts
+            .iter()
+            .filter_map(|&p| {
+                let part = rbx.inst(p);
+                let frame = as_cf(&part.get("CFrame")).unwrap_or_default();
+                let size = as_v3(&part.get("Size")).unwrap_or(Vector3::ONE);
+                let (frame, size) = if class.ends_with("HandleAdornment") {
+                    // Its own size and offset, about the adornee's frame.
+                    let own = as_cf(&adorn_prop(rbx, id, "CFrame")).unwrap_or_default();
+                    let s = as_v3(&adorn_prop(rbx, id, "Size")).unwrap_or(size);
+                    let s = match class {
+                        "SphereHandleAdornment" => {
+                            let r = num_of(id, "Radius", 1.0);
+                            Vector3::new(r, r, r) * 2.0
+                        }
+                        "CylinderHandleAdornment" => {
+                            let r = num_of(id, "Radius", 1.0);
+                            Vector3::new(r * 2.0, r * 2.0, num_of(id, "Height", 1.0))
+                        }
+                        _ => s,
+                    };
+                    (frame * own, s)
+                } else {
+                    (frame, size)
+                };
+                screen_rect(&cam, w, h, &box_corners(frame, size))
+            })
+            .collect();
+        if rects.is_empty() {
+            continue;
+        }
+        match class {
+            "Highlight" => {
+                let fill = c3_of(id, "FillColor", Color3::new(1.0, 0.0, 0.0));
+                let fill_t = num_of(id, "FillTransparency", 0.5);
+                let line = c3_of(id, "OutlineColor", Color3::new(1.0, 1.0, 1.0));
+                let line_t = num_of(id, "OutlineTransparency", 0.0);
+                for r in &rects {
+                    if fill_t < 1.0 && budget > 0 {
+                        budget -= 1;
+                        game.dp_rect(*r, 0.0, argb(fill, 1.0 - fill_t));
+                    }
+                }
+                if line_t < 1.0 && budget > 4 {
+                    budget -= 4;
+                    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                    for r in &rects {
+                        x0 = x0.min(r[0]);
+                        y0 = y0.min(r[1]);
+                        x1 = x1.max(r[0] + r[2]);
+                        y1 = y1.max(r[1] + r[3]);
+                    }
+                    outline(game, [x0, y0, x1 - x0, y1 - y0], 1.5, argb(line, 1.0 - line_t));
+                }
+            }
+            "SelectionBox" | "SelectionSphere" => {
+                let line = c3_of(id, "Color3", Color3::new(0.05, 0.41, 0.67));
+                let t = num_of(id, "Transparency", 0.0);
+                let surface = c3_of(id, "SurfaceColor3", line);
+                let surface_t = num_of(id, "SurfaceTransparency", 1.0);
+                let thick = (num_of(id, "LineThickness", 0.15) * 10.0).clamp(1.0, 6.0) as f32;
+                for r in &rects {
+                    if budget < 5 {
+                        break;
+                    }
+                    budget -= 5;
+                    if surface_t < 1.0 {
+                        game.dp_rect(*r, 0.0, argb(surface, 1.0 - surface_t));
+                    }
+                    if t < 1.0 {
+                        outline(game, *r, thick, argb(line, 1.0 - t));
+                    }
+                }
+            }
+            _ => {
+                let c = c3_of(id, "Color3", Color3::new(0.05, 0.41, 0.67));
+                let t = num_of(id, "Transparency", 0.0);
+                if t >= 1.0 {
+                    continue;
+                }
+                let round: f32 = if class == "BoxHandleAdornment" { 0.0 } else { 999.0 };
+                for r in &rects {
+                    if budget == 0 {
+                        break;
+                    }
+                    budget -= 1;
+                    let radius = round.min(r[2].min(r[3]) / 2.0);
+                    game.dp_rect(*r, radius, argb(c, 1.0 - t));
+                }
+            }
+        }
+    }
+}

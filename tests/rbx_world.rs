@@ -423,10 +423,10 @@ fn the_humanoid_follows_the_game() {
     run_for(&mut st, &mut game, 0.1);
     say(&mut st, &mut game, "events");
     let p = printed(&st, "hum");
-    assert_eq!(p[0], "4.3178    8.4000    1.2522    32    100");
+    assert_eq!(p[0], "4.3178    8.4000    1.2522    196.2    100");
     assert_eq!(p[1], "0.000 0.000 0.000    0.000 0.000 0.000    Running    Grass");
-    assert_eq!(p[2], "50.0000    8.4000    1.2522    32    100");
-    assert_eq!(p[3], "5.6131    8.4000    1.2522    32    100");
+    assert_eq!(p[2], "50.0000    8.4000    1.2522    196.2    100");
+    assert_eq!(p[3], "5.6131    8.4000    1.2522    196.2    100");
     assert_eq!(p[4], p[3]);
     assert_eq!(p[5], "1.000 0.000 0.000    4.300 0.000 0.000    Running    Grass");
     assert_eq!(p[6], "0.000 0.000 0.000    0.000 8.000 0.000    Jumping    Air");
@@ -830,7 +830,7 @@ fn the_world_is_mirrored_once_looked_at() {
     load(&mut game, &mut st, "ui", ui, 0.6);
     assert_eq!(
         printed(&st, "ui"),
-        ["960    100    32    Terrain", "960    true    true"]
+        ["960    100    196.2    Terrain", "960    true    true"]
     );
     assert_eq!(game.entity_asks, 0, "a UI script doesn't have the world mirrored");
     // A look: the zombie is there at once, and ChildAdded doesn't fire for it.

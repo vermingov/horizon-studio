@@ -2111,7 +2111,16 @@ impl Ctx<'_> {
                         let (x, y) = (rbx.pointer.x, rbx.pointer.y);
                         let dx = opt_num(lua, &args, 0, fname, 0.0)?;
                         let dy = opt_num(lua, &args, 1, fname, 0.0)?;
-                        super::hstudio_rbx_draw::pointer_moved(rbx, x + dx, y + dy);
+                        if rbx.pointer.free || rbx.pointer.chat_open {
+                            super::hstudio_rbx_draw::pointer_moved(rbx, x + dx, y + dy);
+                        } else {
+                            // The pointer is the game's (the crosshair): moving the mouse
+                            // turns the view, as it turns Roblox's camera (0.15 degrees a
+                            // pixel, the game's default sensitivity).
+                            let fx = &mut rbx.world.effects;
+                            fx.turn.0 += (dx * 0.15) as f32;
+                            fx.turn.1 += (dy * 0.15) as f32;
+                        }
                     }
                     _ => {
                         let steps = opt_num(lua, &args, 0, fname, 0.0)?;
