@@ -1657,8 +1657,11 @@ impl Parser {
         Ok(out)
     }
     fn loop_block(&mut self) -> PResult<Vec<Stmt>> {
+        let depth = self.fs.len();
         self.fs().loops += 1;
         let b = self.block();
+        // A function in it that failed to parse left its own state pushed.
+        self.fs.truncate(depth);
         self.fs().loops -= 1;
         b
     }

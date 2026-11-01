@@ -429,6 +429,9 @@ fn text_row(
 ) {
     use super::hstudio_ui::TextRow;
     if let Some((a, b)) = super::hstudio_ui::selected_cols(ui, area, key, text.len()) {
+        // (Never inside a letter: one drawn twice, wrapped otherwise, may give
+        // columns of the other wrap.)
+        let (a, b) = (floor_char(text, a), floor_char(text, b));
         let sx = x + p.measure(&text[..a], size, font);
         let mut sw = p.measure(&text[a..b], size, font);
         if b == text.len() && after == "\n" && super::hstudio_ui::selection_goes_on(ui, area, key) {
@@ -2805,7 +2808,9 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     loop {
         let line = &ed.lines[hrow];
         let from = line.char_indices().nth(ed.hscroll).map_or(line.len(), |(i, _)| i);
-        if from > hcol || p.measure(&line[from..hcol], code_size(), Font::Mono) <= text_w - 8.0 {
+        // Nothing left to scroll past, or the cursor's column in view (a code
+        // area narrower than its gutter has no room: it scrolls to the cursor).
+        if from >= hcol || p.measure(&line[from..hcol], code_size(), Font::Mono) <= (text_w - 8.0).max(0.0) {
             break;
         }
         ed.hscroll += 4;

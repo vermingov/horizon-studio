@@ -784,7 +784,13 @@ pub(crate) fn selected_text(ui: &Ui) -> Option<String> {
         if let Some(p) = prev {
             out.push_str(if p.key.0 != row.key.0 { "\n" } else { p.after });
         }
-        out.push_str(&row.text[a..b]);
+        let floor = |mut i: usize| {
+            while !row.text.is_char_boundary(i) {
+                i -= 1;
+            }
+            i
+        };
+        out.push_str(&row.text[floor(a)..floor(b)]);
         prev = Some(row);
     }
     (!out.is_empty()).then_some(out)
@@ -5133,8 +5139,13 @@ fn goto_problem(st: &mut Studio, i: usize) {
     let ed = &mut st.s.editor;
     if let Some(p) = ed.problems.get(i).cloned() {
         let row = (p.line.max(1) - 1).min(ed.lines.len() - 1);
-        let col = p.span.map_or(0, |s| s.0).min(ed.lines[row].len());
-        let chars = ed.lines[row][..col].chars().count();
+        let line = &ed.lines[row];
+        // Its span is from the text as last checked: never inside a letter.
+        let mut col = p.span.map_or(0, |s| s.0).min(line.len());
+        while !line.is_char_boundary(col) {
+            col -= 1;
+        }
+        let chars = line[..col].chars().count();
         ed.click(row, chars, false);
         st.s.ui.problem_sel = i;
         show_code(st);

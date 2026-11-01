@@ -445,7 +445,11 @@ impl Look {
                 "motion" => look.motion = v != "false",
                 "maximized" => look.maximized = v == "true",
                 "rect" => {
-                    let n: Vec<f32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                    let n: Vec<f32> = v
+                        .split(',')
+                        .filter_map(|s| s.trim().parse::<f32>().ok())
+                        .filter(|n| n.is_finite())
+                        .collect();
                     if let [x, y, w, h] = n[..] {
                         look.rect = Some([x, y, w, h]);
                     }
