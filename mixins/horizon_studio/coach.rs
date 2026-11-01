@@ -3170,7 +3170,7 @@ fn lesson_check(st: &mut Studio) {
         st.s.ui
             .agent
             .say(AgentLineKind::You, format!("Check step {}: {task}", i + 1), now);
-    } else if !super::hstudio_ui::agent_busy(st) && super::hstudio_ui::agent_name(st).is_some() {
+    } else if own_agent_checks(st) {
         let ask = format!(
             "I did step {} of the lesson \"{title}\" ({file} {rows}): {}. Check my code and tell me how I did.",
             i + 1,
@@ -3210,9 +3210,18 @@ pub fn step_view(st: &mut Studio, id: u32) -> Option<StepView> {
 }
 
 /// Whether someone can check the player's try: an agent waiting for them,
-/// or the game's own agent, found and not working.
+/// or the game's own agent.
 fn can_check(st: &mut Studio) -> bool {
-    waiting(st) || (!super::hstudio_ui::agent_busy(st) && super::hstudio_ui::agent_name(st).is_some())
+    waiting(st) || own_agent_checks(st)
+}
+
+/// Whether the game's own agent can check the player's try: found, not
+/// working, and in the studio's own layout, whose Agent panel shows what
+/// it says (an executor style has none, as the menus' agent items know).
+fn own_agent_checks(st: &mut Studio) -> bool {
+    st.s.ui.look.theme().layout == super::hstudio_theme::Layout::Studio
+        && !super::hstudio_ui::agent_busy(st)
+        && super::hstudio_ui::agent_name(st).is_some()
 }
 
 /// The lesson for the state the link gives: its title, the step showing,

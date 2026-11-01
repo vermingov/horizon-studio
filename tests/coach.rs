@@ -3133,8 +3133,32 @@ fn check_asks_the_games_agent_when_none_is_waiting() {
         echoed.contains("A lesson is open in the editor: \"Printing\", step 1 of 1 (greet.lua line 2)."),
         "{echoed}"
     );
+    // An executor style has no Agent panel to show the game's own agent's
+    // answer: no Check for it, but one for an agent waiting for the player.
+    use horizon_studio::game::hstudio_theme::THEMES;
+    let lines = st.s.ui.agent.lines.len();
+    st.s.ui.look.theme = THEMES.iter().position(|t| t.name == "Synapse X style").unwrap();
+    still(&mut st, &mut game);
+    assert!(texts_at(&game, "Check").is_empty());
+    ask(&mut st, &mut game, "player_event", json!({})).unwrap();
+    still(&mut st, &mut game);
+    let check = text_at(&game, "Check");
+    click(&mut st, &mut game, (check.0 + 2.0, check.1 + 4.0));
+    let e = ask(&mut st, &mut game, "player_event", json!({})).unwrap();
+    assert_eq!(e["event"], "check", "{e}");
+    assert!(
+        !horizon_studio::game::hstudio_ui::agent_busy(&st),
+        "the game's agent wasn't asked"
+    );
+    let asked = st.s.ui.agent.lines[lines..]
+        .iter()
+        .filter(|l| l.kind == AgentLineKind::You)
+        .count();
+    assert_eq!(asked, 1, "only the waiting agent's line");
     // With the panel hidden, the explanation is the bubble's: none here; and
-    // with no agent at all, no Check.
+    // with no agent at all (none found, none waiting), no Check.
+    st.s.ui.look.theme = 0;
+    st.s.now += 5.0;
     st.s.ui.agent.agents = Some(Vec::new());
     still(&mut st, &mut game);
     assert!(texts_at(&game, "Check").is_empty());

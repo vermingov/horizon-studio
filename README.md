@@ -245,7 +245,8 @@ explanation. **Next** and **Back** in the note (or Alt+Right and Alt+Left) go th
 file when a step is in one; **Done** on the last ends the lesson, and so does its ×. **Check** asks the agent to
 look at what you did: it reads your code, marks any mistake and tells you how you did. The editor's header shows
 *Lesson 2/5*. While the agent waits for you the panel says *Waiting for you*, and Enter sends it what you write.
-The executor styles get the same notes and buttons, with the explanation in the note.
+The executor styles get the same notes and buttons, with the explanation in the note; there Check is for an
+agent waiting for you, as they have no Agent panel for the game's own agent to answer in.
 
 It works in your mods folder and runs with its own permissions: Claude Code may use Horizon Studio's MCP tools and
 read files, and asks for nothing else (in a run from the game, anything that needs your approval is refused); omp
