@@ -1431,6 +1431,148 @@ fn what_agents_do_leaves_what_the_player_holds() {
     );
 }
 
+/// A studio on the Editor tab with long.lua (80 lines) open and drawn, and
+/// other.lua beside it, Motion on: what an agent changes in the code the
+/// player sees is typed in, unless the view is the player's.
+fn with_long(name: &str) -> (FakeGame, Studio) {
+    let (mut game, mut st) = editing(name);
+    let src: String = (1..=80).map(|i| format!("local v{i} = {i}\n")).collect();
+    game.write_mod("long.lua", &src);
+    game.write_mod("other.lua", "print(1)\n");
+    st.scan(&mut game);
+    st.edit_mod(mod_index(&st, "long"));
+    st.s.ui.look.motion = true;
+    // (The Editor tab's arrival is over: nothing is drawn rising.)
+    st.s.now += 1.0;
+    redraw(&mut st, &mut game);
+    (game, st)
+}
+
+#[test]
+fn a_bar_a_tab_or_sizing_held_keeps_the_view_from_agents() {
+    // While the player holds the bar under the code, holds a pane's tab or
+    // sizes a pane from the keys, however long ago that began, the view is
+    // theirs: a change on disk to the file open and an agent's edit at line
+    // 70 come in at once with the view where it is, open_script of the file
+    // open at line 70 leaves the view (and the panes) as they are, and
+    // open_script of another file waits. What they hold goes on.
+    let agents_come = |st: &mut Studio, game: &mut FakeGame, what: &str| {
+        st.s.now += 5.0;
+        let fronts = st.s.ui.dock.clone();
+        let path = game.mods_dir().join("long.lua");
+        let disk = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, disk.replace("local v75 = 75", "local v75 = 750")).unwrap();
+        for _ in 0..3 {
+            st.s.now += 0.5;
+            redraw(st, game);
+            assert!(
+                st.s.ui.coach.typing.is_none(),
+                "{what}: the change on disk is in at once"
+            );
+        }
+        assert_eq!(st.s.editor.lines[74], "local v75 = 750", "{what}");
+        let edit = json!({ "start_line": 70, "end_line": 70, "new_text": "local v70 = 700" });
+        let r = coach::call(st, game, &agent(), "edit", &edit).unwrap();
+        assert_eq!(r["animated"], false, "{what}: the edit is in at once: {r}");
+        assert_eq!(st.s.editor.lines[69], "local v70 = 700", "{what}");
+        let open = json!({ "id": "long", "line": 70 });
+        let r = coach::call(st, game, &agent(), "open", &open).unwrap();
+        assert_eq!(r["ok"], true, "{what}: {r}");
+        let r = coach::call(st, game, &agent(), "open", &json!({ "id": "other" })).unwrap();
+        assert_eq!(r["busy"], true, "{what}: another file waits: {r}");
+        redraw(st, game);
+        assert_eq!(st.s.editor.scroll, 0, "{what}: the view stays");
+        assert_eq!(st.s.editor.title, "long.lua", "{what}: the file stays");
+        assert_eq!(st.s.ui.dock, fronts, "{what}: the panes stay as they are");
+    };
+    // The bar under the code held, and moved up 20.
+    let (mut game, mut st) = with_long("dock-held-view-bar");
+    let col = bar(&st, 3);
+    let at = (col.rect[0] + 300.0, col.rect[1] + 4.0);
+    hold(&mut st, &mut game, at, &[(at.0, at.1 - 20.0)]);
+    assert_eq!(st.s.ui.dock.ratio(3), Some(0.55));
+    agents_come(&mut st, &mut game, "a bar held");
+    point(&mut st, &mut game, (at.0, at.1 - 40.0));
+    assert_eq!(st.s.ui.dock.ratio(3), Some(0.5), "the bar still follows the pointer");
+    release(&mut st, &mut game);
+    assert!(layout_txt(&st).contains("col:0.500("), "{}", layout_txt(&st));
+    // The Problems tab lifted over the script list's strip.
+    let (mut game, mut st) = with_long("dock-held-view-tab");
+    let strip = leaf(&st, Pane::Scripts).strip;
+    let from = middle(tab_of(&st, Pane::Problems));
+    hold(
+        &mut st,
+        &mut game,
+        from,
+        &[(strip[0] + strip[2] - 10.0, strip[1] + 16.0)],
+    );
+    assert_eq!(st.s.ui.lifted(), Some(Pane::Problems));
+    agents_come(&mut st, &mut game, "a tab held");
+    assert_eq!(st.s.ui.lifted(), Some(Pane::Problems), "the tab is still lifted");
+    release(&mut st, &mut game);
+    assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Problems), [Pane::Scripts, Pane::Problems]);
+    // The panel's bar lit for sizing from the keys (Size... on the
+    // console's tab's menu).
+    let (mut game, mut st) = with_long("dock-held-view-sizing");
+    let console = middle(tab_of(&st, Pane::Console));
+    right_click(&mut st, &mut game, console);
+    choose(&mut st, &mut game, "Size...");
+    assert_eq!(st.s.ui.sizing, Some((Pane::Console, 3)));
+    agents_come(&mut st, &mut game, "sizing");
+    assert_eq!(st.s.ui.sizing, Some((Pane::Console, 3)), "sizing goes on");
+    let ratio = st.s.ui.dock.ratio(3);
+    press(&mut st, &mut game, Key::Up, NONE);
+    assert_ne!(st.s.ui.dock.ratio(3), ratio, "the arrows still move the bar");
+    press(&mut st, &mut game, Key::Enter, NONE);
+    assert_eq!(st.s.ui.sizing, None);
+    // Nothing held, the player paused: an agent's edit is typed in as they
+    // watch, and the view goes to it.
+    st.s.now += 5.0;
+    redraw(&mut st, &mut game);
+    let edit = json!({ "start_line": 70, "end_line": 70, "new_text": "local v70 = 7000" });
+    let r = coach::call(&mut st, &mut game, &agent(), "edit", &edit).unwrap();
+    assert!(r.get("typing").is_some(), "typed in: {r}");
+    assert!(st.s.editor.scroll > 0, "the view goes to it");
+}
+
+#[test]
+fn a_lesson_leaves_a_hidden_agent_pane_hidden_under_what_the_player_holds() {
+    // The panel hidden. A lesson that comes while the player holds the
+    // script list's bar leaves the groups where they are (showing the
+    // panel would move the code under the pointer and let go of the bar):
+    // its explanation is in the step's note, and the bar is still held.
+    let (mut game, mut st) = with_sum("dock-lesson-held");
+    st.s.ui.dock.set_hidden(Pane::Agent, true);
+    redraw(&mut st, &mut game);
+    let row = bar(&st, 1);
+    let at = (row.rect[0] + 4.0, row.rect[1] + 100.0);
+    hold(&mut st, &mut game, at, &[(at.0 + 16.0, at.1)]);
+    let ratio = st.s.ui.dock.ratio(1);
+    st.s.now += 5.0;
+    lesson(&mut st, &mut game, "Explained in the note.");
+    assert!(!st.s.ui.dock.shown(Pane::Agent), "the panel stays hidden");
+    assert!(in_bubble(&st, &game, "Explained in the note."));
+    point(&mut st, &mut game, (at.0 + 48.0, at.1));
+    assert_ne!(st.s.ui.dock.ratio(1), ratio, "the bar is still held");
+    release(&mut st, &mut game);
+    // A press in the lesson's frame (the game hands the studio its input
+    // after the link's requests) is for what is drawn: the same.
+    st.s.now += 5.0;
+    redraw(&mut st, &mut game);
+    let code = middle(leaf(&st, Pane::Code).rect);
+    let press = Input::Button { left: true, down: true };
+    coach::input_coming(&mut st, &[Input::Mouse(code.0, code.1), press]);
+    lesson(&mut st, &mut game, "Explained in the note again.");
+    assert!(!st.s.ui.dock.shown(Pane::Agent), "the panel stays hidden");
+    click(&mut st, &mut game, code);
+    // With nothing held, a lesson shows the Agent pane with its explanation.
+    st.s.now += 5.0;
+    lesson(&mut st, &mut game, "Explained in the pane.");
+    assert!(st.s.ui.dock.is_front(Pane::Agent));
+    assert!(drawn(&game, "Explained in the pane."), "the Agent pane has it");
+    assert!(!in_bubble(&st, &game, "Explained in the pane."));
+}
+
 #[test]
 fn the_wheel_scrolls_the_pane_under_the_pointer() {
     let (mut game, mut st) = editing("dock-wheel");
