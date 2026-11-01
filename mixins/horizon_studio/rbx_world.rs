@@ -90,8 +90,12 @@ pub struct World {
     pub name: String,
     pub uuid: u128,
     /// Where the last move of the root part this frame puts the player's
-    /// feet: the /tp to send.
+    /// feet: where the client moves them.
     pub teleport: Option<Vector3>,
+    /// The walk and jump scales a script's WalkSpeed and JumpPower ask of
+    /// the game, and whether the player passes through blocks now.
+    pub speed_request: Option<(f64, f64)>,
+    pub noclip: bool,
     /// The game's speeds the Humanoid was last given: a script's own
     /// WalkSpeed stays until the game's changes.
     pub speed: Option<f64>,
@@ -138,6 +142,8 @@ impl Default for World {
             name: NO_NAME.into(),
             uuid: 0,
             teleport: None,
+            speed_request: None,
+            noclip: false,
             speed: None,
             jump: None,
             state: "Running",
@@ -492,6 +498,8 @@ fn set_state(rbx: &mut Rbx, state: &'static str, speed: f64) {
 /// CharacterAdded and CharacterAppearanceLoaded with the new one, which the
 /// Camera follows and which takes the game's values afresh.
 fn respawn(rbx: &mut Rbx) {
+    // A new character walks and jumps as the game does.
+    rbx.world.speed_request = Some((1.0, 1.0));
     let player = rbx.local_player;
     let old = rbx.character;
     let old_v = rbx.value(old);
@@ -1435,10 +1443,63 @@ fn top_in_the_way(game: &mut dyn GameApi, feet: Vector3) -> Option<f64> {
     None
 }
 
-/// The teleport to send, as the game's command: never as a chat line.
-pub fn take_teleport(rbx: &mut Rbx) -> Option<String> {
+/// Where the client moves the player's feet (a script moved the root part).
+pub fn take_teleport(rbx: &mut Rbx) -> Option<[f64; 3]> {
     let to = rbx.world.teleport.take()?;
-    Some(format!("/tp @s {:.3} {:.3} {:.3}", to.x, to.y, to.z))
+    Some([to.x, to.y, to.z])
+}
+
+/// A script set the local Humanoid's WalkSpeed, JumpPower or JumpHeight:
+/// the game's walking and jumping scale to them (16, 50 and 7.2 its own).
+pub fn speeds_set(rbx: &mut Rbx) {
+    let hum = rbx.humanoid;
+    let walk = rbx.raw_get(hum, "WalkSpeed").to_num().unwrap_or(16.0).max(0.0) / 16.0;
+    let power = rbx.raw_get(hum, "JumpPower").to_num().unwrap_or(50.0).max(0.0) / 50.0;
+    rbx.world.speed_request = Some((walk, power));
+}
+
+/// Whether the character passes through blocks: as a noclip script does it,
+/// its Torso's CanCollide off this frame (the HumanoidRootPart's is off
+/// anyway, as in Roblox). As Roblox's Humanoid does each step, the Torso
+/// takes it back, so a script keeps it off frame after frame, and when it
+/// stops the player collides again.
+pub fn noclip(rbx: &mut Rbx) -> bool {
+    let torso = rbx.world.limbs[0];
+    if rbx.try_inst(torso).is_none_or(|i| i.destroyed) {
+        return false;
+    }
+    let off = !rbx.raw_get(torso, "CanCollide").truthy();
+    if off {
+        rbx.quiet_set(torso, "CanCollide", Value::Bool(true));
+    }
+    off
+}
+
+/// The velocity (studs a second) a mover in the local root part gives the
+/// player this frame: a BodyVelocity's (any MaxForce), an enabled
+/// LinearVelocity's, or towards a BodyPosition's Position. None when
+/// nothing moves it.
+pub fn mover_velocity(rbx: &Rbx) -> Option<Vector3> {
+    let rp = rbx.root_part;
+    let at = as_cf(&rbx.raw_get(rp, "CFrame")).unwrap_or_default().position();
+    let kids = rbx.try_inst(rp)?.children.clone();
+    let v3 = |id: Id, k: &str| super::hstudio_rbx_values::as_v3(&rbx.raw_get(id, k)).unwrap_or_default();
+    for c in kids {
+        let Some(i) = rbx.try_inst(c).filter(|i| !i.destroyed) else {
+            continue;
+        };
+        match i.class.name {
+            "BodyVelocity" if v3(c, "MaxForce").magnitude() > 0.0 => return Some(v3(c, "Velocity")),
+            "LinearVelocity" if rbx.raw_get(c, "Enabled").truthy() => return Some(v3(c, "VectorVelocity")),
+            "BodyPosition" if v3(c, "MaxForce").magnitude() > 0.0 => {
+                // Most of the way there each second, as its P pulls.
+                let to = v3(c, "Position") - at;
+                return Some(to * 10.0);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Humanoid:MoveTo. The local Humanoid walks the player there with the

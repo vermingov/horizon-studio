@@ -203,6 +203,32 @@ fn degrees_between(a: f32, b: f32, alpha: f64) -> f32 {
 
 /// A tick's move as a speed, in blocks a second. More than five blocks in a
 /// tick is a teleport, not a speed.
+/// Scales the player's `attribute` by `scale` (1: as it is), as the game's
+/// own modifiers do (sprinting's): one of ours, by `id`, taken off first.
+fn scale_attribute(
+    attributes: &mut horizon_world::attributes::live::LiveAttributes<Box<dyn FnMut() -> i32>>,
+    attribute: &str,
+    id: &str,
+    scale: f64,
+) -> bool {
+    use horizon_world::attributes::{Modifier, Operation};
+    let Some(key) = attributes.key(attribute) else { return false };
+    let Ok(Some(handle)) = attributes.get_instance(Some(key)) else { return false };
+    let Ok(modifier) = Modifier::new(id, scale - 1.0, Operation::AddMultipliedTotal) else {
+        return false;
+    };
+    let on = (scale - 1.0).abs() > 1e-9;
+    attributes
+        .edit(&handle, |value, observer| {
+            value.remove(modifier.id(), observer)?;
+            if on {
+                value.add_transient(modifier, observer)?;
+            }
+            Ok(())
+        })
+        .is_ok()
+}
+
 fn per_second(from: &horizon_core::geometry::Vec3, to: &horizon_core::geometry::Vec3) -> [f64; 3] {
     let d = [to.x - from.x, to.y - from.y, to.z - from.z];
     if d.iter().map(|c| c * c).sum::<f64>() > 25.0 {
@@ -1089,6 +1115,42 @@ impl GameApi for Host<'_, '_> {
             None => later(Later::Particle(options, at, velocity)),
         }
         Ok(())
+    }
+    fn move_player(&mut self, feet: [f64; 3]) -> bool {
+        let Some(g) = self.g_mut() else { return false };
+        let at = horizon_core::geometry::Vec3::new(feet[0], feet[1], feet[2]);
+        let Some(p) = g.player.as_mut() else { return false };
+        // As the game's own flights end: there, still, its fall forgotten.
+        p.position = at;
+        p.old_position = at;
+        p.velocity = horizon_core::geometry::Vec3::new(0.0, 0.0, 0.0);
+        p.fall_distance = 0.0;
+        g.previous_position = at;
+        true
+    }
+    fn set_player_velocity(&mut self, v: [f64; 3]) -> bool {
+        let Some(p) = self.g_mut().and_then(|g| g.player.as_mut()) else {
+            return false;
+        };
+        p.velocity = horizon_core::geometry::Vec3::new(v[0], v[1], v[2]);
+        p.fall_distance = 0.0;
+        true
+    }
+    fn set_noclip(&mut self, on: bool) -> bool {
+        let Some(g) = self.g_mut() else { return false };
+        // The spectator's physics: through blocks. Back as the game mode has it.
+        let spectator = on || g.mode == horizon_client::command::args::GameMode::Spectator;
+        let Some(p) = g.player.as_mut() else { return false };
+        p.spectator = spectator;
+        true
+    }
+    fn set_player_speed(&mut self, walk: f64, jump: f64) -> bool {
+        let Some(p) = self.g_mut().and_then(|g| g.player.as_mut()) else {
+            return false;
+        };
+        let a = scale_attribute(&mut p.attributes, "minecraft:movement_speed", "horizon_studio:walk_speed", walk);
+        let b = scale_attribute(&mut p.attributes, "minecraft:jump_strength", "horizon_studio:jump", jump);
+        a && b
     }
     fn place(&mut self, corner: Corner, w: f32, h: f32) -> (f32, f32) {
         match self.corners.as_deref_mut() {

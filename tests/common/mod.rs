@@ -10,6 +10,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct FakeGame {
+    /// What the client did to its own player (move_player, its velocity,
+    /// noclip, its speeds), newest last.
+    pub moves: Vec<String>,
     pub dir: PathBuf,
     pub chats: Vec<String>,
     pub sent: Vec<String>,
@@ -62,6 +65,7 @@ impl FakeGame {
         let dir = std::env::temp_dir().join(format!("hstudio-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         FakeGame {
+            moves: Vec::new(),
             dir,
             chats: Vec::new(),
             sent: Vec::new(),
@@ -237,6 +241,26 @@ impl GameApi for FakeGame {
         }
         self.particles.push((id.to_owned(), at, velocity, color));
         Ok(())
+    }
+    fn move_player(&mut self, feet: [f64; 3]) -> bool {
+        self.moves
+            .push(format!("move {:.3} {:.3} {:.3}", feet[0], feet[1], feet[2]));
+        if let Some(p) = self.player.as_mut() {
+            (p.x, p.y, p.z) = (feet[0], feet[1], feet[2]);
+        }
+        true
+    }
+    fn set_player_velocity(&mut self, v: [f64; 3]) -> bool {
+        self.moves.push(format!("velocity {:.2} {:.2} {:.2}", v[0], v[1], v[2]));
+        true
+    }
+    fn set_noclip(&mut self, on: bool) -> bool {
+        self.moves.push(format!("noclip {on}"));
+        true
+    }
+    fn set_player_speed(&mut self, walk: f64, jump: f64) -> bool {
+        self.moves.push(format!("speed {walk:.2} {jump:.2}"));
+        true
     }
     fn dp(&mut self) -> (f32, f32, f32) {
         (960.0, 540.0, 1.0)

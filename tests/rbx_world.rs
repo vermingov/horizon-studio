@@ -182,15 +182,17 @@ fn a_headless_test_names_the_player() {
 
 /// Runs a mod's command and a few frames after (as the sends refill): what
 /// the game was sent.
-fn sent_by(st: &mut Studio, game: &mut FakeGame, cmd: &str) -> Vec<String> {
-    let mark = game.sent.len();
+/// What a command made the client do to its own player (moves, velocity,
+/// noclip, speeds), as the fake game records it.
+fn moved_by(st: &mut Studio, game: &mut FakeGame, cmd: &str) -> Vec<String> {
+    let mark = game.moves.len();
     assert!(st.command(cmd), "no command {cmd}");
     run_for(st, game, 0.3);
-    game.sent[mark..].to_vec()
+    game.moves[mark..].to_vec()
 }
 
 #[test]
-fn moving_the_root_part_teleports_with_tp() {
+fn moving_the_root_part_moves_the_player_in_the_client() {
     let mut game = FakeGame::new("rbxw-tp");
     let mut st = studio(&mut game);
     let src = r#"
@@ -222,11 +224,11 @@ fn moving_the_root_part_teleports_with_tp() {
     "#;
     load(&mut game, &mut st, "tp", src, 0.7);
     // The feet go where the root part's centre is, less the 1.05 blocks it stands above them.
-    assert_eq!(sent_by(&mut st, &mut game, "set"), ["/tp @s 1.000 68.945 2.000"]);
-    assert_eq!(sent_by(&mut st, &mut game, "pos"), ["/tp @s 3.000 69.945 4.000"]);
-    assert_eq!(sent_by(&mut st, &mut game, "pivot"), ["/tp @s 5.000 70.945 6.000"]);
-    assert_eq!(sent_by(&mut st, &mut game, "primary"), ["/tp @s 7.000 71.945 8.000"]);
-    assert_eq!(sent_by(&mut st, &mut game, "moveto"), ["/tp @s 9.000 72.945 10.000"]);
+    assert_eq!(moved_by(&mut st, &mut game, "set"), ["move 1.000 68.945 2.000"]);
+    assert_eq!(moved_by(&mut st, &mut game, "pos"), ["move 3.000 69.945 4.000"]);
+    assert_eq!(moved_by(&mut st, &mut game, "pivot"), ["move 5.000 70.945 6.000"]);
+    assert_eq!(moved_by(&mut st, &mut game, "primary"), ["move 7.000 71.945 8.000"]);
+    assert_eq!(moved_by(&mut st, &mut game, "moveto"), ["move 9.000 72.945 10.000"]);
     // MoveTo moves the character up out of the blocks in its way, as
     // Roblox's does: a point on a stone block's top (the mouse's Hit there)
     // puts the feet on the block, and one by a pillar on its top. PivotTo
@@ -234,17 +236,14 @@ fn moving_the_root_part_teleports_with_tp() {
     game.blocks.insert((9, 63, 10), "minecraft:stone".into());
     game.blocks.insert((20, 64, 20), "minecraft:stone".into());
     game.blocks.insert((20, 65, 20), "minecraft:stone".into());
-    assert_eq!(sent_by(&mut st, &mut game, "onto"), ["/tp @s 9.500 64.000 10.500"]);
-    assert_eq!(sent_by(&mut st, &mut game, "pillar"), ["/tp @s 20.500 66.000 20.500"]);
-    assert_eq!(sent_by(&mut st, &mut game, "into"), ["/tp @s 9.500 62.945 10.500"]);
-    assert_eq!(
-        sent_by(&mut st, &mut game, "partpivot"),
-        ["/tp @s 11.000 73.945 12.000"]
-    );
+    assert_eq!(moved_by(&mut st, &mut game, "onto"), ["move 9.500 64.000 10.500"]);
+    assert_eq!(moved_by(&mut st, &mut game, "pillar"), ["move 20.500 66.000 20.500"]);
+    assert_eq!(moved_by(&mut st, &mut game, "into"), ["move 9.500 62.945 10.500"]);
+    assert_eq!(moved_by(&mut st, &mut game, "partpivot"), ["move 11.000 73.945 12.000"]);
     // One teleport a frame: the last move's.
-    assert_eq!(sent_by(&mut st, &mut game, "twice"), ["/tp @s 1.000 79.945 1.000"]);
-    // Moving the character where it is sends the player where they are.
-    assert_eq!(sent_by(&mut st, &mut game, "stay"), ["/tp @s 10.500 64.000 -3.250"]);
+    assert_eq!(moved_by(&mut st, &mut game, "twice"), ["move 1.000 79.945 1.000"]);
+    // The client moved them there; moving the character where it is keeps them there.
+    assert_eq!(moved_by(&mut st, &mut game, "stay"), ["move 1.000 79.945 1.000"]);
     // Crouching, the root part is lower, and the teleport still lands the feet where they are.
     game.pose = Some(PlayerPose {
         pose: "crouching".into(),
@@ -252,17 +251,17 @@ fn moving_the_root_part_teleports_with_tp() {
         ..PlayerPose::default()
     });
     run_for(&mut st, &mut game, 0.05);
-    assert!(sent_by(&mut st, &mut game, "where").is_empty());
-    assert_eq!(sent_by(&mut st, &mut game, "stay"), ["/tp @s 10.500 64.000 -3.250"]);
+    assert!(moved_by(&mut st, &mut game, "where").is_empty());
+    assert_eq!(moved_by(&mut st, &mut game, "stay"), ["move 1.000 79.945 1.000"]);
     // A script's own parts, and the head, move nothing.
-    assert!(sent_by(&mut st, &mut game, "others").is_empty());
-    assert_eq!(printed(&st, "tp"), ["64.879"]);
-    // Never a chat line.
-    assert!(game.sent.iter().all(|l| l.starts_with("/tp @s ")), "{:?}", game.sent);
+    assert!(moved_by(&mut st, &mut game, "others").is_empty());
+    assert_eq!(printed(&st, "tp"), ["80.824"]);
+    // No command, no chat line: the client moves its player itself.
+    assert!(game.sent.is_empty(), "{:?}", game.sent);
 }
 
 #[test]
-fn a_tween_of_the_root_part_teleports_and_a_teleport_waits_for_a_send() {
+fn a_tween_of_the_root_part_moves_the_player_every_frame_and_sends_nothing() {
     let mut game = FakeGame::new("rbxw-tween");
     let mut st = studio(&mut game);
     let src = r#"
@@ -275,40 +274,29 @@ fn a_tween_of_the_root_part_teleports_and_a_teleport_waits_for_a_send() {
             for i = 1, 10 do pcall(chat.say, "hi " .. i) end
             root.CFrame = CFrame.new(1, 70, 2)
         end)
-        command("again", function() root.CFrame = CFrame.new(3, 70, 4) end)
     "#;
     load(&mut game, &mut st, "tween", src, 0.7);
-    let mark = game.sent.len();
+    let mark = game.moves.len();
     assert!(st.command("glide"));
     run_for(&mut st, &mut game, 1.5);
-    let tps = &game.sent[mark..];
-    assert!(tps.len() >= 2, "{tps:?}");
-    assert!(tps.iter().all(|l| l.starts_with("/tp @s ")), "{tps:?}");
-    assert_eq!(tps.last().unwrap(), "/tp @s 20.000 68.945 20.000");
-    // A teleport takes only what chat.say and game.run leave: after a while
-    // with nothing sent, one goes though chat used every send of its burst,
-    run_for(&mut st, &mut game, 3.0);
-    let mark = game.sent.len();
+    let moves = &game.moves[mark..];
+    // Each frame of the tween moves the player: no budget to wait for.
+    assert!(moves.len() >= 8, "{moves:?}");
+    assert_eq!(moves.last().unwrap(), "move 20.000 68.945 20.000");
+    // A teleport takes nothing from chat.say's sends, and goes at once.
+    let (sent, moves) = (game.sent.len(), game.moves.len());
     assert!(st.command("busy"));
     run_for(&mut st, &mut game, 0.3);
-    let sent = &game.sent[mark..];
-    assert_eq!(sent.iter().filter(|l| l.starts_with("hi ")).count(), 8, "{sent:?}");
-    assert_eq!(sent.last().unwrap(), "/tp @s 1.000 68.945 2.000");
-    // and the next waits until that budget is whole again (two seconds).
-    let mark = game.sent.len();
-    assert!(st.command("again"));
-    run_for(&mut st, &mut game, 1.5);
-    assert!(game.sent[mark..].is_empty(), "{:?}", &game.sent[mark..]);
-    run_for(&mut st, &mut game, 1.0);
-    assert_eq!(game.sent[mark..], ["/tp @s 3.000 68.945 4.000"]);
+    assert_eq!(game.sent[sent..].iter().filter(|l| l.starts_with("hi ")).count(), 8);
+    assert_eq!(game.moves[moves..], ["move 1.000 68.945 2.000"]);
+    assert!(game.sent.iter().all(|l| !l.starts_with("/tp")), "{:?}", game.sent);
 }
 
 #[test]
 fn a_script_teleporting_every_frame_leaves_the_mods_their_burst() {
-    // A fly script moves the root part every frame, so a teleport is always
-    // waiting, while another mod's timer says four lines at a time and its
-    // command a whole burst. Every line goes (the mod would stop at one that
-    // couldn't), and the teleports go on with what the mods leave.
+    // A fly script moves the root part every frame, while another mod's
+    // timer says four lines at a time and its command a whole burst. Every
+    // line goes, and the player moves every frame in the client: no command.
     let mut game = FakeGame::new("rbxw-tp-budget");
     let mut st = studio(&mut game);
     let fly = r#"
@@ -335,7 +323,8 @@ fn a_script_teleporting_every_frame_leaves_the_mods_their_burst() {
     let sent = &game.sent[mark..];
     let count = |what: &str| sent.iter().filter(|l| l.starts_with(what)).count();
     assert_eq!((count("line "), count("tick ")), (8, 8), "{sent:?}");
-    assert!(count("/tp @s ") >= 20, "{sent:?}");
+    assert_eq!(count("/tp"), 0, "{sent:?}");
+    assert!(game.moves.len() >= 100, "it moves every frame: {}", game.moves.len());
 }
 
 /// The player's pose on the fake game: standing, on the ground or not.
@@ -1655,11 +1644,11 @@ fn a_script_moving_the_player_every_frame_leaves_the_mods_their_sends() {
         end)
     "#;
     load(&mut game, &mut st, "sender", sender, 2.0);
-    // The player moves a few times a second: never more than the sends refill.
-    let mark = game.sent.len();
+    // The player moves every frame, in the client: no sends taken.
+    let mark = game.moves.len();
     run_for(&mut st, &mut game, 3.0);
-    let tps = game.sent[mark..].iter().filter(|l| l.starts_with("/tp @s ")).count();
-    assert!((8..=13).contains(&tps), "{tps} teleports in 3 seconds");
+    let moves = game.moves.len() - mark;
+    assert!(moves >= 50, "{moves} moves in 3 seconds");
     // And another mod's game.run keeps working, again and again.
     for _ in 0..3 {
         assert!(st.command("send"));

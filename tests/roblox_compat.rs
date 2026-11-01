@@ -134,3 +134,59 @@ fn roblox_image_ids_ask_the_thumbnails_api() {
     assert_eq!(roblox_image("rbxasset://textures/ui/x.png"), None);
     assert_eq!(roblox_image(""), None);
 }
+
+#[test]
+fn fly_noclip_and_speed_move_the_player_in_the_client_with_no_command() {
+    let mut game = FakeGame::new("compat-move");
+    let mut st = studio(&mut game);
+    game.write_mod(
+        "t.lua",
+        r#"
+        local char = game.Players.LocalPlayer.Character
+        local root, hum = char.HumanoidRootPart, char.Humanoid
+        command("fly", function()
+            -- Infinite Yield's way, Roblox's older names and all.
+            local bg = Instance.new("BodyGyro", root)
+            bg.P = 9e4 bg.maxTorque = Vector3.new(9e9, 9e9, 9e9) bg.cframe = root.CFrame
+            local bv = Instance.new("BodyVelocity", root)
+            bv.velocity = Vector3.new(0, 20, 0) bv.maxForce = Vector3.new(9e9, 9e9, 9e9)
+        end)
+        command("land", function() root.BodyVelocity:Destroy() root.BodyGyro:Destroy() end)
+        local stepped
+        command("noclip", function()
+            stepped = game:GetService("RunService").Stepped:Connect(function()
+                for _, p in ipairs(char:GetDescendants()) do
+                    if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false end
+                end
+            end)
+        end)
+        command("clip", function() stepped:Disconnect() end)
+        command("speed", function() hum.WalkSpeed = 50 hum.JumpPower = 100 end)
+        "#,
+    );
+    run_for(&mut st, &mut game, 0.7);
+    let run = |st: &mut horizon_studio::game::hstudio::Studio, game: &mut FakeGame, cmd: &str| {
+        let mark = game.moves.len();
+        assert!(st.command(cmd), "{cmd}");
+        run_for(st, game, 0.3);
+        game.moves[mark..].to_vec()
+    };
+    // Flying: the BodyVelocity's 20 studs a second up, a block a tick, every frame.
+    let m = run(&mut st, &mut game, "fly");
+    assert!(
+        m.len() >= 4 && m.iter().all(|l| l == "velocity 0.00 1.00 0.00"),
+        "{m:?}"
+    );
+    let m = run(&mut st, &mut game, "land");
+    assert!(m.iter().all(|l| !l.starts_with("velocity")), "{m:?}");
+    // Noclip while the script keeps the parts' CanCollide off; collisions back once it stops.
+    let m = run(&mut st, &mut game, "noclip");
+    assert_eq!(m, ["noclip true"]);
+    let m = run(&mut st, &mut game, "clip");
+    assert_eq!(m, ["noclip false"]);
+    // WalkSpeed and JumpPower scale the game's own (16 and 50 are its).
+    let m = run(&mut st, &mut game, "speed");
+    assert_eq!(m, ["speed 3.12 2.00"]);
+    // Never a command or a chat line.
+    assert!(game.sent.is_empty(), "{:?}", game.sent);
+}

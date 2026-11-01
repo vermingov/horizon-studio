@@ -297,6 +297,27 @@ pub trait GameApi {
     fn sound(&mut self, id: &str, at: Option<[f64; 3]>, volume: f32, pitch: f32) -> Result<(), String>;
     /// Spawns a particle (`minecraft:flame`); `color` for those that take one (dust).
     fn particle(&mut self, id: &str, at: [f64; 3], velocity: [f64; 3], color: Option<[f32; 4]>) -> Result<(), String>;
+    /// The client moves its own player there at once (its feet), as its own
+    /// movement would: no command. Whether there was a player to move.
+    fn move_player(&mut self, feet: [f64; 3]) -> bool {
+        let _ = feet;
+        false
+    }
+    /// Sets the player's velocity, in blocks a tick (its fall cut short).
+    fn set_player_velocity(&mut self, v: [f64; 3]) -> bool {
+        let _ = v;
+        false
+    }
+    /// The player passes through blocks (no collisions) while `on`.
+    fn set_noclip(&mut self, on: bool) -> bool {
+        let _ = on;
+        false
+    }
+    /// The player's walking speed and jump, scaled (1: the game's own).
+    fn set_player_speed(&mut self, walk: f64, jump: f64) -> bool {
+        let _ = (walk, jump);
+        false
+    }
     /// The studio's own screens draw with Horizon's design system, in dp
     /// (the launcher's logical pixels): the screen in dp, and dp per GUI pixel.
     fn dp(&mut self) -> (f32, f32, f32);
@@ -2863,16 +2884,24 @@ impl Studio {
                 game.send(&line);
             }
         }
-        // A script's teleport is the game's /tp command, never chat; it waits
-        // for a send rather than being dropped. It takes only what the mods'
-        // chat.say and game.run leave (their budget's refill once it is
-        // full), so a script that moves the player every frame leaves them
-        // their whole burst, and all of them together send no more.
-        if self.s.teleport_tokens >= 1.0
-            && let Some(line) = super::hstudio_rbx_world::take_teleport(rbx)
-        {
-            self.s.teleport_tokens -= 1.0;
-            game.send(&line);
+        // The player moves in the client itself, as an executor moves its
+        // character: a teleport, the speeds a script gave the Humanoid, the
+        // character's parts passing through blocks, and what moves the root
+        // part (a BodyVelocity, a LinearVelocity, a BodyPosition).
+        if let Some(feet) = super::hstudio_rbx_world::take_teleport(rbx) {
+            game.move_player(feet);
+        }
+        if let Some((walk, jump)) = rbx.world.speed_request.take() {
+            game.set_player_speed(walk, jump);
+        }
+        let noclip = super::hstudio_rbx_world::noclip(rbx);
+        if noclip != rbx.world.noclip {
+            rbx.world.noclip = noclip;
+            game.set_noclip(noclip);
+        }
+        if let Some(v) = super::hstudio_rbx_world::mover_velocity(rbx) {
+            // Studs a second are blocks a second here; the game counts ticks.
+            game.set_player_velocity([v.x / 20.0, v.y / 20.0, v.z / 20.0]);
         }
         for cmd in std::mem::take(&mut rbx.agent) {
             let _ = game.agent(&cmd);

@@ -1128,6 +1128,103 @@ pub static CLASSES: &[C] = &[
     kept("Pants", "Instance"),
     kept("Accessory", "Instance"),
     kept("Tool", "Instance"),
+    // Body movers: one in the local character's root part moves the player
+    // (hstudio_rbx_world::mover_velocity); elsewhere they are kept.
+    class(
+        "BodyVelocity",
+        "Instance",
+        &[
+            p("Velocity", K::V3, D::V3(0.0, 2.0, 0.0)),
+            p("MaxForce", K::V3, D::V3(4000.0, 4000.0, 4000.0)),
+            p("P", Num, N(1250.0)),
+        ],
+        &[],
+    ),
+    class(
+        "BodyPosition",
+        "Instance",
+        &[
+            p("Position", K::V3, D::V3(0.0, 50.0, 0.0)),
+            p("MaxForce", K::V3, D::V3(4000.0, 4000.0, 4000.0)),
+            p("P", Num, N(10000.0)),
+            p("D", Num, N(1250.0)),
+        ],
+        &["ReachedTarget"],
+    ),
+    class(
+        "BodyGyro",
+        "Instance",
+        &[
+            p("CFrame", K::CF, D::CF0),
+            p("MaxTorque", K::V3, D::V3(400000.0, 0.0, 400000.0)),
+            p("P", Num, N(3000.0)),
+            p("D", Num, N(500.0)),
+        ],
+        &[],
+    ),
+    class(
+        "BodyAngularVelocity",
+        "Instance",
+        &[
+            p("AngularVelocity", K::V3, D::V3(0.0, 2.0, 0.0)),
+            p("MaxTorque", K::V3, D::V3(4000.0, 4000.0, 4000.0)),
+            p("P", Num, N(1250.0)),
+        ],
+        &[],
+    ),
+    class("BodyForce", "Instance", &[p("Force", K::V3, D::V3(0.0, 0.0, 0.0))], &[]),
+    class(
+        "BodyThrust",
+        "Instance",
+        &[
+            p("Force", K::V3, D::V3(0.0, 0.0, 0.0)),
+            p("Location", K::V3, D::V3(0.0, 0.0, 0.0)),
+        ],
+        &[],
+    ),
+    class(
+        "LinearVelocity",
+        "Instance",
+        &[
+            p("VectorVelocity", K::V3, D::V3(0.0, 0.0, 0.0)),
+            p("MaxForce", Num, N(1000.0)),
+            p("Enabled", Bool, B(true)),
+            p("Attachment0", Obj, D::Nil),
+        ],
+        &[],
+    ),
+    class(
+        "AlignPosition",
+        "Instance",
+        &[
+            p("Position", K::V3, D::V3(0.0, 0.0, 0.0)),
+            p("MaxForce", Num, N(10000.0)),
+            p("Responsiveness", Num, N(10.0)),
+            p("Enabled", Bool, B(true)),
+            p("Attachment0", Obj, D::Nil),
+            p("Attachment1", Obj, D::Nil),
+        ],
+        &[],
+    ),
+    class(
+        "AlignOrientation",
+        "Instance",
+        &[
+            p("CFrame", K::CF, D::CF0),
+            p("MaxTorque", Num, N(10000.0)),
+            p("Responsiveness", Num, N(10.0)),
+            p("Enabled", Bool, B(true)),
+            p("Attachment0", Obj, D::Nil),
+        ],
+        &[],
+    ),
+    class(
+        "VectorForce",
+        "Instance",
+        &[p("Force", K::V3, D::V3(0.0, 0.0, 0.0)), p("Enabled", Bool, B(true))],
+        &[],
+    ),
+    kept("HopperBin", "Instance"),
     kept("RemoteEvent", "Instance"),
     kept("RemoteFunction", "Instance"),
     kept("UnreliableRemoteEvent", "Instance"),
@@ -1160,6 +1257,24 @@ pub fn is_a(c: &'static C, name: &str) -> bool {
 }
 
 fn find_prop(c: &'static C, name: &str) -> Option<&'static P> {
+    find_prop_named(c, name).or_else(|| {
+        // Roblox's older names: lower camel case (velocity, maxForce,
+        // cframe), and a few of their own.
+        let alias = match name {
+            "cframe" | "CoordinateFrame" | "coordinateFrame" => "CFrame".to_owned(),
+            "className" => "ClassName".to_owned(),
+            "brickColor" => "BrickColor".to_owned(),
+            _ => {
+                let mut cs = name.chars();
+                let first = cs.next().filter(char::is_ascii_lowercase)?;
+                first.to_ascii_uppercase().to_string() + cs.as_str()
+            }
+        };
+        find_prop_named(c, &alias)
+    })
+}
+
+fn find_prop_named(c: &'static C, name: &str) -> Option<&'static P> {
     let mut at = Some(c);
     while let Some(k) = at {
         if let Some(p) = k.props.iter().chain(k.more).find(|p| p.name == name) {
@@ -2939,6 +3054,9 @@ impl Rbx {
         match (class, prop) {
             ("Sound", "Playing") if self.raw_get(id, "Playing").truthy() => self.play_sound(id),
             (_, "CFrame") if id == self.root_part => super::hstudio_rbx_world::root_moved(self),
+            ("Humanoid", "WalkSpeed" | "JumpPower" | "JumpHeight") if id == self.humanoid => {
+                super::hstudio_rbx_world::speeds_set(self)
+            }
             ("TextBox", "Text") => {}
             _ => {}
         }
