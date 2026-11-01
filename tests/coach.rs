@@ -3048,6 +3048,15 @@ fn the_consoles_edit_finds_the_edit_whole() {
             .contains("the console opened another file"),
         "{r}"
     );
+    // edit() of the file the edit types into opens nothing anew: the edit
+    // goes on typing in, whole.
+    let (mut game, mut st, id) = mid_edit("coach-mid-console-same");
+    st.run_console(&mut game, "edit('greet')");
+    assert_eq!(st.s.editor.title, "greet.lua");
+    assert!(st.s.ui.coach.typing.is_some(), "still typing in");
+    let r = typed_in(&mut st, &mut game, id);
+    assert_eq!((&r["ok"], &r["cut_short"]), (&json!(true), &Json::Null), "{r}");
+    assert_eq!(st.s.editor.lines[1], "print('typed in whole')");
     // An agent's run_lua (run_chunk, out of the history), the player paused:
     // its edit is all in, then edit() opens nothing over it, unsaved.
     let (mut game, mut st, id) = mid_edit("coach-mid-agent-console");

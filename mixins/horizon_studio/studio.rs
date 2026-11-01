@@ -3395,10 +3395,14 @@ impl Studio {
     fn do_requests(&mut self, game: &mut dyn GameApi, agent: bool) {
         let mut requests = std::mem::take(&mut self.s.requests);
         // Another file opening: an agent's edit being typed in is all in first.
-        if requests
-            .iter()
-            .any(|r| matches!(r, Request::Edit(..) | Request::New(..)))
-        {
+        let opens = |st: &Studio, r: &Request| match r {
+            Request::Edit(id, file) => st
+                .edit_path(id, file.as_deref())
+                .is_some_and(|p| st.s.editor.path.as_deref() != Some(p.as_path())),
+            Request::New(..) => true,
+            Request::Reload(_) => false,
+        };
+        if requests.iter().any(|r| opens(self, r)) {
             super::hstudio_coach::finish_typing(self, "the console opened another file");
         }
         if agent {
@@ -3430,14 +3434,13 @@ impl Studio {
                     }
                 }
                 Request::Edit(id, file) => {
-                    if let Some(i) = self.s.mods.iter().position(|m| m.id == id) {
-                        let m = &self.s.mods[i];
-                        let path = match (&file, &m.folder) {
-                            (Some(rel), Some(folder)) => path_in(folder, rel),
-                            _ => m.main.clone(),
-                        };
+                    if let Some(path) = self.edit_path(&id, file.as_deref()) {
                         self.save_before_switch(game, Some(&path));
-                        self.open_file(&path);
+                        // The file open already isn't read again: the
+                        // player's unsaved edits in it stay, with their undo.
+                        if self.s.editor.path.as_deref() != Some(path.as_path()) {
+                            self.open_file(&path);
+                        }
                         super::hstudio_ui::reveal_code(self);
                     }
                 }
@@ -3458,6 +3461,16 @@ impl Studio {
                 }
             }
         }
+    }
+
+    /// The file console code's edit() opens: mod `id`'s main file, or `file`
+    /// of a module (its path in it). None when no mod has that id.
+    fn edit_path(&self, id: &str, file: Option<&str>) -> Option<PathBuf> {
+        let m = self.s.mods.iter().find(|m| m.id == id)?;
+        Some(match (file, &m.folder) {
+            (Some(rel), Some(folder)) => path_in(folder, rel),
+            _ => m.main.clone(),
+        })
     }
 
     /// Saves the editor's file if it has unsaved edits (the scan then reloads
