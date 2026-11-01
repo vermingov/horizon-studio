@@ -2444,9 +2444,7 @@ pub fn highlight(line: &str, start: Long) -> (Vec<(usize, usize, Tint)>, Long) {
 /// own functions and the standard library's tables.
 pub fn complete(text: &str, cursor: usize) -> Option<String> {
     let before = &text[..cursor];
-    let start = before
-        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
-        .map_or(0, |i| i + 1);
+    let start = super::hstudio_assist::start_after(before, |c| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'));
     let word = &before[start..];
     if word.is_empty() {
         return None;

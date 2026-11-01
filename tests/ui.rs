@@ -331,6 +331,9 @@ fn completion() {
     assert_eq!(complete("x = ag", 6).as_deref(), Some("ent."));
     assert_eq!(complete("", 0), None);
     assert_eq!(complete("zzz", 3), None);
+    // A letter of more than one byte before the word.
+    assert_eq!(complete("épla", "épla".len()).as_deref(), Some("yer."));
+    assert_eq!(complete("print(\"héllo", "print(\"héllo".len()), None);
 }
 
 #[test]
@@ -894,6 +897,37 @@ fn suggestions_open_as_you_type_and_tab_takes_one() {
     type_text(&mut st, &mut game, "player:po");
     handle(&mut st, &mut game, key(Key::Tab, NONE));
     assert_eq!(st.s.editor.text(), "player.pos()");
+}
+
+#[test]
+fn accented_letters_type_in_the_code_and_the_console() {
+    // As each letter comes the suggestions look for the word typed, and
+    // the console's Tab completes it: a letter of more than one byte
+    // before it (é, ö, ú) is never cut in two.
+    let mut game = FakeGame::new("ui-accents");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    st.s.editor.set_text("");
+    type_text(&mut st, &mut game, "local número = 5");
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    type_text(&mut st, &mut game, "local grö = é.a");
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.editor.text(), "local número = 5\nlocal grö = é.a");
+    // The console: as typed, then Tab after an accent in a string.
+    handle(&mut st, &mut game, key(Key::Char('1'), CTRL));
+    type_text(&mut st, &mut game, "größe = é.a");
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.ui.input.text, "größe = é.a");
+    st.s.ui.input.set("");
+    type_text(&mut st, &mut game, "print(\"héllo");
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert_eq!(st.s.ui.input.text, "print(\"héllo");
+    st.s.ui.input.set("");
+    type_text(&mut st, &mut game, "épla");
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert!(st.s.ui.input.text.starts_with("éplayer"), "{:?}", st.s.ui.input.text);
 }
 
 #[test]
