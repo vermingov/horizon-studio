@@ -807,6 +807,19 @@ fn switch_waits(st: &Studio) -> Option<Json> {
     using(st).then(|| busy("the player is using the studio"))
 }
 
+/// Why console code an agent runs (run_lua) can't open another file in the
+/// editor now (its `edit()` or `new()`, `what`), if it can't: as for
+/// open_script, not while the player is using the studio or has a prompt
+/// or a menu open in it, nor over unsaved edits in the file open (nothing
+/// of theirs is saved for an agent).
+pub fn console_open_refused(st: &Studio, what: &str) -> Option<String> {
+    if let Some(wait) = switch_waits(st) {
+        let why = wait["error"].as_str().unwrap_or("the player is using the studio");
+        return Some(format!("{what} opened no file: {why} (open_script waits for them)"));
+    }
+    unsaved_refusal(st, what, "")
+}
+
 /// The rows the code shows: in the studio's own layout, as the dock has its
 /// panes now, laid out in the Editor tab's room (a pane shown or hidden, or
 /// the code brought to the front, a moment ago counts before the next draw

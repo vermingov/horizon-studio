@@ -1238,6 +1238,81 @@ fn an_edit_behind_a_scripts_screen_lands_at_once() {
 }
 
 #[test]
+fn an_agents_console_code_opens_no_file_while_the_player_uses_the_studio() {
+    // An agent's run_lua runs console code (run_chunk, out of the history),
+    // whose edit() and new() open a file in the editor. As open_script,
+    // they open none while the player is using the studio (the wheel a
+    // moment ago, a prompt up) nor over unsaved edits in the file open,
+    // which nothing saves for an agent: the console says why, the run
+    // fails, and nothing is made or saved. Once the player pauses with
+    // nothing unsaved, edit() opens the file. The player's own console
+    // opens files whenever they ask.
+    let (mut game, mut st) = with_module("coach-console-opens");
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    st.s.now = 10.0;
+    redraw(&mut st, &mut game);
+    let title = st.s.editor.title.clone();
+    let refused = |st: &mut Studio, game: &mut FakeGame, code: &str, why: &str| {
+        let lines = st.run_chunk(game, code, false);
+        let errors: Vec<&String> = lines
+            .iter()
+            .filter(|(k, _)| *k == horizon_studio::game::hstudio::LogKind::Error)
+            .map(|(_, t)| t)
+            .collect();
+        assert!(errors.iter().any(|e| e.contains(why)), "{code}: {lines:?}");
+    };
+    // The wheel a moment ago.
+    handle(&mut st, &mut game, Input::Wheel(-1.0));
+    refused(&mut st, &mut game, "edit('kit')", "the player is using the studio");
+    refused(&mut st, &mut game, "new('fresh')", "the player is using the studio");
+    assert_eq!(st.s.editor.title, title);
+    assert!(!game.mods_dir().join("fresh.lua").exists(), "nothing made");
+    // A prompt up.
+    st.s.now += 5.0;
+    st.s.ui.naming = Some(Default::default());
+    refused(
+        &mut st,
+        &mut game,
+        "edit('kit', 'lib/util.lua')",
+        "a prompt or a menu open",
+    );
+    st.s.ui.naming = None;
+    assert_eq!(st.s.editor.title, title);
+    // The player's unsaved edits, paused.
+    st.s.editor.click(0, 0, false);
+    handle(&mut st, &mut game, Input::Text("-- mine\n".into()));
+    let path = st.s.editor.path.clone().unwrap();
+    let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+    st.s.now += 5.0;
+    refused(&mut st, &mut game, "edit('kit')", "unsaved edits");
+    refused(&mut st, &mut game, "new('fresh')", "unsaved edits");
+    assert_eq!(st.s.editor.title, title);
+    assert!(st.s.editor.dirty, "still the player's, unsaved");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap_or_default(),
+        on_disk,
+        "nothing saved"
+    );
+    assert!(!game.mods_dir().join("fresh.lua").exists(), "nothing made");
+    // Saved, paused: it opens.
+    handle(&mut st, &mut game, key(Key::Char('s'), CTRL));
+    st.s.now += 5.0;
+    let lines = st.run_chunk(&mut game, "edit('kit')", false);
+    assert!(
+        lines
+            .iter()
+            .all(|(k, _)| *k != horizon_studio::game::hstudio::LogKind::Error),
+        "{lines:?}"
+    );
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    // The player's own console, while they use the studio.
+    handle(&mut st, &mut game, Input::Wheel(-1.0));
+    st.run_console(&mut game, "edit('hello')");
+    assert_eq!(st.s.editor.title, "hello.lua");
+}
+
+#[test]
 fn a_change_over_all_the_view_shows_leaves_the_view_at_its_line() {
     // While the view is the player's (they typed and saved a moment ago,
     // drag a selection, or press in the change's frame), or nobody sees it
@@ -2954,9 +3029,11 @@ fn reload_on_the_conflict_banner_finds_the_edit_whole() {
 
 #[test]
 fn the_consoles_edit_finds_the_edit_whole() {
+    // The player's console. (An agent's run_lua opens no other file over
+    // unsaved edits, its own included, as open_script: below.)
     let (mut game, mut st, id) = mid_edit("coach-mid-console");
     let path = st.s.editor.path.clone().unwrap();
-    st.run_chunk(&mut game, "edit('hello')", false);
+    st.run_console(&mut game, "edit('hello')");
     assert_eq!(st.s.editor.title, "hello.lua");
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
@@ -2971,6 +3048,23 @@ fn the_consoles_edit_finds_the_edit_whole() {
             .contains("the console opened another file"),
         "{r}"
     );
+    // An agent's run_lua (run_chunk, out of the history), the player paused:
+    // its edit is all in, then edit() opens nothing over it, unsaved.
+    let (mut game, mut st, id) = mid_edit("coach-mid-agent-console");
+    let path = st.s.editor.path.clone().unwrap();
+    st.s.now += 5.0;
+    let lines = st.run_chunk(&mut game, "edit('hello')", false);
+    let said: Vec<&String> = lines.iter().map(|(_, t)| t).collect();
+    assert!(
+        said.iter().any(|t| t.contains("your edits to greet.lua aren't saved")),
+        "{said:?}"
+    );
+    assert_eq!(st.s.editor.title, "greet.lua");
+    assert_eq!(st.s.editor.lines[1], "print('typed in whole')");
+    assert!(st.s.editor.dirty, "unsaved");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), GREET, "nothing saved");
+    let r = result_of(&mut st, &mut game, id);
+    assert_eq!(r["ok"], true, "{r}");
 }
 
 #[test]

@@ -4362,7 +4362,7 @@ for id, state in pairs(mods()) do print(id, state) end
         r##"
 `edit(id[, file])`
 
-Console only. Opens a mod in the studio's Editor tab (after the console line): its main file, or with `file` another file of a module, by its path in the module (`"lib.lua"`, `"lib/util"`; the `.lua` may be left out). Unsaved edits in the file open before are saved first.
+Console only. Opens a mod in the studio's Editor tab (after the console line): its main file, or with `file` another file of a module, by its path in the module (`"lib.lua"`, `"lib/util"`; the `.lua` may be left out). Unsaved edits in the file open before are saved first. Run by an agent (`run_lua`), it opens nothing while the player is using the studio or has a prompt or a menu up, nor over unsaved edits in the file open: an error line says why, as `open_script` would wait or refuse.
 
 - `id` (string): a mod id.
 - `file` (string, optional): a file of the module.
@@ -4382,7 +4382,7 @@ edit("tool", "lib.lua")
         r##"
 `new(name[, kind])`
 
-Console only. Makes a new mod and opens it in the Editor: a script, `<id>.lua` from the template (the id made from the name), or with `kind` `"module"` a module, the folder `<id>/` with `main.lua`, `shared.lua` and `lib.lua` (main.lua requires the other two, and every file shares the table shared.lua returns). If a mod has that id, the console logs `<id> already exists`. Unsaved edits in the file open are saved first.
+Console only. Makes a new mod and opens it in the Editor: a script, `<id>.lua` from the template (the id made from the name), or with `kind` `"module"` a module, the folder `<id>/` with `main.lua`, `shared.lua` and `lib.lua` (main.lua requires the other two, and every file shares the table shared.lua returns). If a mod has that id, the console logs `<id> already exists`. Unsaved edits in the file open are saved first. Run by an agent (`run_lua`), it makes and opens nothing while the player is using the studio or has a prompt or a menu up, nor over unsaved edits in the file open: an error line says why, as `open_script` would wait or refuse.
 
 - `name` (string): the mod's name; the id is made from it.
 - `kind` (string, optional): `"script"` (the default) or `"module"`.
