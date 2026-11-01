@@ -15,7 +15,7 @@ Scripts run in the studio's own sandboxed Lua: no files, network or processes, a
 chat and commands. A script that fails stops alone.
 
 A native mod: the launcher builds it into the game once (Settings → Game → Native mods (experimental), then Build);
-after that, script mods need no build at all. It is pinned to Horizon Nightly baa379d.
+after that, script mods need no build at all. It is pinned to Horizon Nightly 4aa6854.
 """
 authors = ["vermingov"]
 owners = ["vermingov"]

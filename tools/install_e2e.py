@@ -7,9 +7,10 @@ it reads a bundle folder or a registry-style one (horizon-native.json beside mix
 which horizon-mixins commit goes in a build's name, its profile and its Rust. install.sh must
 put the game where each one looks, so that its native-build only selects it, never compiles:
 
-- old: the launcher at the pinned Horizon (horizon-mixins 0d6b103, always the release profile,
-  no --profile option);
-- new: a later one (another horizon-mixins, the fast profile by default, --profile);
+- old: a launcher from before build profiles (Horizon baa379d's: always the release profile, no
+  --profile option), with the pinned horizon-mixins a2af5c0 as its own;
+- new: one with them, as the launcher at the pinned Horizon is (the fast profile by default,
+  --profile), here with another horizon-mixins as its own;
 - new with another Rust: the name takes the launcher's own Rust.
 
 install.ps1 runs the same cases where there is a PowerShell (pwsh), on any system: told it is
@@ -43,7 +44,7 @@ FAKE = r'''#!/usr/bin/env python3
 import hashlib, json, os, sys, tomllib
 mode, state = os.environ["FAKE_MODE"], os.environ["FAKE_STATE"]
 data = os.environ["HORIZON_LAUNCHER_HOME"]
-mixins_rev = {"old": "0d6b103c70633d8fd9443d8d0acd3aadaacedb06",
+mixins_rev = {"old": "a2af5c0dd4117d51ecd70066ba7a00b4a2c10dab",
               "new": "4342a0bfbe71d4d14185528d64e496d6022f16a1"}[mode]
 args = sys.argv[1:]
 with open(os.path.join(state, "calls"), "a") as log:

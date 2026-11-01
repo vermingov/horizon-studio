@@ -184,16 +184,26 @@ def launcher_constants(src):
     """What the launcher at the pinned Horizon puts in a native build's key: its Rust, profile and features."""
     rust = (src / "launcher" / "src" / "rust_toolchain.rs").read_text()
     native = (src / "launcher" / "src" / "native_mods.rs").read_text()
+    cli = (src / "launcher" / "src" / "cli.rs").read_text()
     def const(text, name):
         found = re.search(rf'const {name}: &str = "([^"]*)";', text)
         if not found:
             sys.exit(f"the launcher has no {name}: its native build changed")
         return found.group(1)
+    def profile():
+        # Launchers before build profiles always build with one, PROFILE.
+        if re.search(r'const PROFILE: &str = "', native):
+            return const(native, "PROFILE")
+        # Later ones build each time with a profile of the player's choice, its name in the key (fast by
+        # default, native-build --profile): the prebuilt game is release's, and install.sh asks for that one.
+        if 'Self::Release => "release"' in native and 'value_parser = ["fast", "release"]' in cli:
+            return "release"
+        sys.exit("the launcher has no PROFILE and no --profile: its native build changed")
     if const(native, "MIXINS_REV") != COMPAT["horizon_mixins_revision"]:
         sys.exit("compatibility.json's horizon-mixins is not the launcher's MIXINS_REV")
     return {
         "rust": const(rust, "VERSION"),
-        "profile": const(native, "PROFILE"),
+        "profile": profile(),
         "features": const(native, "FEATURES"),
     }
 

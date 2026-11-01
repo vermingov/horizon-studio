@@ -166,7 +166,7 @@ pub(crate) fn render(
                         crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY
                     } else {
                         0
-                    },
+                    } | u32::from(super::hdr_tier(p.ty)) << 16,
                     color,
                     light,
 
