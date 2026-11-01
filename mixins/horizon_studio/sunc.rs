@@ -686,8 +686,10 @@ pub struct ImageCache {
     /// key in `items`: decoded again, it takes the same one, so the atlas
     /// finds it where it is rather than placing it anew.
     places: std::collections::HashMap<u64, u32>,
-    /// Large images scaled down for the game's atlas, by the image's key.
-    small: Vec<(u32, Rc<super::hstudio_meshes::Texture>)>,
+    /// Large images scaled down for the game's atlas, by the image's key,
+    /// which a copy takes (the image itself never goes there): made again,
+    /// it is found where the last was put.
+    small: Kept<(u32, Rc<super::hstudio_meshes::Texture>)>,
     /// This frame (the studio's clock), and the images it put in the
     /// game's atlas (by key) with their pixels in all.
     frame: f64,
@@ -721,6 +723,9 @@ const KEPT_TEXELS: usize = 1 << 23;
 const KEPT_BYTES: usize = 32 << 20;
 /// The images whose place in the atlas is remembered.
 const PLACES: usize = 4096;
+/// The copies of large images kept scaled down for the atlas: a frame's
+/// take at most its share of the atlas, and these hold four frames' worth.
+const SMALL_TEXELS: usize = 4 * ATLAS_TEXELS;
 
 /// Moves entry `i` of `kept` to its end (the most recently drawn), drawn
 /// in `frame`, and returns it.
@@ -849,14 +854,16 @@ impl ImageCache {
         if (w, h) == (t.w, t.h) {
             return Some(t.clone());
         }
-        if let Some((_, s)) = self.small.iter().find(|(k, _)| *k == t.key) {
-            return Some(s.clone());
+        if let Some(i) = self.small.iter().position(|(_, (k, _))| *k == t.key) {
+            return Some(touch(&mut self.small, i, self.frame).1.clone());
         }
-        let s = Rc::new(shrink(t, w, h)?);
-        if self.small.len() >= 32 {
-            self.small.remove(0);
-        }
-        self.small.push((t.key, s.clone()));
+        // The copy is the image in the atlas: it takes the image's key, its
+        // place there, so one made again is drawn from the same place.
+        let mut s = shrink(t, w, h)?;
+        (s.key, s.version) = (t.key, t.version);
+        let s = Rc::new(s);
+        self.small.push((self.frame, (t.key, s.clone())));
+        keep(&mut self.small, self.frame, SMALL_TEXELS, |(_, s)| s.texels());
         Some(s)
     }
 

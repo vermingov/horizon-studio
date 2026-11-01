@@ -2191,6 +2191,76 @@ fn a_shop_of_large_images_is_decoded_once() {
 }
 
 #[test]
+fn scaled_images_keep_their_places_in_the_atlas() {
+    // 40 banners, each its own 512 x 16 PNG: each goes to the atlas as a
+    // copy scaled down to 256 x 8, and the copies (all 40 fit the frame's
+    // share) keep their places frame after frame.
+    let mut game = FakeGame::new("rbx-banners");
+    let mut st = studio(&mut game);
+    let ws = st.s.rbx.workspace_dir.clone();
+    std::fs::create_dir_all(&ws).unwrap();
+    for i in 0..40u8 {
+        let px = vec![[i, 7, 7, 255]; 512 * 16];
+        std::fs::write(ws.join(format!("bar{i}.png")), png(512, 16, &px)).unwrap();
+    }
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        for i = 0, 39 do
+            local bar = Instance.new("ImageLabel", gui)
+            bar.Position = UDim2.fromOffset(0, 10 * i)
+            bar.Size = UDim2.fromOffset(256, 8)
+            bar.Image = getcustomasset("bar" .. i .. ".png")
+        end
+    "#;
+    load(&mut game, &mut st, "banners", src, 0.6);
+    let mut places = Vec::new();
+    for _ in 0..3 {
+        run_for(&mut st, &mut game, 0.05);
+        game.image_keys.clear();
+        let drawn = hud(&mut st, &mut game);
+        assert_eq!(images(&drawn).len(), 40);
+        assert!(
+            drawn
+                .iter()
+                .filter(|d| d.starts_with("image "))
+                .all(|d| d.starts_with("image 256x8 "))
+        );
+        if places.is_empty() {
+            places = game.image_keys.clone();
+        }
+        assert_eq!(game.image_keys, places, "the same places in the atlas");
+    }
+    // More copies a frame than are kept (300 strips, 256 kept): those made
+    // again each frame are drawn from their places too.
+    let mut cache = horizon_studio::game::hstudio_sunc::ImageCache::default();
+    for i in 0..300u16 {
+        let px = vec![[(i % 256) as u8, (i / 256) as u8, 3, 255]; 512 * 2];
+        std::fs::write(ws.join(format!("strip{i}.png")), png(512, 2, &px)).unwrap();
+    }
+    let mut places = Vec::new();
+    for frame in 1..=3 {
+        cache.begin(f64::from(frame));
+        game.image_keys.clear();
+        for i in 0..300 {
+            let t = cache.file_image(&ws, &format!("strip{i}.png")).flatten().unwrap();
+            cache.draw_part(
+                &mut game,
+                &t,
+                [0.0, 0.0, 256.0, 1.0],
+                [0.0, 0.0, 512.0, 2.0],
+                0xFF_FFFF,
+                1.0,
+            );
+        }
+        assert_eq!(game.image_keys.len(), 300);
+        if places.is_empty() {
+            places = game.image_keys.clone();
+        }
+        assert_eq!(game.image_keys, places, "frame {frame}: the same places in the atlas");
+    }
+}
+
+#[test]
 fn large_images_go_to_the_atlas_smaller_and_within_a_share() {
     // The game's atlas is shared with the interface's glyphs: an image
     // goes there at most 256 pixels a side, and a frame's images take at
