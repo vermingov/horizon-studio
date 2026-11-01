@@ -593,8 +593,9 @@ after that what `suggest` returns, which the studio filters by what is typed. An
 anything but a space) or `text` (the rest of the line), or one the chat reads, colours and completes as the game's own
 commands do: `int` and `number` (with `min` and `max`, red outside them), `bool`, `player`, `pos`, `item` and `block`.
 `fn` still gets the line as typed. The studio answers the chat's completion requests itself, so nothing typed after a
-script command's name reaches the server. `/studio help` and the Library show each command with its usage. Script
-commands don't show in a command block's editor (command blocks run on the server) or after `/execute ... run`.
+script command's name reaches the server. `/studio help` shows each command with its usage (the first 20: typing
+`/` in the chat lists them all), and the Library a mod's own with what they do. Script commands don't show in a
+command block's editor (command blocks run on the server) or after `/execute ... run`.
 
 ### Screens
 

@@ -3864,7 +3864,8 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     if !commands.is_empty() && dy + 46.0 <= bottom {
         p.text("Commands", dx, top(dy + 8.0, 13.0), 13.0, Font::Medium, pal().ink_soft);
         dy += 24.0;
-        for (name, help) in commands.iter().take(6) {
+        const SHOWN: usize = 6;
+        for (name, help) in commands.iter().take(SHOWN) {
             if dy + 22.0 > bottom {
                 break;
             }
@@ -3872,6 +3873,11 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             let cw = p.text(&cmd, dx, dy, 13.0, Font::Mono, pal().ink);
             let help = p.fit(help, dw - cw - 12.0, 13.0, Font::Regular);
             p.text(&help, dx + cw + 12.0, dy, 13.0, Font::Regular, pal().muted);
+            dy += 22.0;
+        }
+        if commands.len() > SHOWN && dy + 22.0 <= bottom {
+            let rest = format!("and {} more: type / in the chat to see them", commands.len() - SHOWN);
+            p.text(&rest, dx, dy, 12.0, Font::Regular, pal().muted);
             dy += 22.0;
         }
         dy += 10.0;

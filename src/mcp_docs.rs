@@ -1915,7 +1915,7 @@ Every number below is in the runtime's source.
 | Options of one argument / completions in one answer (`MAX_COMPLETIONS`) | 256 / 256 |
 | A completion's text / tooltip (`MAX_COMPLETION_BYTES`) | 256 bytes (a longer text is left out, a tooltip is cut) |
 | Entries of a `suggest` function's list looked at | 4096 |
-| `/studio help` lines for the mods' commands | 20 (the Library lists them all) |
+| `/studio help` lines for the mods' commands | 20 (typing / in the chat lists them all; the Library shows a mod's first 6) |
 
 ## Per mod
 

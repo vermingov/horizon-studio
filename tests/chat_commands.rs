@@ -878,7 +878,9 @@ fn studio_help_lists_the_commands() {
         ]
     );
     assert!(texts(&mut st, &mut game, "/lua pri").is_empty());
-    // Many commands: the first 20, then a pointer to the Library.
+    // Many commands: the first 20, then where they all are (the chat's
+    // suggestions; the Library has a mod's first few, and none of the
+    // console's).
     console(
         &mut st,
         &mut game,
@@ -890,11 +892,32 @@ fn studio_help_lists_the_commands() {
     assert!(
         game.chats
             .iter()
-            .any(|c| c.starts_with("and ") && c.ends_with(" more: see the Library")),
+            .any(|c| c.starts_with("and ") && c.ends_with(" more: type / in the chat to see them all")),
         "{:?}",
         game.chats
     );
     assert!(game.chats.len() <= 24, "{:?}", game.chats);
+    assert!(chat_names(&st).contains(&"c30".to_owned()), "the chat has them all");
+    // A mod's commands past the Library's first 6 say where the rest are.
+    let src: String = (1..=9)
+        .map(|i| format!("command('m{i}', function() end, 'Mine')\n"))
+        .collect();
+    game.write_mod("many.lua", &src);
+    run_for(&mut st, &mut game, 0.6);
+    st.s.ui.open = true;
+    st.s.ui.tab = horizon_studio::game::hstudio_ui::Tab::Library;
+    st.s.ui.library_sel = mod_index(&st, "many");
+    game.drawn.clear();
+    horizon_studio::game::hstudio_ui::draw(&mut st, &mut game);
+    let shown = game.drawn.iter().filter(|d| d.starts_with("text /m")).count();
+    assert_eq!(shown, 6, "{:?}", game.drawn);
+    assert!(
+        game.drawn
+            .iter()
+            .any(|d| d.starts_with("text and 3 more: type / in the chat to see them @")),
+        "{:?}",
+        game.drawn
+    );
     // An unknown action names help.
     st.command("studio what");
     st.frame(&mut game, 0.016);

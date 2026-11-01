@@ -3244,7 +3244,10 @@ impl Studio {
             game.chat(line);
         }
         if lines.len() > SHOWN {
-            game.chat(&format!("and {} more: see the Library", lines.len() - SHOWN));
+            game.chat(&format!(
+                "and {} more: type / in the chat to see them all",
+                lines.len() - SHOWN
+            ));
         }
         game.chat(
             "/studio [help|reload] - opens the studio; help lists these commands, reload reloads every script mod",
