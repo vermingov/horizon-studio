@@ -1491,6 +1491,10 @@ impl Editor {
             ..Editor::default()
         };
         self.set_text(&text);
+        // It shows its top, where the cursor is: the view has followed the
+        // cursor, drawn yet or not (a change on disk before the first draw
+        // types in where the view goes).
+        self.followed = Some((self.row, self.col, self.revision));
     }
     /// The file it shows moved (renamed, or a script made a module's
     /// main.lua): the same text, cursor, undo and unsaved edits, at its new

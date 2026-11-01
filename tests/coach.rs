@@ -1469,6 +1469,55 @@ fn the_view_follows_the_agent_as_the_game_draws() {
 }
 
 #[test]
+fn a_change_on_disk_to_a_file_opened_unseen_types_in_where_the_view_goes() {
+    // open_script with no line while the studio is closed opens a file that
+    // nothing draws, and the file then changes on disk. When the player
+    // opens the studio, the change types in where the view goes, and the
+    // view follows it, as in a file the editor has drawn: a file just
+    // opened shows its top, where its cursor is.
+    let src: String = (1..=200).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-opened-unseen", "other", "print(1)\n");
+    game.write_mod("long.lua", &src);
+    st.scan(&mut game);
+    for _ in 0..5 {
+        game_frame(&mut st, &mut game);
+    }
+    st.s.ui.open = false;
+    run_for(&mut st, &mut game, 3.0);
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "long" })).unwrap();
+    assert_eq!(r["did"], "Opened long.lua", "{r}");
+    run_for(&mut st, &mut game, 1.0);
+    let changed = "local v151 = 151 -- and more";
+    std::fs::write(
+        game.mods_dir().join("long.lua"),
+        src.replace("local v151 = 151", changed),
+    )
+    .unwrap();
+    run_for(&mut st, &mut game, 1.0);
+    st.s.ui.open = true;
+    st.s.ui.opened_at = st.s.now;
+    let mut n = 0;
+    while st.s.ui.coach.typing.is_none() {
+        n += 1;
+        assert!(n < 20, "never typed in");
+        game_frame(&mut st, &mut game);
+    }
+    while st.s.ui.coach.typing.is_some() {
+        n += 1;
+        assert!(n < 100, "it never was in");
+        assert!(
+            st.s.ui.coach.typing.as_ref().is_some_and(|t| !t.free),
+            "the view follows it"
+        );
+        game_frame(&mut st, &mut game);
+        let scroll = st.s.editor.scroll;
+        assert!((121..=150).contains(&scroll), "the view on the change: {scroll}");
+    }
+    assert_eq!(st.s.editor.lines[150], changed);
+    assert!(!st.s.editor.dirty);
+}
+
+#[test]
 fn a_change_on_disk_after_a_key_leaves_the_view_with_the_cursor() {
     // In the game the studio draws, and looks at the file on disk, after a
     // frame's input: a change on disk can begin to type in before the draw
