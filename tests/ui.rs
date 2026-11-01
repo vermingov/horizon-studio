@@ -3640,6 +3640,43 @@ fn the_code_opens_the_library_or_the_file_it_names() {
 }
 
 #[test]
+fn a_file_gone_since_its_menu_opened_is_said_to_be_gone() {
+    // kit/main.lua requires lib/util.lua and calls helper, defined there.
+    // The player opens the menu of the require's string, or of helper, and
+    // lib/util.lua goes meanwhile (an agent deletes it, or a file manager):
+    // Open lib/util.lua and Go to definition leave main.lua open and say
+    // why, rather than open an empty file in its name, which a save would
+    // write back.
+    let mut game = FakeGame::new("ui-menu-file-gone");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    let kit = game.mods_dir().join("kit");
+    std::fs::create_dir_all(kit.join("lib")).unwrap();
+    std::fs::write(kit.join("main.lua"), "require(\"lib.util\")\nprint(helper())\n").unwrap();
+    for (item, at) in [("Open lib/util.lua", "\"lib.util\""), ("Go to definition", "helper")] {
+        std::fs::write(kit.join("lib/util.lua"), "function helper()\n  return 2\nend\n").unwrap();
+        run_for(&mut st, &mut game, 0.6);
+        st.open_file(&kit.join("main.lua"));
+        handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+        redraw(&mut st, &mut game);
+        let at = last_text_at(&game, at);
+        right_click(&mut st, &mut game, (at.0 + 4.0, at.1));
+        assert!(menu_items(&st).contains(&item.to_owned()), "{:?}", menu_items(&st));
+        redraw(&mut st, &mut game);
+        std::fs::remove_file(kit.join("lib/util.lua")).unwrap();
+        run_for(&mut st, &mut game, 0.6);
+        choose(&mut st, &mut game, item);
+        assert_eq!(st.s.editor.title, "kit/main.lua", "{item}");
+        assert_eq!(
+            st.s.ui.notice.as_ref().map(|n| n.0.as_str()),
+            Some("kit/lib/util.lua isn't there any more"),
+            "{item}"
+        );
+    }
+}
+
+#[test]
 fn run_the_selection_runs_it_and_marks_its_line() {
     let src = "print('first')\nprint('second')\nerror('third')";
     let (mut game, mut st) = editing("ui-run-selection", src);

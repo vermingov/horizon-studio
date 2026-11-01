@@ -363,12 +363,28 @@ fn go_to(st: &mut Studio, place: Option<(usize, usize, usize)>) {
     ui.suggest = None;
 }
 
+/// Whether `path`, a file a menu named when it opened, is gone since (an
+/// agent or a file manager deleted it): a notice says so, and the item
+/// doesn't open it, which would show an empty file in its name that a save
+/// writes back. The file open is never gone: the editor has its text.
+fn gone(st: &mut Studio, path: &Path) -> bool {
+    if st.s.editor.path.as_deref() == Some(path) || path.is_file() {
+        return false;
+    }
+    let file = st.file_title(path);
+    notice(st, format!("{file} isn't there any more"));
+    true
+}
+
 /// The definition of `name` in another file of the module: the file opens,
 /// and the definition is found in its text as it opens, so an agent's edit
 /// on disk since the menu opened (which leaves the file open, and so the
 /// menu, as they were) can't send the cursor to lines that moved. Gone from
-/// the file, the file opens all the same.
+/// the file, the file opens all the same; the file gone, it doesn't.
 fn define(st: &mut Studio, game: &mut dyn GameApi, path: &Path, name: &str) {
+    if gone(st, path) {
+        return;
+    }
     open_path(st, game, path);
     let ed = &st.s.editor;
     let place = (ed.path.as_deref() == Some(path))
@@ -762,7 +778,11 @@ pub fn run(st: &mut Studio, game: &mut dyn GameApi, cmd: MenuCmd, place: [f32; 4
         MenuCmd::NewScript => open_naming(st, NamingKind::NewScript, ""),
         MenuCmd::NewModule => open_naming(st, NamingKind::NewModule, ""),
         MenuCmd::NewFile(folder) => open_naming(st, NamingKind::NewFile(folder), ""),
-        MenuCmd::Open(path) => open_path(st, game, &path),
+        MenuCmd::Open(path) => {
+            if !gone(st, &path) {
+                open_path(st, game, &path);
+            }
+        }
         MenuCmd::Rename(path) => {
             // The field starts with its path in the module.
             let rel = file_in_module(st, &path).map(|(_, rel)| rel).unwrap_or_default();
