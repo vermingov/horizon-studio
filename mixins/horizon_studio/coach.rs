@@ -827,11 +827,15 @@ fn code_page(ui: &super::hstudio_ui::Ui) -> usize {
 }
 
 /// Whether the player sees the code: the studio open on its Editor tab, not
-/// rolled up, and in the studio's own layout the code's body drawn last
-/// frame (not behind another tab, nor given way to another pane). An
-/// agent's change to code not seen lands at once instead of being typed in.
-fn code_seen(ui: &super::hstudio_ui::Ui) -> bool {
+/// rolled up nor under a script's screen (the Roblox GUI's too: the game
+/// draws that instead of the studio), and in the studio's own layout the
+/// code's body drawn last frame (not behind another tab, nor given way to
+/// another pane). An agent's change to code not seen lands at once instead
+/// of being typed in.
+fn code_seen(st: &Studio) -> bool {
+    let ui = &st.s.ui;
     ui.open
+        && st.s.screen.is_none()
         && ui.tab == Tab::Editor
         && !ui.collapsed
         && (ui.look.theme().layout != super::hstudio_theme::Layout::Studio || ui.dock_front[Pane::Code.index()])
@@ -1298,7 +1302,7 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     }
     let now = st.s.now;
     let ui = &st.s.ui;
-    let seen = code_seen(ui);
+    let seen = code_seen(st);
     let hands_off = view_held(st);
     let animated = seen && !hands_off && ui.look.motion && flag(params, "typing") != Some(false);
     let page = code_page(ui).max(1);
@@ -3627,7 +3631,7 @@ pub fn sync_disk(st: &mut Studio) -> bool {
         return false;
     }
     let ui = &st.s.ui;
-    let shown = code_seen(ui);
+    let shown = code_seen(st);
     let seen = shown && ui.look.motion;
     // A view the player holds takes the change through the editor's splices,
     // however big: reading the file in whole would let go of a drag's other

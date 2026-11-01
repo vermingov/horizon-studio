@@ -1206,6 +1206,38 @@ fn a_window_rolled_up_then_made_full_screen_shows_its_code() {
 }
 
 #[test]
+fn an_edit_behind_a_scripts_screen_lands_at_once() {
+    // A script's screen (its ui.open; the Roblox GUI's is one too) over the
+    // studio: the game draws the screen, not the studio, so nobody sees the
+    // code, and an agent's edit lands at once rather than typing in behind
+    // the screen. The studio shows it when the screen closes.
+    use horizon_studio::game::hstudio_ui::draw_screen;
+    let (mut game, mut st) = editing("coach-behind-screen", "bs", GREET);
+    for _ in 0..5 {
+        game_frame(&mut st, &mut game);
+    }
+    st.run_console(&mut game, "ui.open({ draw = function() end })");
+    assert!(st.accept_screen(), "the script's screen");
+    for _ in 0..5 {
+        game.drawn.clear();
+        draw_screen(&mut st, &mut game);
+        run_for(&mut st, &mut game, 0.05);
+    }
+    let edit = json!({ "old_text": "print('hi')", "new_text": "print('hello there')" });
+    let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+    assert_eq!(r["animated"], false, "{r}");
+    assert!(st.s.ui.coach.typing.is_none(), "it landed at once");
+    assert_eq!(st.s.editor.lines[1], "print('hello there')");
+    // Back to the studio under it, which arrives again.
+    st.close_screen(&mut game);
+    st.s.ui.opened_at = st.s.now;
+    for _ in 0..5 {
+        game_frame(&mut st, &mut game);
+    }
+    assert!(!texts_at(&game, "'hello there'").is_empty(), "drawn");
+}
+
+#[test]
 fn a_change_over_all_the_view_shows_leaves_the_view_at_its_line() {
     // While the view is the player's (they typed and saved a moment ago,
     // drag a selection, or press in the change's frame), or nobody sees it
