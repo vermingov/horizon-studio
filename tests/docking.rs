@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::{FakeGame, mod_index, studio};
+use common::{FakeGame, mod_index, run_for, studio};
 use horizon_studio::game::hstudio::{LogKind, Studio};
 use horizon_studio::game::hstudio_coach::{self as coach, By};
 use horizon_studio::game::hstudio_theme::{Layout, Look, THEMES};
@@ -1571,6 +1571,147 @@ fn a_lesson_leaves_a_hidden_agent_pane_hidden_under_what_the_player_holds() {
     assert!(st.s.ui.dock.is_front(Pane::Agent));
     assert!(drawn(&game, "Explained in the pane."), "the Agent pane has it");
     assert!(!in_bubble(&st, &game, "Explained in the pane."));
+}
+
+/// A frame in the game's order: the studio draws, then its frame runs; the
+/// link's requests and the player's input come after it.
+fn game_frame(st: &mut Studio, game: &mut FakeGame) {
+    redraw(st, game);
+    run_for(st, game, 0.05);
+}
+
+/// long.lua's 200 lines.
+fn lines_200() -> String {
+    (1..=200).map(|i| format!("local v{i} = {i}\n")).collect()
+}
+
+/// A studio on its Editor tab with long.lua (200 lines) open, nothing
+/// moving, drawn as the game draws.
+fn with_200(name: &str) -> (FakeGame, Studio) {
+    let (mut game, mut st) = editing(name);
+    game.write_mod("long.lua", &lines_200());
+    st.scan(&mut game);
+    st.edit_mod(mod_index(&st, "long"));
+    game_frame(&mut st, &mut game);
+    (game, st)
+}
+
+/// Whether line `n` (from 1) is among the code's rows as the last frame
+/// drew them.
+fn in_view(st: &Studio, n: usize) -> bool {
+    let (scroll, rows) = (st.s.editor.scroll, st.s.ui.pages[Pane::Code.index()]);
+    (scroll..scroll + rows).contains(&(n - 1))
+}
+
+#[test]
+fn what_agents_show_is_in_the_rows_the_code_has_once_the_panes_change() {
+    // The panel hidden, the code as high as the Editor tab. A lesson shows
+    // the Agent pane, which brings the panel back under the code: its step,
+    // on a line the code showed before, is in the rows the code has now,
+    // its note drawn.
+    let (mut game, mut st) = with_200("dock-room-lesson");
+    st.s.ui.dock.set_hidden(Pane::Agent, true);
+    game_frame(&mut st, &mut game);
+    let tall = st.s.ui.pages[Pane::Code.index()];
+    let line = tall - 1;
+    assert!(in_view(&st, line));
+    st.s.now += 5.0;
+    game_frame(&mut st, &mut game);
+    let steps = json!([{ "start_line": line, "note": "Down here.", "explain": "Explained in the pane." }]);
+    let r = coach::call(
+        &mut st,
+        &mut game,
+        &agent(),
+        "lesson",
+        &json!({ "title": "Low", "steps": steps }),
+    )
+    .unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(st.s.ui.dock.is_front(Pane::Agent));
+    game_frame(&mut st, &mut game);
+    game_frame(&mut st, &mut game);
+    let rows = st.s.ui.pages[Pane::Code.index()];
+    assert!(rows < tall, "the panel takes room from the code: {rows}");
+    assert!(
+        in_view(&st, line),
+        "the step's line {line} shows in {rows} rows: scroll {}",
+        st.s.editor.scroll
+    );
+    assert!(in_bubble(&st, &game, "Down here."), "its note shows");
+    assert!(drawn(&game, "Explained in the pane."));
+    // The studio on its Console tab, the code not drawn yet: an agent's
+    // open_script at line 100 brings the Editor tab forward, and line 100
+    // shows in the rows the code has there.
+    let (mut game, mut st) = editing("dock-room-open");
+    game.write_mod("long.lua", &lines_200());
+    st.scan(&mut game);
+    press(&mut st, &mut game, Key::Char('1'), CTRL);
+    st.edit_mod(mod_index(&st, "long"));
+    game_frame(&mut st, &mut game);
+    assert_eq!(st.s.ui.tab, Tab::Console);
+    st.s.now += 5.0;
+    game_frame(&mut st, &mut game);
+    let r = coach::call(
+        &mut st,
+        &mut game,
+        &agent(),
+        "open",
+        &json!({ "id": "long", "line": 100 }),
+    )
+    .unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    game_frame(&mut st, &mut game);
+    assert_eq!(st.s.ui.tab, Tab::Editor);
+    assert!(st.s.ui.dock_front[Pane::Code.index()]);
+    assert!(
+        in_view(&st, 100),
+        "line 100 shows in {} rows: scroll {}",
+        st.s.ui.pages[Pane::Code.index()],
+        st.s.editor.scroll
+    );
+    assert!(drawn(&game, "v100"));
+    // The Agent among the code's tabs, the code drawn as high as the Editor
+    // tab (the panel hidden). The player brings the Agent pane to the front
+    // and the panel back with most of the room: Show on an agent's line in
+    // the Agent pane brings the code to the front, its line in the rows the
+    // code has now.
+    let (mut game, mut st) = with_200("dock-room-show");
+    let rows = st.s.ui.pages[Pane::Code.index()];
+    assert!(st.s.ui.dock.move_pane(
+        Pane::Agent,
+        DropAt::Into {
+            anchor: Pane::Code,
+            at: 1,
+        },
+    ));
+    st.s.ui.dock.activate(Pane::Code);
+    st.s.ui.dock.set_hidden(Pane::Console, true);
+    game_frame(&mut st, &mut game);
+    let tall = st.s.ui.pages[Pane::Code.index()];
+    assert!(tall > rows, "the code drawn as high as the Editor tab: {tall}");
+    let agent_tab = middle(tab_of(&st, Pane::Agent));
+    click(&mut st, &mut game, agent_tab);
+    st.s.ui.dock.set_hidden(Pane::Console, false);
+    st.s.ui.dock.set_ratio(3, 0.05);
+    game_frame(&mut st, &mut game);
+    assert!(st.s.ui.dock_front[Pane::Agent.index()] && !st.s.ui.dock_front[Pane::Code.index()]);
+    st.s.now += 5.0;
+    game_frame(&mut st, &mut game);
+    let edit = json!({ "start_line": 100, "end_line": 100, "new_text": "local v100 = 1000" });
+    let r = coach::call(&mut st, &mut game, &agent(), "edit", &edit).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    game_frame(&mut st, &mut game);
+    let show = last_text_at(&game, "Show");
+    click(&mut st, &mut game, (show.0 + 4.0, show.1 + 4.0));
+    assert_eq!(st.s.editor.row, 99, "the cursor on line 100");
+    game_frame(&mut st, &mut game);
+    let rows = st.s.ui.pages[Pane::Code.index()];
+    assert!(st.s.ui.dock_front[Pane::Code.index()] && rows < tall);
+    assert!(
+        in_view(&st, 100),
+        "line 100 shows in {rows} rows: scroll {}",
+        st.s.editor.scroll
+    );
 }
 
 #[test]

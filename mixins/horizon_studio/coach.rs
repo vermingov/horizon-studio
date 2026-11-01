@@ -765,9 +765,23 @@ fn switch_waits(st: &Studio) -> Option<Json> {
     using(st).then(|| busy("the player is using the studio"))
 }
 
-/// The rows the code showed when it was last drawn (0: never).
+/// The rows the code shows: in the studio's own layout, as the dock has its
+/// panes now, laid out in the Editor tab's room (a pane shown or hidden, or
+/// the code brought to the front, a moment ago counts before the next draw
+/// has it); else, or while its body isn't drawn, as it was last drawn (0:
+/// never).
 fn code_page(ui: &super::hstudio_ui::Ui) -> usize {
-    ui.pages[Pane::Code.index()]
+    let drawn = ui.pages[Pane::Code.index()];
+    let studio = ui.look.theme().layout == super::hstudio_theme::Layout::Studio;
+    let Some(ws) = ui.dock_ws.filter(|_| studio) else {
+        return drawn;
+    };
+    let (_, placed) = ui.dock.layout(ws, ui.dock.settled(ui.focus));
+    placed
+        .iter()
+        .find(|l| l.active == Pane::Code && l.has_body())
+        .and_then(|l| super::hstudio_look::code_rows(Pane::Code.body(l.rect)[3], ui.look.code))
+        .unwrap_or(drawn)
 }
 
 /// Whether the player sees the code: the studio open on its Editor tab, not
@@ -1912,8 +1926,8 @@ pub fn go(st: &mut Studio, game: &mut dyn GameApi, seq: u64) {
         c.open_mark = Some(m.id);
         c.more = false;
     }
-    show_line(st, jump.first + 1, true);
     super::hstudio_ui::show_code(st);
+    show_line(st, jump.first + 1, true);
     let now = st.s.now;
     let ui = &mut st.s.ui;
     ui.coach.notice = None;

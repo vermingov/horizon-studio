@@ -211,7 +211,19 @@ pub fn code_size() -> f32 {
     CODE.with(std::cell::Cell::get)
 }
 pub fn code_line() -> f32 {
-    (code_size() * 1.54).round()
+    line_of(code_size())
+}
+
+/// A line of code's height with the code at `size`.
+fn line_of(size: f32) -> f32 {
+    (size * 1.54).round()
+}
+
+/// The lines of code a panel `h` high shows with the code at `size` (None:
+/// too few for one, when its text isn't drawn).
+pub fn code_rows(h: f32, size: f32) -> Option<usize> {
+    let line = line_of(size);
+    (h >= 24.0 + line).then(|| ((h - 24.0) / line).max(1.0) as usize)
 }
 
 #[derive(Clone, Copy)]
@@ -2760,13 +2772,12 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
         }
     }
     let top_y = panel[1] + 12.0;
-    if panel[3] < 24.0 + code_line() {
+    let Some(rows) = code_rows(panel[3], code_size()) else {
         return;
-    }
+    };
     // A right click on the code (its line numbers too) opens its menu; the
     // scroll bar, a banner and the suggestions, drawn later, are over it.
     st.s.ui.hits.push((panel, Action::Spot(Spot::Code)));
-    let rows = ((panel[3] - 24.0) / code_line()).max(1.0) as usize;
     st.s.ui.pages[Pane::Code.index()] = rows;
     let gutter = p.measure("0000", 12.0, Font::Mono) + 30.0;
     let text_x = panel[0] + gutter;
