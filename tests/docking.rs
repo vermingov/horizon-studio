@@ -1,9 +1,11 @@
 // The Editor tab's panes on the studio's screen: where they are drawn,
-// sizing them with their bars and from the keys, moving them from their
-// menus, what has the keys (and that it is always a pane that is drawn),
-// hiding and showing their groups, the layout kept in layout.txt, the
-// coach's and the agents' ways with them, small windows, and each pane's
-// body kept to its place (FakeGame records the game's clips).
+// sizing them with their bars and from the keys, moving them by dragging
+// their tabs (the preview of where they land, and what cancels a drag)
+// and from their menus, what has the keys (and that it is always a pane
+// that is drawn), hiding and showing their groups, the layout kept in
+// layout.txt, the coach's and the agents' ways with them, small windows,
+// and each pane's body kept to its place (FakeGame records the game's
+// clips).
 
 mod common;
 
@@ -146,6 +148,50 @@ fn drag(st: &mut Studio, game: &mut FakeGame, from: (f32, f32), to: (f32, f32)) 
             down: false,
         },
     );
+}
+
+/// The pointer moved to `at`.
+fn point(st: &mut Studio, game: &mut FakeGame, (x, y): (f32, f32)) {
+    handle(st, game, Input::Mouse(x, y));
+}
+
+/// The left button pressed at `from`, then the pointer moved through each
+/// of `to`, the button still held.
+fn hold(st: &mut Studio, game: &mut FakeGame, from: (f32, f32), to: &[(f32, f32)]) {
+    point(st, game, from);
+    handle(st, game, Input::Button { left: true, down: true });
+    for &at in to {
+        point(st, game, at);
+    }
+}
+
+/// The left button let go.
+fn release(st: &mut Studio, game: &mut FakeGame) {
+    handle(
+        st,
+        game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+}
+
+/// The colours of what was drawn at `r` (dp) as `kind` ("rect" or
+/// "border"), in the order drawn.
+fn colours(game: &FakeGame, kind: &str, r: [f32; 4]) -> Vec<u32> {
+    let prefix = format!("{kind} {r:?} r");
+    game.drawn
+        .iter()
+        .filter_map(|d| d.strip_prefix(&prefix)?.rsplit(' ').next())
+        .map(|c| u32::from_str_radix(c, 16).unwrap())
+        .collect()
+}
+
+/// `c` with `a` of its alpha, as the studio fades a colour.
+fn faded(c: u32, a: f32) -> u32 {
+    let alpha = ((c >> 24) as f32 * a).round() as u32;
+    (c & 0x00FF_FFFF) | alpha << 24
 }
 
 /// The game's clips as recorded: where each record is among the drawing,
@@ -849,15 +895,14 @@ fn typing_never_reaches_a_code_pane_that_is_not_drawn() {
     let path = st.s.editor.path.clone().unwrap();
     let (text, disk) = (st.s.editor.text(), std::fs::read_to_string(&path).unwrap());
     redraw(&mut st, &mut game);
-    // The script list dropped among the code's tabs comes to the front: the
-    // keys go nowhere, so nothing reaches the code drawn under it.
-    st.s.ui.dock.move_pane(
-        Pane::Scripts,
-        DropAt::Into {
-            anchor: Pane::Code,
-            at: 1,
-        },
-    );
+    // The script list's tab dragged onto the code's strip, past its tab: it
+    // joins the code's tabs at the front. The keys go nowhere, so nothing
+    // reaches the code drawn under it.
+    let (strip, code_tab) = (leaf(&st, Pane::Code).strip, tab_of(&st, Pane::Code));
+    let to = (code_tab[0] + code_tab[2] + 20.0, strip[1] + 16.0);
+    let from = middle(tab_of(&st, Pane::Scripts));
+    drag(&mut st, &mut game, from, to);
+    assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Code), [Pane::Code, Pane::Scripts]);
     redraw(&mut st, &mut game);
     assert!(st.s.ui.dock.is_front(Pane::Scripts));
     assert_eq!(st.s.ui.focus, Pane::Scripts);
@@ -1698,4 +1743,368 @@ fn keys_alone_move_size_and_reset_panes() {
     choose(&mut st, &mut game, "Move");
     assert!(!item(&st, "Right of the code").enabled);
     assert!(item(&st, "With the code").enabled);
+}
+
+#[test]
+fn dragging_a_tab_beside_the_code_moves_its_pane() {
+    let (mut game, mut st) = editing("dock-drag-beside");
+    redraw(&mut st, &mut game);
+    // The Agent's tab pressed and moved 3 units: it comes to the front with
+    // the keys, but hasn't lifted, so it would land nowhere.
+    let from = middle(tab_of(&st, Pane::Agent));
+    hold(&mut st, &mut game, from, &[(from.0 + 3.0, from.1)]);
+    assert!(st.s.ui.dock.is_front(Pane::Agent) && st.s.ui.focus == Pane::Agent);
+    assert_eq!((st.s.ui.lifted(), st.s.ui.dock_spot), (None, None));
+    redraw(&mut st, &mut game);
+    let (strip, tab) = (leaf(&st, Pane::Agent).strip, tab_of(&st, Pane::Agent));
+    let line = [tab[0] + 8.0, strip[1] + strip[3] - 3.0, tab[2] - 16.0, 2.0];
+    let held = *colours(&game, "rect", line)
+        .last()
+        .expect("the line under the front tab");
+    assert!(drawn(&game, TIP));
+    // In the code's right quarter it lifts: it would land beside the code.
+    point(&mut st, &mut game, (890.0, 200.0));
+    assert_eq!(st.s.ui.lifted(), Some(Pane::Agent));
+    let spot = st.s.ui.dock_spot.expect("a place to land");
+    assert_eq!(
+        spot.at,
+        DropAt::Beside {
+            anchor: Pane::Code,
+            side: Side::Right
+        }
+    );
+    assert_eq!((spot.rect, spot.bar), ([565.0, 80.0, 347.0, 240.0], None));
+    // Drawn: the place Agent's group would take, tinted; its tab faded
+    // where it was and no label following the pointer; the footer saying
+    // how to drop or cancel, and no tip.
+    redraw(&mut st, &mut game);
+    let accent = st.s.ui.look.palette().accent;
+    assert!(
+        colours(&game, "rect", spot.rect).contains(&faded(accent, 0.16)),
+        "the tint"
+    );
+    assert!(colours(&game, "border", spot.rect).contains(&accent), "its edge");
+    assert_eq!(
+        colours(&game, "rect", line).last(),
+        Some(&faded(held, 0.5)),
+        "the tab at half alpha"
+    );
+    for (text, at) in texts(&game) {
+        assert!(text != "Agent" || inside(tab, at), "a label at {at:?}");
+    }
+    assert!(drawn(&game, "drop") && drawn(&game, "cancel"));
+    assert!(!drawn(&game, TIP));
+    assert!(!layout_txt(&st).contains("tips=0"), "nothing moved yet");
+    // Back over its own tab it would land where it is: nowhere, and the
+    // tab, lit under the pointer, is faded still.
+    point(&mut st, &mut game, middle(tab));
+    assert_eq!((st.s.ui.lifted(), st.s.ui.dock_spot), (Some(Pane::Agent), None));
+    redraw(&mut st, &mut game);
+    let ink = st.s.ui.look.palette().ink;
+    assert_eq!(colours(&game, "rect", tab), [faded(faded(ink, 0.07), 0.5)]);
+    assert!(colours(&game, "border", spot.rect).is_empty(), "no preview");
+    // Let go in the code's right quarter: Agent in its own group right of
+    // the code, where the preview was, with the keys; written, the tip gone.
+    point(&mut st, &mut game, (890.0, 200.0));
+    release(&mut st, &mut game);
+    assert_eq!((st.s.ui.lifted(), st.s.ui.dock_spot), (None, None));
+    assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Agent), [Pane::Agent]);
+    assert_eq!(st.s.ui.focus, Pane::Agent);
+    type_text(&mut st, &mut game, "hi");
+    assert_eq!(st.s.ui.agent_input.text, "hi");
+    let kept = layout_txt(&st);
+    assert!(
+        kept.contains("col:0.600(row:0.500([code*],[agent*]),[console,problems*])") && kept.contains("tips=0"),
+        "{kept}"
+    );
+    redraw(&mut st, &mut game);
+    assert_eq!(leaf(&st, Pane::Agent).rect, spot.rect);
+    assert!(!drawn(&game, TIP) && !drawn(&game, "cancel"));
+}
+
+#[test]
+fn a_tab_dropped_on_a_strip_joins_that_group() {
+    let (mut game, mut st) = editing("dock-drag-strip");
+    redraw(&mut st, &mut game);
+    // Problems held over the script list's strip, past its tab: it would
+    // join that group after it, the group widening to the Problems' least.
+    let (strip, tab) = (leaf(&st, Pane::Scripts).strip, tab_of(&st, Pane::Scripts));
+    let problems = tab_of(&st, Pane::Problems);
+    let panel = leaf(&st, Pane::Problems).strip;
+    let line = [problems[0] + 8.0, panel[1] + panel[3] - 3.0, problems[2] - 16.0, 2.0];
+    hold(&mut st, &mut game, middle(problems), &[]);
+    redraw(&mut st, &mut game);
+    let held = *colours(&game, "rect", line)
+        .last()
+        .expect("the line under the front tab");
+    point(&mut st, &mut game, (tab[0] + tab[2] + 10.0, strip[1] + 16.0));
+    let spot = st.s.ui.dock_spot.expect("a place to land");
+    assert_eq!(
+        spot.at,
+        DropAt::Into {
+            anchor: Pane::Scripts,
+            at: 1
+        }
+    );
+    assert_eq!(spot.rect, [48.0, 80.0, 200.0, 408.0]);
+    let bar = [tab[0] + tab[2] - 1.0, strip[1] + 4.0, 2.0, strip[3] - 8.0];
+    assert_eq!(spot.bar, Some(bar));
+    // Before the release, the bar is drawn where it will go, and the tab
+    // lifted from the middle of its strip is faded with its line.
+    redraw(&mut st, &mut game);
+    let accent = st.s.ui.look.palette().accent;
+    assert_eq!(colours(&game, "rect", bar), [accent]);
+    assert_eq!(colours(&game, "rect", line).last(), Some(&faded(held, 0.5)));
+    release(&mut st, &mut game);
+    assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Scripts), [Pane::Scripts, Pane::Problems]);
+    assert!(st.s.ui.dock.is_front(Pane::Problems));
+    assert_eq!(st.s.ui.focus, Pane::Problems);
+    assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Console), [Pane::Console, Pane::Agent]);
+    redraw(&mut st, &mut game);
+    assert_eq!(leaf(&st, Pane::Problems).rect, spot.rect);
+}
+
+#[test]
+fn a_dragged_script_list_leaves_the_keys_where_they_are() {
+    let (mut game, mut st) = editing("dock-drag-scripts");
+    redraw(&mut st, &mut game);
+    // The script list's tab dragged to the right edge: a full-height
+    // column there. It takes no keys, so they stay with the code, which
+    // typing still reaches.
+    let from = middle(tab_of(&st, Pane::Scripts));
+    hold(&mut st, &mut game, from, &[(906.0, 300.0)]);
+    let spot = st.s.ui.dock_spot.expect("a place to land");
+    assert_eq!(spot.at, DropAt::Edge(Side::Right));
+    assert_eq!(spot.rect, [698.0, 80.0, 214.0, 408.0]);
+    release(&mut st, &mut game);
+    assert_eq!(st.s.ui.focus, Pane::Code);
+    let kept = layout_txt(&st);
+    assert!(
+        kept.contains("dock=row:0.750(col:0.600([code*],[console*,problems,agent]),[scripts*])\n"),
+        "{kept}"
+    );
+    st.s.editor.set_text("");
+    type_text(&mut st, &mut game, "x");
+    assert_eq!(st.s.editor.text(), "x");
+    redraw(&mut st, &mut game);
+    assert_eq!(leaf(&st, Pane::Scripts).rect, spot.rect);
+}
+
+#[test]
+fn esc_letting_go_over_nothing_or_closing_cancels_a_drag() {
+    let (mut game, mut st) = editing("dock-drag-cancel");
+    redraw(&mut st, &mut game);
+    // The Console's tab is at the front already: pressing it changes nothing.
+    let console = middle(tab_of(&st, Pane::Console));
+    let beside = (890.0, 200.0);
+    let unchanged = |st: &Studio, what: &str| {
+        assert_eq!(st.s.ui.dock, Dock::default(), "{what}");
+        assert_eq!((st.s.ui.lifted(), st.s.ui.dock_spot), (None, None), "{what}");
+        assert!(!st.s.dir.join("layout.txt").exists(), "{what}: written");
+    };
+    // Esc while it is lifted: nothing moves, and the tip is back.
+    hold(&mut st, &mut game, console, &[beside]);
+    assert!(st.s.ui.dock_spot.is_some());
+    redraw(&mut st, &mut game);
+    assert!(!drawn(&game, TIP));
+    press(&mut st, &mut game, Key::Escape, NONE);
+    release(&mut st, &mut game);
+    unchanged(&st, "Esc, lifted");
+    redraw(&mut st, &mut game);
+    assert!(drawn(&game, TIP));
+    // Esc before it lifts: moved on after it, it doesn't.
+    hold(&mut st, &mut game, console, &[(console.0 + 3.0, console.1)]);
+    press(&mut st, &mut game, Key::Escape, NONE);
+    point(&mut st, &mut game, beside);
+    unchanged(&st, "Esc, pressed");
+    release(&mut st, &mut game);
+    unchanged(&st, "Esc, pressed, let go");
+    // Let go over the gap between the code and the panel: nowhere to land.
+    hold(&mut st, &mut game, console, &[(500.0, 324.0)]);
+    assert_eq!(st.s.ui.lifted(), Some(Pane::Console));
+    assert_eq!(st.s.ui.dock_spot, None);
+    release(&mut st, &mut game);
+    unchanged(&st, "over a gap");
+    // On another tab it lands nowhere, the Editor tab drawn or not, and
+    // back on the Editor tab not before it is drawn again.
+    hold(&mut st, &mut game, console, &[beside]);
+    press(&mut st, &mut game, Key::Char('3'), CTRL);
+    point(&mut st, &mut game, (880.0, 210.0));
+    assert_eq!(st.s.ui.dock_spot, None, "the Library tab, not drawn yet");
+    redraw(&mut st, &mut game);
+    point(&mut st, &mut game, beside);
+    assert_eq!(st.s.ui.dock_spot, None, "the Library tab");
+    press(&mut st, &mut game, Key::Char('2'), CTRL);
+    point(&mut st, &mut game, (560.0, 478.0));
+    assert_eq!(st.s.ui.dock_spot, None, "the Editor tab, not drawn yet");
+    redraw(&mut st, &mut game);
+    point(&mut st, &mut game, beside);
+    assert!(st.s.ui.dock_spot.is_some(), "the Editor tab drawn: the drag goes on");
+    press(&mut st, &mut game, Key::Char('3'), CTRL);
+    point(&mut st, &mut game, (880.0, 210.0));
+    release(&mut st, &mut game);
+    unchanged(&st, "let go on the Library tab");
+    press(&mut st, &mut game, Key::Char('2'), CTRL);
+    redraw(&mut st, &mut game);
+    // The Menu key during a drag opens no menu.
+    hold(&mut st, &mut game, console, &[beside]);
+    press(&mut st, &mut game, Key::Menu, NONE);
+    assert!(st.s.ui.menu.is_none());
+    press(&mut st, &mut game, Key::Escape, NONE);
+    release(&mut st, &mut game);
+    unchanged(&st, "the Menu key");
+    // Closing the studio during one: opened again, a move shows nothing.
+    hold(&mut st, &mut game, console, &[beside]);
+    let spot = st.s.ui.dock_spot.expect("a place to land");
+    assert_eq!(press(&mut st, &mut game, Key::Toggle, NONE), UiResult::Close);
+    unchanged(&st, "closed");
+    st.s.now += 1.0;
+    st.s.ui.opened_at = st.s.now;
+    point(&mut st, &mut game, beside);
+    unchanged(&st, "opened again");
+    redraw(&mut st, &mut game);
+    assert!(colours(&game, "border", spot.rect).is_empty(), "no preview");
+    release(&mut st, &mut game);
+    unchanged(&st, "opened again, let go");
+    // Ctrl+B while one is lifted hides the script list, which ends the drag:
+    // nothing is dropped at the release.
+    hold(&mut st, &mut game, console, &[beside]);
+    press(&mut st, &mut game, Key::Char('b'), CTRL);
+    assert!(!st.s.ui.dock.shown(Pane::Scripts));
+    assert_eq!((st.s.ui.lifted(), st.s.ui.dock_spot), (None, None));
+    release(&mut st, &mut game);
+    let mut hidden = Dock::default();
+    hidden.set_hidden(Pane::Scripts, true);
+    assert_eq!(st.s.ui.dock, hidden);
+    assert!(
+        layout_txt(&st).contains("dock=row:0.180(-[scripts*],"),
+        "{}",
+        layout_txt(&st)
+    );
+}
+
+#[test]
+fn a_press_without_a_drag_only_switches_tabs() {
+    let (mut game, mut st) = editing("dock-drag-click");
+    redraw(&mut st, &mut game);
+    // A click on the Agent's tab: it comes to the front with the keys, and
+    // that is written at once; nothing moves.
+    let agent = middle(tab_of(&st, Pane::Agent));
+    click(&mut st, &mut game, agent);
+    assert!(st.s.ui.dock.is_front(Pane::Agent) && st.s.ui.focus == Pane::Agent);
+    assert_eq!((st.s.ui.lifted(), st.s.ui.dock_spot), (None, None));
+    let kept = layout_txt(&st);
+    assert!(
+        kept.contains("dock=row:0.180([scripts*],col:0.600([code*],[console,problems,agent*]))\n"),
+        "{kept}"
+    );
+    assert!(!kept.contains("tips=0"), "{kept}");
+    // Moved less than it takes to lift, it is a click too.
+    redraw(&mut st, &mut game);
+    let problems = middle(tab_of(&st, Pane::Problems));
+    hold(&mut st, &mut game, problems, &[(problems.0 + 4.0, problems.1 + 3.0)]);
+    release(&mut st, &mut game);
+    assert!(st.s.ui.dock.is_front(Pane::Problems) && st.s.ui.focus == Pane::Problems);
+    assert_eq!(
+        st.s.ui.dock.leaf_tabs(Pane::Problems),
+        [Pane::Console, Pane::Problems, Pane::Agent]
+    );
+    assert!(layout_txt(&st).contains("[console,problems*,agent]"));
+}
+
+#[test]
+fn drops_and_shows_never_take_a_panes_place() {
+    // An 854 x 480 game's default window: the code takes the room with the
+    // panel's strip under it, and there is no room beside the code.
+    let (mut game, mut st) = editing("dock-drop-fits");
+    st.s.ui.look.window = true;
+    st.s.ui.look.scale = 1.125;
+    redraw(&mut st, &mut game);
+    let px = |(x, y): (f32, f32)| (x * 1.125, y * 1.125);
+    let code = leaf(&st, Pane::Code).rect;
+    assert!(leaf(&st, Pane::Console).collapsed);
+    // The Agent's tab pressed on the panel's strip and dragged at once into
+    // the code's right quarter: beside the code it would push the script
+    // list out, so it would join the code's tabs, and the preview says so.
+    let from = px(middle(tab_of(&st, Pane::Agent)));
+    hold(
+        &mut st,
+        &mut game,
+        from,
+        &[px((code[0] + code[2] - 30.0, code[1] + code[3] / 2.0))],
+    );
+    let spot = st.s.ui.dock_spot.expect("a place to land");
+    assert_eq!(
+        spot.at,
+        DropAt::Into {
+            anchor: Pane::Code,
+            at: 1
+        }
+    );
+    assert_eq!((spot.rect, spot.bar), (code, None));
+    // Let go, the script list, the code's group (Agent at its front, with
+    // the keys) and the panel's strip (the Problems now at its front) are
+    // all still drawn.
+    release(&mut st, &mut game);
+    assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Code), [Pane::Code, Pane::Agent]);
+    assert_eq!(st.s.ui.focus, Pane::Agent);
+    redraw(&mut st, &mut game);
+    let groups =
+        |st: &Studio| -> Vec<(Pane, bool)> { st.s.ui.dock_drawn.iter().map(|l| (l.active, l.collapsed)).collect() };
+    assert_eq!(
+        groups(&st),
+        [(Pane::Scripts, false), (Pane::Problems, true), (Pane::Agent, false)]
+    );
+    assert_eq!(leaf(&st, Pane::Agent).rect, code);
+    // A click on the panel's Problems tab gives Problems the room and the
+    // keys, the code's group keeping its strip above it; Esc gives the code
+    // the room back.
+    let problems = px(middle(tab_of(&st, Pane::Problems)));
+    click(&mut st, &mut game, problems);
+    assert_eq!(st.s.ui.focus, Pane::Problems);
+    redraw(&mut st, &mut game);
+    assert_eq!(
+        groups(&st),
+        [(Pane::Scripts, false), (Pane::Agent, true), (Pane::Problems, false)]
+    );
+    assert!(leaf(&st, Pane::Code).rect[1] < leaf(&st, Pane::Problems).rect[1]);
+    press(&mut st, &mut game, Key::Escape, NONE);
+    assert_eq!(st.s.ui.focus, Pane::Code);
+    redraw(&mut st, &mut game);
+    assert_eq!(
+        groups(&st),
+        [(Pane::Scripts, false), (Pane::Problems, true), (Pane::Code, false)]
+    );
+    // As the game draws a frame between the press and the move: the panel's
+    // Agent pressed takes the room, the code keeping its strip; over that
+    // strip, past the code's tab, Agent would join the code's tabs, and the
+    // preview is where the code's group will be.
+    st.s.ui.dock = Dock::default();
+    redraw(&mut st, &mut game);
+    let agent = px(middle(tab_of(&st, Pane::Agent)));
+    hold(&mut st, &mut game, agent, &[]);
+    redraw(&mut st, &mut game);
+    let (strip, code_tab) = (leaf(&st, Pane::Code).strip, tab_of(&st, Pane::Code));
+    assert!(leaf(&st, Pane::Code).collapsed);
+    point(
+        &mut st,
+        &mut game,
+        px((code_tab[0] + code_tab[2] + 20.0, strip[1] + 16.0)),
+    );
+    let spot = st.s.ui.dock_spot.expect("a place to land");
+    assert_eq!(
+        spot.at,
+        DropAt::Into {
+            anchor: Pane::Code,
+            at: 1
+        }
+    );
+    assert_eq!(spot.rect, code);
+    assert_eq!(
+        spot.bar,
+        Some([code_tab[0] + code_tab[2] - 1.0, strip[1] + 4.0, 2.0, strip[3] - 8.0])
+    );
+    release(&mut st, &mut game);
+    assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Code), [Pane::Code, Pane::Agent]);
+    assert_eq!(st.s.ui.focus, Pane::Agent);
 }

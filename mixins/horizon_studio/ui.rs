@@ -609,11 +609,17 @@ pub(crate) struct WinDrag {
 
 /// What the left button holds on the Editor tab's panes: a bar between two
 /// groups, as the last frame drew it, and where the pointer is on it along
-/// its way (from its left or top edge).
+/// its way (from its left or top edge); or a pane's tab, pressed where the
+/// pointer was, and lifted (`moving`) once dragged `TAB_LIFT` from there.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DockDrag {
     Bar { bar: Bar, grab: f32 },
+    Tab { pane: Pane, from: (f32, f32), moving: bool },
 }
+
+/// How far a pressed tab is dragged before it lifts, so a click that moves
+/// a little only brings its pane to the front.
+const TAB_LIFT: f32 = 6.0;
 
 /// Where the editor's text was drawn, for the pointer.
 #[derive(Clone, Copy, Debug, Default)]
@@ -914,6 +920,13 @@ impl Ui {
     /// text, the scroll bar's thumb, a bar between panes or the window.
     pub fn dragging_any(&self) -> bool {
         self.dragging || self.text_drag || self.scroll_drag.is_some() || self.dock_drag.is_some() || self.drag.is_some()
+    }
+    /// The pane whose tab is lifted, dragged to another place.
+    pub fn lifted(&self) -> Option<Pane> {
+        match self.dock_drag {
+            Some(DockDrag::Tab { pane, moving: true, .. }) => Some(pane),
+            _ => None,
+        }
     }
 }
 
@@ -2414,7 +2427,8 @@ pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult
 
 /// The left button let go, or its release went elsewhere (the studio closed,
 /// a script's screen took the input): what it dragged ends, a window moved
-/// or a bar between panes stays where it is, and a selection of no text goes.
+/// or a bar between panes stays where it is, a pane's tab moves nothing (a
+/// drop is the release's own, before this), and a selection of no text goes.
 pub(crate) fn let_go(st: &mut Studio) {
     let ui = &mut st.s.ui;
     ui.scroll_drag = None;
@@ -2771,7 +2785,8 @@ fn sizing_key(st: &mut Studio, key: Key, mods: Mods) -> bool {
 }
 
 /// What the left button held on the panes ends, nothing dropped: a bar stays
-/// where it is, written (the tip that tabs move goes once one did).
+/// where it is, written (the tip that tabs move goes once one did), and a
+/// tab moves nothing and writes nothing.
 fn end_dock_drag(st: &mut Studio) {
     let ui = &mut st.s.ui;
     ui.dock_spot = None;
@@ -2781,6 +2796,33 @@ fn end_dock_drag(st: &mut Studio) {
         }
         dock_changed(st);
     }
+}
+
+/// A pane's tab held with the pointer at `at`: it lifts once `TAB_LIFT`
+/// from where it was pressed, and from then on `dock_spot` is where its
+/// pane would land among the groups as the last frame drew them on the
+/// Editor tab (nowhere while another tab shows, or before the Editor tab is
+/// drawn), so the preview and the release follow the pointer.
+fn drag_tab(st: &mut Studio, at: (f32, f32)) {
+    let ui = &mut st.s.ui;
+    let Some(DockDrag::Tab { pane, from, moving }) = ui.dock_drag else {
+        return;
+    };
+    if !moving {
+        if (at.0 - from.0).hypot(at.1 - from.1) < TAB_LIFT {
+            return;
+        }
+        ui.dock_drag = Some(DockDrag::Tab {
+            pane,
+            from,
+            moving: true,
+        });
+    }
+    let editor = ui.tab == Tab::Editor && ui.look.theme().layout == super::hstudio_theme::Layout::Studio;
+    ui.dock_spot = match ui.dock_ws {
+        Some(ws) if editor && !ui.dock_drawn.is_empty() => ui.dock.drop_at(ws, &ui.dock_drawn, pane, ui.focus, at),
+        _ => None,
+    };
 }
 
 /// The front pane of the group under `at` as the last frame drew it, and
@@ -3091,6 +3133,12 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 st.s.ui.dock.set_ratio(bar.path, (pos - bar.start) / bar.len.max(1.0));
                 return UiResult::Used;
             }
+            // A pane's tab held: it lifts once dragged a little, and then
+            // where its pane would land follows the pointer.
+            if matches!(st.s.ui.dock_drag, Some(DockDrag::Tab { .. })) {
+                drag_tab(st, (x, y));
+                return UiResult::Used;
+            }
             if let Some(grab) = st.s.ui.scroll_drag {
                 scroll_to_thumb(st, y - grab);
                 return UiResult::Used;
@@ -3140,6 +3188,11 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 };
             }
             if !down {
+                // A lifted tab let go where its pane would land moves it
+                // there; anything else the button held just ends.
+                if let (Some(pane), Some(spot)) = (st.s.ui.lifted(), st.s.ui.dock_spot) {
+                    act(st, game, Action::MovePane(pane, spot.at));
+                }
                 let_go(st);
                 return UiResult::Used;
             }
@@ -3235,6 +3288,17 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
             }
             if !matches!(hit, Some(Action::Suggest(_))) {
                 st.s.ui.suggest = None;
+            }
+            // A pane's tab: its pane to the front with the keys, and the tab
+            // held, to be dragged to another place.
+            if let Some(Action::PaneTab(pane)) = hit {
+                act(st, game, Action::PaneTab(pane));
+                st.s.ui.dock_drag = Some(DockDrag::Tab {
+                    pane,
+                    from: at,
+                    moving: false,
+                });
+                return UiResult::Used;
             }
             let drawn = st.s.ui.smooth[1];
             if let Some(Action::Focus(p)) = hit {
@@ -4166,7 +4230,8 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
     if key == Key::Escape && st.s.ui.suggest.take().is_some() {
         return UiResult::Used;
     }
-    // Esc lets go of a bar held between panes, where it is.
+    // Esc lets go of what the button holds on the panes: a bar stays where
+    // it is, and a tab, lifted or not yet, moves nothing.
     if key == Key::Escape && st.s.ui.dock_drag.is_some() {
         end_dock_drag(st);
         return UiResult::Used;

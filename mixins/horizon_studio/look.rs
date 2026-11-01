@@ -1189,7 +1189,8 @@ fn footer(st: &mut Studio, p: &mut P, x: f32, cy: f32, w: f32) {
         .and_then(|(_, path)| ui.dock_bars.iter().find(|b| b.path == path))
         .map(|b| b.row);
     let hints: Vec<(&str, &str)> = match ui.tab {
-        // An open menu has the keys, then a bar lit for sizing.
+        // An open menu has the keys, then a bar lit for sizing, then a
+        // lifted tab.
         _ if ui.menu.is_some() => vec![("↑ ↓", "choose"), ("⏎", "do it"), ("Esc", "close")],
         _ if sized.is_some() => vec![
             (if sized == Some(true) { "← →" } else { "↑ ↓" }, "move the bar"),
@@ -1197,6 +1198,7 @@ fn footer(st: &mut Studio, p: &mut P, x: f32, cy: f32, w: f32) {
             ("Tab", "next bar"),
             ("⏎", "done"),
         ],
+        _ if ui.lifted().is_some() => vec![("release", "drop"), ("Esc", "cancel")],
         Tab::Console => vec![
             ("⏎", "run"),
             ("↑ ↓", "history"),
@@ -1473,6 +1475,21 @@ fn draw_editor(st: &mut Studio, p: &mut P, body: [f32; 4], dt: f32) {
     if let Some(i) = last {
         draw_leaf(st, p, &placed[i], dt);
     }
+    drop_preview(&st.s.ui, p);
+}
+
+/// Where a lifted tab's pane would land, drawn in place over the groups:
+/// the place its group would take, tinted, and where it would join a
+/// strip's tabs a bar between them.
+fn drop_preview(ui: &Ui, p: &mut P) {
+    let (Some(_), Some(spot)) = (ui.lifted(), ui.dock_spot) else {
+        return;
+    };
+    p.rect(spot.rect, 14.0, fade(pal().accent, 0.16));
+    p.border(spot.rect, 14.0, pal().accent);
+    if let Some(bar) = spot.bar {
+        p.rect(bar, 1.0, pal().accent);
+    }
 }
 
 /// A bar between two groups: a grip that widens under the pointer and is
@@ -1658,7 +1675,11 @@ fn draw_strip(st: &mut Studio, p: &mut P, l: &Placed, keys: f32, name: Option<&s
     let mut tx = x + 8.0;
     let mut line = [8.0, 0.0];
     let mut out = Vec::new();
+    // A tab lifted to be dropped elsewhere stays where it was, faded.
+    let lifted = st.s.ui.lifted();
+    let alpha = p.alpha;
     for (t, label, lw, badge, dot) in labels {
+        p.alpha = if lifted == Some(t) { alpha * 0.5 } else { alpha };
         let (label, lw) = if lw > cap {
             let cut = p.fit(&label, cap, 12.0, Font::Medium);
             let cw = p.measure(&cut, 12.0, Font::Medium);
@@ -1704,7 +1725,8 @@ fn draw_strip(st: &mut Studio, p: &mut P, l: &Placed, keys: f32, name: Option<&s
         out.push((t, r));
         tx += r[2] + 2.0;
     }
-    // The line under the front tab glides to it.
+    // The line under the front tab glides to it (faded with it, lifted).
+    p.alpha = if lifted == Some(l.active) { alpha * 0.5 } else { alpha };
     let ui = &mut st.s.ui;
     let first = l.tabs.first().copied().unwrap_or_default();
     let (key, wkey) = (id("leaf-line", first.index()), id("leaf-line-w", first.index()));
@@ -1719,14 +1741,16 @@ fn draw_strip(st: &mut Studio, p: &mut P, l: &Placed, keys: f32, name: Option<&s
         1.0,
         mix(pal().ink_soft, pal().accent, keys),
     );
+    p.alpha = alpha;
     p.rect([x + 10.0, y + STRIP - 1.0, w - 20.0, 1.0], 0.0, fade(pal().rule, 0.8));
     let free = if l.active == Pane::Code {
         code_chips(st, p, tx + 6.0, y, rx - 8.0, dt)
     } else {
         tx
     };
-    // Until a tab or a bar is first moved, the panel's strip says how.
-    if st.s.ui.dock_tips && l.tabs.contains(&Pane::Console) {
+    // Until a tab or a bar is first moved, the panel's strip says how (not
+    // while a tab is lifted: the footer says what to do then).
+    if st.s.ui.dock_tips && lifted.is_none() && l.tabs.contains(&Pane::Console) {
         let tip = "Drag a tab to move it · right-click a tab for more";
         let tw = p.measure(tip, 12.0, Font::Regular);
         if free + 12.0 + tw <= rx - 12.0 {
