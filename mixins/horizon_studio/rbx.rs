@@ -1862,12 +1862,17 @@ impl Rbx {
         Ok(())
     }
 
-    /// Destroys `id` and everything under it, as Instance:Destroy.
+    /// Destroys `id` and everything under it, as Instance:Destroy. A TextBox
+    /// being edited loses the focus as it goes (FocusLost), so the GUI lets
+    /// go of the keys and the pointer.
     pub fn destroy(&mut self, id: Id) {
         if self.insts.get(&id).is_none_or(|i| i.destroyed) {
             return;
         }
         self.fire(id, "Destroying", Vec::new());
+        if self.pointer.focus == Some(id) {
+            super::hstudio_rbx_draw::unfocus(self, false);
+        }
         // Destroying's handlers are deferred: they still get the instance.
         if self.inst(id).parent.is_some() {
             self.inst_mut(id).locked = false;
@@ -1931,15 +1936,29 @@ impl Rbx {
         let insts = &self.insts;
         self.page_turns.retain(|t| insts.contains_key(&t.layout));
         self.starter_copied.retain(|id| insts.contains_key(id));
-        if self.pointer.focus.is_some_and(|f| !self.insts.contains_key(&f)) {
-            self.pointer.focus = None;
+        // What the pointer does with its GUI ends; with another mod's it
+        // goes on (a press held, a scroll bar dragged, a TextBox's focus),
+        // and the last frame's layout stays for that GUI's input (what went
+        // from it is passed over; its destroying marked it to lay out again).
+        let insts = &self.insts;
+        let live = |id: Id| insts.get(&id).is_some_and(|i| !i.destroyed);
+        let p = &mut self.pointer;
+        if p.focus.is_some_and(|f| !live(f)) {
+            p.focus = None;
         }
-        self.pointer.hover.retain(|h| self.insts.contains_key(h));
-        self.pointer.pressed = None;
-        self.pointer.drag = None;
-        self.pointer.bar = None;
-        self.pointer.selecting = None;
-        self.layout = None;
+        p.hover.retain(|&h| live(h));
+        if p.pressed.is_some_and(|(b, _)| !live(b)) {
+            p.pressed = None;
+        }
+        if p.drag.is_some_and(|(d, ..)| !live(d)) {
+            p.drag = None;
+        }
+        if p.bar.is_some_and(|(b, ..)| !live(b)) {
+            p.bar = None;
+        }
+        if p.selecting.is_some_and(|s| !live(s)) {
+            p.selecting = None;
+        }
         super::hstudio_rbx_world::forget(self, owner);
     }
 

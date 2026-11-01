@@ -275,6 +275,7 @@ fn a_tween_of_the_root_part_teleports_and_a_teleport_waits_for_a_send() {
             for i = 1, 10 do pcall(chat.say, "hi " .. i) end
             root.CFrame = CFrame.new(1, 70, 2)
         end)
+        command("again", function() root.CFrame = CFrame.new(3, 70, 4) end)
     "#;
     load(&mut game, &mut st, "tween", src, 0.7);
     let mark = game.sent.len();
@@ -284,17 +285,57 @@ fn a_tween_of_the_root_part_teleports_and_a_teleport_waits_for_a_send() {
     assert!(tps.len() >= 2, "{tps:?}");
     assert!(tps.iter().all(|l| l.starts_with("/tp @s ")), "{tps:?}");
     assert_eq!(tps.last().unwrap(), "/tp @s 20.000 68.945 20.000");
-    // With every send used by chat, the teleport waits until half the burst
-    // is back (a second).
+    // A teleport takes only what chat.say and game.run leave: after a while
+    // with nothing sent, one goes though chat used every send of its burst,
     run_for(&mut st, &mut game, 3.0);
     let mark = game.sent.len();
     assert!(st.command("busy"));
-    run_for(&mut st, &mut game, 0.5);
-    let now: Vec<&String> = game.sent[mark..].iter().filter(|l| l.starts_with('/')).collect();
-    assert!(now.is_empty(), "{now:?}");
-    run_for(&mut st, &mut game, 0.7);
-    let later: Vec<&String> = game.sent[mark..].iter().filter(|l| l.starts_with('/')).collect();
-    assert_eq!(later, ["/tp @s 1.000 68.945 2.000"]);
+    run_for(&mut st, &mut game, 0.3);
+    let sent = &game.sent[mark..];
+    assert_eq!(sent.iter().filter(|l| l.starts_with("hi ")).count(), 8, "{sent:?}");
+    assert_eq!(sent.last().unwrap(), "/tp @s 1.000 68.945 2.000");
+    // and the next waits until that budget is whole again (two seconds).
+    let mark = game.sent.len();
+    assert!(st.command("again"));
+    run_for(&mut st, &mut game, 1.5);
+    assert!(game.sent[mark..].is_empty(), "{:?}", &game.sent[mark..]);
+    run_for(&mut st, &mut game, 1.0);
+    assert_eq!(game.sent[mark..], ["/tp @s 3.000 68.945 4.000"]);
+}
+
+#[test]
+fn a_script_teleporting_every_frame_leaves_the_mods_their_burst() {
+    // A fly script moves the root part every frame, so a teleport is always
+    // waiting, while another mod's timer says four lines at a time and its
+    // command a whole burst. Every line goes (the mod would stop at one that
+    // couldn't), and the teleports go on with what the mods leave.
+    let mut game = FakeGame::new("rbxw-tp-budget");
+    let mut st = studio(&mut game);
+    let fly = r#"
+        local root = game.Players.LocalPlayer.Character.HumanoidRootPart
+        game:GetService("RunService").RenderStepped:Connect(function(dt)
+            root.CFrame = root.CFrame + Vector3.new(0, 0, dt)
+        end)
+    "#;
+    load(&mut game, &mut st, "fly", fly, 0.7);
+    let talk = r#"
+        command("talk", function() for i = 1, 8 do chat.say("line " .. i) end end)
+        every(5, function() for i = 1, 4 do chat.say("tick " .. i) end end)
+    "#;
+    load(&mut game, &mut st, "talk", talk, 0.6);
+    // The timer's first four, then the burst two seconds after them, then
+    // the timer's next four.
+    let mark = game.sent.len();
+    run_for(&mut st, &mut game, 7.0);
+    let i = mod_index(&st, "talk");
+    assert!(st.s.mods[i].running(), "{:?}", st.s.mods[i].state);
+    assert!(st.command("talk"));
+    run_for(&mut st, &mut game, 3.2);
+    assert!(st.s.mods[i].running(), "{:?}", st.s.mods[i].state);
+    let sent = &game.sent[mark..];
+    let count = |what: &str| sent.iter().filter(|l| l.starts_with(what)).count();
+    assert_eq!((count("line "), count("tick ")), (8, 8), "{sent:?}");
+    assert!(count("/tp @s ") >= 20, "{sent:?}");
 }
 
 /// The player's pose on the fake game: standing, on the ground or not.

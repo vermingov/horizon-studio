@@ -2189,8 +2189,12 @@ fn mouse_input(rbx: &mut Rbx, kind: &'static str, down: bool, processed: bool) {
     }
 }
 
+/// Gives the focus to TextBox `id` (None: to none). A box that went
+/// (destroyed, with its GUI or alone) takes none, as in Roblox: a handler
+/// that takes the focus back as the box loses it (FocusLost, which fires as
+/// the box goes) leaves the GUI without it, and the game its keys.
 pub fn focus(rbx: &mut Rbx, id: Option<Id>) {
-    if rbx.pointer.focus == id {
+    if rbx.pointer.focus == id || id.is_some_and(|id| rbx.try_inst(id).is_none_or(|i| i.destroyed)) {
         return;
     }
     unfocus(rbx, false);
@@ -2491,14 +2495,19 @@ pub fn pointer_moved(rbx: &mut Rbx, x: f64, y: f64) {
     gui_states_changed(rbx, before);
 }
 
+/// Whether `id` is still there to take input: the last frame's layout and
+/// the pointer's hover may name an object destroyed or let go since (a
+/// script's Destroy and the layer's sweep, a mob's mirror gone with it).
+fn live(rbx: &Rbx, id: Id) -> bool {
+    rbx.try_inst(id).is_some_and(|i| !i.destroyed)
+}
+
 /// The topmost Active object under the pointer, and the button there.
 fn hits(rbx: &Rbx) -> (Option<Id>, Option<Id>) {
     let Some(f) = &rbx.layout else { return (None, None) };
     let p = Vector2::new(rbx.pointer.x, rbx.pointer.y);
-    (
-        f.layout.hit_test(p).map(|n| f.node_inst[n]),
-        f.layout.button_at(p).map(|n| f.node_inst[n]),
-    )
+    let there = |n: Option<NodeId>| n.map(|n| f.node_inst[n]).filter(|&i| live(rbx, i));
+    (there(f.layout.hit_test(p)), there(f.layout.button_at(p)))
 }
 
 /// The middle button over the GUI: InputBegan and InputEnded of the GUI
@@ -2583,7 +2592,7 @@ pub fn pointer_button(rbx: &mut Rbx, left: bool, down: bool) {
 }
 
 pub fn wheel(rbx: &mut Rbx, steps: f64) {
-    let over = rbx.pointer.hover.clone();
+    let over: Vec<Id> = rbx.pointer.hover.iter().copied().filter(|&i| live(rbx, i)).collect();
     let mouse = rbx.mouse;
     rbx.fire(
         mouse,

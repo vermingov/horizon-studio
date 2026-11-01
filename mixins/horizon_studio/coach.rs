@@ -57,6 +57,10 @@ pub struct Coach {
     pub player_at: f64,
     /// When they last pressed a key or a button, typed or turned the wheel.
     pub input_at: f64,
+    /// A press that put an edit being typed in whole: where the pointer
+    /// was, and the place (row, char column) drawn under it, which the edit
+    /// moved with its text. The press is for that place.
+    pub(crate) pressed: Option<((f32, f32), (usize, usize))>,
     /// The answers to the last requests that changed something, by the
     /// key their client gave: one sent again (after a timeout, on a new
     /// connection) gets the same answer and isn't done twice.
@@ -139,6 +143,7 @@ impl Default for Coach {
         Coach {
             player_at: f64::NEG_INFINITY,
             input_at: f64::NEG_INFINITY,
+            pressed: None,
             replies: VecDeque::new(),
             typing: None,
             flash: None,
@@ -278,15 +283,32 @@ pub struct Before {
 /// Before the player's input reaches the studio: it is noted, and a key, a
 /// typed character or a press puts the rest of an edit being typed in at
 /// once, so whatever the input does (type at the player's own caret, save,
-/// run, clear, open another file) finds the edit whole.
-pub fn before_input(st: &mut Studio, input: &Input) -> Before {
+/// run, clear, open another file) finds the edit whole. A press is for the
+/// text drawn under the pointer, wherever the rest of the edit moves it.
+pub fn before_input(st: &mut Studio, game: &mut dyn GameApi, input: &Input) -> Before {
     let why = match input {
         Input::Key { down: true, .. } | Input::Text(_) => Some("the player typed"),
         Input::Button { down: true, .. } => Some("the player clicked"),
         _ => None,
     };
     if let Some(why) = why {
+        let press = matches!(input, Input::Button { down: true, .. }) && st.s.ui.coach.typing.is_some();
+        let at = st.s.ui.mouse;
+        let drawn = st.s.ui.smooth[1];
+        let place = press
+            .then(|| super::hstudio_ui::editor_pos(st, game, at.0, at.1, drawn))
+            .flatten();
+        let ed = &mut st.s.editor;
+        ed.held = place.map(|(row, col)| {
+            let line = &ed.lines[row];
+            (row, line.char_indices().nth(col).map_or(line.len(), |(i, _)| i))
+        });
         finish_typing(st, why);
+        let ed = &mut st.s.editor;
+        st.s.ui.coach.pressed = ed.held.take().map(|(row, byte)| {
+            let col = ed.lines[row].char_indices().take_while(|(i, _)| *i < byte).count();
+            (at, (row, col))
+        });
     }
     if used(input) {
         st.s.ui.coach.input_at = st.s.now;
@@ -321,6 +343,7 @@ pub fn input_coming(st: &mut Studio, inputs: &[Input]) {
 /// After it: when it changed the code of the file that was open (not by
 /// opening another), the player is editing.
 pub fn after_input(st: &mut Studio, before: Before) {
+    st.s.ui.coach.pressed = None;
     let ed = &st.s.editor;
     if ed.revision != before.revision && ed.path == before.path {
         st.s.ui.coach.player_at = st.s.now;
@@ -691,16 +714,37 @@ fn busy(why: impl Into<String>) -> Json {
     json!({ "ok": false, "busy": true, "error": why.into() })
 }
 
+/// Whether the player is using the studio: they used it a moment ago, or
+/// hold the button down for a drag (selecting, the scroll bar, the panel's
+/// edge, the window), however long ago it began.
+fn using(st: &Studio) -> bool {
+    let ui = &st.s.ui;
+    ui.coach.player_busy(st.s.now) || (ui.open && ui.dragging_any())
+}
+
+/// Whether the view is the player's: they changed the code a moment ago,
+/// or hold the button down for a drag (selecting, the scroll bar, the
+/// panel's edge, the window), however long ago it began. An agent's edit
+/// then lands at once, and nothing an agent asks moves the view: a drag
+/// would go on selecting in the lines it moved to.
+fn view_held(st: &Studio) -> bool {
+    let ui = &st.s.ui;
+    ui.coach.player_editing(st.s.now) || (ui.open && ui.dragging_any())
+}
+
+/// Whether the player has a prompt or a menu open in the studio.
+fn prompted(st: &Studio) -> bool {
+    let ui = &st.s.ui;
+    ui.open && (ui.naming.is_some() || ui.menu.is_some())
+}
+
 /// Why another file can't open in the editor now, if it can't: the player
 /// is using the studio, or has a prompt or a menu open in it.
 fn switch_waits(st: &Studio) -> Option<Json> {
-    let ui = &st.s.ui;
-    if ui.open && (ui.naming.is_some() || ui.menu.is_some()) {
+    if prompted(st) {
         return Some(busy("the player has a prompt or a menu open in the studio"));
     }
-    ui.coach
-        .player_busy(st.s.now)
-        .then(|| busy("the player is using the studio"))
+    using(st).then(|| busy("the player is using the studio"))
 }
 
 /// Shows line `n` (from 1) a third of the way down the editor's view, with
@@ -726,15 +770,16 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let create = flag(params, "create") == Some(true);
     let t = target(st, params, create)?;
     let line = line_param(params, "line")?;
-    let now = st.s.now;
     let already = st.s.editor.path.as_deref() == Some(t.path.as_path());
     if already {
-        if !st.s.ui.coach.player_busy(now) {
+        // Its tab comes forward when another file could open.
+        if switch_waits(st).is_none() {
             st.s.ui.tab = Tab::Editor;
         }
-        // The view moves to the line; the player's cursor stays theirs.
+        // The view moves to the line, unless it is the player's; their
+        // cursor stays theirs.
         if let Some(n) = line
-            && !st.s.ui.coach.player_editing(now)
+            && !view_held(st)
         {
             show_line(st, n, false);
         }
@@ -1158,7 +1203,7 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     let now = st.s.now;
     let ui = &st.s.ui;
     let seen = ui.open && ui.tab == Tab::Editor && !ui.collapsed;
-    let hands_off = ui.coach.player_editing(now);
+    let hands_off = view_held(st);
     let animated = seen && !hands_off && ui.look.motion && flag(params, "typing") != Some(false);
     let page = ui.page.max(1);
     let player_edits = match &ui.coach.unsaved {
@@ -2189,7 +2234,7 @@ pub fn mark(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     }
     if open {
         track(st);
-        if reveal && !st.s.ui.coach.player_busy(st.s.now) {
+        if reveal && !using(st) {
             reveal_rows(st, first, last);
         }
     }
@@ -2481,6 +2526,74 @@ pub fn file_gone(st: &mut Studio, path: &Path) {
     c.marks.retain(|m| m.step.is_some() || !m.path.starts_with(path));
     if c.unsaved.as_ref().is_some_and(|u| u.path.starts_with(path)) {
         c.unsaved = None;
+    }
+}
+
+/// A file the studio moved, or a folder with its files (a mod renamed, a
+/// module's file renamed, a script made a module), now at `to`, whether
+/// the editor shows it or not: its marks go along, a lesson's steps too,
+/// and so do the record of an agent's unsaved edits and the Agent panel's
+/// lines about it, named as the editor names the file now. Marks already
+/// at `to` are another file's, gone from there (a lesson's steps stay).
+pub fn file_moved(st: &mut Studio, from: &Path, to: &Path) {
+    let place = |p: &Path| {
+        let rest = p.strip_prefix(from).ok()?;
+        Some(if rest.as_os_str().is_empty() {
+            to.to_path_buf()
+        } else {
+            to.join(rest)
+        })
+    };
+    let c = &st.s.ui.coach;
+    let mut named: Vec<&Path> = c.marks.iter().map(|m| m.path.as_path()).collect();
+    named.extend(c.unsaved.iter().map(|u| u.path.as_path()));
+    named.extend(
+        st.s.ui
+            .agent
+            .lines
+            .iter()
+            .filter_map(|l| Some(l.jump.as_ref()?.path.as_path())),
+    );
+    named.sort();
+    named.dedup();
+    // Where each file named is now, and its title there.
+    let moved: Vec<(PathBuf, PathBuf, String)> = named
+        .into_iter()
+        .filter_map(|p| {
+            let new = place(p)?;
+            let title = st.file_title(&new);
+            Some((p.to_path_buf(), new, title))
+        })
+        .collect();
+    let now = |p: &Path| {
+        moved
+            .iter()
+            .find(|(old, ..)| old == p)
+            .map(|(_, new, f)| (new.clone(), f.clone()))
+    };
+    let c = &mut st.s.ui.coach;
+    c.marks
+        .retain(|m| m.step.is_some() || m.path.starts_with(from) || !m.path.starts_with(to));
+    for m in &mut c.marks {
+        if let Some((path, file)) = now(&m.path) {
+            (m.path, m.file) = (path, file);
+        }
+    }
+    if let Some(u) = c.unsaved.as_mut()
+        && let Some((path, file)) = now(&u.path)
+    {
+        (u.path, u.file) = (path, file);
+    }
+    // The editor's file, if it is the one: the marks have followed it.
+    if let Some(f) = c.followed.as_mut()
+        && let Some(path) = place(&f.path)
+    {
+        f.path = path;
+    }
+    for jump in st.s.ui.agent.lines.iter_mut().filter_map(|l| l.jump.as_mut()) {
+        if let Some((path, file)) = now(&jump.path) {
+            (jump.path, jump.file) = (path, file);
+        }
     }
 }
 
@@ -2854,11 +2967,14 @@ pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -
     };
     say(st, by, in_run, did.clone(), Some(jump));
     // The Agent panel shows its steps' explanations, unless the player has
-    // the keys in another of the panel's tabs.
+    // the keys in another of the panel's tabs or a prompt or a menu is up;
+    // the Editor tab comes forward when another file could open.
     let now = st.s.now;
-    let (busy, editing) = (st.s.ui.coach.player_busy(now), st.s.ui.coach.player_editing(now));
+    let (prompt, held) = (prompted(st), view_held(st));
+    let busy = prompt || using(st);
     let ui = &mut st.s.ui;
     if ui.look.theme().layout == super::hstudio_theme::Layout::Studio
+        && !prompt
         && (!ui.panel_focus || ui.panel == super::hstudio_ui::Panel::Agent)
     {
         if ui.panel != super::hstudio_ui::Panel::Agent {
@@ -2870,7 +2986,7 @@ pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -
     if !busy {
         ui.tab = Tab::Editor;
     }
-    show_step(st, game, 0, !editing);
+    show_step(st, game, 0, !held);
     if !st.s.ui.open {
         st.s.toast(format!("{} started a lesson in the editor: \"{title}\"", by.name));
     }
@@ -3064,7 +3180,7 @@ fn lesson_check(st: &mut Studio) {
         st.s.ui
             .agent
             .say(AgentLineKind::You, format!("Check step {}: {task}", i + 1), now);
-    } else if !super::hstudio_ui::agent_busy(st) && super::hstudio_ui::agent_name(st).is_some() {
+    } else if own_agent_checks(st) {
         let ask = format!(
             "I did step {} of the lesson \"{title}\" ({file} {rows}): {}. Check my code and tell me how I did.",
             i + 1,
@@ -3104,9 +3220,18 @@ pub fn step_view(st: &mut Studio, id: u32) -> Option<StepView> {
 }
 
 /// Whether someone can check the player's try: an agent waiting for them,
-/// or the game's own agent, found and not working.
+/// or the game's own agent.
 fn can_check(st: &mut Studio) -> bool {
-    waiting(st) || (!super::hstudio_ui::agent_busy(st) && super::hstudio_ui::agent_name(st).is_some())
+    waiting(st) || own_agent_checks(st)
+}
+
+/// Whether the game's own agent can check the player's try: found, not
+/// working, and in the studio's own layout, whose Agent panel shows what
+/// it says (an executor style has none, as the menus' agent items know).
+fn own_agent_checks(st: &mut Studio) -> bool {
+    st.s.ui.look.theme().layout == super::hstudio_theme::Layout::Studio
+        && !super::hstudio_ui::agent_busy(st)
+        && super::hstudio_ui::agent_name(st).is_some()
 }
 
 /// The lesson for the state the link gives: its title, the step showing,

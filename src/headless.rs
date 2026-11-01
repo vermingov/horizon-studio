@@ -65,7 +65,7 @@ pub struct HeadlessGame {
     /// player list (a `players` step; None, as a world played alone has).
     pub entities: Vec<EntityInfo>,
     pub players: Option<Vec<PlayerEntry>>,
-    /// How many of `sent` reached the mods' commands.
+    /// How many of `sent` the frames have noted.
     routed: usize,
 }
 
@@ -846,13 +846,12 @@ impl Run {
             *total += 1;
         }
         st.frame(game, FRAME_SECONDS);
-        // A command a mod sent as the player reaches the mods' commands, as in the game.
+        // A command a mod sent as the player goes to the server, as in the
+        // game (one the studio takes ran in it instead): it is noted.
         let new: Vec<String> = game.sent[game.routed..].to_vec();
         game.routed = game.sent.len();
         for line in new {
-            if let Some(cmd) = line.strip_prefix('/')
-                && !st.command(cmd)
-            {
+            if let Some(cmd) = line.strip_prefix('/') {
                 game.chats.push(format!("(the game would run /{cmd})"));
             }
         }

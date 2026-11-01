@@ -63,7 +63,8 @@ pub fn key_menu(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
                 .unwrap_or([ui.mouse.0, ui.mouse.1]);
             let ed = &st.s.editor;
             let items = code_items(st, (ed.row, ed.col));
-            open(st, at, code_line(), items, None)
+            let opened = open(st, at, code_line(), items, None);
+            about_code(st, opened)
         }
         Target::Console | Target::Agent => {
             let field = if target(ui) == Target::Agent {
@@ -106,7 +107,8 @@ pub fn key_menu(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
                 Some(r) => {
                     let (at, h) = below(r);
                     let items = problem_items(st, k);
-                    open(st, at, h, items, Some(r))
+                    let opened = open(st, at, h, items, Some(r));
+                    about_code(st, opened)
                 }
                 // No problem's row: the panel's own menu, under its tab
                 // (the last of the panel's spots drawn).
@@ -198,7 +200,21 @@ fn open_spot(st: &mut Studio, game: &mut dyn GameApi, spot: Spot, rect: [f32; 4]
             None,
         ),
     };
-    open(st, at, 0.0, items, target)
+    let opened = open(st, at, 0.0, items, target);
+    match spot {
+        Spot::Code | Spot::Problem(_) => about_code(st, opened),
+        _ => opened,
+    }
+}
+
+/// Whether a menu `opened`: one about the code is for the code as it is
+/// now, and goes when that changes (see `Menu::code`).
+fn about_code(st: &mut Studio, opened: bool) -> bool {
+    let revision = st.s.editor.revision;
+    if opened && let Some(menu) = st.s.ui.menu.as_mut() {
+        menu.code = Some(revision);
+    }
+    opened
 }
 
 // ----------------------------------------------------------------- the panel, the window, the themes
@@ -272,7 +288,7 @@ fn problem_items(st: &mut Studio, k: usize) -> Vec<MenuItem> {
     let row = (p.line.max(1) - 1).min(ed.lines.len() - 1);
     let (start, end) = p.span.unwrap_or((0, 0));
     let mut items = vec![
-        MenuItem::new("Go to it", MenuCmd::GoTo(None, row, start, end)).keys("⏎"),
+        MenuItem::new("Go to it", MenuCmd::GoTo(row, start, end)).keys("⏎"),
         MenuItem::new("Copy", MenuCmd::Copy(format!("{}:{}: {}", ed.title, p.line, p.message))),
     ];
     if let Some(agent) = agent {
@@ -335,17 +351,30 @@ fn replace(st: &mut Studio, place: [f32; 4], items: Vec<MenuItem>) {
     }
 }
 
-/// The editor's cursor to a place, selecting it: a row and its bytes from
-/// and to, in `path` (opened first) or in the file open.
-fn go_to(st: &mut Studio, game: &mut dyn GameApi, path: Option<&Path>, row: usize, start: usize, end: usize) {
-    if let Some(path) = path {
-        open_path(st, game, path);
+/// The editor's cursor to a place in the file open, selecting it (a row
+/// and its bytes from and to), and the editor in front with the keys.
+fn go_to(st: &mut Studio, place: Option<(usize, usize, usize)>) {
+    if let Some((row, start, end)) = place {
+        st.s.editor.select_span(row, start, end);
     }
-    st.s.editor.select_span(row, start, end);
     let ui = &mut st.s.ui;
     ui.tab = Tab::Editor;
     ui.panel_focus = false;
     ui.suggest = None;
+}
+
+/// The definition of `name` in another file of the module: the file opens,
+/// and the definition is found in its text as it opens, so an agent's edit
+/// on disk since the menu opened (which leaves the file open, and so the
+/// menu, as they were) can't send the cursor to lines that moved. Gone from
+/// the file, the file opens all the same.
+fn define(st: &mut Studio, game: &mut dyn GameApi, path: &Path, name: &str) {
+    open_path(st, game, path);
+    let ed = &st.s.editor;
+    let place = (ed.path.as_deref() == Some(path))
+        .then(|| definition(&ed.lines, name, 0, true))
+        .flatten();
+    go_to(st, place);
 }
 
 // ----------------------------------------------------------------- the code, the text, the input lines
@@ -446,17 +475,17 @@ fn name_items(st: &mut Studio, row: usize, byte: usize) -> Vec<MenuItem> {
         if let Some((r, a, b)) = definition(&lines, n, row, false) {
             // Not when it is the definition clicked.
             if (r, a) != (row, start) {
-                goto = Some(MenuCmd::GoTo(None, r, a, b));
+                goto = Some(MenuCmd::GoTo(r, a, b));
             }
             break;
         }
         if let (Some(folder), Some(sib)) = (&folder, &siblings)
-            && let Some((rel, (r, a, b))) = sib
+            && let Some(rel) = sib
                 .others
                 .iter()
-                .find_map(|(rel, other)| Some((rel, definition(other, n, 0, true)?)))
+                .find_map(|(rel, other)| definition(other, n, 0, true).map(|_| rel))
         {
-            goto = Some(MenuCmd::GoTo(Some(path_in(folder, rel)), r, a, b));
+            goto = Some(MenuCmd::Define(path_in(folder, rel), n.clone()));
             break;
         }
     }
@@ -784,7 +813,8 @@ pub fn run(st: &mut Studio, game: &mut dyn GameApi, cmd: MenuCmd, place: [f32; 4
             replace(st, place, items);
         }
         MenuCmd::CopyDocs => copy_text(st, game, &docs_markdown()),
-        MenuCmd::GoTo(path, row, start, end) => go_to(st, game, path.as_deref(), row, start, end),
+        MenuCmd::GoTo(row, start, end) => go_to(st, Some((row, start, end))),
+        MenuCmd::Define(path, name) => define(st, game, &path, &name),
         MenuCmd::Docs(name) => {
             st.s.ui.tab = Tab::Docs;
             st.s.ui.docs_find = Some(name);

@@ -314,8 +314,9 @@ fn an_agent_writes_tests_and_runs_a_mod_in_the_linked_game() {
     }
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let (mods_tx, mods_rx) = mpsc::channel();
-    // The game's thread: the studio's frame, commands the player sends reaching
-    // the scripts (the game's command hook), chat kept, then the link.
+    // The game's thread: the studio's frame, what it sends as the player and
+    // shows in chat kept, then the link. As in the game, a line sent goes to
+    // the server: only a command typed in the chat reaches the studio's hook.
     let game = std::thread::spawn(move || {
         let mut game = FakeGame::new("mcp-link");
         let mut st = Studio::new();
@@ -327,9 +328,6 @@ fn an_agent_writes_tests_and_runs_a_mod_in_the_linked_game() {
             st.frame(&mut game, 0.016);
             for line in &game.sent[sent..] {
                 link::record("sent", line);
-                if let Some(cmd) = line.strip_prefix('/') {
-                    st.command(cmd);
-                }
             }
             sent = game.sent.len();
             for line in &game.chats[chats..] {
@@ -439,18 +437,17 @@ fn an_agent_writes_tests_and_runs_a_mod_in_the_linked_game() {
             { "chat": "<Bo> hi" },
             { "block": [0, 0, 0], "id": "minecraft:stone" },
             { "suggest": "/greet A" },
+            { "entities": [{ "kind": "zombie", "pos": [3, 64, 0] }] },
+            { "players": [{ "name": "Alex" }] },
         ] }),
     );
     assert!(error, "the block step is headless only");
     let steps = r["steps"].as_array().unwrap();
     assert!(steps[..5].iter().all(|s| s["ok"] == true), "{r:#}");
-    assert!(steps[5]["failures"][0].as_str().unwrap().contains("headless only"));
-    assert!(
-        steps[6]["failures"][0]
-            .as_str()
-            .unwrap()
-            .contains("suggest steps are headless only")
-    );
+    for step in &steps[5..] {
+        let failure = step["failures"][0].as_str().unwrap();
+        assert!(failure.contains("steps are headless only"), "{failure}");
+    }
     // A broken edit: the check says where, and so does the game.
     let (r, error) = call(
         &mut s,

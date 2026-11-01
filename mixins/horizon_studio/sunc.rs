@@ -669,24 +669,36 @@ pub fn draw_drawings(rbx: &Rbx, game: &mut dyn GameApi, textures: &mut ImageCach
     }
 }
 
+/// What the image cache keeps: each entry with the frame (the studio's
+/// clock) it was last drawn in, the least recently drawn first (`keep`).
+type Kept<T> = Vec<(f64, T)>;
+
 /// Decoded images for Drawing's Image and the GUI's images (getcustomasset's
 /// files), shared by the HUD and the GUI's screen: drawn as textures where
 /// the game draws images, else as blocks of colour.
 #[derive(Default)]
 pub struct ImageCache {
-    items: Vec<(u64, Rc<super::hstudio_meshes::Texture>)>,
-    /// Workspace files read, with the key in `items` of the image they hold.
-    files: Vec<(PathBuf, Rc<Vec<u8>>, u64)>,
-    /// Large images scaled down for the game's atlas, by the image's key.
-    small: Vec<(u32, Rc<super::hstudio_meshes::Texture>)>,
+    /// Images decoded, and workspace files read with the key in `items` of
+    /// the image they hold.
+    items: Kept<(u64, Rc<super::hstudio_meshes::Texture>)>,
+    files: Kept<(PathBuf, Rc<Vec<u8>>, u64)>,
+    /// The key each image had in the game's atlas (its place there), by its
+    /// key in `items`: decoded again, it takes the same one, so the atlas
+    /// finds it where it is rather than placing it anew.
+    places: std::collections::HashMap<u64, u32>,
+    /// Large images scaled down for the game's atlas, by the image's key,
+    /// which a copy takes (the image itself never goes there): made again,
+    /// it is found where the last was put.
+    small: Kept<(u32, Rc<super::hstudio_meshes::Texture>)>,
     /// This frame (the studio's clock), and the images it put in the
     /// game's atlas (by key) with their pixels in all.
     frame: f64,
     in_atlas: Vec<u32>,
     texels: usize,
-    /// How many times image bytes were hashed to find their image: once a
-    /// file, and once a frame for each Drawing's image.
+    /// How many times image bytes were hashed to find their image (once a
+    /// file, and once a frame for each Drawing's image), and decoded.
     pub hashed: u64,
+    pub decoded: u64,
 }
 
 /// Image cells a side at most: an image draws as up to 48 x 48 blocks.
@@ -701,6 +713,48 @@ const ATLAS_SIDE: u32 = 256;
 /// they share with the interface's glyphs; an image past them draws in
 /// blocks.
 const ATLAS_TEXELS: usize = 1 << 18;
+/// The images kept decoded and the workspace files kept read: as many as a
+/// big GUI draws in a frame (a shop's or an inventory's icons), within this
+/// many pixels and bytes in all (32 images of the largest, 512 a side, as
+/// many as fit 32 MiB). The least recently drawn go first, never one the
+/// frame has drawn (see `keep`).
+const KEPT: usize = 256;
+const KEPT_TEXELS: usize = 1 << 23;
+const KEPT_BYTES: usize = 32 << 20;
+/// The images whose place in the atlas is remembered.
+const PLACES: usize = 4096;
+/// The copies of large images kept scaled down for the atlas: a frame's
+/// take at most its share of the atlas, and these hold four frames' worth.
+const SMALL_TEXELS: usize = 4 * ATLAS_TEXELS;
+
+/// Moves entry `i` of `kept` to its end (the most recently drawn), drawn
+/// in `frame`, and returns it.
+fn touch<T>(kept: &mut Kept<T>, i: usize, frame: f64) -> &T {
+    let mut e = kept.remove(i);
+    e.0 = frame;
+    kept.push(e);
+    &kept[kept.len() - 1].1
+}
+
+/// Keeps `kept` within KEPT entries and `budget` of `size` in all, its
+/// newest entry just put in. The least recently drawn go first, but never
+/// one `frame` drew: the GUI asks for its images in the same order every
+/// frame, and the oldest would be the next it asks for. Over the limits
+/// with only this frame's entries left, the newest goes (it is made again
+/// each time it is drawn), so a frame that draws more than the limits hold
+/// keeps the first it drew, frame after frame, rather than none.
+fn keep<T>(kept: &mut Kept<T>, frame: f64, budget: usize, size: impl Fn(&T) -> usize) {
+    let mut total: usize = kept.iter().map(|(_, e)| size(e)).sum();
+    while kept.len() > 1 && (kept.len() > KEPT || total > budget) {
+        match kept.iter().position(|(drawn, _)| *drawn != frame) {
+            Some(i) => total -= size(&kept.remove(i).1),
+            None => {
+                kept.pop();
+                break;
+            }
+        }
+    }
+}
 
 impl ImageCache {
     /// A workspace file's bytes (getcustomasset's images), read once.
@@ -714,15 +768,14 @@ impl ImageCache {
         if !p.starts_with(workspace) || rel.contains("..") {
             return None;
         }
-        if let Some((_, b, key)) = self.files.iter().find(|(q, _, _)| *q == p) {
+        if let Some(i) = self.files.iter().position(|(_, (q, _, _))| *q == p) {
+            let (_, b, key) = touch(&mut self.files, i, self.frame);
             return Some((b.clone(), *key));
         }
         let bytes = Rc::new(std::fs::read(&p).ok().filter(|b| b.len() <= MAX_FILE)?);
         let key = self.key(&bytes);
-        if self.files.len() >= 32 {
-            self.files.remove(0);
-        }
-        self.files.push((p, bytes.clone(), key));
+        self.files.push((self.frame, (p, bytes.clone(), key)));
+        keep(&mut self.files, self.frame, KEPT_BYTES, |(_, b, _)| b.len());
         Some((bytes, key))
     }
 
@@ -750,16 +803,21 @@ impl ImageCache {
         self.decoded(key, bytes)
     }
 
-    /// The image of `bytes`, found by their `key`, decoded once.
+    /// The image of `bytes`, found by their `key`, decoded once, in the
+    /// place in the game's atlas it had.
     fn decoded(&mut self, key: u64, bytes: &[u8]) -> Option<Rc<super::hstudio_meshes::Texture>> {
-        if let Some((_, t)) = self.items.iter().find(|(k, _)| *k == key) {
-            return Some(t.clone());
+        if let Some(i) = self.items.iter().position(|(_, (k, _))| *k == key) {
+            return Some(touch(&mut self.items, i, self.frame).1.clone());
         }
-        let t = Rc::new(super::hstudio_meshes::decode_png(bytes).ok()?);
-        if self.items.len() >= 32 {
-            self.items.remove(0);
+        self.decoded += 1;
+        let mut t = super::hstudio_meshes::decode_png(bytes).ok()?;
+        if self.places.len() >= PLACES && !self.places.contains_key(&key) {
+            self.places.clear();
         }
-        self.items.push((key, t.clone()));
+        t.key = *self.places.entry(key).or_insert(t.key);
+        let t = Rc::new(t);
+        self.items.push((self.frame, (key, t.clone())));
+        keep(&mut self.items, self.frame, KEPT_TEXELS, |(_, t)| t.texels());
         Some(t)
     }
 
@@ -796,14 +854,16 @@ impl ImageCache {
         if (w, h) == (t.w, t.h) {
             return Some(t.clone());
         }
-        if let Some((_, s)) = self.small.iter().find(|(k, _)| *k == t.key) {
-            return Some(s.clone());
+        if let Some(i) = self.small.iter().position(|(_, (k, _))| *k == t.key) {
+            return Some(touch(&mut self.small, i, self.frame).1.clone());
         }
-        let s = Rc::new(shrink(t, w, h)?);
-        if self.small.len() >= 32 {
-            self.small.remove(0);
-        }
-        self.small.push((t.key, s.clone()));
+        // The copy is the image in the atlas: it takes the image's key, its
+        // place there, so one made again is drawn from the same place.
+        let mut s = shrink(t, w, h)?;
+        (s.key, s.version) = (t.key, t.version);
+        let s = Rc::new(s);
+        self.small.push((self.frame, (t.key, s.clone())));
+        keep(&mut self.small, self.frame, SMALL_TEXELS, |(_, s)| s.texels());
         Some(s)
     }
 

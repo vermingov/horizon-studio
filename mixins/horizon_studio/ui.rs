@@ -279,10 +279,13 @@ pub enum MenuCmd {
     Models,
     /// The Docs tab as Markdown, to the clipboard.
     CopyDocs,
-    /// A place in the editor's text selected (a problem's, a name's
-    /// definition): its row and the bytes from and to, in the file open, or
-    /// in this file of the module, opened first.
-    GoTo(Option<PathBuf>, usize, usize, usize),
+    /// A place in the file open selected (a problem's, a name's
+    /// definition): its row and the bytes from and to.
+    GoTo(usize, usize, usize),
+    /// A name's definition in another file of the module: that file opened,
+    /// and the definition selected where its text has it then, which an
+    /// agent's edit on disk may have moved since the menu opened.
+    Define(PathBuf, String),
     /// The Docs tab at this function's entry.
     Docs(String),
     /// The agent asked this (None: its input takes the keys, for a
@@ -494,7 +497,10 @@ pub(crate) fn row_label(st: &Studio, row: &ScriptRow) -> String {
 /// pointer), which a menu with no room below opens above. `target` is the
 /// row it is for, outlined while it is open. A menu taller than the screen
 /// shows its items from `scroll` on (`shown`: the first and the end, as
-/// drawn), and the wheel and the keys scroll it.
+/// drawn), and the wheel and the keys scroll it. A menu about the code
+/// (the code's own, a problem's) has the editor's revision it was made
+/// for in `code`: its items hold places in that text, so it goes when the
+/// text changes under it (an agent's edit, the file read again).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Menu {
     pub at: [f32; 2],
@@ -506,6 +512,7 @@ pub struct Menu {
     pub target: Option<[f32; 4]>,
     pub scroll: usize,
     pub shown: (usize, usize),
+    pub code: Option<u64>,
 }
 
 impl Menu {
@@ -522,11 +529,16 @@ impl Menu {
             target: None,
             scroll: 0,
             shown: (0, 0),
+            code: None,
         }
     }
     /// Whether it was drawn with only some of its items (it scrolls).
     pub fn scrolls(&self) -> bool {
         self.rect.is_some() && self.shown != (0, self.items.len())
+    }
+    /// Whether it is about the code, which changed since it was made.
+    pub fn stale(&self, ed: &Editor) -> bool {
+        self.code.is_some_and(|r| r != ed.revision)
     }
 }
 
@@ -1159,6 +1171,13 @@ pub struct Editor {
     pub col: usize,
     /// The other end of the selection.
     pub anchor: Option<(usize, usize)>,
+    /// A place (row, byte) that keeps its place in the text through a
+    /// splice as the cursor does: a press's, while an agent's edit is put
+    /// in whole under it.
+    pub held: Option<(usize, usize)>,
+    /// The rows as last drawn while an agent's edit typed in, and the
+    /// splices since (see `Drawn`).
+    pub(crate) drawn: Option<Drawn>,
     pub scroll: usize,
     /// Chars of each line scrolled off to the left.
     pub hscroll: usize,
@@ -1195,6 +1214,63 @@ pub struct Editor {
     pub reloaded_at: Option<f64>,
 }
 
+/// The rows the editor last drew while an agent's edit typed in, and how
+/// the text changed since. A press is for the text drawn under the pointer,
+/// and in the game each frame types more of the edit in (the studio's
+/// frame) before the studio gets that frame's input: the place drawn under
+/// the pointer is found in these rows, then carried through the splices.
+pub(crate) struct Drawn {
+    /// The revision the splices below bring the rows to: the editor's own
+    /// while nothing else changed its text since (which leaves it behind).
+    rev: u64,
+    /// The first row drawn, the rows drawn from it, the chars of each
+    /// scrolled off to the left, and how many lines the text had.
+    first: usize,
+    lines: Vec<String>,
+    hscroll: usize,
+    count: usize,
+    /// Each splice since.
+    splices: Vec<Splice>,
+}
+
+/// A splice: where it began and ended, and where the text it put in ends
+/// (rows, and bytes of them).
+type Splice = ((usize, usize), (usize, usize), (usize, usize));
+
+/// The splices a press can be carried through, at most: more, and it is
+/// for the text as it is.
+const DRAWN_SPLICES: usize = 64;
+
+impl Drawn {
+    /// Rows `first` to `last` of `ed` as it is drawn now.
+    pub(crate) fn of(ed: &Editor, first: usize, last: usize) -> Drawn {
+        let end = (last + 1).min(ed.lines.len());
+        Drawn {
+            rev: ed.revision,
+            first,
+            lines: ed.lines.get(first..end).map(<[String]>::to_vec).unwrap_or_default(),
+            hscroll: ed.hscroll,
+            count: ed.lines.len(),
+            splices: Vec::new(),
+        }
+    }
+}
+
+/// Where place `p` (row, byte) is once `text` ending at `end` replaced
+/// `from..to`: before `from` it stays, inside the range it goes to its
+/// start, and after it it moves with the text after it.
+fn after_splice(p: (usize, usize), from: (usize, usize), to: (usize, usize), end: (usize, usize)) -> (usize, usize) {
+    if p < from {
+        p
+    } else if p < to {
+        from
+    } else if p.0 == to.0 {
+        (end.0, end.1 + p.1 - to.1)
+    } else {
+        (p.0 - to.0 + end.0, p.1)
+    }
+}
+
 impl Default for Editor {
     fn default() -> Self {
         Editor {
@@ -1204,6 +1280,8 @@ impl Default for Editor {
             row: 0,
             col: 0,
             anchor: None,
+            held: None,
+            drawn: None,
             scroll: 0,
             hscroll: 0,
             followed: None,
@@ -1495,19 +1573,19 @@ impl Editor {
             None => (from.0, from.1 + text.len()),
         };
         self.lines.splice(from.0..=to.0, joined.split('\n').map(str::to_owned));
-        let moved = |p: (usize, usize)| {
-            if p < from {
-                p
-            } else if p < to {
-                from
-            } else if p.0 == to.0 {
-                (end.0, end.1 + p.1 - to.1)
-            } else {
-                (p.0 - to.0 + end.0, p.1)
+        let moved = |p: (usize, usize)| after_splice(p, from, to, end);
+        // The rows as drawn follow the text through it, as far as they can.
+        let revision = self.revision;
+        if let Some(d) = self.drawn.as_mut().filter(|d| d.rev == revision) {
+            d.splices.push((from, to, end));
+            d.rev = revision + 1;
+            if d.splices.len() > DRAWN_SPLICES {
+                self.drawn = None;
             }
-        };
+        }
         (self.row, self.col) = self.clamp_pos(moved((self.row, self.col)));
         self.anchor = self.anchor.map(|a| self.clamp_pos(moved(a)));
+        self.held = self.held.map(|h| self.clamp_pos(moved(h)));
         self.dirty = true;
         self.revision += 1;
         self.followed = Some((self.row, self.col, self.revision));
@@ -2366,7 +2444,7 @@ pub use super::hstudio_look::{code_line, draw, draw_screen};
 // ----------------------------------------------------------------- input
 
 pub fn handle(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResult {
-    let before = super::hstudio_coach::before_input(st, &input);
+    let before = super::hstudio_coach::before_input(st, game, &input);
     let revision = st.s.editor.revision;
     let out = handle_input(st, game, input);
     if st.s.editor.revision != revision {
@@ -3001,17 +3079,46 @@ fn as_drawn(st: &Studio, action: Action) -> Option<Action> {
 
 /// The place in the editor's text drawn under `(x, y)`: its row and char
 /// column. Rows glide as the view scrolls, so the view as drawn (its first
-/// row, not where it is going) says which, given as `drawn`. Left of the
-/// text (over the line numbers) it is the line's start.
+/// row, not where it is going) says which, given as `drawn`; and an agent's
+/// edit may have typed more in since the text was drawn, so the place is
+/// found in the text as drawn, then where that is now (`Drawn`). Left of
+/// the text (over the line numbers) it is the line's start.
 pub(crate) fn editor_pos(st: &Studio, game: &mut dyn GameApi, x: f32, y: f32, drawn: f32) -> Option<(usize, usize)> {
+    // A press that put an agent's edit in whole is for the text drawn under
+    // it, wherever the edit moved that.
+    if let Some((at, place)) = st.s.ui.coach.pressed
+        && at == (x, y)
+    {
+        return Some(place);
+    }
     let v = st.s.ui.view?;
     let ed = &st.s.editor;
     let at = drawn.max(0.0) + ((y - v.y) / code_line()).clamp(0.0, v.rows as f32);
+    let scale = st.s.ui.look.scale;
+    // While an agent's edit typed in, the rows were drawn before the frame
+    // typed more: the place drawn under the pointer, where its text is now.
+    if let Some(d) = ed.drawn.as_ref().filter(|d| d.rev == ed.revision) {
+        let row = (at.floor() as usize).min(d.count.saturating_sub(1));
+        if let Some(line) = row.checked_sub(d.first).and_then(|i| d.lines.get(i)) {
+            let col = if x < v.x {
+                0
+            } else {
+                d.hscroll + column_at(game, line, d.hscroll, x - v.x, scale)
+            };
+            let byte = line.char_indices().nth(col).map_or(line.len(), |(i, _)| i);
+            let place = d
+                .splices
+                .iter()
+                .fold((row, byte), |p, &(a, b, e)| after_splice(p, a, b, e));
+            let (row, byte) = ed.clamp_pos(place);
+            return Some((row, ed.lines[row][..byte].chars().count()));
+        }
+    }
     let row = (at.floor() as usize).min(ed.lines.len() - 1);
     let col = if x < v.x {
         0
     } else {
-        ed.hscroll + column_at(game, &ed.lines[row], ed.hscroll, x - v.x, st.s.ui.look.scale)
+        ed.hscroll + column_at(game, &ed.lines[row], ed.hscroll, x - v.x, scale)
     };
     Some((row, col))
 }
@@ -3105,6 +3212,10 @@ pub(crate) fn menu_pick(st: &mut Studio, game: &mut dyn GameApi, i: usize) -> Ui
     let Some(menu) = st.s.ui.menu.take() else {
         return UiResult::Used;
     };
+    // The code it was for changed under it: it just goes.
+    if menu.stale(&st.s.editor) {
+        return UiResult::Used;
+    }
     let Some(cmd) = menu.items.get(i).filter(|it| it.enabled).and_then(|it| it.cmd.clone()) else {
         return UiResult::Used;
     };
@@ -3985,9 +4096,11 @@ pub fn agent_ask(st: &mut Studio, text: &str) {
         );
         return;
     };
-    // It reads the file from disk: unsaved edits are saved first, so it
-    // works on what the player sees (and its writes don't conflict); an
-    // agent's edit being typed in is all in first.
+    // Unsaved edits are saved first (the docs say so), so its turn starts
+    // from what the player sees with nothing of theirs unsaved: a write_mod
+    // to the file then doesn't conflict with them, and the turn's end can
+    // save the agent's own edits, which it does only in a buffer that had
+    // none of the player's. An agent's edit being typed in is all in first.
     super::hstudio_coach::finish_typing(st, "the player asked the agent");
     if st.s.editor.dirty && st.s.editor.path.is_some() {
         match st.s.editor.save() {
@@ -4018,6 +4131,7 @@ pub fn agent_ask(st: &mut Studio, text: &str) {
         .unwrap_or_default();
     let ctx = super::hstudio_agent::AgentContext {
         file,
+        scratch: ed.path.as_deref() == Some(st.scratch_path().as_path()),
         mods_dir: mods_dir.clone(),
         files,
         selection: ed.selected_text().filter(|t| !t.trim().is_empty()),

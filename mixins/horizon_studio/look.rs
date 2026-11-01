@@ -494,8 +494,13 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
     let dt = {
         let ui = &mut st.s.ui;
         // A menu left open goes when the studio opens again (or comes back
-        // from a script's screen).
-        if ui.menu.as_ref().is_some_and(|m| m.opened_at < ui.opened_at) {
+        // from a script's screen), and one about the code when the code
+        // changed under it.
+        if ui
+            .menu
+            .as_ref()
+            .is_some_and(|m| m.opened_at < ui.opened_at || m.stale(&st.s.editor))
+        {
             ui.menu = None;
         }
         ui.dp = k;
@@ -505,6 +510,7 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         ui.text_areas.clear();
         ui.view = None;
         ui.caret_at = None;
+        st.s.editor.drawn = None;
         ui.scripts_at = None;
         ui.library_dots = None;
         ui.drawn_files.clear();
@@ -2745,6 +2751,12 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
         w: text_w,
         rows,
     });
+    // While an agent's edit types in, the rows as drawn: the game's next
+    // frame types more in before the press it hands the studio, which is
+    // for what was drawn under the pointer.
+    let typing = st.s.ui.coach.typing.is_some();
+    let ed = &mut st.s.editor;
+    ed.drawn = typing.then(|| super::hstudio_ui::Drawn::of(ed, first, first + rows));
     note_bubble(st, p, panel, [text_x, top_y, bottom, s], dt);
     file_changed(st, p, panel, dt);
     agent_notice(st, p, panel, dt);
@@ -3859,7 +3871,8 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     if !commands.is_empty() && dy + 46.0 <= bottom {
         p.text("Commands", dx, top(dy + 8.0, 13.0), 13.0, Font::Medium, pal().ink_soft);
         dy += 24.0;
-        for (name, help) in commands.iter().take(6) {
+        const SHOWN: usize = 6;
+        for (name, help) in commands.iter().take(SHOWN) {
             if dy + 22.0 > bottom {
                 break;
             }
@@ -3867,6 +3880,11 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             let cw = p.text(&cmd, dx, dy, 13.0, Font::Mono, pal().ink);
             let help = p.fit(help, dw - cw - 12.0, 13.0, Font::Regular);
             p.text(&help, dx + cw + 12.0, dy, 13.0, Font::Regular, pal().muted);
+            dy += 22.0;
+        }
+        if commands.len() > SHOWN && dy + 22.0 <= bottom {
+            let rest = format!("and {} more: type / in the chat to see them", commands.len() - SHOWN);
+            p.text(&rest, dx, dy, 12.0, Font::Regular, pal().muted);
             dy += 22.0;
         }
         dy += 10.0;
@@ -3908,6 +3926,7 @@ fn docs() -> Vec<Doc> {
         Doc::Heading("Script mods".into()),
         Doc::Para("Script mods live in horizon-mods/.horizon-mod-data/horizon_studio/mods/. A script is one file, name.lua. A module is a folder, name/, whose main.lua loads its other files with require(\"lib\") for lib.lua: each file runs once, however its name is written, and the files share the mod's globals. The New prompt (the Library's New mod, or + in the Editor's script list) makes either; a new module has main.lua, shared.lua and lib.lua. The main file runs when the mod loads; what it registers with on(), command() and every() then runs in the game. Save any of its files, in the Editor or any other editor, and the mod reloads at once. A mod that fails stops alone: the Library shows the error, and the Editor marks its line in the file it is in.".into()),
         Doc::Para("In the Editor's script list a module is a folder that folds open to its files. A row's ... (or a right click) adds, renames and deletes a module's files, deletes a mod and makes a script a module; what is deleted goes to the trash folder beside mods, where an older copy of the same name stays, numbered. In the Library each mod's ... (or the . key) has the same, with a module's files to open. Right-click a script or a module, in the Editor's list or the Library, to rename, duplicate or delete it: a copy starts turned off, and a rename keeps its saved data and its on/off state. Ctrl+Enter on a module's file saves it and reloads the module.".into()),
+        Doc::Para("Right-click anything for what can be done with it: the code (Go to definition, the clipboard, Toggle comment, Run, and the agent's Ask, Explain and Fix), a row of the script list or the Library, a problem, the panels and the title bar. The Menu key, or Shift+F10, opens the menu of what has the keys: the code's at the cursor.".into()),
         Doc::Para("Drop a .lua file, a mod folder or a .zip on the game window to install it. Lines -- name:, -- version:, -- author: and -- description: at the top name it in the Library.".into()),
         Doc::Heading("Libraries".into()),
         Doc::Para("A mod can be a library for others: it calls export(table), or its main file returns a table, and other mods take it with local kit = import(\"uikit\"). Libraries load first; when one reloads, the mods that use it reload too. A library's functions run as the mod that calls them, so what they draw, register or store belongs to that mod. Mods talk to each other with emit(\"name:event\", ...) and on(\"name:event\", fn), and json.encode and json.decode turn tables into text and back.".into()),
@@ -3920,6 +3939,7 @@ fn docs() -> Vec<Doc> {
         Doc::Para("Lua 5.3 without goto. Numbers are 64-bit floats (bitwise operators work on whole numbers). string (with Lua patterns, format, split, trim), math, table, utf8, coroutine and os.clock, os.time, os.date and os.difftime are there; io and the rest of os are not. Each call into a script has a step budget, so an endless loop stops the script, not the game.".into()),
         Doc::Heading("Roblox scripts".into()),
         Doc::Para("Roblox client scripts run as mods too, in Luau with the Roblox API a LocalScript uses. game.Players.LocalPlayer is you, by your name and a UserId from your UUID; game.LocalPlayer is the studio's own shortcut for it. Its Character follows you, in blocks: its Humanoid has your health, the game's WalkSpeed and JumpPower and your state, moving its HumanoidRootPart (its CFrame, PivotTo, a tween) teleports you with /tp, and Humanoid:MoveTo walks you there. Once a script looks at the world (the Workspace's children, a raycast, the mouse's Target, Players), the mobs, dropped items and orbs near you are in the Workspace and the other players in Players, raycasts and the mouse hit them, and workspace.Terrain reads the map.".into()),
+        Doc::Para("ScreenGuis in the PlayerGui are laid out and drawn as Roblox does (frames, text and TextBoxes, images from getcustomasset, UICorner, UIStroke, the layouts, ScrollingFrames), and BillboardGuis float over parts and mobs. In Minecraft the mouse is the game's: the GUI takes it while a visible button has Modal = true or a TextBox has focus, or after you press Left Alt over a GUI with buttons, and Escape gives it back.".into()),
         Doc::Heading("API".into()),
     ];
     let api = API
@@ -3940,7 +3960,7 @@ fn docs() -> Vec<Doc> {
     out.push(Doc::Para("The executor styles are always a window. Their buttons do the studio's work: Execute runs the editor's code, Clear empties it, Execute File saves the file and reloads its mod, Open File shows the Library, Attach and Inject reload every mod, and Options shows Settings, where the console, the Library and the docs are a click away too.".into()));
     out.push(Doc::Heading("AI agents".into()));
     out.push(Doc::Para("horizon-studio-mcp lets AI agents (Claude Code, omp, Codex, Cursor...) make mods here: they write and test them, headless and in this game, run Lua in the console and read what happened. Copy AI setup prompt, at the top right, copies a prompt for your agent that sets it all up; once one is connected, its name shows there. Options > Mods > Horizon Studio turns the AI link off.".into()));
-    out.push(Doc::Para("An agent can work in this editor as you watch: it opens any script, reads it as you have it (unsaved edits too), and types its changes in at a caret of its own with its name on it. Your cursor stays where it is, the view follows the agent until you scroll, and any key or click puts the rest of its change in at once. Ctrl+Z takes a whole change back; a change it writes to the file on disk is typed in too. Its changes stay unsaved until it saves them (or you do); nothing you are typing is saved for you. A file you don't have open is changed on disk instead, and a note over the code shows it. The Agent panel says what it did, and Show there goes to that code.".into()));
+    out.push(Doc::Para("An agent can work in this editor as you watch: it opens any script, reads it as you have it (unsaved edits too), and types its changes in at a caret of its own with its name on it. Your cursor stays where it is, the view follows the agent until you scroll, and any key or click puts the rest of its change in at once. Ctrl+Z takes a whole change back; a change it writes to the file on disk is typed in too. Its changes stay unsaved until it saves them (or you do); nothing you are typing is saved for you, but asking the game's own agent (Enter in the Agent panel, Ask, Explain or Fix in a menu, a lesson's Check) saves the file you have open first, so its turn starts from what you see (the mod reloads with it). A file you don't have open is changed on disk instead, and a note over the code shows it. The Agent panel says what it did, and Show there goes to that code.".into()));
     out.push(Doc::Para("It can point at code too: lines highlighted in a colour (red for an error, amber for a warning, green for something right) with a note. The newest note shows in a bubble under its lines, the others at the end of their line (a click opens them); the bubble's × removes a note and Esc closes it. The editor's header counts the notes: a click goes to the next, its × clears them. Notes stay on their lines as you edit.".into()));
     out.push(Doc::Para("And it can teach: a lesson is numbered steps over your code, each a note with something to try, and an explanation in the Agent panel (in the note, in the executor styles). Next and Back, or Alt+Right and Alt+Left, go through it; Check asks the agent to look at what you did; Done or the × ends it. While the agent waits for you the panel says so, and Enter sends it your answer.".into()));
     out.push(Doc::Heading("Commands in chat".into()));

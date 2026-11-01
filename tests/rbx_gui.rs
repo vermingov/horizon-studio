@@ -4,14 +4,14 @@
 // IsLoaded), classes that stay lenient, TextTruncate and
 // MaxVisibleGraphemes, layout values fresh when read, TextBox editing
 // through the GUI's screen, ScrollingFrames' directions and bars, the
-// services scripts ask for, right clicks on the GUI's screen, and the
-// drawing cut, turned and coloured once drawn (ClipsDescendants, Rotation,
-// UIGradient, CanvasGroup).
+// services scripts ask for, right clicks on the GUI's screen, input over
+// what went since the last frame, and the drawing cut, turned and coloured
+// once drawn (ClipsDescendants, Rotation, UIGradient, CanvasGroup).
 
 mod common;
 
 use common::{FakeGame, log, mod_index, run_for, studio};
-use horizon_studio::game::hstudio::{ModState, Studio};
+use horizon_studio::game::hstudio::{EntityInfo, ModState, Studio};
 use horizon_studio::game::hstudio_look::draw_screen;
 use horizon_studio::game::hstudio_rbx_draw::{
     OUTPUTS, PLACE, fresh_layout, fresh_output, lay_out, objects_at, pointer_button, pointer_moved, wheel,
@@ -928,6 +928,151 @@ fn escape_beside_a_modal_button_lets_go_of_the_box_first() {
 }
 
 #[test]
+fn a_text_box_destroyed_while_edited_gives_the_keys_back() {
+    // Destroyed with the focus, it loses it as it goes: FocusLost says so,
+    // and the screen goes, as nothing else wants the pointer.
+    let mut game = FakeGame::new("rbx-box-destroyed");
+    let mut st = studio(&mut game);
+    let src = format!("{BOX}\ncommand('gone', function() box:Destroy() end)\n");
+    load(&mut game, &mut st, "gone", &src, 0.6);
+    focus_box(&mut st, &mut game);
+    typed(&mut st, &mut game, "hi");
+    say(&mut st, &mut game, "gone");
+    hud(&mut st, &mut game);
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(st.s.rbx.pointer.focus, None);
+    assert!(st.s.screen.is_none(), "the game has its keys back");
+    let lost: Vec<String> = printed(&st, "gone")
+        .into_iter()
+        .filter(|l| l.starts_with("lost"))
+        .collect();
+    assert_eq!(lost, ["lost    false    hi"]);
+    // A box on a mob's name tag, being edited when the mob goes (its
+    // mirror goes with it): no script destroys it, and it lets go too.
+    let mut game = FakeGame::new("rbx-box-mob");
+    game.entities = vec![EntityInfo {
+        id: 5,
+        kind: "minecraft:zombie".into(),
+        pos: [10.5, 64.0, -13.25],
+        width: 0.6,
+        height: 1.95,
+        eye: 1.74,
+        health: 20.0,
+        max_health: 20.0,
+        on_ground: true,
+        ..EntityInfo::default()
+    }];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local board = Instance.new("BillboardGui", workspace:WaitForChild("Zombie").Head)
+        board.Size = UDim2.fromOffset(100, 40)
+        board.Active = true
+        local name = Instance.new("TextBox", board)
+        name.Size = UDim2.fromScale(1, 1)
+        name.FocusLost:Connect(function(enter) print("lost", enter) end)
+        command("focus", function() name:CaptureFocus() end)
+    "#;
+    load(&mut game, &mut st, "mob", src, 0.6);
+    focus_box(&mut st, &mut game);
+    game.entities.clear();
+    hud(&mut st, &mut game);
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(st.s.rbx.pointer.focus, None);
+    assert!(st.s.screen.is_none(), "the game has its keys back");
+    assert_eq!(printed(&st, "mob"), ["lost    false"]);
+}
+
+#[test]
+fn a_destroyed_text_box_takes_no_focus() {
+    // A box that takes the focus back whenever it loses it (an always
+    // focused command bar): its GUI destroyed by a command, or by its own
+    // close button (whose press lets go of the box first), the box loses
+    // the focus as it goes, and CaptureFocus can't give it back to a box
+    // that went, as in Roblox.
+    let src = format!(
+        "{BOX}
+        box.FocusLost:Connect(function() box:CaptureFocus() end)
+        local close = Instance.new('TextButton', gui)
+        close.Position = UDim2.fromOffset(0, 40)
+        close.Size = UDim2.fromOffset(100, 30)
+        close.Activated:Connect(function() gui:Destroy() end)
+        command('gone', function() gui:Destroy() end)
+        command('focused', function() return tostring(box:IsFocused()) end)
+        "
+    );
+    for button in [false, true] {
+        let mut game = FakeGame::new(&format!("rbx-box-refocus-{button}"));
+        let mut st = studio(&mut game);
+        load(&mut game, &mut st, "bar", &src, 0.6);
+        focus_box(&mut st, &mut game);
+        if button {
+            // A click: the press lets go of the box, whose handler takes the
+            // focus back before Activated's destroys the GUI.
+            handle_screen(&mut st, &mut game, Input::Mouse(10.0, 55.0));
+            handle_screen(&mut st, &mut game, Input::Button { left: true, down: true });
+            handle_screen(
+                &mut st,
+                &mut game,
+                Input::Button {
+                    left: true,
+                    down: false,
+                },
+            );
+        } else {
+            say(&mut st, &mut game, "gone");
+        }
+        for _ in 0..5 {
+            hud(&mut st, &mut game);
+            st.frame(&mut game, 0.016);
+        }
+        assert_eq!(say(&mut st, &mut game, "focused"), "false", "button {button}");
+        assert_eq!(st.s.rbx.pointer.focus, None, "button {button}");
+        assert!(st.s.screen.is_none(), "button {button}: the game has its keys back");
+        assert!(
+            st.s.rbx.layout.as_ref().is_some_and(|l| l.node_inst.is_empty()),
+            "the GUI went"
+        );
+    }
+}
+
+#[test]
+fn another_mod_reloading_leaves_the_gui_as_it_is() {
+    // Mod a's TextBox is being edited when mod b reloads (its file changed
+    // on disk): a's screen stays up through it, with the box's focus, so
+    // no key reaches the game; then a's Modal button held while b reloads
+    // again still clicks when it is let go.
+    let mut game = FakeGame::new("rbx-reload-other");
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{BOX}\nlocal ok = Instance.new('TextButton', gui) ok.Position = UDim2.fromOffset(0, 50) ok.Size = UDim2.fromOffset(50, 20) ok.Modal = true ok.Activated:Connect(function() print('ok') end)\n"
+    );
+    load(&mut game, &mut st, "a", &src, 0.6);
+    load(&mut game, &mut st, "b", "print('b')\n", 0.6);
+    focus_box(&mut st, &mut game);
+    typed(&mut st, &mut game, "hi");
+    // Each frame as the game has it: the studio's, then the GUI drawn.
+    let reload_b = |st: &mut Studio, game: &mut FakeGame, again: &str| {
+        game.write_mod("b.lua", &format!("print('{again}')\n"));
+        for _ in 0..12 {
+            st.frame(game, 0.05);
+            assert!(st.s.screen.is_some(), "a's screen stays up");
+            hud(st, game);
+        }
+        assert_eq!(printed(st, "b").last().map(String::as_str), Some(again), "b reloaded");
+    };
+    reload_b(&mut st, &mut game, "b again");
+    assert!(st.s.rbx.pointer.focus.is_some(), "the box keeps the focus");
+    typed(&mut st, &mut game, "!");
+    assert_eq!(say(&mut st, &mut game, "state"), "hi!|4|-1");
+    pointer_moved(&mut st.s.rbx, 10.0, 60.0);
+    pointer_button(&mut st.s.rbx, true, true);
+    reload_b(&mut st, &mut game, "b once more");
+    pointer_button(&mut st.s.rbx, true, false);
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(printed(&st, "a").last().map(String::as_str), Some("ok"));
+}
+
+#[test]
 fn up_and_down_move_a_drawn_line() {
     let mut game = FakeGame::new("rbx-lines");
     let mut st = studio(&mut game);
@@ -1316,6 +1461,92 @@ fn a_held_scroll_bar_lets_go_with_the_screen() {
     assert!(st.s.screen.is_none(), "nothing wants the pointer");
     pointer_moved(&mut st.s.rbx, 195.0, 90.0);
     assert_eq!(say(&mut st, &mut game, "pos"), held);
+}
+
+#[test]
+fn input_over_what_went_since_the_last_frame_reaches_what_is_left() {
+    // A list's item destroys itself when clicked, and the layer lets it go
+    // at its next sweep while the pointer rests where it was: the wheel
+    // then scrolls the list (the pointer's hover still names the item).
+    let mut game = FakeGame::new("rbx-gone-under");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local list = Instance.new("ScrollingFrame", gui)
+        list.Size = UDim2.fromOffset(200, 100)
+        list.CanvasSize = UDim2.fromOffset(200, 300)
+        list.ScrollingDirection = Enum.ScrollingDirection.Y
+        local item = Instance.new("TextButton", list)
+        item.Size = UDim2.fromOffset(200, 30)
+        item.Activated:Connect(function() item:Destroy() end)
+        command("pos", function() return tostring(list.CanvasPosition) end)
+    "#;
+    load(&mut game, &mut st, "gone", src, 0.6);
+    st.s.rbx.pointer.free = true;
+    hud(&mut st, &mut game);
+    pointer_moved(&mut st.s.rbx, 50.0, 10.0);
+    pointer_button(&mut st.s.rbx, true, true);
+    pointer_button(&mut st.s.rbx, true, false);
+    let item = st.s.rbx.pointer.hover[0];
+    // Its handler runs, then the sweep (every 120 frames) lets it go.
+    run_for(&mut st, &mut game, 6.1);
+    assert!(st.s.rbx.try_inst(item).is_none(), "let go");
+    wheel(&mut st.s.rbx, -1.0);
+    assert_eq!(say(&mut st, &mut game, "pos"), "0, 40");
+    // A mob's clickable name tag, its mirror let go when the mob goes: the
+    // wheel and a click in that frame, before the GUI is drawn again (the
+    // last frame's layout has the tag), reach nothing that went.
+    let mut game = FakeGame::new("rbx-gone-mob");
+    game.entities = vec![EntityInfo {
+        id: 5,
+        kind: "minecraft:zombie".into(),
+        pos: [10.5, 64.0, -13.25],
+        width: 0.6,
+        height: 1.95,
+        eye: 1.74,
+        health: 20.0,
+        max_health: 20.0,
+        on_ground: true,
+        ..EntityInfo::default()
+    }];
+    let mut st = studio(&mut game);
+    let src = r#"
+        local board = Instance.new("BillboardGui", workspace:WaitForChild("Zombie").Head)
+        board.Size = UDim2.fromOffset(100, 40)
+        board.Active = true
+        local tag = Instance.new("TextButton", board)
+        tag.Size = UDim2.fromScale(1, 1)
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        local modal = Instance.new("TextButton", gui)
+        modal.Size = UDim2.fromOffset(50, 20)
+        modal.Modal = true
+        modal.Activated:Connect(function() print("clicked") end)
+    "#;
+    load(&mut game, &mut st, "tag", src, 0.6);
+    hud(&mut st, &mut game);
+    pointer_moved(&mut st.s.rbx, 480.0, 270.0);
+    let over: Vec<_> =
+        st.s.rbx
+            .pointer
+            .hover
+            .iter()
+            .map(|&i| st.s.rbx.inst(i).class.name)
+            .collect();
+    assert_eq!(over, ["TextButton"], "the tag");
+    game.entities.clear();
+    st.frame(&mut game, 0.016);
+    let tag = st.s.rbx.pointer.hover[0];
+    assert!(st.s.rbx.try_inst(tag).is_none(), "let go with the mirror");
+    wheel(&mut st.s.rbx, -1.0);
+    pointer_button(&mut st.s.rbx, true, true);
+    pointer_button(&mut st.s.rbx, true, false);
+    // The GUI goes on: its Modal button still takes a click.
+    hud(&mut st, &mut game);
+    pointer_moved(&mut st.s.rbx, 10.0, 10.0);
+    pointer_button(&mut st.s.rbx, true, true);
+    pointer_button(&mut st.s.rbx, true, false);
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(printed(&st, "tag"), ["clicked"]);
 }
 
 #[test]
@@ -1917,6 +2148,169 @@ fn an_image_is_found_once_however_it_is_cut() {
         assert_eq!(images(&drawn).len(), 25 * 25 + 9);
     }
     assert_eq!(st.s.rbx.screen_images.hashed, 1);
+}
+
+#[test]
+fn a_grid_of_many_images_is_read_once_and_keeps_its_places_in_the_atlas() {
+    // A shop's grid of 40 icons, each its own file, drawn every frame: each
+    // file is read, hashed and decoded once, and each image is drawn from
+    // the same place in the game's atlas (its key) frame after frame.
+    let mut game = FakeGame::new("rbx-grid");
+    let mut st = studio(&mut game);
+    let ws = st.s.rbx.workspace_dir.clone();
+    std::fs::create_dir_all(&ws).unwrap();
+    for i in 0..40u8 {
+        std::fs::write(ws.join(format!("icon{i}.png")), png(4, 4, &[[i, 9, 9, 255]; 16])).unwrap();
+    }
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        for i = 0, 39 do
+            local icon = Instance.new("ImageLabel", gui)
+            icon.Position = UDim2.fromOffset(20 * (i % 10), 20 * math.floor(i / 10))
+            icon.Size = UDim2.fromOffset(16, 16)
+            icon.Image = getcustomasset("icon" .. i .. ".png")
+        end
+    "#;
+    load(&mut game, &mut st, "grid", src, 0.6);
+    let mut places = Vec::new();
+    for _ in 0..3 {
+        run_for(&mut st, &mut game, 0.05);
+        game.image_keys.clear();
+        hud(&mut st, &mut game);
+        assert_eq!(game.image_keys.len(), 40);
+        if places.is_empty() {
+            places = game.image_keys.clone();
+        }
+        assert_eq!(game.image_keys, places, "the same places in the atlas");
+    }
+    assert_eq!(st.s.rbx.screen_images.hashed, 40);
+    // Even more files than are kept: each image comes back to its place.
+    let mut cache = horizon_studio::game::hstudio_sunc::ImageCache::default();
+    for i in 0..300u16 {
+        let px = [(i % 256) as u8, (i / 256) as u8, 1, 255];
+        std::fs::write(ws.join(format!("many{i}.png")), png(1, 1, &[px])).unwrap();
+    }
+    let keys = |cache: &mut horizon_studio::game::hstudio_sunc::ImageCache| -> Vec<u32> {
+        (0..300)
+            .map(|i| cache.file_image(&ws, &format!("many{i}.png")).flatten().unwrap().key)
+            .collect()
+    };
+    let first = keys(&mut cache);
+    assert_eq!(keys(&mut cache), first);
+}
+
+#[test]
+fn a_shop_of_large_images_is_decoded_once() {
+    // 20 ImageLabels, each its own 512 x 512 PNG (the largest an image is),
+    // drawn every frame: each is decoded once, not again each frame.
+    let mut game = FakeGame::new("rbx-large-grid");
+    let mut st = studio(&mut game);
+    let ws = st.s.rbx.workspace_dir.clone();
+    std::fs::create_dir_all(&ws).unwrap();
+    for i in 0..20u8 {
+        let px = vec![[i, 9, 9, 255]; 512 * 512];
+        std::fs::write(ws.join(format!("big{i}.png")), png(512, 512, &px)).unwrap();
+    }
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        for i = 0, 19 do
+            local icon = Instance.new("ImageLabel", gui)
+            icon.Position = UDim2.fromOffset(20 * (i % 10), 20 * math.floor(i / 10))
+            icon.Size = UDim2.fromOffset(16, 16)
+            icon.Image = getcustomasset("big" .. i .. ".png")
+        end
+    "#;
+    load(&mut game, &mut st, "shop", src, 0.6);
+    for _ in 0..3 {
+        run_for(&mut st, &mut game, 0.05);
+        hud(&mut st, &mut game);
+    }
+    assert_eq!(st.s.rbx.screen_images.decoded, 20);
+    // More than are kept, frame after frame: those drawn first stay
+    // decoded, and only the rest are decoded again (here 300 tiny images,
+    // 256 kept).
+    let mut cache = horizon_studio::game::hstudio_sunc::ImageCache::default();
+    for i in 0..300u16 {
+        let px = [(i % 256) as u8, (i / 256) as u8, 2, 255];
+        std::fs::write(ws.join(format!("tiny{i}.png")), png(1, 1, &[px])).unwrap();
+    }
+    for frame in 1..=3 {
+        cache.begin(f64::from(frame));
+        for i in 0..300 {
+            assert!(cache.loads(&ws, &format!("tiny{i}.png")));
+        }
+    }
+    assert_eq!(cache.decoded, 300 + 2 * 44);
+}
+
+#[test]
+fn scaled_images_keep_their_places_in_the_atlas() {
+    // 40 banners, each its own 512 x 16 PNG: each goes to the atlas as a
+    // copy scaled down to 256 x 8, and the copies (all 40 fit the frame's
+    // share) keep their places frame after frame.
+    let mut game = FakeGame::new("rbx-banners");
+    let mut st = studio(&mut game);
+    let ws = st.s.rbx.workspace_dir.clone();
+    std::fs::create_dir_all(&ws).unwrap();
+    for i in 0..40u8 {
+        let px = vec![[i, 7, 7, 255]; 512 * 16];
+        std::fs::write(ws.join(format!("bar{i}.png")), png(512, 16, &px)).unwrap();
+    }
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        for i = 0, 39 do
+            local bar = Instance.new("ImageLabel", gui)
+            bar.Position = UDim2.fromOffset(0, 10 * i)
+            bar.Size = UDim2.fromOffset(256, 8)
+            bar.Image = getcustomasset("bar" .. i .. ".png")
+        end
+    "#;
+    load(&mut game, &mut st, "banners", src, 0.6);
+    let mut places = Vec::new();
+    for _ in 0..3 {
+        run_for(&mut st, &mut game, 0.05);
+        game.image_keys.clear();
+        let drawn = hud(&mut st, &mut game);
+        assert_eq!(images(&drawn).len(), 40);
+        assert!(
+            drawn
+                .iter()
+                .filter(|d| d.starts_with("image "))
+                .all(|d| d.starts_with("image 256x8 "))
+        );
+        if places.is_empty() {
+            places = game.image_keys.clone();
+        }
+        assert_eq!(game.image_keys, places, "the same places in the atlas");
+    }
+    // More copies a frame than are kept (300 strips, 256 kept): those made
+    // again each frame are drawn from their places too.
+    let mut cache = horizon_studio::game::hstudio_sunc::ImageCache::default();
+    for i in 0..300u16 {
+        let px = vec![[(i % 256) as u8, (i / 256) as u8, 3, 255]; 512 * 2];
+        std::fs::write(ws.join(format!("strip{i}.png")), png(512, 2, &px)).unwrap();
+    }
+    let mut places = Vec::new();
+    for frame in 1..=3 {
+        cache.begin(f64::from(frame));
+        game.image_keys.clear();
+        for i in 0..300 {
+            let t = cache.file_image(&ws, &format!("strip{i}.png")).flatten().unwrap();
+            cache.draw_part(
+                &mut game,
+                &t,
+                [0.0, 0.0, 256.0, 1.0],
+                [0.0, 0.0, 512.0, 2.0],
+                0xFF_FFFF,
+                1.0,
+            );
+        }
+        assert_eq!(game.image_keys.len(), 300);
+        if places.is_empty() {
+            places = game.image_keys.clone();
+        }
+        assert_eq!(game.image_keys, places, "frame {frame}: the same places in the atlas");
+    }
 }
 
 #[test]

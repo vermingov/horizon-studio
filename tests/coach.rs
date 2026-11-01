@@ -491,6 +491,107 @@ fn input_that_comes_in_a_requests_frame_is_the_player_using_the_studio() {
 }
 
 #[test]
+fn a_drag_held_or_a_prompt_up_keeps_the_players_file_and_tab() {
+    // The player selects lines with the mouse, slowly: long after the press
+    // they are still using the studio, and another file waits.
+    let src: String = (1..=12).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-drag", "dr", &src);
+    let (x, y) = text_at(&game, "v2");
+    let (_, y5) = text_at(&game, "v5");
+    handle(&mut st, &mut game, Input::Mouse(x + 1.0, y + 2.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    for k in 1..=30 {
+        st.s.now += 0.1;
+        handle(
+            &mut st,
+            &mut game,
+            Input::Mouse(x + 1.0, y + 2.0 + (y5 - y) * k as f32 / 30.0),
+        );
+    }
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "hello" })).unwrap();
+    assert_eq!(r["busy"], true, "{r}");
+    assert_eq!(st.s.editor.title, "dr.lua");
+    assert!(st.s.ui.dragging_any(), "the drag goes on");
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    st.s.now += 2.5;
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "hello" })).unwrap();
+    assert_eq!(r["did"], "Opened hello.lua", "{r}");
+    // In the Library with a prompt or a menu up, the file open already
+    // shown, or a lesson started in it, leaves the tab where it is (the
+    // Duplicate prompt's Enter would open the copy in the Editor tab).
+    st.s.now += 2.5;
+    st.s.ui.tab = Tab::Library;
+    st.s.ui.naming = Some(Default::default());
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "hello", "line": 1 })).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(st.s.ui.tab, Tab::Library);
+    let lesson = json!({ "title": "Hi", "steps": [{ "start_line": 1, "note": "It says hello." }] });
+    ask(&mut st, &mut game, "lesson", lesson).unwrap();
+    assert_eq!(st.s.ui.tab, Tab::Library);
+}
+
+#[test]
+fn a_drag_held_keeps_the_view_under_it() {
+    // The player drags a selection from line 2 to line 5, slowly. Meanwhile
+    // an agent's edit far below, a lesson there and open_script of a line
+    // there leave the view where it is (the edit lands at once, as while
+    // the player types), so the drag selects the lines the player sees.
+    let src: String = (1..=80).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-drag-view", "dr", &src);
+    let (x, y) = text_at(&game, "v2");
+    let (_, y5) = text_at(&game, "v5");
+    let drag_to = |st: &mut Studio, game: &mut FakeGame, k: usize| {
+        st.s.now += 0.1;
+        handle(st, game, Input::Mouse(x + 1.0, y + 2.0 + (y5 - y) * k as f32 / 30.0));
+    };
+    handle(&mut st, &mut game, Input::Mouse(x + 1.0, y + 2.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    for k in 1..=25 {
+        drag_to(&mut st, &mut game, k);
+    }
+    for (method, params) in [
+        (
+            "edit",
+            json!({ "start_line": 70, "end_line": 70, "new_text": "local v70 = 700" }),
+        ),
+        (
+            "lesson",
+            json!({ "title": "Down", "steps": [{ "start_line": 70, "note": "Down here." }] }),
+        ),
+        ("open", json!({ "id": "dr", "line": 70 })),
+    ] {
+        ask(&mut st, &mut game, method, params).unwrap();
+        for _ in 0..3 {
+            run_for(&mut st, &mut game, 0.05);
+            redraw(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, 0, "{method}: the view stays");
+        assert!(st.s.ui.dragging_any(), "the drag goes on");
+    }
+    assert_eq!(st.s.editor.lines[69], "local v70 = 700");
+    for k in 26..=30 {
+        drag_to(&mut st, &mut game, k);
+    }
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    let ((r1, _), (r2, _)) = st.s.editor.selection().expect("a selection");
+    assert_eq!((r1, r2), (1, 4), "lines 2 to 5");
+}
+
+#[test]
 fn a_file_the_editor_couldnt_read_is_never_read_changed_or_saved_through_it() {
     let mut game = FakeGame::new("coach-unreadable");
     let mut st = studio(&mut game);
@@ -734,6 +835,223 @@ fn an_edit_lands_at_once_when_the_player_types() {
     assert_eq!(st.s.editor.text(), "local n = 0\nprint('hello there')\nreturn n\n");
     st.s.editor.undo();
     assert_eq!(st.s.editor.text(), GREET);
+}
+
+#[test]
+fn a_press_while_an_edit_comes_in_is_for_the_line_drawn_under_it() {
+    // An agent's edit is typing four lines in at line 2 when the player
+    // presses a line below: the rest of the edit goes in at once, which
+    // moves that line down, and the press is still for that line, a right
+    // press's menu (which acts on the cursor) and a left press's cursor.
+    let src: String = (1..=14).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-press-mid-edit", "pm", &src);
+    let comment = "-- a comment long enough to take a moment to type in";
+    let new_text = [comment; 4].join("\n");
+    for left in [false, true] {
+        let edit = json!({ "start_line": 2, "end_line": 1, "new_text": new_text });
+        ask(&mut st, &mut game, "edit", edit).unwrap();
+        run_for(&mut st, &mut game, 1.0);
+        redraw(&mut st, &mut game);
+        assert!(st.s.ui.coach.typing.is_some(), "still typing");
+        // The lowest line the view shows.
+        let word = (1..=14)
+            .map(|i| format!("v{i}"))
+            .filter(|w| !texts_at(&game, w).is_empty())
+            .max_by(|a, b| text_at(&game, a).1.total_cmp(&text_at(&game, b).1))
+            .unwrap();
+        let (x, y) = text_at(&game, &word);
+        handle(&mut st, &mut game, Input::Mouse(x + 1.0, y + 2.0));
+        handle(&mut st, &mut game, Input::Button { left, down: true });
+        handle(&mut st, &mut game, Input::Button { left, down: false });
+        assert!(st.s.ui.coach.typing.is_none(), "put in whole");
+        let ed = &st.s.editor;
+        assert!(
+            ed.lines[ed.row].contains(&format!("{word} = ")),
+            "{left}: {:?}",
+            ed.lines[ed.row]
+        );
+        assert_eq!(st.s.ui.menu.is_some(), !left);
+        st.s.ui.menu = None;
+        st.s.ui.coach.player_at = f64::NEG_INFINITY;
+    }
+}
+
+#[test]
+fn a_press_after_the_frame_typed_more_is_for_the_line_drawn_under_it() {
+    // In the game a frame types more of an agent's edit in (the studio's
+    // frame) before the studio gets the frame's input, and the studio was
+    // drawn before that: a press is for the line drawn under the pointer,
+    // though the step since typed a line in above it, or took away the
+    // lines the edit replaces.
+    let src: String = (1..=14).map(|i| format!("local v{i} = {i}\n")).collect();
+    // The file open, with room for all of it (no panel under the code).
+    let open = |name: &str| {
+        let (game, mut st) = editing(name, "ps", &src);
+        st.s.ui.panel_hidden = true;
+        (game, st)
+    };
+    // The lowest of the file's own lines drawn.
+    let lowest = |game: &FakeGame| {
+        (1..=14)
+            .map(|i| format!("v{i}"))
+            .filter(|w| !texts_at(game, w).is_empty())
+            .max_by(|a, b| text_at(game, a).1.total_cmp(&text_at(game, b).1))
+            .expect("a line of the file drawn")
+    };
+    let press = |st: &mut Studio, game: &mut FakeGame, word: &str, left: bool| {
+        let (x, y) = text_at(game, word);
+        handle(st, game, Input::Mouse(x + 1.0, y + 2.0));
+        for down in [true, false] {
+            handle(st, game, Input::Button { left, down });
+        }
+        assert!(st.s.ui.coach.typing.is_none(), "put in whole");
+        let ed = &st.s.editor;
+        assert!(
+            ed.lines[ed.row].contains(&format!("{word} = ")),
+            "left {left}: {word} pressed, {:?} got",
+            ed.lines[ed.row]
+        );
+        assert_eq!(st.s.ui.menu.is_some(), !left);
+    };
+    // 40 short lines put in at line 2: the frame after the draw types one.
+    let lines: Vec<String> = (1..=40).map(|i| format!("-- {i}")).collect();
+    for (left, dt) in [(false, 0.016), (true, 0.016), (false, 0.05), (true, 0.05)] {
+        let (mut game, mut st) = open(&format!("coach-press-step-{left}-{dt}"));
+        let edit = json!({ "start_line": 2, "end_line": 1, "new_text": lines.join("\n") });
+        ask(&mut st, &mut game, "edit", edit).unwrap();
+        run_for(&mut st, &mut game, 0.3);
+        let word = loop {
+            redraw(&mut st, &mut game);
+            let word = lowest(&game);
+            let rows = st.s.editor.lines.len();
+            st.frame(&mut game, dt);
+            assert!(st.s.ui.coach.typing.is_some(), "still typing");
+            if st.s.editor.lines.len() > rows {
+                break word;
+            }
+        };
+        press(&mut st, &mut game, &word, left);
+    }
+    // Lines 2 to 5 replaced: the frame after the draw takes them away.
+    let (mut game, mut st) = open("coach-press-step-old");
+    let edit = json!({ "start_line": 2, "end_line": 5, "new_text": "-- gone" });
+    ask(&mut st, &mut game, "edit", edit).unwrap();
+    let word = loop {
+        redraw(&mut st, &mut game);
+        let word = lowest(&game);
+        st.frame(&mut game, 0.05);
+        if st.s.ui.coach.typing.as_ref().is_some_and(|t| t.phase == Phase::Typing) {
+            break word;
+        }
+    };
+    press(&mut st, &mut game, &word, false);
+}
+
+#[test]
+fn a_menu_about_the_code_goes_when_the_code_changes_under_it() {
+    // The player opens greet's menu in print(greet()) and pauses, and an
+    // agent's edit puts a line in at the top: the menu's Go to
+    // definition was for the code as it was. Picked before the studio
+    // draws again it does nothing, and drawn the menu goes; one opened
+    // again goes to the definition where it is now.
+    let src = "local function greet()\n  return 'hi'\nend\nprint(greet())\n";
+    let (mut game, mut st) = editing("coach-stale-menu", "gm", src);
+    let open_menu = |st: &mut Studio, game: &mut FakeGame| {
+        redraw(st, game);
+        let at = texts_at(game, "greet")
+            .into_iter()
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        handle(st, game, Input::Mouse(at.0 + 2.0, at.1 + 4.0));
+        handle(
+            st,
+            game,
+            Input::Button {
+                left: false,
+                down: true,
+            },
+        );
+        handle(
+            st,
+            game,
+            Input::Button {
+                left: false,
+                down: false,
+            },
+        );
+        let menu = st.s.ui.menu.as_ref().expect("greet's menu");
+        assert!(menu.items.iter().any(|i| i.label == "Go to definition"));
+    };
+    let agent_edit = |st: &mut Studio, game: &mut FakeGame| {
+        st.s.now += 5.0;
+        let edit = json!({ "start_line": 1, "end_line": 0, "new_text": "-- a note", "typing": false });
+        ask(st, game, "edit", edit).unwrap();
+    };
+    // Go to definition's letter, then a space, picks it.
+    let pick = |st: &mut Studio, game: &mut FakeGame| {
+        handle(st, game, Input::Text("g".into()));
+        handle(st, game, Input::Text(" ".into()));
+    };
+    open_menu(&mut st, &mut game);
+    agent_edit(&mut st, &mut game);
+    pick(&mut st, &mut game);
+    assert!(st.s.ui.menu.is_none());
+    assert_eq!(st.s.editor.lines[st.s.editor.row], "print(greet())", "the cursor stays");
+    open_menu(&mut st, &mut game);
+    agent_edit(&mut st, &mut game);
+    redraw(&mut st, &mut game);
+    assert!(st.s.ui.menu.is_none(), "drawn, it goes");
+    open_menu(&mut st, &mut game);
+    pick(&mut st, &mut game);
+    assert_eq!(st.s.editor.lines[st.s.editor.row], "local function greet()");
+    assert_eq!(st.s.editor.row, 2);
+}
+
+#[test]
+fn go_to_definition_in_another_file_finds_it_where_an_edit_moved_it() {
+    // kit/main.lua calls helper, defined in kit/lib/util.lua. The player
+    // opens helper's menu and pauses, and an agent's edit puts three lines
+    // in at the top of lib/util.lua, on disk (the editor doesn't have it
+    // open, so its own text stays as it was): Go to definition opens
+    // lib/util.lua at the definition, where it is now.
+    let mut game = FakeGame::new("coach-sibling-definition");
+    let mut st = studio(&mut game);
+    let kit = game.mods_dir().join("kit");
+    std::fs::create_dir_all(kit.join("lib")).unwrap();
+    std::fs::write(kit.join("main.lua"), "require('lib.util')\nprint(helper())\n").unwrap();
+    std::fs::write(kit.join("lib/util.lua"), "function helper()\n  return 2\nend\n").unwrap();
+    st.scan(&mut game);
+    st.open_file(&kit.join("main.lua"));
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    st.s.now = 10.0;
+    redraw(&mut st, &mut game);
+    let at = text_at(&game, "helper");
+    handle(&mut st, &mut game, Input::Mouse(at.0 + 2.0, at.1 + 4.0));
+    for down in [true, false] {
+        handle(&mut st, &mut game, Input::Button { left: false, down });
+    }
+    let menu = st.s.ui.menu.as_ref().expect("helper's menu");
+    assert!(menu.items.iter().any(|i| i.label == "Go to definition"));
+    st.s.now += 5.0;
+    let lines = "-- one\n-- two\n-- three";
+    let edit = json!({ "id": "kit", "file": "lib/util.lua", "start_line": 1, "end_line": 0, "new_text": lines });
+    let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+    assert_eq!(
+        r["written"].as_str().map(|p| p.ends_with("util.lua")),
+        Some(true),
+        "{r}"
+    );
+    run_for(&mut st, &mut game, 0.05);
+    redraw(&mut st, &mut game);
+    assert!(st.s.ui.menu.is_some(), "main.lua didn't change");
+    // Go to definition's letter, then a space, picks it.
+    handle(&mut st, &mut game, Input::Text("g".into()));
+    handle(&mut st, &mut game, Input::Text(" ".into()));
+    let ed = &st.s.editor;
+    assert_eq!(ed.title, "kit/lib/util.lua");
+    assert_eq!(ed.row, 3, "{:?}", ed.lines);
+    assert_eq!(ed.selected_text().as_deref(), Some("helper"));
 }
 
 #[test]
@@ -2088,6 +2406,122 @@ fn a_file_deleted_takes_its_marks_and_one_renamed_to_its_name_has_none() {
 }
 
 #[test]
+fn marks_steps_and_jumps_follow_a_file_the_studio_moves() {
+    // A script the New prompt made (its name line is its id), renamed from
+    // its menu while open: the name line changes in the editor, and the
+    // mark goes along on its line.
+    let mut game = FakeGame::new("coach-studio-moves");
+    let mut st = studio(&mut game);
+    let greet = st.create_mod(&mut game, "greet", None).unwrap();
+    st.open_file(&greet);
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    st.s.now = 10.0;
+    still(&mut st, &mut game);
+    ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "start_line": 6, "note": "It says so." }),
+    )
+    .unwrap();
+    st.rename_mod(&mut game, "greet", "salut").unwrap();
+    still(&mut st, &mut game);
+    assert_eq!(st.s.editor.lines[0], "-- name: salut");
+    let m = &st.s.ui.coach.marks[0];
+    assert_eq!(
+        (&m.path, m.file.as_str()),
+        (&game.mods_dir().join("salut.lua"), "salut.lua")
+    );
+    assert_eq!(marked(&st), [(5, 5)]);
+    // A module's file that isn't open, renamed from the script list: a
+    // lesson's step there, a mark and the Agent panel's line about an
+    // agent's edit to it all go to its new name.
+    let (mut game, mut st) = with_module("coach-studio-moves-files");
+    let kit = game.mods_dir().join("kit");
+    st.open_file(&kit.join("main.lua"));
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    st.s.now = 10.0;
+    st.s.ui.look.motion = false;
+    let mut lesson = kit_lesson();
+    lesson["steps"][1] = lesson["steps"][2].clone();
+    lesson["steps"].as_array_mut().unwrap().truncate(2);
+    ask(&mut st, &mut game, "lesson", lesson).unwrap();
+    let util = json!({ "id": "kit", "file": "lib/util.lua" });
+    let mut edit = util.clone();
+    edit["old_text"] = json!("return 2");
+    edit["new_text"] = json!("return 3");
+    ask(&mut st, &mut game, "edit", edit).unwrap();
+    // Its line's number (the panel numbers its lines from 1).
+    let edited = st.s.ui.agent.lines.len() as u64;
+    let mut mark = util.clone();
+    mark["start_line"] = json!(1);
+    mark["note"] = json!("The helper.");
+    ask(&mut st, &mut game, "mark", mark).unwrap();
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    let helpers = st
+        .rename_file(&mut game, &kit.join("lib/util.lua"), "lib/helpers")
+        .unwrap();
+    for m in &st.s.ui.coach.marks[1..] {
+        assert_eq!((&m.path, m.file.as_str()), (&helpers, "kit/lib/helpers.lua"));
+    }
+    for jump in st.s.ui.agent.lines.iter().filter_map(|l| l.jump.as_ref()) {
+        assert!(jump.path.is_file(), "{jump:?}");
+    }
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    assert_eq!(st.s.editor.title, "kit/lib/helpers.lua", "Next goes to the step");
+    assert_eq!(marked(&st), [(0, 0), (0, 0)]);
+    st.open_file(&kit.join("main.lua"));
+    coach::go(&mut st, &mut game, edited);
+    assert_eq!(st.s.editor.title, "kit/lib/helpers.lua", "Show goes to the edit");
+    // A script that isn't open made a module: its mark goes to main.lua.
+    let mut game = FakeGame::new("coach-studio-moves-module");
+    let mut st = studio(&mut game);
+    game.write_mod("hello.lua", GREET);
+    game.write_mod("other.lua", GREET);
+    st.scan(&mut game);
+    st.edit_mod(mod_index(&st, "other"));
+    ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "id": "hello", "start_line": 2, "note": "It says hi." }),
+    )
+    .unwrap();
+    st.make_module(&mut game, mod_index(&st, "hello")).unwrap();
+    let m = &st.s.ui.coach.marks[0];
+    let main = game.mods_dir().join("hello/main.lua");
+    assert_eq!((&m.path, m.file.as_str()), (&main, "hello/main.lua"));
+    // A module renamed: the marks in its files, open or not, go along.
+    let (mut game, mut st) = with_module("coach-studio-moves-folder");
+    let kit = game.mods_dir().join("kit");
+    st.open_file(&kit.join("main.lua"));
+    for file in ["main.lua", "lib/util.lua"] {
+        let at = json!({ "id": "kit", "file": file, "start_line": 1, "note": "Here." });
+        ask(&mut st, &mut game, "mark", at).unwrap();
+    }
+    st.rename_mod(&mut game, "kit", "tools").unwrap();
+    let tools = game.mods_dir().join("tools");
+    let moved: Vec<_> =
+        st.s.ui
+            .coach
+            .marks
+            .iter()
+            .map(|m| (m.path.clone(), m.file.clone()))
+            .collect();
+    assert_eq!(
+        moved,
+        [
+            (tools.join("main.lua"), "tools/main.lua".to_owned()),
+            (tools.join("lib/util.lua"), "tools/lib/util.lua".to_owned())
+        ]
+    );
+    still(&mut st, &mut game);
+    assert_eq!(marked(&st), [(0, 0)]);
+}
+
+#[test]
 fn marks_are_cleared_by_number_by_file_or_all() {
     let (mut game, mut st) = editing("coach-unmark", "sum", TEN);
     game.write_mod("other.lua", "print('other')\n");
@@ -2871,8 +3305,32 @@ fn check_asks_the_games_agent_when_none_is_waiting() {
         echoed.contains("A lesson is open in the editor: \"Printing\", step 1 of 1 (greet.lua line 2)."),
         "{echoed}"
     );
+    // An executor style has no Agent panel to show the game's own agent's
+    // answer: no Check for it, but one for an agent waiting for the player.
+    use horizon_studio::game::hstudio_theme::THEMES;
+    let lines = st.s.ui.agent.lines.len();
+    st.s.ui.look.theme = THEMES.iter().position(|t| t.name == "Synapse X style").unwrap();
+    still(&mut st, &mut game);
+    assert!(texts_at(&game, "Check").is_empty());
+    ask(&mut st, &mut game, "player_event", json!({})).unwrap();
+    still(&mut st, &mut game);
+    let check = text_at(&game, "Check");
+    click(&mut st, &mut game, (check.0 + 2.0, check.1 + 4.0));
+    let e = ask(&mut st, &mut game, "player_event", json!({})).unwrap();
+    assert_eq!(e["event"], "check", "{e}");
+    assert!(
+        !horizon_studio::game::hstudio_ui::agent_busy(&st),
+        "the game's agent wasn't asked"
+    );
+    let asked = st.s.ui.agent.lines[lines..]
+        .iter()
+        .filter(|l| l.kind == AgentLineKind::You)
+        .count();
+    assert_eq!(asked, 1, "only the waiting agent's line");
     // With the panel hidden, the explanation is the bubble's: none here; and
-    // with no agent at all, no Check.
+    // with no agent at all (none found, none waiting), no Check.
+    st.s.ui.look.theme = 0;
+    st.s.now += 5.0;
     st.s.ui.agent.agents = Some(Vec::new());
     still(&mut st, &mut game);
     assert!(texts_at(&game, "Check").is_empty());

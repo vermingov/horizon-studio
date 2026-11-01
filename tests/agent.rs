@@ -261,6 +261,7 @@ fn tools_are_summed_up_in_a_line() {
 fn the_prompt_has_the_editor_context() {
     let ctx = AgentContext {
         file: Some("statue/main.lua".into()),
+        scratch: false,
         mods_dir: PathBuf::from("/home/steve/.horizon/mods"),
         files: Vec::new(),
         selection: Some("world.set_block(x, y, z, 'stone')".into()),
@@ -302,6 +303,20 @@ fn the_prompt_has_the_editor_context() {
     );
     assert!(bare.contains("No mod file is open"));
     assert!(!bare.contains("selected") && !bare.contains("problems:"));
+    // The scratch file open: it says so, and how the editor tools reach it.
+    let scratch = prompt(
+        "hi",
+        &AgentContext {
+            scratch: true,
+            mods_dir: PathBuf::from("/m"),
+            ..Default::default()
+        },
+    );
+    assert!(
+        scratch.contains("The editor has its scratch file open") && scratch.contains("scratch: true"),
+        "{scratch}"
+    );
+    assert!(!scratch.contains("No mod file is open"));
     let one = prompt(
         "hi",
         &AgentContext {

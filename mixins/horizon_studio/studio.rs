@@ -997,6 +997,9 @@ pub struct State {
     /// Bundled libraries installed once already (deleting one keeps it gone).
     pub seen: HashSet<String>,
     send_tokens: f64,
+    /// A Roblox script's teleports' own budget: what `send_tokens` can't
+    /// hold of its refill, one teleport's worth at most.
+    teleport_tokens: f64,
     next_timer: u32,
     /// The last id `model.attach` gave.
     pub next_model: u32,
@@ -1083,6 +1086,28 @@ impl State {
             .position(|m| m.running() && m.commands.iter().any(|c| c.name == name))
             .map(Owner::Mod)
     }
+    /// See `Studio::command`.
+    fn command(&mut self, line: &str) -> bool {
+        let name = line.split_whitespace().next().unwrap_or("");
+        let ours = self.takes(name);
+        if ours && self.queued_commands.len() < 64 {
+            self.queued_commands.push(line.to_owned());
+        }
+        ours
+    }
+    /// See `Studio::takes`.
+    fn takes(&self, name: &str) -> bool {
+        matches!(name, "studio" | "lua") || self.command_owner(name).is_some()
+    }
+    /// A line sent as the player (`game.run`, an agent's): a command the
+    /// studio takes runs in it, on the next frame, as one typed in the chat
+    /// does (the game sends a line straight to the server, which doesn't
+    /// know it); anything else goes to the server.
+    pub(crate) fn send_line(&mut self, game: &mut dyn GameApi, line: &str) {
+        if !line.strip_prefix('/').is_some_and(|cmd| self.command(cmd)) {
+            game.send(line);
+        }
+    }
 }
 
 pub struct Studio {
@@ -1125,6 +1150,7 @@ impl Studio {
                 disabled: HashSet::new(),
                 seen: HashSet::new(),
                 send_tokens: SEND_BURST,
+                teleport_tokens: 1.0,
                 next_timer: 1,
                 next_model: 0,
                 queued_keys: Vec::new(),
@@ -1365,7 +1391,11 @@ impl Studio {
     /// file changed on disk. A file of a mod that is gone gives way to its
     /// module's main.lua, or to the scratch file when the whole mod went;
     /// with unsaved edits it stays, marked as removed (a save writes it back).
+    /// Agents' marks in a file that moved go along, whether it is open or not.
     fn follow_open(&mut self, moved: &[(PathBuf, PathBuf)]) {
+        for (from, to) in moved {
+            super::hstudio_coach::file_moved(self, from, to);
+        }
         let Some(path) = self.s.editor.path.clone() else {
             return;
         };
@@ -1832,6 +1862,8 @@ impl Studio {
         let new = super::hstudio_modfiles::rename_file(&folder, &from, &to)?;
         self.s.log(LogKind::Info, format!("Renamed {from} to {to}"));
         self.file_moved(path, Some(&new), &new);
+        // Agents' marks in it go along.
+        super::hstudio_coach::file_moved(self, path, &new);
         self.scan(game);
         self.settle_open();
         Ok(new)
@@ -1895,6 +1927,7 @@ impl Studio {
         self.s
             .log(LogKind::Info, format!("Made {id} a module: {}", main.display()));
         self.file_moved(&old, Some(&main), &main);
+        // The scan finds its main file moved: agents' marks in it go along.
         self.scan(game);
         self.settle_open();
         Ok(main)
@@ -2053,6 +2086,9 @@ impl Studio {
             self.s.ui.expanded.insert(new_id.clone());
         }
         self.file_moved(&from, Some(&to), &main);
+        // Agents' marks in its files go along, before its name line changes
+        // (in the editor too), so they follow that change where they are.
+        super::hstudio_coach::file_moved(self, &from, &to);
         self.rename_header(&main, id, typed.trim());
         let m = &mut self.s.mods[i];
         m.stamp = Self::stamp(&m.main, m.folder.as_deref());
@@ -2604,7 +2640,9 @@ impl Studio {
         super::hstudio_ui::agent_poll(self);
         // What AI agents do in the editor moves on (an edit typed in).
         super::hstudio_coach::step(self, game);
-        self.s.send_tokens = (self.s.send_tokens + dt * SEND_RATE).min(SEND_BURST);
+        let budget = self.s.send_tokens + dt * SEND_RATE;
+        self.s.send_tokens = budget.min(SEND_BURST);
+        self.s.teleport_tokens = (self.s.teleport_tokens + (budget - SEND_BURST).max(0.0)).min(1.0);
         self.s.particles = 0;
         self.s.sounds = 0;
         if self.s.now >= self.s.next_scan {
@@ -2723,13 +2761,14 @@ impl Studio {
             }
         }
         // A script's teleport is the game's /tp command, never chat; it waits
-        // for a send rather than being dropped. It goes only while half the
-        // burst is left, so a script that moves the player every frame
-        // leaves the mods' chat.say and game.run their sends.
-        if self.s.send_tokens >= SEND_BURST / 2.0
+        // for a send rather than being dropped. It takes only what the mods'
+        // chat.say and game.run leave (their budget's refill once it is
+        // full), so a script that moves the player every frame leaves them
+        // their whole burst, and all of them together send no more.
+        if self.s.teleport_tokens >= 1.0
             && let Some(line) = super::hstudio_rbx_world::take_teleport(rbx)
         {
-            self.s.send_tokens -= 1.0;
+            self.s.teleport_tokens -= 1.0;
             game.send(&line);
         }
         for cmd in std::mem::take(&mut rbx.agent) {
@@ -2990,18 +3029,13 @@ impl Studio {
     /// A command typed in chat (no slash): whether the studio takes it. It
     /// runs on the next frame.
     pub fn command(&mut self, line: &str) -> bool {
-        let name = line.split_whitespace().next().unwrap_or("");
-        let ours = self.takes(name);
-        if ours && self.s.queued_commands.len() < 64 {
-            self.s.queued_commands.push(line.to_owned());
-        }
-        ours
+        self.s.command(line)
     }
 
     /// Whether the studio takes `/name`: its own two, or a command the
     /// console or a running mod has.
     pub fn takes(&self, name: &str) -> bool {
-        matches!(name, "studio" | "lua") || self.s.command_owner(name).is_some()
+        self.s.takes(name)
     }
 
     /// The owners whose commands the studio takes, in the order a typed
@@ -3210,7 +3244,10 @@ impl Studio {
             game.chat(line);
         }
         if lines.len() > SHOWN {
-            game.chat(&format!("and {} more: see the Library", lines.len() - SHOWN));
+            game.chat(&format!(
+                "and {} more: type / in the chat to see them all",
+                lines.len() - SHOWN
+            ));
         }
         game.chat(
             "/studio [help|reload] - opens the studio; help lists these commands, reload reloads every script mod",
@@ -4626,7 +4663,7 @@ impl Ctx<'_> {
             return Err(lua.rt_error("sending too fast: chat.say and game.run are limited to a few a second"));
         }
         self.s.send_tokens -= 1.0;
-        self.game.send(line);
+        self.s.send_line(self.game, line);
         Ok(())
     }
     fn agent(&mut self, lua: &Lua, line: &str) -> Result<Reply, Throw> {

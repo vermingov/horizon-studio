@@ -5,8 +5,9 @@ native Horizon mod that adds:
 
 - **A code executor.** A console that runs Lua at once in the running game, like a Lua executor: type
   `player.pos()` and see where you are, or `game.run("time set day")`. `/lua <code>` does the same from chat.
-- **Script mods with hot reloading.** A script mod is a `.lua` file in your Horizon folder. Save it, from the in-game
-  editor or any other editor, and it reloads at once: no rebuild, no restart.
+- **Script mods with hot reloading.** A script mod is a script, one `.lua` file in your Horizon folder, or a module,
+  a folder of files (main, shared, lib...) that `require` each other. Save any of its files, from the in-game editor
+  or any other editor, and it reloads at once: no rebuild, no restart.
 - **An in-game editor, laid out like VS Code.** Lua highlighting, suggestions as you type (the whole API, events,
   keywords and your own names, with their signatures and docs), problems found as you type (syntax errors and
   misspelled names, underlined, with their message at the line's end), auto-indent that closes blocks with their
@@ -36,7 +37,7 @@ native Horizon mod that adds:
   and standard library, `task.wait` and `task.spawn` with a scheduler, and Roblox's API on Minecraft: `game`,
   `workspace`, `Instance.new`, `Vector3`, `CFrame`, `UDim2`, signals, TweenService and ScreenGuis drawn in game. A
   Roblox UI script or a general Luau script runs as a script mod; see [Luau and Roblox scripts](#luau-and-roblox-scripts).
-- **Libraries and modules.** A mod can export functions for other mods to `import`: a UI library, a pathfinder, a
+- **Libraries.** A mod can export functions for other mods to `import`: a UI library, a pathfinder, a
   shared config. Libraries load first, and mods using one reload with it. Mods send each other events, and
   `gfx.*` draws in Horizon's own style (rounded shapes, the Geist fonts) so a UI library can be written in Lua. The
   bundled **UI Kit** is one, installed with the studio.
@@ -174,11 +175,12 @@ last), Enter or Space does it, a letter goes to the next item that starts with i
 outside it, closes it. A menu taller than the screen scrolls. Items that can't do anything now are greyed out, and
 each shows its shortcut.
 
-- **The code**: Go to definition (in the file, or in a module's other files, which it opens), Open the library an
-  `import("...")` names or the file a `require("...")` loads, Show the function in the Docs; Cut, Copy, Paste, Select
-  all; Toggle comment, Indent, Outdent, Duplicate line; with an agent found, Ask it, Explain the selection (or the
-  line), and Fix with it when the line has a problem; Run the selection, Run and Save. A right click puts the cursor
-  there, unless that is in the selection, which stays. Go to definition reads the file as written, without scopes.
+- **The code**: Go to definition (in the file, or in a module's other files, which it opens and finds it in as they
+  are then), Open the library an `import("...")` names or the file a `require("...")` loads, Show the function in the
+  Docs; Cut, Copy, Paste, Select all; Toggle comment, Indent, Outdent, Duplicate line; with an agent found, Ask it,
+  Explain the selection (or the line), and Fix with it when the line has a problem; Run the selection, Run and Save. A
+  right click puts the cursor there, unless that is in the selection, which stays. Go to definition reads the file as
+  written, without scopes.
 - **The file's name** (and Synapse's tab): Save, Save as a script for scratch code, Revert to saved (one edit: Ctrl+Z
   brings yours back), Rename, Show in folder, Copy path.
 - **A mod** (a row of the script list, of Synapse's list, of the Library): Open or Edit (a module's New file and its
@@ -222,14 +224,16 @@ game) opens any script, reads it as you have it, unsaved edits included, and typ
 own with its name on a flag: the code it replaces shows in red a moment, then the new code comes in, in 2 s at most.
 Your cursor and selection keep their place, and the view follows the agent until you scroll. Any key or click puts
 the rest of its change in at once, so your key lands where you type; Ctrl+Z takes a whole change back, and Ctrl+Y
-puts it back. With Motion off, or while you are typing, its changes land at once. It never switches your file or tab
-while you use the studio: a change to a file you don't have open is written to disk (the mod reloads), and a note
-over the code shows it. Its changes stay unsaved until it saves them or you press Ctrl+S (with the studio closed they
-are saved at once, unless the file has unsaved edits of yours); nothing you are typing is saved for you, and a file
-changed on disk meanwhile isn't written over. When the game's own agent finishes a turn
-well, its unsaved edits are saved; otherwise the panel says they aren't, and how to keep them or take them back.
-Each thing it did in the editor has a line in the panel (*Typed lines 12-19 into timer.lua*), and **Show** on it
-goes to that code.
+puts it back. With Motion off, or while you are typing or dragging a selection, its changes land at once. It never
+switches your file or tab while you use the studio: a change to a file you don't have open is written to disk (the
+mod reloads), and a note over the code shows it. Its changes stay unsaved until it saves them or you press Ctrl+S
+(with the studio closed they are saved at once, unless the file has unsaved edits of yours); nothing you are typing
+is saved for you, and a file changed on disk meanwhile isn't written over. Asking the game's own agent is the one
+exception: Enter in its panel, the menus' Ask, Explain and Fix, and a lesson's Check save the file you have open
+first, so its turn starts from what you see (the mod reloads with it, half-typed code too). When the game's own agent
+finishes a turn well, its unsaved edits are saved; otherwise the panel says they aren't, and how to keep them or take
+them back. Each thing it did in the editor has a line in the panel (*Typed lines 12-19 into timer.lua*), and **Show**
+on it goes to that code.
 
 **It points at code.** Ask *why does my timer never stop?* and the agent can highlight the lines at fault, in red
 for an error (amber for a warning, green for something right, the accent for a note), with a note beside them: the
@@ -245,7 +249,8 @@ explanation. **Next** and **Back** in the note (or Alt+Right and Alt+Left) go th
 file when a step is in one; **Done** on the last ends the lesson, and so does its ×. **Check** asks the agent to
 look at what you did: it reads your code, marks any mistake and tells you how you did. The editor's header shows
 *Lesson 2/5*. While the agent waits for you the panel says *Waiting for you*, and Enter sends it what you write.
-The executor styles get the same notes and buttons, with the explanation in the note.
+The executor styles get the same notes and buttons, with the explanation in the note; there Check is for an
+agent waiting for you, as they have no Agent panel for the game's own agent to answer in.
 
 It works in your mods folder and runs with its own permissions: Claude Code may use Horizon Studio's MCP tools and
 read files, and asks for nothing else (in a run from the game, anything that needs your approval is refused); omp
@@ -357,7 +362,7 @@ Each part checks its own switch at the moment it runs, so turning one off takes 
 ## AI agents (MCP)
 
 `horizon-studio-mcp` is an [MCP](https://modelcontextprotocol.io) server that gives AI agents Horizon Studio: they
-write mods (single files, folders, libraries), check and test them, and drive the running game.
+write mods (scripts, modules, libraries), check and test them, and drive the running game.
 
 **Give your agent this prompt** and it sets everything up (it installs the server, checks Horizon Studio is in your
 game, and tells you when to restart it):
@@ -590,8 +595,9 @@ after that what `suggest` returns, which the studio filters by what is typed. An
 anything but a space) or `text` (the rest of the line), or one the chat reads, colours and completes as the game's own
 commands do: `int` and `number` (with `min` and `max`, red outside them), `bool`, `player`, `pos`, `item` and `block`.
 `fn` still gets the line as typed. The studio answers the chat's completion requests itself, so nothing typed after a
-script command's name reaches the server. `/studio help` and the Library show each command with its usage. Script
-commands don't show in a command block's editor (command blocks run on the server) or after `/execute ... run`.
+script command's name reaches the server. `/studio help` shows each command with its usage (the first 20: typing
+`/` in the chat lists them all), and the Library a mod's own with what they do. Script commands don't show in a
+command block's editor (command blocks run on the server) or after `/execute ... run`.
 
 ### Screens
 
