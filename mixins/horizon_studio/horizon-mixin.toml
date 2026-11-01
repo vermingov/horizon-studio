@@ -159,6 +159,12 @@ name = "hstudio_skins"
 source = "skins.rs"
 
 [[module]]
+id = "dock"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_dock"
+source = "dock.rs"
+
+[[module]]
 id = "examples"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_examples"
