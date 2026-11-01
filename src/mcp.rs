@@ -1316,13 +1316,16 @@ impl Server {
                 };
                 self.live("reload", params)?;
                 wait(self, 2)?;
-            } else if ["player", "block", "time", "click", "type", "camera", "pose", "suggest"]
-                .iter()
-                .any(|k| step.get(*k).is_some())
+            } else if [
+                "player", "block", "entities", "players", "time", "click", "type", "camera", "pose", "suggest",
+            ]
+            .iter()
+            .any(|k| step.get(*k).is_some())
             {
                 failures.push(
-                    "player, block, time, click, type, camera, pose and suggest steps are headless only: live, use a \
-                     command step (\"/tp\", \"/setblock\", \"/time set\") or horizon_ctl (F5, sneaking)"
+                    "player, block, entities, players, time, click, type, camera, pose and suggest steps are headless \
+                     only: live, use a command step (\"/tp\", \"/setblock\", \"/summon\", \"/time set\") or \
+                     horizon_ctl (F5, sneaking)"
                         .into(),
                 );
             } else if !step

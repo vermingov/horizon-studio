@@ -439,18 +439,17 @@ fn an_agent_writes_tests_and_runs_a_mod_in_the_linked_game() {
             { "chat": "<Bo> hi" },
             { "block": [0, 0, 0], "id": "minecraft:stone" },
             { "suggest": "/greet A" },
+            { "entities": [{ "kind": "zombie", "pos": [3, 64, 0] }] },
+            { "players": [{ "name": "Alex" }] },
         ] }),
     );
     assert!(error, "the block step is headless only");
     let steps = r["steps"].as_array().unwrap();
     assert!(steps[..5].iter().all(|s| s["ok"] == true), "{r:#}");
-    assert!(steps[5]["failures"][0].as_str().unwrap().contains("headless only"));
-    assert!(
-        steps[6]["failures"][0]
-            .as_str()
-            .unwrap()
-            .contains("suggest steps are headless only")
-    );
+    for step in &steps[5..] {
+        let failure = step["failures"][0].as_str().unwrap();
+        assert!(failure.contains("steps are headless only"), "{failure}");
+    }
     // A broken edit: the check says where, and so does the game.
     let (r, error) = call(
         &mut s,

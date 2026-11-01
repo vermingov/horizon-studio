@@ -1388,8 +1388,10 @@ The step format, as the MCP server describes it:
 | `{"key": "key.keyboard.r"}` | presses the key for a frame and releases it for a frame; with `"down": true` or `false` only presses or releases. `on("key")` gets exactly this name, so use the game's names (`key.keyboard.r`); a mapping name such as `key.jump` makes `keys.mapping("key.jump")` held headless |
 | `{"lua": "code"}` | runs Lua in the console: its prints and returned values are the step's output; a failed `assert` fails the step. Mods' globals are not visible there: use `import("id")` on a mod that exports |
 | `{"suggest": "/name words"}` | the completions the chat would show for that line, with the cursor at its end (`"/wp "` completes the first argument, `"/wp re"` the word `re`): each is a line of the step's output, its text and then its tooltip in brackets (`remove (Forgets one)`); runs no frame. It fails when no command the studio takes has that name, or the line has no space after the name. Headless only |
-| `{"player": {...}}` | changes the player: `x`, `y`, `z`, `yaw`, `pitch`, `health`, `food`, `level`, `mode`, `dimension`, `held` (an item id, or null for an empty hand); `"player": null` leaves the world (no ticks, player functions return nil). Then one frame. Headless only |
+| `{"player": {...}}` | changes the player: `x`, `y`, `z`, `yaw`, `pitch`, `health`, `food`, `level`, `mode`, `dimension`, `held` (an item id, or null for an empty hand), `name` and `uuid` (their profile's: a Roblox script's LocalPlayer Name and UserId), `velocity` (blocks a second) and `on_ground` (how they move, which the Roblox Humanoid's MoveDirection and state follow); `"player": null` leaves the world (no ticks, player functions return nil). Then one frame. Headless only |
 | `{"block": [x, y, z], "id": "minecraft:stone"}` | sets a block (default air); runs no frame. Headless only |
+| `{"entities": [{"kind": "zombie", "pos": [3, 64, 0]}, ...]}` | puts these entities near the player in place of the last ones, which Roblox scripts see in the Workspace: each a `kind` (`zombie`, `player`, `item`, `experience_orb`...), an `id` (100 on in their order unless given), `pos`, and `name`, `yaw`, `velocity`, `on_ground`, `baby`, `health`, `max_health`, `speed`, `width`, `height` and `eye` (the rest as the game has the kind), a dropped item's `item` and `count`, an orb's `value`. Then one frame. Headless only |
+| `{"players": [{"name": "Alex", "entity": 12, "latency": 40}, ...]}` | the server's player list (`uuid`, `display_name` and `local` too): the other players Roblox scripts see in Players, each with the entity of its `entity` id as its Character. Then one frame. Headless only |
 | `{"time": 13000}` | sets the day time; runs no frame. Headless only |
 | `{"click": "label"}` | clicks text drawn on the open script screen: the first text equal to the label, else containing it (a button, toggle, slider or input row, or the screen's `click`), then one frame. Headless only |
 | `{"type": "text"}` | types into the focused input (or the screen's `text`), then one frame. Headless only |
@@ -1423,14 +1425,14 @@ Strings, or lists of strings, matched as substrings of what the step caused:
 - Every block is `minecraft:air` unless a `block` step set it. The day time starts at 1000 and every frame adds one tick.
 - The GUI is 480 x 270 GUI pixels; dp are twice that (960 x 540). Text is 6 GUI pixels a character (`hud.width`); `gfx.measure` is characters x size x 0.55.
 - `game.fps()` is 20, 20, 20; `game.screen()` is `"playing"`, or `"script"` while a script screen shows.
-- No agent: `agent.*`, `world.find` and `world.entities` raise errors. No entities, no ViaHorizon.
+- No agent: `agent.*`, `world.find` and `world.entities` raise errors (they ask the game's agent). No entities and no other players until an `entities` or `players` step puts them there, for the Roblox layer (the Workspace, Players). No ViaHorizon.
 - Sounds, particles and items are recorded, not played; ids are checked for form only.
 - A command a mod sends with `game.run` reaches mods' commands as in the game; other commands are noted in chat as `(the game would run /...)`.
 - The mod's libraries come from the mods folder (when the tool has one), else the bundled examples (`uikit`, `viahorizon`...).
 
 ## Live tests
 
-`live: true` writes the files (when given), reloads the mod in the game and runs the steps there. `player`, `block`, `time`, `click`, `type`, `camera`, `pose` and `suggest` steps are headless only: live, use a command step (`/tp`, `/setblock`, `/time set`) or the `horizon_ctl` tool. `expect_drawn`, `expect_sound`, `expect_particle` and `expect_screen` are only noted live (look with `horizon_ctl screenshot`). Live, a `command` step waits 10 frames, a `chat` step 2, a `key` step a frame between press and release and 2 after.
+`live: true` writes the files (when given), reloads the mod in the game and runs the steps there. `player`, `block`, `entities`, `players`, `time`, `click`, `type`, `camera`, `pose` and `suggest` steps are headless only: live, use a command step (`/tp`, `/setblock`, `/summon`, `/time set`) or the `horizon_ctl` tool. `expect_drawn`, `expect_sound`, `expect_particle` and `expect_screen` are only noted live (look with `horizon_ctl screenshot`). Live, a `command` step waits 10 frames, a `chat` step 2, a `key` step a frame between press and release and 2 after.
 
 ## Examples
 
