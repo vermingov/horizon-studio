@@ -6,6 +6,7 @@
 // for content arriving, rows 40 ms apart.
 
 use super::hstudio::{API, CONSOLE_API, Font, GameApi, LogKind, ModState, Studio};
+use super::hstudio_dock::Pane;
 use super::hstudio_examples::EXAMPLES;
 use super::hstudio_theme::{ACCENTS, Layout, Look, Palette, THEMES};
 use super::hstudio_ui::{
@@ -20,6 +21,60 @@ thread_local! {
     static MOTION: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
     /// The studio's palette easing to a newly chosen one: from, to, since.
     static EASE: std::cell::Cell<Option<(Palette, Palette, f64)>> = const { std::cell::Cell::new(None) };
+    /// A pane's body being drawn, which `clip_end` keeps to its place.
+    static CLIP: std::cell::Cell<Option<Clip>> = const { std::cell::Cell::new(None) };
+}
+
+/// Where a pane's body is kept (in units, and in dp as drawn), the game's
+/// mark before it (None where what was drawn can't be cut), and how many
+/// hits and text areas there were then.
+#[derive(Clone, Copy)]
+struct Clip {
+    rect: [f32; 4],
+    at: [f32; 4],
+    mark: Option<usize>,
+    hits: usize,
+    areas: usize,
+}
+
+/// Begins a pane's body in `rect`: what it draws from here, and the
+/// clicks and text it marks, stay inside, once `clip_end` comes.
+fn clip_begin(st: &mut Studio, p: &mut P, rect: [f32; 4]) {
+    clip_end(st, p);
+    let clip = Clip {
+        rect,
+        at: p.at(rect),
+        mark: p.g.dp_mark(),
+        hits: st.s.ui.hits.len(),
+        areas: st.s.ui.text_areas.len(),
+    };
+    CLIP.with(|c| c.set(Some(clip)));
+}
+
+/// Ends the pane's body begun last, if one is: the game cuts what it drew
+/// to its place, and its hits and text areas are cut to it too (those left
+/// with nothing go). What is drawn after, as suggestions are, is over the
+/// panes around it.
+fn clip_end(st: &mut Studio, p: &mut P) {
+    let Some(clip) = CLIP.with(std::cell::Cell::take) else {
+        return;
+    };
+    if let Some(mark) = clip.mark {
+        p.g.dp_clip(mark, clip.at);
+    }
+    let ui = &mut st.s.ui;
+    let cut = |r: [f32; 4]| {
+        let (x, y) = (r[0].max(clip.rect[0]), r[1].max(clip.rect[1]));
+        let w = (r[0] + r[2]).min(clip.rect[0] + clip.rect[2]) - x;
+        let h = (r[1] + r[3]).min(clip.rect[1] + clip.rect[3]) - y;
+        (w > 0.0 && h > 0.0).then_some([x, y, w, h])
+    };
+    let hits = ui.hits.split_off(clip.hits.min(ui.hits.len()));
+    ui.hits
+        .extend(hits.into_iter().filter_map(|(r, a)| cut(r).map(|r| (r, a))));
+    let areas = ui.text_areas.split_off(clip.areas.min(ui.text_areas.len()));
+    ui.text_areas
+        .extend(areas.into_iter().filter_map(|(k, r)| cut(r).map(|r| (k, r))));
 }
 
 /// This frame's palette.
@@ -508,6 +563,13 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         ui.scripts_at = None;
         ui.library_dots = None;
         ui.drawn_files.clear();
+        // Set again where they are drawn: a scroll bar not drawn this
+        // frame can't be held, and the coach reads no stale place. No
+        // pane's body is begun yet (a mark is the frame's own).
+        ui.scrollbar = None;
+        ui.coach.code_at = None;
+        ui.coach.bubble_at = None;
+        CLIP.with(|c| c.set(None));
         tick(ui, now)
     };
     // The hits name mods by their place in this list.
@@ -520,6 +582,10 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
             st.s.editor.reloaded_at = Some(now);
         }
     }
+    // Agents' marks on their lines as they are now, and the live check:
+    // each frame, so they keep up wherever the code is, drawn or not.
+    super::hstudio_coach::follow_marks(st);
+    live_check(st);
     let (alpha, rise) = presence(&st.s.ui, now);
     let mut p = P {
         g: game,
@@ -1281,7 +1347,7 @@ pub(super) fn draw_log(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], scrol
     let skip = scroll.min(shown.len().saturating_sub(rows));
     // Scrolling back glides, a line at a time.
     let back = if scrolled {
-        st.s.ui.page = rows;
+        st.s.ui.pages[Pane::Console.index()] = rows;
         st.s.ui.log_scroll = skip;
         smooth(&mut st.s.ui.smooth[0], skip as f32, dt);
         st.s.ui.smooth[0]
@@ -1457,7 +1523,9 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     // The scripts at the left, as VS Code's explorer, when there is room.
     let (x, w) = if w >= 640.0 {
         let sw = (w * 0.18).clamp(150.0, 210.0).floor();
+        clip_begin(st, p, [x, by, sw, bh]);
         draw_scripts(st, p, [x, by, sw, bh], dt);
+        clip_end(st, p);
         (x + sw + 10.0, w - sw - 10.0)
     } else {
         (x, w)
@@ -1498,10 +1566,14 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         p.rect([x + (w - bw) / 2.0, sy + gap / 2.0 - 1.5, bw, 3.0], 1.5, c);
         ui.hits.push((split, Action::PanelResize));
         draw_panel(st, p, [x, sy + gap, w, ph], dt);
+        clip_begin(st, p, [x, by, w, code_h]);
         draw_code(st, p, [x, by, w, code_h], dt);
+        clip_end(st, p);
     } else {
         ui.panel_at = None;
+        clip_begin(st, p, [x, by, w, bh]);
         draw_code(st, p, [x, by, w, bh], dt);
+        clip_end(st, p);
     }
 }
 
@@ -1855,11 +1927,13 @@ fn draw_panel(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let shown = progress(st.s.now, st.s.ui.tab_at, MOVE) * progress(st.s.now, st.s.ui.panel_tab_at, MOVE);
     p.alpha = base * ((h - STRIP) / 60.0).clamp(0.0, 1.0) * shown;
     p.dy += (1.0 - shown) * RISE * 0.5;
+    clip_begin(st, p, [x, y + STRIP, w, h - STRIP]);
     match panel {
         Panel::Console => panel_console(st, p, body, dt),
         Panel::Problems => panel_problems(st, p, body, dt),
         Panel::Agent => panel_agent(st, p, body, name.as_deref(), dt),
     }
+    clip_end(st, p);
     p.alpha = base;
     p.dy -= (1.0 - shown) * RISE * 0.5;
 }
@@ -1868,9 +1942,7 @@ fn draw_panel(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
 fn panel_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let now = st.s.now;
     let field_h = 30.0;
-    let page = st.s.ui.page;
     draw_log(st, p, [x, y, w, h - field_h - 6.0], true, dt);
-    st.s.ui.page = page;
     let focused = st.s.ui.panel_focus && st.s.ui.panel == Panel::Console;
     let f = [x - 4.0, y + h - field_h, w + 8.0, field_h];
     let fo = glide(&mut st.s.ui, id("panel-input", 0), focused, dt);
@@ -1904,6 +1976,8 @@ fn panel_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         pal().ink,
         focused,
     );
+    // Its suggestions are over the code, out of the panel's place.
+    clip_end(st, p);
     if focused {
         console_suggest(st, p, &input, [tx, f[1], field_h], start, size, dt);
     }
@@ -2415,6 +2489,27 @@ fn draw_suggest(st: &mut Studio, p: &mut P, [wx, ly, lh]: [f32; 3], typed: &str,
 /// How long typing pauses before the live check looks again.
 pub const CHECK_PAUSE: f64 = 1.0;
 
+/// The live check, once typing pauses; a module's file with its siblings
+/// (read again, and checked again, when they change). Each frame, whether
+/// the code is drawn or not, so its problems are always the file's.
+fn live_check(st: &mut Studio) {
+    let now = st.s.now;
+    let siblings = super::hstudio_ui::editor_siblings(st);
+    let s = &mut st.s;
+    let ed = &mut s.editor;
+    // (A file opened or read again is checked at once; typing, at a pause.)
+    let typing = ed.edited_at > 0.0 && now - ed.edited_at < CHECK_PAUSE;
+    if ed.checked != Some(ed.revision) && !typing {
+        ed.problems = super::hstudio_assist::check(&ed.lines, &ed.title, siblings.as_deref());
+        ed.checked = Some(ed.revision);
+        let old = std::mem::take(&mut s.ui.problem_at);
+        for pr in &ed.problems {
+            let k = problem_key(pr, &ed.lines);
+            s.ui.problem_at.insert(k, old.get(&k).copied().unwrap_or(now));
+        }
+    }
+}
+
 /// A wavy line under `[x, y, w]`, as editors mark problems.
 fn squiggle(p: &mut P, x: f32, y: f32, w: f32, c: u32) {
     const LIFT: [f32; 4] = [0.0, 0.9, 1.8, 0.9];
@@ -2442,28 +2537,7 @@ fn floor_char(s: &str, i: usize) -> usize {
 /// scrollbar, the suggestions, and the file changing on disk.
 pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     let now = st.s.now;
-    // Agents' marks on their lines as they are now.
-    super::hstudio_coach::follow_marks(st);
     st.s.ui.coach.code_at = Some(panel);
-    st.s.ui.coach.bubble_at = None;
-    // The live check, once typing pauses; a module's file with its siblings
-    // (read again, and checked again, when they change).
-    let siblings = super::hstudio_ui::editor_siblings(st);
-    {
-        let s = &mut st.s;
-        let ed = &mut s.editor;
-        // (A file opened or read again is checked at once; typing, at a pause.)
-        let typing = ed.edited_at > 0.0 && now - ed.edited_at < CHECK_PAUSE;
-        if ed.checked != Some(ed.revision) && !typing {
-            ed.problems = super::hstudio_assist::check(&ed.lines, &ed.title, siblings.as_deref());
-            ed.checked = Some(ed.revision);
-            let old = std::mem::take(&mut s.ui.problem_at);
-            for pr in &ed.problems {
-                let k = problem_key(pr, &ed.lines);
-                s.ui.problem_at.insert(k, old.get(&k).copied().unwrap_or(now));
-            }
-        }
-    }
     p.rect(panel, 14.0, pal().plate_soft);
     if let Some(at) = st.s.editor.reloaded_at {
         // Read again after a change elsewhere: a flash.
@@ -2480,7 +2554,7 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     // scroll bar, a banner and the suggestions, drawn later, are over it.
     st.s.ui.hits.push((panel, Action::Spot(Spot::Code)));
     let rows = ((panel[3] - 24.0) / code_line()).max(1.0) as usize;
-    st.s.ui.page = rows;
+    st.s.ui.pages[Pane::Code.index()] = rows;
     let gutter = p.measure("0000", 12.0, Font::Mono) + 30.0;
     let text_x = panel[0] + gutter;
     let text_w = panel[2] - gutter - 18.0;
@@ -2748,6 +2822,9 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     note_bubble(st, p, panel, [text_x, top_y, bottom, s], dt);
     file_changed(st, p, panel, dt);
     agent_notice(st, p, panel, dt);
+    // What the code drew stays in its place; its suggestions, drawn after,
+    // are over the panes around it and take their clicks there.
+    clip_end(st, p);
     // The suggestions, at the word being typed.
     if st.s.ui.suggest.as_ref().is_some_and(|sg| !sg.console) {
         let ed = &st.s.editor;
@@ -4002,7 +4079,7 @@ fn draw_docs(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let total: f32 = lines.iter().map(|l| l.4).sum();
     let step = 22.0;
     let max = ((total - h) / step).max(0.0).ceil() as usize;
-    st.s.ui.page = (h / step) as usize;
+    st.s.ui.pages[Pane::Docs.index()] = (h / step) as usize;
     // Show in Docs: the entry asked for at the top, at once, and tinted a moment.
     if let Some(name) = st.s.ui.docs_find.take()
         && let Some((_, first, _)) = entries.iter().find(|(n, ..)| *n == name)
@@ -4053,7 +4130,6 @@ fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let total = 30.0 + grid_h + 14.0 + row_h * 7.0;
     let ui = &mut st.s.ui;
     ui.settings_scroll = ui.settings_scroll.clamp(0.0, (total - h).max(0.0));
-    ui.page = (h / 40.0) as usize;
     smooth(&mut ui.smooth[3], ui.settings_scroll, dt);
     let shown = |r: [f32; 4]| r[1] >= y - 0.5 && r[1] + r[3] <= y + h + 0.5;
     let mut cy = y - ui.smooth[3];

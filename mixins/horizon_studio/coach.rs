@@ -12,6 +12,7 @@
 // what they are typing is never saved for them.
 
 use super::hstudio::{GameApi, ModState, Studio, mod_id};
+use super::hstudio_dock::Pane;
 use super::hstudio_modfiles::{file_name, path_in, plan_mod};
 use super::hstudio_ui::{Action, AgentLineKind, Editor, Input, Key, Mods, Tab};
 use serde_json::{Value as Json, json};
@@ -703,10 +704,15 @@ fn switch_waits(st: &Studio) -> Option<Json> {
         .then(|| busy("the player is using the studio"))
 }
 
+/// The rows the code showed when it was last drawn (0: never).
+fn code_page(ui: &super::hstudio_ui::Ui) -> usize {
+    ui.pages[Pane::Code.index()]
+}
+
 /// Shows line `n` (from 1) a third of the way down the editor's view, with
 /// the cursor on it when `cursor`.
 fn show_line(st: &mut Studio, n: usize, cursor: bool) {
-    let page = if st.s.ui.page > 0 { st.s.ui.page } else { 30 };
+    let page = Some(code_page(&st.s.ui)).filter(|n| *n > 0).unwrap_or(30);
     let ed = &mut st.s.editor;
     let row = (n - 1).min(ed.lines.len() - 1);
     if cursor {
@@ -1160,7 +1166,7 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     let seen = ui.open && ui.tab == Tab::Editor && !ui.collapsed;
     let hands_off = ui.coach.player_editing(now);
     let animated = seen && !hands_off && ui.look.motion && flag(params, "typing") != Some(false);
-    let page = ui.page.max(1);
+    let page = code_page(ui).max(1);
     let player_edits = match &ui.coach.unsaved {
         Some(u) if st.s.editor.path.as_ref() == Some(&u.path) && u.rev == st.s.editor.revision => u.player_edits,
         _ => st.s.editor.dirty,
@@ -1599,7 +1605,7 @@ pub fn followed_caret(c: &Coach, ed: &Editor) -> Option<(usize, usize)> {
 
 /// Keeps the agent's caret in view, unless the player scrolled away.
 fn follow(st: &mut Studio, t: &mut Typing) {
-    let page = st.s.ui.page.max(1);
+    let page = code_page(&st.s.ui).max(1);
     let ed = &mut st.s.editor;
     if t.free || ed.scroll != t.scroll {
         t.free = true;
@@ -2121,7 +2127,7 @@ fn marks_json(st: &Studio, path: &Path) -> Json {
 /// Scrolls the editor so rows `first..=last` show, the first a third of
 /// the way down, unless they all show already. The cursor stays.
 fn reveal_rows(st: &mut Studio, first: usize, last: usize) {
-    let page = if st.s.ui.page > 0 { st.s.ui.page } else { 30 };
+    let page = Some(code_page(&st.s.ui)).filter(|n| *n > 0).unwrap_or(30);
     let ed = &mut st.s.editor;
     let shows = first >= ed.scroll && last < ed.scroll + page;
     if !shows {
@@ -3351,7 +3357,7 @@ pub fn sync_disk(st: &mut Studio) -> bool {
     let (a, b) = (pre, old.len() - suf);
     let ins = now_text[pre..now_text.len() - suf].to_owned();
     let now = st.s.now;
-    let page = st.s.ui.page.max(1);
+    let page = code_page(&st.s.ui).max(1);
     let ed = &mut st.s.editor;
     let (from, old_to) = (ed.pos_at(a), ed.pos_at(b));
     // One undo step for all of it, as when the editor reads a file again

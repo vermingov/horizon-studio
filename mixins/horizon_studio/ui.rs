@@ -6,6 +6,7 @@
 // for the console and code, 1 px rules, one accent for the main action.
 
 use super::hstudio::{API, CONSOLE_API, Font, GameApi, LogKind, Owner, Studio};
+use super::hstudio_dock::Pane;
 use super::hstudio_examples::EXAMPLES;
 use super::hstudio_lua::{TableRef, Value};
 use std::path::{Path, PathBuf};
@@ -834,8 +835,9 @@ pub struct Ui {
     pub hidden_until: f64,
     pub(crate) scroll_drag: Option<f32>,
     pub(crate) view: Option<EditorView>,
-    /// Lines the last frame could show, for Page Up/Down.
-    pub(crate) page: usize,
+    /// Lines each pane could show when last drawn (by `Pane::index`), for
+    /// Page Up/Down: the code's, the console's and the docs' are their own.
+    pub(crate) pages: [usize; 7],
     /// dp per GUI pixel, from the last frame drawn (the pointer arrives in GUI pixels).
     pub dp: f32,
     /// Motion: when the screen opened and began to close, when the tab
@@ -3782,7 +3784,7 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
         Tab::Console | Tab::Editor => {}
         Tab::Library => library_key(st, game, key),
         Tab::Docs => {
-            let page = st.s.ui.page.max(1);
+            let page = st.s.ui.pages[Pane::Docs.index()].max(1);
             let s = &mut st.s.ui.docs_scroll;
             match key {
                 Key::Up => *s = s.saturating_sub(1),
@@ -3851,8 +3853,8 @@ fn console_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
                 st.s.ui.input.insert(&rest);
             }
         }
-        Key::PageUp => ui.log_scroll += ui.page.max(1),
-        Key::PageDown => ui.log_scroll = ui.log_scroll.saturating_sub(ui.page.max(1)),
+        Key::PageUp => ui.log_scroll += ui.pages[Pane::Console.index()].max(1),
+        Key::PageDown => ui.log_scroll = ui.log_scroll.saturating_sub(ui.pages[Pane::Console.index()].max(1)),
         Key::Char('l') if mods.ctrl => st.s.log.clear(),
         Key::Char('v') if mods.ctrl => {
             let clip = game.clipboard();
@@ -4320,7 +4322,7 @@ fn agent_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
 }
 
 fn editor_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
-    let page = st.s.ui.page.max(1) as isize;
+    let page = st.s.ui.pages[Pane::Code.index()].max(1) as isize;
     if mods.ctrl {
         match key {
             Key::Char('s') => return st.save_editor(game),
