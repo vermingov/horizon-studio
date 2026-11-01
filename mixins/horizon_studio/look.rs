@@ -1496,9 +1496,10 @@ fn drop_preview(ui: &Ui, p: &mut P) {
     }
 }
 
-/// A bar between two groups: a grip that widens under the pointer and is
-/// the accent while it is held or lit for sizing from the keys. A bar with
-/// too little room to move is a plain gap: no grip, nothing to press.
+/// A bar between two groups: a grip that widens under the pointer (not
+/// under a lifted tab, which can't land on it) and is the accent while it
+/// is held or lit for sizing from the keys. A bar with too little room to
+/// move is a plain gap: no grip, nothing to press.
 fn draw_bar(st: &mut Studio, p: &mut P, bar: &Bar, dt: f32) {
     use super::hstudio_ui::DockDrag;
     if bar.hi - bar.lo < 16.0 {
@@ -1507,12 +1508,8 @@ fn draw_bar(st: &mut Studio, p: &mut P, bar: &Bar, dt: f32) {
     let ui = &mut st.s.ui;
     let held = matches!(ui.dock_drag, Some(DockDrag::Bar { bar: b, .. }) if b.path == bar.path)
         || ui.sizing.is_some_and(|(_, path)| path == bar.path);
-    let hv = hover(
-        ui,
-        id("dock-bar", usize::from(bar.path)),
-        held || inside(bar.rect, ui.mouse),
-        dt,
-    );
+    let over = inside(bar.rect, ui.mouse) && ui.lifted().is_none();
+    let hv = hover(ui, id("dock-bar", usize::from(bar.path)), held || over, dt);
     let c = if held {
         pal().accent
     } else {

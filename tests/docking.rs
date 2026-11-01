@@ -2662,3 +2662,42 @@ fn the_docs_say_how_the_panes_work() {
     assert!(docs.contains("The code's tab strip counts the notes"));
     assert!(docs.contains("in the note where that pane isn't shown, as in the executor styles"));
 }
+
+/// The grip drawn on the bar at `bar` (dp): its rect.
+fn grip_on(game: &FakeGame, bar: [f32; 4]) -> [f32; 4] {
+    game.drawn
+        .iter()
+        .filter_map(|d| {
+            let rest = d.strip_prefix("rect [")?;
+            let (rect, style) = rest.split_once("] ")?;
+            if !style.starts_with("r1.5 ") {
+                return None;
+            }
+            let n: Vec<f32> = rect.split(", ").map(|v| v.parse().unwrap()).collect();
+            Some([n[0], n[1], n[2], n[3]])
+        })
+        .find(|r| r[0] >= bar[0] && r[1] >= bar[1] && r[0] + r[2] <= bar[0] + bar[2] && r[1] + r[3] <= bar[1] + bar[3])
+        .expect("a grip on the bar")
+}
+
+#[test]
+fn a_dragged_tab_lights_no_grip() {
+    // A bar's grip widens under the pointer, as it can be pressed there;
+    // under a lifted tab, which can't land on it, it doesn't.
+    let (mut game, mut st) = editing("dock-drag-grip");
+    redraw(&mut st, &mut game);
+    let gap = bar(&st, 3).rect;
+    point(&mut st, &mut game, middle(gap));
+    redraw(&mut st, &mut game);
+    assert_eq!(grip_on(&game, gap)[2], 60.0, "widened under the pointer");
+    let agent = middle(tab_of(&st, Pane::Agent));
+    hold(&mut st, &mut game, agent, &[(agent.0, agent.1 - 40.0)]);
+    redraw(&mut st, &mut game);
+    let gap = bar(&st, 3).rect;
+    point(&mut st, &mut game, middle(gap));
+    assert_eq!(st.s.ui.lifted(), Some(Pane::Agent));
+    redraw(&mut st, &mut game);
+    assert_eq!(grip_on(&game, gap)[2], 36.0, "not under a lifted tab");
+    press(&mut st, &mut game, Key::Escape, NONE);
+    release(&mut st, &mut game);
+}
