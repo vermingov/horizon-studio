@@ -61,7 +61,7 @@ pub(in crate::game) fn villager_pickups(game: &mut Game<'_>) {
             }
             match rest {
                 None => {
-                    game.dropped.remove(j);
+                    game.remove_dropped(j);
                 }
                 Some(rest) => {
                     game.dropped[j].stack.count = rest.count;

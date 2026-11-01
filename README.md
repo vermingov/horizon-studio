@@ -988,11 +988,11 @@ particle, Video Settings, merge, pickup and swim hooks can answer in their funct
 
 | Hook | Target | For |
 |---|---|---|
-| frame | `game::control::poll_control` | each frame with the event loop: scripts, input, agent commands; the scripts' commands into the chat's command tree (the server's), and the completions the chat asked for |
+| frame | `game::control::poll_control` | each frame with the event loop: scripts, input, agent commands; the scripts' commands into the chat's command tree (the connection's), and the completions the chat asked for |
 | window-input | `game::follow_keymap` | each window event: dropped files to install; while the studio is open, keys, clicks and the wheel (the game gets an event it ignores) |
 | overlay | `game::remote::remote_hud` | the studio's screen and the scripts' screens, drawn last |
 | world | `game::end::end_geometry` | each frame in a world, with its camera: `draw.*` shapes go into the entity geometry, depth tested |
-| chat | `game::remote::chat_line` | `on("chat")` |
+| chat | `game::remote::signed_chat_line` | `on("chat")`: the server's lines and the players' |
 | suggest | `game::remote::send_suggestion_request` | the chat's completion request: one for a script's command stays in the game and the studio answers it at the frame; any other is sent as before |
 | via-address | `horizon_protocol::servers::parse_address` | on the threads that join and ping servers, an address ViaHorizon routes parses as ViaProxy's internal host (the server and version, for ViaProxy to read from the handshake) |
 | via-srv | `horizon_protocol::resolver::srv_redirect` | that host's SRV lookup answers with the local ViaProxy, so the connection goes there |
@@ -1005,15 +1005,15 @@ particle, Video Settings, merge, pickup and swim hooks can answer in their funct
 | natrium-view | `horizon_client_render::gfx::Renderer::camera_frustum` (RETURN) | the frame's view, for particle culling |
 | natrium-particles-render | `horizon_client_render::particles::ParticleEngine::render` | Natrium's particle loop in its place, while particle culling is on |
 | natrium-frame | `horizon_client_render::gfx::Renderer::render` | this frame's fog, and whether it hides what is past it |
-| natrium-fog | `horizon_client_render::gfx::resident::in_frustum` (RETURN) | a section wholly past that fog counts as out of view |
+| natrium-fog, natrium-fog-inside | `horizon_client_render::gfx::<Frusta as Cull>::intersects`, `::contains` (RETURN) | in `Resident::visible`'s column walk, a chunk column or section wholly past that fog counts as out of view, and a column reaching into it as not wholly in view (its sections are tested one by one) |
 | natrium-video-rows | `horizon_client_render::options_ui::pairs` | after Video Settings' Preferences, Natrium's section |
 | natrium-video-search | `horizon_client_render::options_ui::OptionsUi::page` | the settings search's text, which the section follows |
 | natrium-merge, natrium-pickups, natrium-swim | `entities::merge_with_neighbours`, `game::villagers::Game::villager_pickups`, `mobs::path::Finder::swim_neighbors` | Natrium's versions in their place, while faster ticks are on |
 | hud, key, command, zoom, list, settings, click | Horizon's [native hook points](https://github.com/horizon-rust/horizon/blob/main/crates/horizon-client/src/game/native_hooks.rs) | the HUD, keys, commands, `view.zoom`, the Options → Mods row and page |
 
 The first six, ViaHorizon's and Natrium's go beyond the stable hook points, so the bundle pins one Horizon commit (a Nightly's,
-`compatibility.json`): the launcher builds it on that commit. Their bodies are free of macros, which the launcher's
-horizon-mixins (`a2af5c0`) requires of a hooked function. The studio opens over the game's chat screen, which frees
+`compatibility.json`): the launcher builds it on that commit. Their bodies are free of macros but the standard ones
+the launcher's horizon-mixins (`a2af5c0`) keeps under a HEAD hook (`signed_chat_line`'s `matches!`). The studio opens over the game's chat screen, which frees
 the pointer and keeps the world running while it takes the keyboard.
 
 Moving to a new Nightly: change `horizon_revision` in `horizon-mixin.toml` and `compatibility.json`, then

@@ -57,18 +57,41 @@ pub fn fog_cut() -> Option<f32> {
 
 /// Whether a camera-relative 16-block box `min..min+16` is wholly past `end`.
 pub fn past(min: [f32; 3], end: f32) -> bool {
-    let near = min.map(|m| {
-        if m > 0.0 {
-            m
-        } else if m + 16.0 < 0.0 {
-            m + 16.0
+    past_box(min, min.map(|m| m + 16.0), end)
+}
+
+/// Whether the camera-relative box `min..max` is wholly past `end`: its
+/// nearest point to the camera is.
+pub fn past_box(min: [f32; 3], max: [f32; 3], end: f32) -> bool {
+    let near: [f32; 3] = std::array::from_fn(|i| {
+        if min[i] > 0.0 {
+            min[i]
+        } else if max[i] < 0.0 {
+            max[i]
         } else {
             0.0
         }
     });
-    let d2 = near[0] * near[0] + near[1] * near[1] + near[2] * near[2];
     // A block's margin: fog is linear up to `end`, so only past it is it whole.
-    d2 >= (end + 1.0) * (end + 1.0)
+    length_squared(near) >= (end + 1.0) * (end + 1.0)
+}
+
+/// Whether some of the camera-relative box `min..max` may be past `end`: its
+/// farthest point from the camera is. A box that isn't holds no section
+/// `past` would cut.
+pub fn reaches(min: [f32; 3], max: [f32; 3], end: f32) -> bool {
+    let far: [f32; 3] = std::array::from_fn(|i| if min[i].abs() > max[i].abs() { min[i] } else { max[i] });
+    length_squared(far) >= (end + 1.0) * (end + 1.0)
+}
+
+/// How many sections a box `min..max` stands for: its height in sections (a
+/// section's own box, even a tight one, is one; a chunk column's, its height).
+pub fn sections_in(min: [f32; 3], max: [f32; 3]) -> u64 {
+    ((max[1] - min[1]) / 16.0).round().max(1.0) as u64
+}
+
+fn length_squared(v: [f32; 3]) -> f32 {
+    v[0] * v[0] + v[1] * v[1] + v[2] * v[2]
 }
 
 /// Natrium's switches as its settings have them (Natrium, particle culling,

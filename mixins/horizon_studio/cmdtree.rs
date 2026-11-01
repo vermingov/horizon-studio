@@ -1,6 +1,6 @@
 // The chat's command tree with the studio's commands in it. Horizon's chat
 // parses, colours and completes a command line with the tree the server sent
-// (Remote.commands, the game's own before one comes). Each frame
+// (Remote.chat_tree, the game's own before one comes). Each frame
 // hstudio_bridge puts the commands the studio takes under that tree's root,
 // so they are listed, coloured and completed like the server's, and the
 // chat's completion requests for them stay in the game, where the studio

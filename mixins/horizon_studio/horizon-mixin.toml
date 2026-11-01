@@ -6,10 +6,11 @@ priority = 100
 # Pinned: besides Horizon's native hook points, the studio hooks the window's
 # events (follow_keymap, to take the keyboard while it is open), the
 # per-frame control poll (for the event loop the agent commands need), the
-# server's chat lines, the chat's completion requests
+# server's chat lines (signed_chat_line), the chat's completion requests
 # (send_suggestion_request), the world's entity geometry (end_geometry) and
-# the last HUD layer (remote_hud). Every target's body
-# is free of macros, as horizon-mixins a2af5c0 (the launcher's) requires.
+# the last HUD layer (remote_hud). Every target's body is free of macros but
+# the standard ones horizon-mixins a2af5c0 (the launcher's) keeps under a
+# HEAD hook (signed_chat_line's matches!).
 [compatibility]
 horizon_revision = "4aa6854a886183440256f4f4a4a9d1ed853227a1"
 
@@ -265,7 +266,7 @@ target = "horizon_client::game::control::Game<'_>::poll_control"
 helper = "frame.rs"
 bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
-  { name = "event_loop", ty = "&winit::event_loop::ActiveEventLoop", value = "event_loop" },
+  { name = "event_loop", ty = "&dyn crate::game::event_loop::EventLoopCtl", value = "event_loop" },
 ]
 
 # window_event hands each event to follow_keymap first: while the studio is
@@ -335,10 +336,12 @@ bindings = [
   { name = "ran", ty = "&mut bool", value = "&mut *ran" },
 ]
 
+# The server's chat lines: signed_chat_line takes the system ones (from
+# chat_line) and the players' (which skip chat_line), each once.
 [[injection]]
 id = "chat"
 kind = "HEAD"
-target = "horizon_client::game::remote::Game<'_>::chat_line"
+target = "horizon_client::game::remote::Game<'_>::signed_chat_line"
 helper = "chat.rs"
 bindings = [
   { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
@@ -591,14 +594,32 @@ bindings = [
   { name = "frame", ty = "&Frame<'_>", value = "frame" },
 ]
 
-# Sections wholly inside that fog are left out of the frame.
+# Sections wholly inside that fog are left out of the frame. Resident::visible
+# (generic, so not a target) walks chunk columns with Frusta, the camera's
+# frustum and its water mirror's, which nothing else culls with: a column or
+# a section box wholly past the fog doesn't intersect it, and a column that
+# reaches into the fog isn't "entirely inside", so its sections are tested
+# one by one.
 [[injection]]
 id = "natrium-fog"
 kind = "RETURN"
-target = "horizon_client_render::gfx::resident::in_frustum"
+target = "horizon_client_render::gfx::<Frusta as Cull>::intersects"
 helper = "natrium_fog.rs"
 bindings = [
-  { name = "value", ty = "Option<(f64, Vec3)>", value = "$value" },
+  { name = "value", ty = "bool", value = "$value" },
+  { name = "min", ty = "Vec3", value = "min" },
+  { name = "max", ty = "Vec3", value = "max" },
+]
+
+[[injection]]
+id = "natrium-fog-inside"
+kind = "RETURN"
+target = "horizon_client_render::gfx::<Frusta as Cull>::contains"
+helper = "natrium_fog_inside.rs"
+bindings = [
+  { name = "value", ty = "bool", value = "$value" },
+  { name = "min", ty = "Vec3", value = "min" },
+  { name = "max", ty = "Vec3", value = "max" },
 ]
 
 

@@ -10,6 +10,7 @@ use super::hstudio::{
 };
 use horizon_client::net::hstudio_via as via;
 use super::hstudio_ui::{Input, Key, Mods, UiResult, draw, draw_screen, handle, handle_screen};
+use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
 use horizon_client::clipboard::Clipboard as _;
 use horizon_client::extras::Corner as GameCorner;
@@ -22,7 +23,6 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::time::Instant;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 thread_local! {
@@ -104,7 +104,7 @@ enum GameRef<'h, 'a> {
 /// The game as the studio sees it, for one hook call.
 struct Host<'h, 'a> {
     game: GameRef<'h, 'a>,
-    event_loop: Option<&'h ActiveEventLoop>,
+    event_loop: Option<&'h dyn EventLoopCtl>,
     batch: Option<&'h mut HudBatch>,
     corners: Option<&'h mut Corners>,
     /// While the world draws: its geometry, and the frame's own camera.
@@ -206,7 +206,7 @@ fn degrees_between(a: f32, b: f32, alpha: f64) -> f32 {
 /// Scales the player's `attribute` by `scale` (1: as it is), as the game's
 /// own modifiers do (sprinting's): one of ours, by `id`, taken off first.
 fn scale_attribute(
-    attributes: &mut horizon_world::attributes::live::LiveAttributes<Box<dyn FnMut() -> i32>>,
+    attributes: &mut horizon_world::attributes::live::LiveAttributes<Box<dyn horizon_world::attributes::live::Identities>>,
     attribute: &str,
     id: &str,
     scale: f64,
@@ -358,6 +358,7 @@ fn push_quads(b: &mut HudBatch, list: &[quads::Quad]) {
                 color: hud_color(q[i].argb),
                 depth: 0.0,
                 glint_uv: [0.0, 0.0],
+                text: 0,
             });
         }
     }
@@ -588,6 +589,8 @@ impl GameApi for Host<'_, '_> {
         renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
             path: path.to_path_buf(),
             size: None,
+            // As the window shows it, as before F2 took the game's resolution.
+            scaled: false,
         });
         Ok(())
     }
@@ -1176,7 +1179,8 @@ fn make_way(game: &mut Game<'_>) -> bool {
 /// Hands the game back its screen.
 fn give_back(game: &mut Game<'_>) {
     if game.screen == Screen::Chat {
-        game.close_chat();
+        // As another screen taking its place does: the chat's draft stays.
+        game.close_chat(super::chat::ChatExit::Interrupted);
     }
 }
 
@@ -1197,7 +1201,7 @@ const MAPPING_NAMES: [&str; 9] = [
 
 /// Each frame, with the event loop (poll_control): the input the window
 /// hook queued, the studio's frame, and opening or closing it.
-pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
+pub(super) fn frame(game: &mut Game<'_>, event_loop: &dyn EventLoopCtl) {
     if !game.native_window() {
         return;
     }
@@ -1624,19 +1628,20 @@ thread_local! {
     static CHAT: RefCell<ChatSync> = const { RefCell::new(ChatSync::new()) };
 }
 
-/// The chat's command tree, a server's (`Remote.commands`), as
+/// The chat's command tree for the world's connection (`Remote.chat_tree`), as
 /// hstudio_cmdtree changes it, with the registries the chat parses with.
 struct ChatTree<'g> {
     tree: &'g mut Dispatcher,
     registries: &'g Registries,
 }
 
-/// The tree the chat parses and completes with, when a server sent one
-/// (chat::chat_tree picks it so; without one the chat has the game's own,
-/// which stays as it is).
+/// The tree the chat parses and completes with while connected (chat::chat_tree
+/// picks it so): the server's once it sent one, the game's own before, each
+/// with native mods' commands; Horizon builds it anew for each connection and
+/// tree. Without a connection the chat has the game's own, which stays as it is.
 fn chat_tree<'g>(game: &'g mut Game<'_>) -> Option<ChatTree<'g>> {
     let registries = &game.ui.registries;
-    let tree = game.remote.as_mut()?.commands.as_mut()?;
+    let tree = &mut game.remote.as_mut()?.chat_tree;
     Some(ChatTree { tree, registries })
 }
 
