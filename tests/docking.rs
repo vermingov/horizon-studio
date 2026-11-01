@@ -2630,3 +2630,35 @@ fn a_groups_tabs_stay_on_its_strip() {
         assert!(r[0] + r[2] <= cross, "{p:?}'s tab {r:?} runs past the × at {cross}");
     }
 }
+
+#[test]
+fn the_docs_say_how_the_panes_work() {
+    use horizon_studio::game::hstudio_look::docs_markdown;
+    let docs = docs_markdown();
+    // Their own section, after the looks and before the agents.
+    let (looks, panes, agents) = (
+        docs.find("## Looks").unwrap(),
+        docs.find("## The Editor's panes").expect("the panes' section"),
+        docs.find("## AI agents").unwrap(),
+    );
+    assert!(looks < panes && panes < agents);
+    let section = &docs[panes..agents];
+    for said in [
+        "Drag a tab to move its pane",
+        "The Console, Library and Docs tabs at the top drag in the same way.",
+        "Ctrl+B the script list",
+        "Move ›, Size..., Panes › and Reset layout",
+        "the Menu key's menus end with Layout ›",
+        "Esc gives them back to the code",
+        "layout.txt",
+        "Settings stays a page",
+    ] {
+        assert!(section.contains(said), "{said:?} not in {section}");
+    }
+    // The executor styles say theirs are fixed, and the agents' words are
+    // the panes'.
+    assert!(docs.contains("Their layouts are fixed: the panes move in the Horizon themes."));
+    assert!(docs.contains("The Agent pane says what it did"));
+    assert!(docs.contains("The code's tab strip counts the notes"));
+    assert!(docs.contains("in the note where that pane isn't shown, as in the executor styles"));
+}

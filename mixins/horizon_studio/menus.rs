@@ -5,7 +5,10 @@
 // list's "..." open too. ui.rs routes the keys, the text and the pointer to
 // the menu while it is open, and hands the item chosen to `run`. Items name
 // mods by id and files by path, never by their place in a list: a scan
-// between the menu opening and an item chosen can move them.
+// between the menu opening and an item chosen can move them. A pane's menu
+// (its tab's, its strip's) has the pane's own items, then where it is: Hide,
+// Close (the Library and the Docs), Move, Size..., Panes and Reset layout,
+// which the Menu key's menus on the Editor tab reach through Layout.
 
 use super::hstudio::{GameApi, ModState, Studio};
 use super::hstudio_assist::{definition, documented, module_at, name_at};

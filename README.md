@@ -10,8 +10,8 @@ native Horizon mod that adds:
 - **An in-game editor, laid out like VS Code.** Lua highlighting, suggestions as you type (the whole API, events,
   keywords and your own names, with their signatures and docs), problems found as you type (syntax errors and
   misspelled names, underlined, with their message at the line's end), auto-indent that closes blocks with their
-  `end`, brackets and quotes that close themselves, undo and redo, and under the code a panel with the console, the
-  problems and an AI agent.
+  `end`, brackets and quotes that close themselves, undo and redo, and around the code panes for the script list,
+  the console, the problems and an AI agent, which you size and move about as in VS Code.
 - **An AI agent in the game.** Ask Claude Code or omp, the one installed on your computer, to write or fix the
   script open in the editor: it sees the file, what you selected and its problems, works through Horizon Studio's
   MCP, and types its changes into the editor as you watch, at a caret of its own. It points at the code it means
@@ -112,7 +112,7 @@ In a world, press **F8** (or type `/studio`). Escape or F8 closes it. The world 
 | Tab | What it does | Keys |
 |---|---|---|
 | **Console** | Runs Lua at once. An expression's value is printed, tables expanded. What you register here (`on`, `command`, `every`) runs until `clear()`. Suggestions show as you type. | Enter run · Tab complete · Up/Down history (or choose a suggestion) · Esc close the suggestions · Page Up/Down scroll · Ctrl+L clear |
-| **Editor** | Edits a mod's file (or `scratch.lua`), with the script list beside it and the console, the problems and the agent in a panel under it. Saving reloads the mod. | Ctrl+S save · Ctrl+Enter run in the console (a module's file: save and reload the module) · Ctrl+Space suggest · Tab take a suggestion · Ctrl+\` or Ctrl+J show or hide the panel · Esc back to the code · Ctrl+Z/Y undo/redo · Ctrl+C/X/V · Ctrl+A · Ctrl+D duplicate line · Ctrl+/ comment · Tab/Shift+Tab indent · mouse click and drag · right click or the Menu key: its menu |
+| **Editor** | Edits a mod's file (or `scratch.lua`), in panes with the script list, the console, the problems and the agent (see [The editor](#the-editor)). Saving reloads the mod. | Ctrl+S save · Ctrl+Enter run in the console (a module's file: save and reload the module) · Ctrl+Space suggest · Tab take a suggestion · drag a tab to move its pane · drag the bars to size panes · right click a tab for its menu · Ctrl+\` or Ctrl+J show, focus or hide the panel · Ctrl+B the script list · the Menu key's Layout › to move and size panes from the keys · Esc back to the code · Ctrl+Z/Y undo/redo · Ctrl+C/X/V · Ctrl+A · Ctrl+D duplicate line · Ctrl+/ comment · Tab/Shift+Tab indent · mouse click and drag · right click or the Menu key: its menu |
 | **Library** | Your script mods and the examples, a module with its files; each mod's **...** (or a right click on its row) has its menu: a module's files to open and New file, or a script's Edit, then Reload, Turn off or on, Rename, Duplicate, Make it a module, Delete, Show in folder, Copy path and New mod. Open folder shows the mods folder. | Up/Down choose · Enter edit · Space on/off · R reload · N new script or module · F new file in a module · M make a script a module · . or the Menu key: its menu |
 | **Docs** | The API. | Up/Down, Page Up/Down, wheel |
 | **Settings** | How the studio looks: see [Themes](#themes-and-the-window). | Up/Down, Page Up/Down, wheel |
@@ -125,13 +125,14 @@ commands are in the chat's suggestions, beside the server's.
 
 - **The script list** beside the code has the scratch file, then your mods: a script as one row, a module as a folder
   that a click folds open to its files (opening one of its files unfolds it). A click opens a file, unsaved edits in
-  the one before saved first. The **+** at its top makes a new script or module, or a new file of the module open.
+  the one before saved first. The **+** in its strip makes a new script or module, or a new file of the module open.
   Each row's **...** (or a right click on it) has its menu (see [Right-click menus](#right-click-menus)): a mod's
   Reload, Turn off or on, Rename, Duplicate, Make it a module and Delete, a module's New file, a file's Rename and
   Delete. A delete asks first and moves the file or mod to `trash/` beside the mods folder (an older copy of the
   same name there stays, as `test (2).lua`), and the editor follows a file that is renamed or made a module.
   Ctrl+Enter on a module's file saves it and reloads the module, since the console can't `require` its files; when
-  a module fails in another of its files, a chip by the title says where (*Failed in lib.lua:5*) and opens it there.
+  a module fails in another of its files, a chip on the code's tab strip says where (*Failed in lib.lua:5*) and opens
+  it there.
 - **Suggestions** open as you type a name: after `player.` the player's functions, after `on("` the events, and
   otherwise the libraries, the standard library, keywords and the names in your file, best matches first. Each shows
   its kind, its signature, and beside the list what it does. Up and Down choose, Tab takes one (Enter too, once you
@@ -141,7 +142,7 @@ commands are in the chat's suggestions, beside the server's.
 - **Problems** are found as you type, a second after you stop typing: a syntax error underlined in red where the parser
   stopped, and in amber a name nothing defines (*nothing defines 'plyer' (did you mean player?)*) or a library
   function that doesn't exist (*player has no 'poss'*). Each line with one has a dot in the gutter and its message at
-  the end, the scrollbar marks where they are, and the count by the file's name opens the Problems panel. A runtime
+  the end, the scrollbar marks where they are, and the count by the file's name shows the Problems pane. A runtime
   error still marks its line in red. In a module's file, what the other files define for all of it is known: their
   globals (`_G.x = ` and `getgenv().x = ` set one too), and a member they add to a table as that member alone (their
   `function chat.shout` leaves `chat.sya` a typo; their parameters, loop names and tables' fields, one a line or not,
@@ -152,9 +153,31 @@ commands are in the chat's suggestions, beside the server's.
   closes the block below with its `end` (`end)` for a function passed to a call, `until` for `repeat`), unless it is
   already closed. Brackets and quotes close themselves, typing the closing one steps over it, and Backspace between
   an empty pair deletes both. A selection typed over with a bracket or quote is wrapped in it.
-- **The panel** under the code has three tabs: the **Console** (the same log and input as the Console tab),
-  **Problems** (a click, or Enter, goes to one) and the **Agent**. Drag the bar above it to size it; Ctrl+\` hides
-  and shows it; a click in it, or on a tab, sends typing there, and Esc back to the code.
+- **The panes** are groups, each with a strip of tabs: by default the script list at the left, the code, and under
+  it **the panel** (the group holding the console) with the **Console** (the same log and input as the Console tab),
+  **Problems** (a click, or Enter, goes to one) and the **Agent**. The code's strip has the file's name and its
+  unsaved dot, the problems count, the *Failed in* chip, the notes or lesson chip, and Save and Run; the script
+  list's has its +. Drag the bar between two groups to size them: each stops where a pane would be too small to use
+  (the code keeps 300 x 140, the console, problems and agent 120 high, two lines and the input). Drag a tab to move
+  its pane: a tinted area shows where it lands, among a group's tabs where the pointer is (a bar marks the place),
+  beside a group in its outer quarter, among its tabs in its middle, or along the left, right or bottom edge. Where
+  there is no room beside a group without pushing another pane out, it joins that group's tabs instead, and the
+  tinted area says so before you let go; Esc, or letting go over nothing, cancels. The Console, Library and Docs tabs
+  at the top drag in the same way. A strip's × hides its group, in place, and a notice says how it comes back (the
+  code's group has none, nor has the script list's, which **Ctrl+B** shows and hides); **Ctrl+\`** or **Ctrl+J**
+  shows the panel, wherever it was moved, with its front pane taking the keys, and hides it while it has them.
+- **A tab's menu** (a right click on it, or on its strip) has the pane's own items, then Hide, Close (the Library and
+  the Docs), Move › (beside the code, with the code or another group, along an edge), Size... (its bars from the
+  arrow keys: Shift faster, Tab the next, Enter done), Panes › (every pane: one chosen comes to the front with the
+  keys) and Reset layout, which Undo reset layout takes back. The Menu key's menus end with Layout ›, which has the
+  same, so the keys alone move and size every pane. The **Library** and the **Docs** dock as panes too, from Panes ›,
+  from Dock in the Editor in their own menus or by dragging their tab at the top, and Show in Docs goes to a docked
+  Docs, leaving the keys in the code.
+- **The keys** go to the pane you click in (its strip's buttons leave them where they are), and Esc gives them back
+  to the code; they never reach a pane that isn't drawn, and suggestions stay with the pane they opened in. In a
+  small window the pane in use takes the room and a group stacked under or over it keeps its strip, a click away; a
+  drop or a pane shown never pushes another out. The layout is kept in `layout.txt` in the studio's folder, written
+  at every change.
 - **The file on disk** is watched: when something else changes it (another editor, or the agent), the editor reads it
   again, keeping your place, and Ctrl+Z goes back. A change of up to 60 lines is typed in as you watch, as the
   agent's own edits are (with Motion off, or a bigger change, it comes in at once). If you had unsaved edits, it asks
@@ -167,9 +190,10 @@ commands are in the chat's suggestions, beside the server's.
 
 A right click opens the menu of what is under the pointer, at the pointer: the code, the file's name, the console's
 lines and the agent's conversation and their input lines, the rows of the script list and the Library, the examples,
-the panel's tabs, the problems, the title bar and the header, and the Docs. The **Menu key** (or **Shift+F10**) opens
-the menu of what has the keys: the code's at the cursor, an input line's, the Library's chosen mod's and the Problems'
-chosen problem's (the list's own menu while it is empty). Up and Down choose (Home and End go to the first and the
+the panes' tabs and strips, the problems, the title bar and the header, and the Docs. The **Menu key** (or
+**Shift+F10**) opens the menu of what has the keys: the code's at the cursor, an input line's, the Library's chosen
+mod's and the Problems' chosen problem's (the list's own menu while it is empty); on the Editor tab it ends with
+Layout ›, where that pane is moved and sized. Up and Down choose (Home and End go to the first and the
 last), Enter or Space does it, a letter goes to the next item that starts with it, and Escape, or a click or the wheel
 outside it, closes it. A menu taller than the screen scrolls. Items that can't do anything now are greyed out, and
 each shows its shortcut.
@@ -195,14 +219,17 @@ each shows its shortcut.
 - **The console's lines** and **the agent's conversation**: Copy what is selected, Copy all, Clear (or Stop and New
   conversation). **Their input lines**: the console's Paste, Copy, Cut and Clear the line, Run and Clear the console;
   the agent's Paste, Clear the line, Send and Stop.
-- **The panel's tabs**: Copy all, Clear, Copy all problems, the agents found and Look for agents again, Model ›, Hide
-  the panel. **A problem**: Go to it, Copy, Fix with the agent.
+- **A pane's tab or strip**: its own items (Copy all, Clear, Copy all problems, the agents found and Look for agents
+  again, Model ›; the file's on the code's tab), then Hide the panel (or the script list, or the group by its tabs),
+  Close for the Library and the Docs, Move ›, Size..., Panes › and Reset layout. **A problem**: Go to it, Copy, Fix
+  with the agent.
 - **The title bar** and **the header**: Roll up, Fill the screen, Reset window, In a window or Full screen, Theme ›,
-  Settings, Close. An item ending in › puts its list in the menu's place, so an executor style is left in two clicks.
+  Panes ›, Reset layout, Settings, Close. An item ending in › puts its list in the menu's place, so an executor
+  style is left in two clicks.
 
 The executor styles have the same menus (ProtoSmasher's theme dropdown lists the themes on a right click); asking the
-agent is the studio's own layout's, which has its panel. What a menu did, such as *Copied 42 characters*, shows at the
-bottom of the studio a moment.
+agent is the studio's own layout's, which has the Agent pane. What a menu did, such as *Copied 42 characters*, shows
+at the bottom of the studio a moment.
 
 ### The agent
 
@@ -222,29 +249,33 @@ game) opens any script, reads it as you have it, unsaved edits included, and typ
 own with its name on a flag: the code it replaces shows in red a moment, then the new code comes in, in 2 s at most.
 Your cursor and selection keep their place, and the view follows the agent until you scroll. Any key or click puts
 the rest of its change in at once, so your key lands where you type; Ctrl+Z takes a whole change back, and Ctrl+Y
-puts it back. With Motion off, or while you are typing, its changes land at once. It never switches your file or tab
-while you use the studio: a change to a file you don't have open is written to disk (the mod reloads), and a note
-over the code shows it. Its changes stay unsaved until it saves them or you press Ctrl+S (with the studio closed they
+puts it back. With Motion off, while you are typing, or while the code isn't shown (behind another tab, or squeezed
+to its strip), its changes land at once. It never switches your file or tab while you use the studio: a change to a
+file you don't have open is written to disk (the mod reloads), and a note over the code shows it. A file it opens
+brings the code to the front without taking your keys, and never covers the pane you are typing in. Its changes
+stay unsaved until it saves them or you press Ctrl+S (with the studio closed they
 are saved at once, unless the file has unsaved edits of yours); nothing you are typing is saved for you, and a file
 changed on disk meanwhile isn't written over. When the game's own agent finishes a turn
-well, its unsaved edits are saved; otherwise the panel says they aren't, and how to keep them or take them back.
-Each thing it did in the editor has a line in the panel (*Typed lines 12-19 into timer.lua*), and **Show** on it
-goes to that code.
+well, its unsaved edits are saved; otherwise the Agent pane says they aren't, and how to keep them or take them
+back. Each thing it did in the editor has a line in the Agent pane (*Typed lines 12-19 into timer.lua*), and **Show**
+on it goes to that code.
 
 **It points at code.** Ask *why does my timer never stop?* and the agent can highlight the lines at fault, in red
 for an error (amber for a warning, green for something right, the accent for a note), with a note beside them: the
 view goes there unless you are busy, and your cursor stays. The newest note shows in a bubble under its lines; the
 others show at the end of their first line, and a click opens them. The bubble's × removes a note, Esc closes the
-bubble, and the editor's header says how many notes there are (*3 notes*: a click goes to the next, its × clears
+bubble, and the code's tab strip says how many notes there are (*3 notes*: a click goes to the next, its × clears
 them all). Notes stay on their lines as you edit, and one for a file you don't have open waits there; **Show** on
-its line in the panel opens it.
+its line in the Agent pane opens it.
 
 **It teaches in the editor.** Ask *teach me events* and the agent can give you a lesson: numbered steps over your
-code, each a few lines with a note, something to try (*Try: change 20 to 40*) and, in the Agent panel, a longer
-explanation. **Next** and **Back** in the note (or Alt+Right and Alt+Left) go through the steps, opening another
+code, each a few lines with a note, something to try (*Try: change 20 to 40*) and, in the Agent pane (in the note
+when that pane isn't shown), a longer explanation. **Next** and **Back** in the note (or Alt+Right and Alt+Left) go
+through the steps, opening another
 file when a step is in one; **Done** on the last ends the lesson, and so does its ×. **Check** asks the agent to
-look at what you did: it reads your code, marks any mistake and tells you how you did. The editor's header shows
-*Lesson 2/5*. While the agent waits for you the panel says *Waiting for you*, and Enter sends it what you write.
+look at what you did: it reads your code, marks any mistake and tells you how you did. The code's tab strip shows
+*Lesson 2/5*. A lesson shows the Agent pane, unless it would cover the pane you are typing in. While the agent waits
+for you the Agent pane says *Waiting for you*, and Enter sends it what you write.
 The executor styles get the same notes and buttons, with the explanation in the note.
 
 It works in your mods folder and runs with its own permissions: Claude Code may use Horizon Studio's MCP tools and
@@ -261,13 +292,18 @@ Settings, the last tab, chooses how the studio looks, and keeps it in `look.txt`
   the executor styles below.
 - **Window.** Full screen, or a window like a Windows 10 application's: drag it by its title bar, size it from its
   bottom right corner, roll it up to its title bar (—), fill the screen (□) or close it (×). Reset window puts it
-  back in the middle. A right click on the title bar (or on the header) has all of these, and Theme ›.
+  back in the middle. A right click on the title bar (or on the header) has all of these, Theme ›, Panes › and
+  Reset layout.
 - **Accent**, the colour of the main buttons, the cursor and the selection; **Size**, of everything, 75% to 150%;
   **Backdrop**, how much the studio hides the game; **Code size**, in the editor and console; **Animations** on or
   off.
+- **Layout.** Reset layout puts the Editor tab's panes back where they start, and Undo reset layout takes that back.
+  The panes' layout is kept in `layout.txt`, beside `look.txt`. Settings itself stays a page, as it restyles the
+  whole studio, the panes included.
 
 The executor styles lay the studio out as the script executors of old Roblox days did, each always in its own
-window. Only their shape and colours are copied; the window says Horizon Studio, and RC7's letters read HS.
+window. Only their shape and colours are copied; the window says Horizon Studio, and RC7's letters read HS. Their
+layouts are fixed: the panes move in the Horizon themes, and Settings' Reset the panes resets them there.
 
 | Style | Its layout |
 |---|---|
@@ -897,12 +933,12 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `net.rs`, `crypt.rs` (`hstudio_net`, `hstudio_crypt`) | HTTP and WebSockets for scripts (the internet only); hashes, Base64 and LZ4 |
 | `studio.rs` (`hstudio`) | Script mods, hot reloading, events, timers, the API, the console |
 | `chatcmd.rs`, `cmdtree.rs` (`hstudio_chatcmd`, `hstudio_cmdtree`) | The scripts' commands in the chat: what `command` declares (arguments, kinds, completions), and their place in the chat's command tree |
-| `ui.rs` (`hstudio_ui`) | The screen: console, editor, library, docs, settings; input, the window's moving and sizing |
+| `ui.rs` (`hstudio_ui`) | The screen: console, editor, library, docs, settings; input, the window's moving and sizing, the Editor tab's panes (which has the keys, dragging and sizing them) |
 | `assist.rs` (`hstudio_assist`) | The editor's and console's suggestions, and the live check of a script (syntax, unknown names) |
 | `agent.rs` (`hstudio_agent`) | The in-game agent: finding Claude Code and omp, running one with the editor's context, reading its events |
 | `coach.rs` (`hstudio_coach`) | AI agents in the player's editor: which file a request means, reading and opening, edits typed in at the agent's own caret, saving, marks that follow their lines, lessons and what the player does for an agent waiting, the Agent panel's lines that go to the code |
 | `meshes.rs` (`hstudio_meshes`) | Textures and meshes: PNG and base64, `.obj` and `.bbmodel`, box UV, drawing them as textured triangles |
-| `look.rs` (`hstudio_look`) | How the screen draws: the studio's layout, Settings, the Windows 10 window, script screens |
+| `look.rs` (`hstudio_look`) | How the screen draws: the studio's layout and the Editor tab's panes (their strips, bars and bodies kept to their place), Settings, the Windows 10 window, script screens |
 | `theme.rs` (`hstudio_theme`) | The themes' palettes, and the look chosen in Settings (`look.txt`) |
 | `skins.rs` (`hstudio_skins`) | The executor styles' layouts |
 | `dock.rs` (`hstudio_dock`) | The Editor tab's panes: where they are (a tree of splits and groups of tabs), their sizes, moving them, and the layout kept (`layout.txt`) |

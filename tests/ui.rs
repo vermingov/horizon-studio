@@ -3913,7 +3913,7 @@ fn the_footer_and_the_docs_say_how_menus_work() {
     let docs = docs_markdown();
     assert!(docs.contains("Right-click a script or a module"), "Script mods");
     assert!(
-        docs.contains("Right-click the title bar for the window and the theme."),
+        docs.contains("Right-click the title bar for the window, the theme and the panes."),
         "Looks"
     );
 }

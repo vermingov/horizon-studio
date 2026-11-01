@@ -4,6 +4,12 @@
 // with the game's own GUI font and rectangles through GameApi, in Horizon's
 // dark design tokens (docs/design-system.md): a veil over the world, plates
 // for the console and code, 1 px rules, one accent for the main action.
+// The Editor tab is panes the player sizes and moves, which the dock
+// (hstudio_dock) places: the script list, the code, the console, the
+// problems, the agent, and the Library and the Docs once docked. Here are
+// which of them has the keys (only ever one that is drawn), the drags of
+// their bars and tabs (the Console's, Library's and Docs' tabs at the top
+// too), sizing from the keys, and what their menus' items do.
 
 use super::hstudio::{API, CONSOLE_API, Font, GameApi, LogKind, Owner, Studio};
 pub use super::hstudio_dock::{Bar, Dock, DrawnLeaf, DropAt, DropSpot, Pane, Side};

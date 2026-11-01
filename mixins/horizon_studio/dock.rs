@@ -1,9 +1,10 @@
 // The Editor tab's panes, as in Visual Studio: a tree of splits, side by
 // side or stacked, each with its ratio, whose leaves are groups of tabs,
 // each pane in it once. Where they go in the tab's area (no pane smaller
-// than it is useful in while there is room, the pane in use first where
-// there isn't, and a stacked group that gives way keeping its strip), the
-// moves a drag, a menu or a key makes, where a dragged tab would land, and
+// than it is useful in, nor a strip too short for its tabs, while there is
+// room, the pane in use first where there isn't, and a stacked group that
+// gives way keeping its strip), the moves a drag, a menu or a key makes
+// (none taking another pane's place), where a dragged tab would land, and
 // the layout kept in `layout.txt` in the studio's folder. Plain std: it
 // draws nothing and knows nothing of the game.
 
