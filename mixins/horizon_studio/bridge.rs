@@ -1327,7 +1327,9 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
             give_back(game);
         }
         OPEN.with(|o| o.set(st.overlay_open()));
-        CHAT_FREE.with(|c| c.set(game.screen == Screen::Chat && !st.overlay_open()));
+        let chat_free = game.screen == Screen::Chat && !st.overlay_open();
+        CHAT_FREE.with(|c| c.set(chat_free));
+        st.set_chat_open(chat_free);
     });
 }
 

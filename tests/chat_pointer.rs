@@ -115,3 +115,51 @@ fn stop_ends_what_the_console_ran_and_it_runs_again() {
         Some("Nothing the console ran is running")
     );
 }
+
+#[test]
+fn with_the_chat_open_the_pointer_stays_where_the_mouse_is_between_frames() {
+    let mut game = FakeGame::new("chat-pointer-stays");
+    let mut st = studio(&mut game);
+    game.write_mod(
+        "btn.lua",
+        r#"
+        local gui = Instance.new("ScreenGui")
+        local b = Instance.new("TextButton", gui)
+        b.Position = UDim2.new(0, 100, 0, 100)
+        b.Size = UDim2.new(0, 120, 0, 40)
+        b.MouseButton1Click:Connect(function() print("clicked") end)
+        b.MouseEnter:Connect(function() print("over") end)
+        gui.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+        "#,
+    );
+    st.set_chat_open(true);
+    for _ in 0..12 {
+        run_for(&mut st, &mut game, 0.05);
+        st.hud(&mut game);
+    }
+    let k = st.s.ui.dp_factor();
+    st.chat_pointer(&Input::Mouse(150.0 / k, 120.0 / k));
+    // Frames go by with no mouse event: the pointer is still over the
+    // button, not at the crosshair, so the click is the button's.
+    for _ in 0..6 {
+        run_for(&mut st, &mut game, 0.05);
+        st.hud(&mut game);
+    }
+    assert!(st.chat_pointer(&Input::Button { left: true, down: true }));
+    run_for(&mut st, &mut game, 0.05);
+    assert!(st.chat_pointer(&Input::Button {
+        left: true,
+        down: false
+    }));
+    run_for(&mut st, &mut game, 0.1);
+    let printed: Vec<String> = log(&st)
+        .iter()
+        .filter_map(|l| l.strip_prefix("[btn] ").map(str::to_owned))
+        .collect();
+    assert_eq!(printed, ["over", "clicked"], "{:?}", log(&st));
+    // The chat closes: the pointer is the game's crosshair again.
+    st.set_chat_open(false);
+    run_for(&mut st, &mut game, 0.05);
+    st.hud(&mut game);
+    assert_ne!((st.s.rbx.pointer.x, st.s.rbx.pointer.y), (150.0, 120.0));
+}

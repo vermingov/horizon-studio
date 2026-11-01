@@ -326,3 +326,52 @@ fn a_roblox_script_s_chat_message_goes_to_the_game_s_chat() {
     run_for(&mut st, &mut game, 0.8);
     assert_eq!(game.sent, ["hello from roblox", "and the old chat"]);
 }
+
+#[test]
+fn saveinstance_writes_a_model_studio_and_the_reader_open() {
+    let mut game = FakeGame::new("compat-save");
+    let mut st = studio(&mut game);
+    game.write_mod(
+        "t.lua",
+        r#"
+        local char = game.Players.LocalPlayer.Character
+        local part = Instance.new("Part")
+        part.Name = "Saved <&> part"
+        part.Size = Vector3.new(2, 3, 4)
+        part.Color = Color3.fromRGB(255, 0, 0)
+        part.Parent = char
+        print(saveinstance(char), SaveInstance(part, "one"), ypcall == pcall)
+        print(decompile(char.Animate):sub(1, 21))
+        "#,
+    );
+    run_for(&mut st, &mut game, 0.8);
+    let p: Vec<String> = log(&st)
+        .iter()
+        .filter_map(|l| l.strip_prefix("[t] ").map(|s| s.replace("    ", "\t")))
+        .collect();
+    assert_eq!(
+        p,
+        ["Player1.rbxmx\tone.rbxmx\ttrue", "local Character = scr"],
+        "{:?}",
+        log(&st)
+    );
+    let dir = st.s.rbx.workspace_dir.clone();
+    let bytes = std::fs::read(dir.join("Player1.rbxmx")).unwrap();
+    let file = horizon_studio::game::hstudio_rbx_file::read(&bytes).unwrap();
+    let names: Vec<&str> = file.roots.iter().map(|&r| file.items[r].class.as_str()).collect();
+    assert_eq!(names, ["Model"]);
+    let part = file
+        .items
+        .iter()
+        .find(|i| i.properties.iter().any(|(k, v)| k == "Name" && matches!(v, horizon_studio::game::hstudio_rbx_file::PropValue::String(s) if s == b"Saved <&> part")))
+        .expect("the part, its name escaped and read back");
+    assert_eq!(part.class, "Part");
+    assert!(
+        part.properties.iter().any(|(k, _)| k == "Size"),
+        "{:?}",
+        part.properties
+    );
+    let animate = file.items.iter().find(|i| i.class == "LocalScript").unwrap();
+    assert!(animate.properties.iter().any(|(k, v)| k == "Source"
+        && matches!(v, horizon_studio::game::hstudio_rbx_file::PropValue::String(s) if s.starts_with(b"local Character"))));
+}

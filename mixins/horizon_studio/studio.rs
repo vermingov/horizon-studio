@@ -1758,6 +1758,22 @@ impl Studio {
     /// wheel over one of its objects goes to it rather than to the chat, as
     /// does the release of a press it took. `input` in GUI pixels, as the
     /// window gives them. Whether the GUI took it.
+    /// Whether the game's chat is open with the pointer free (the bridge
+    /// says each frame): the scripts' GUI keeps the pointer where the mouse
+    /// is meanwhile. Closing it lets go of what the chat's pointer held.
+    pub fn set_chat_open(&mut self, open: bool) {
+        let rbx = &mut self.s.rbx;
+        if rbx.pointer.chat_open && !open {
+            for (i, left) in [(0, true), (1, false)] {
+                if rbx.pointer.chat_held[i] {
+                    rbx.pointer.chat_held[i] = false;
+                    super::hstudio_rbx_draw::pointer_button(rbx, left, false);
+                }
+            }
+        }
+        rbx.pointer.chat_open = open;
+    }
+
     pub fn chat_pointer(&mut self, input: &Input) -> bool {
         if self.overlay_open() {
             return false;
@@ -2547,6 +2563,11 @@ impl Studio {
         g.set_str("workspace", ws.clone());
         g.set_str("Workspace", ws);
         g.set_str("shared", Value::table(Table::new()));
+        // Roblox's older name for pcall, which yields as pcall does.
+        let pcall = g.get_str("pcall");
+        if !pcall.is_nil() {
+            g.set_str("ypcall", pcall);
+        }
     }
 
     fn console_env(&mut self) -> TableRef {

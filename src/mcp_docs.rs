@@ -7723,6 +7723,52 @@ local r = NumberRange.new(1, 5)
 "##
     ),
     e!(
+        "saveinstance",
+        "executor",
+        r##"
+`saveinstance([object | file, object | options])`
+
+Saves an Instance and everything in it as a Roblox XML model (`.rbxmx`)
+in the workspace folder, or the whole place (`.rbxlx`: its services with
+what is in them) when given none or `game`, and returns the file's name.
+Studio opens both. Options: `FileName`, `Object`.
+
+```lua
+saveinstance(workspace.Model)                 -- Model.rbxmx
+saveinstance({ FileName = "my place" })       -- my place.rbxlx
+```
+"##
+    ),
+    e!(
+        "SaveInstance",
+        "executor",
+        r##"
+`SaveInstance(object, file)`
+
+Elysian's name for `saveinstance(file, object)`: the object as an XML
+model in the workspace folder.
+
+```lua
+SaveInstance(workspace.Model, "model")       -- model.rbxmx
+```
+"##
+    ),
+    e!(
+        "decompile",
+        "executor",
+        r##"
+`decompile(script)`
+
+A script's source as text: its Source, or the file of a mod it runs (here
+the source itself is at hand, so nothing is guessed from bytecode). A
+script with none gives a comment saying so.
+
+```lua
+print(decompile(game.Players.LocalPlayer.Character.Animate))
+```
+"##
+    ),
+    e!(
         "PhysicalProperties.new",
         "roblox",
         r##"
@@ -7735,6 +7781,19 @@ A part's physics (`CustomPhysicalProperties`): `Density`, `Friction`,
 ```lua
 part.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.3, 0.5)
 local wood = PhysicalProperties.new(Enum.Material.Wood)
+```
+"##
+    ),
+    e!(
+        "ypcall",
+        "roblox",
+        r##"
+`ypcall(f, ...)`
+
+Roblox's older name for `pcall` (which can yield): the same function.
+
+```lua
+local ok, err = ypcall(function() error("no") end)
 ```
 "##
     ),

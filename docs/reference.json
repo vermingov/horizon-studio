@@ -1834,9 +1834,29 @@
       "doc": "`NumberRange.new(min[, max])`\n\nA range: `Min`, `Max`.\n\n```lua\nlocal r = NumberRange.new(1, 5)\n```"
     },
     {
+      "name": "saveinstance",
+      "topic": "executor",
+      "doc": "`saveinstance([object | file, object | options])`\n\nSaves an Instance and everything in it as a Roblox XML model (`.rbxmx`)\nin the workspace folder, or the whole place (`.rbxlx`: its services with\nwhat is in them) when given none or `game`, and returns the file's name.\nStudio opens both. Options: `FileName`, `Object`.\n\n```lua\nsaveinstance(workspace.Model)                 -- Model.rbxmx\nsaveinstance({ FileName = \"my place\" })       -- my place.rbxlx\n```"
+    },
+    {
+      "name": "SaveInstance",
+      "topic": "executor",
+      "doc": "`SaveInstance(object, file)`\n\nElysian's name for `saveinstance(file, object)`: the object as an XML\nmodel in the workspace folder.\n\n```lua\nSaveInstance(workspace.Model, \"model\")       -- model.rbxmx\n```"
+    },
+    {
+      "name": "decompile",
+      "topic": "executor",
+      "doc": "`decompile(script)`\n\nA script's source as text: its Source, or the file of a mod it runs (here\nthe source itself is at hand, so nothing is guessed from bytecode). A\nscript with none gives a comment saying so.\n\n```lua\nprint(decompile(game.Players.LocalPlayer.Character.Animate))\n```"
+    },
+    {
       "name": "PhysicalProperties.new",
       "topic": "roblox",
       "doc": "`PhysicalProperties.new(density, friction, elasticity[, frictionWeight, elasticityWeight] | material)`\n\nA part's physics (`CustomPhysicalProperties`): `Density`, `Friction`,\n`Elasticity`, `FrictionWeight`, `ElasticityWeight`. Given an\n`Enum.Material`, that material's own.\n\n```lua\npart.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.3, 0.5)\nlocal wood = PhysicalProperties.new(Enum.Material.Wood)\n```"
+    },
+    {
+      "name": "ypcall",
+      "topic": "roblox",
+      "doc": "`ypcall(f, ...)`\n\nRoblox's older name for `pcall` (which can yield): the same function.\n\n```lua\nlocal ok, err = ypcall(function() error(\"no\") end)\n```"
     },
     {
       "name": "settings",

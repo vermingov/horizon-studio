@@ -1291,6 +1291,26 @@ fn api_class_def(name: &str) -> Option<&'static C> {
     Some(c)
 }
 
+/// Roblox's older lower camel case names (className, archivable,
+/// brickColor, findFirstChild), which its API lists beside the members
+/// they are: the member's own name.
+fn api_alias(c: &'static C, key: String) -> String {
+    let mut cs = key.chars();
+    let Some(first) = cs.next().filter(char::is_ascii_lowercase) else {
+        return key;
+    };
+    if super::hstudio_rbx_api::member(c.name, &key).is_none() {
+        return key;
+    }
+    let upper = first.to_ascii_uppercase().to_string() + cs.as_str();
+    let known = matches!(upper.as_str(), "Name" | "ClassName" | "Parent")
+        || find_prop(c, &upper).is_some()
+        || find_method(c, &upper).is_some()
+        || has_event(c, &upper)
+        || super::hstudio_rbx_api::member(c.name, &upper).is_some();
+    if known { upper } else { key }
+}
+
 /// Member `name` of Roblox's API for class `c`, when the layer's own
 /// class doesn't have it.
 fn api_member(c: &'static C, name: &str) -> Option<&'static super::hstudio_rbx_api::Member> {
@@ -1533,6 +1553,9 @@ pub struct Pointer {
     /// Presses the game's open chat gave the GUI (the left and right
     /// buttons), whose releases are the GUI's too.
     pub chat_held: [bool; 2],
+    /// The game's chat is open, its pointer free over the GUI (Studio's
+    /// set_chat_open): the pointer stays where the mouse is, not the crosshair.
+    pub chat_open: bool,
 }
 
 pub struct Rbx {
@@ -2532,6 +2555,7 @@ const METHODS: &[(&str, &str)] = &[
     ("FindPartOnRayWithIgnoreList", "Workspace"),
     ("FindPartOnRayWithWhitelist", "Workspace"),
     ("GetBlock", "Terrain"),
+    ("CopyRegion", "Terrain"),
     ("ReadVoxels", "Terrain"),
     ("WorldToCell", "Terrain"),
     ("WorldToCellPreferSolid", "Terrain"),
@@ -2926,6 +2950,7 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
             env.rbx().inst(id).class.name
         )));
     };
+    let k = api_alias(env.rbx().inst(id).class, k);
     super::hstudio_rbx_world::before_read(env, id, &k);
     if matches!(k.as_str(), "ViewportSize" | "ViewSizeX" | "ViewSizeY") {
         let snap = env_snapshot(env);
@@ -3376,6 +3401,7 @@ fn newindex(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Result<(), Thro
     let v = args.get(2).cloned().unwrap_or_default();
     let rbx = env.rbx();
     let c = rbx.inst(id).class;
+    let key = api_alias(c, key);
     if rbx.inst(id).unscriptable.contains(&key) {
         return Err(lua.rt_error(format!(
             "{key} is not a valid member of {} \"{}\"",

@@ -2995,7 +2995,8 @@ pub fn mouse_refresh(env: &mut dyn Env) {
     let game = env.game();
     let (w, h, _) = game.dp();
     let Some(cam) = game.camera() else { return };
-    let (mx, my) = if free {
+    let chat = env.rbx().pointer.chat_open;
+    let (mx, my) = if free || chat {
         (px, py)
     } else {
         (f64::from(w) / 2.0, f64::from(h) / 2.0)
@@ -3067,7 +3068,7 @@ pub fn sync(rbx: &mut Rbx, game: &mut dyn GameApi) {
         // The pointer is the crosshair while the game has it.
         let (mx, my) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
         let m = rbx.mouse;
-        if !rbx.pointer.free {
+        if !rbx.pointer.free && !rbx.pointer.chat_open {
             rbx.pointer.x = mx;
             rbx.pointer.y = my;
             rbx.quiet_set(m, "X", Value::Num(mx));

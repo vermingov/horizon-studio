@@ -64,6 +64,9 @@ pub const FUNCTIONS: &[(&str, u32)] = &[
     ("dumpstring", 2065),
     ("getscripthash", 2066),
     ("getscriptfromthread", 2067),
+    ("decompile", 2068),
+    ("saveinstance", 2069),
+    ("SaveInstance", 2074),
     ("gethiddenproperty", 2070),
     ("sethiddenproperty", 2071),
     ("isscriptable", 2072),
@@ -1369,19 +1372,23 @@ impl Ctx<'_> {
         self.s.rbx.script_envs.push((id, v.clone()));
         v
     }
-    /// A script's Source compiled to a function, in its own environment
-    /// (none when it has no source or the source doesn't compile).
-    fn compile_source(&mut self, lua: &mut Lua, id: Id) -> Option<Value> {
-        let rbx = &self.s.rbx;
-        let n = rbx.inst(id);
+    /// A script's Source (none when it has none).
+    fn script_source(&self, id: Id) -> Option<Vec<u8>> {
+        let n = self.s.rbx.inst(id);
         if !is_a(n.class, "LuaSourceContainer") {
             return None;
         }
-        let src = match n.props.iter().find(|(k, _)| **k == "Source").map(|(_, v)| v) {
+        match n.props.iter().find(|(k, _)| **k == "Source").map(|(_, v)| v) {
             Some(v) if v.as_bytes().is_some_and(|b| !b.is_empty()) => v.as_bytes().map(<[u8]>::to_vec),
             _ => n.extra.get("Source").and_then(Value::as_bytes).map(<[u8]>::to_vec),
         }
-        .filter(|b| !b.is_empty())?;
+        .filter(|b| !b.is_empty())
+    }
+    /// A script's Source compiled to a function, in its own environment
+    /// (none when it has no source or the source doesn't compile).
+    fn compile_source(&mut self, lua: &mut Lua, id: Id) -> Option<Value> {
+        let src = self.script_source(id)?;
+        let rbx = &self.s.rbx;
         let chunk = rbx.full_name(id);
         let Value::Table(env) = self.script_env(id) else {
             return None;
@@ -1791,6 +1798,103 @@ impl Ctx<'_> {
             }
             // Every thread here is the executor's: no game script calls.
             2063 | 2067 => one(Value::Nil),
+            // saveinstance([object | path, object | options]) and Elysian's
+            // SaveInstance(object, file): an XML model (or the place) in the
+            // workspace folder.
+            2069 | 2074 => {
+                let rbx = &self.s.rbx;
+                let mut object = None;
+                let mut file = None;
+                for a in args.iter().take(3) {
+                    if let Some(o) = rbx.id_of(a) {
+                        object.get_or_insert(o);
+                    } else if let Some(t) = a.as_text().filter(|_| matches!(a, Value::Str(_))) {
+                        file.get_or_insert(t);
+                    } else if let Value::Table(t) = a {
+                        let t = t.borrow();
+                        for k in ["FileName", "FilePath", "filename", "Path"] {
+                            if let Some(f) = t.get_str(k).as_text() {
+                                file.get_or_insert(f);
+                            }
+                        }
+                        for k in ["Object", "Instance", "object"] {
+                            if let Some(o) = rbx.id_of(&t.get_str(k)) {
+                                object.get_or_insert(o);
+                            }
+                        }
+                    }
+                }
+                let object = object.unwrap_or(rbx.game);
+                let place = object == rbx.game;
+                let roots: Vec<Id> = if place {
+                    // The place's services with what is in them (not the
+                    // players or Roblox's own GUI), as Studio saves a place.
+                    rbx.inst(rbx.game)
+                        .children
+                        .iter()
+                        .copied()
+                        .filter(|&c| {
+                            !matches!(rbx.inst(c).class.name, "Players" | "CoreGui") && !rbx.inst(c).children.is_empty()
+                        })
+                        .collect()
+                } else {
+                    vec![object]
+                };
+                let ext = if place { "rbxlx" } else { "rbxmx" };
+                let mut name = file.unwrap_or_else(|| {
+                    let place_id = rbx.raw_get(rbx.game, "PlaceId").to_num().unwrap_or(0.0);
+                    if place {
+                        format!("place_{place_id}")
+                    } else {
+                        rbx.inst(object).name.clone()
+                    }
+                });
+                if !name.ends_with(".rbxlx")
+                    && !name.ends_with(".rbxmx")
+                    && !name.ends_with(".rbxm")
+                    && !name.ends_with(".rbxl")
+                {
+                    name = format!("{name}.{ext}");
+                }
+                // A binary name gets the XML it holds.
+                if let Some(stem) = name.strip_suffix(".rbxm").or_else(|| name.strip_suffix(".rbxl")) {
+                    name = format!("{stem}.{ext}");
+                }
+                let xml = super::hstudio_rbx_save::rbxmx(rbx, &roots);
+                lua.charge(xml.len() / 64)?;
+                let p = sandboxed(lua, &self.workspace(), &name, fname)?;
+                writable(lua, &p, fname)?;
+                if let Some(dir) = p.parent() {
+                    std::fs::create_dir_all(dir).map_err(|e| io_err(lua, fname, e))?;
+                }
+                std::fs::write(&p, xml.as_bytes()).map_err(|e| io_err(lua, fname, e))?;
+                one(Value::str(&name))
+            }
+            // decompile: the script's own source, which is at hand here
+            // (its Source, or the mod's file it runs).
+            2068 => {
+                let sid = inst(self, lua, &args, 0, fname)?;
+                if let Some(src) = self.script_source(sid) {
+                    return one(Value::bytes(&src));
+                }
+                let file = self.s.mods.iter().find_map(|m| {
+                    if m.script == Some(sid) {
+                        Some(m.main.clone())
+                    } else {
+                        let rel = m
+                            .module_scripts
+                            .iter()
+                            .find(|(i, _)| *i == sid)
+                            .map(|(_, r)| r.clone())?;
+                        m.folder.as_ref().map(|f| f.join(rel))
+                    }
+                });
+                if let Some(text) = file.and_then(|f| std::fs::read(f).ok()) {
+                    return one(Value::bytes(&text));
+                }
+                let name = self.s.rbx.full_name(sid);
+                one(Value::str(&format!("-- {name}: no source to show (it has none here)")))
+            }
             2064..=2066 => {
                 let sid = inst(self, lua, &args, 0, fname)?;
                 let mut main = self.running_script(sid).map(|(_, f)| f);

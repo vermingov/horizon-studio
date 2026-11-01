@@ -353,6 +353,12 @@ pub fn inspect(v: &Value, depth: usize) -> String {
 fn inspect_into(out: &mut String, v: &Value, depth: usize, indent: usize, seen: &mut Vec<usize>) {
     match v {
         Value::Str(s) => out.push_str(&quote(s)),
+        // A Roblox value (Vector3, CFrame, an EnumItem...): as tostring shows it.
+        Value::Userdata(_) if super::hstudio_rbx_values::get(v).is_some() => {
+            if let Some(d) = super::hstudio_rbx_values::get(v) {
+                out.push_str(&super::hstudio_rbx_values::text(&d));
+            }
+        }
         Value::Table(t) => {
             let ptr = Rc::as_ptr(t) as *const u8 as usize;
             if seen.contains(&ptr) {

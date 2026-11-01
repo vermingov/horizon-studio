@@ -762,6 +762,15 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             | "FindPartOnRayWithIgnoreList"
             | "FindPartOnRayWithWhitelist",
         ) => super::hstudio_rbx_query::workspace_method(env, lua, name, args),
+        // A copy of the terrain's region: Minecraft's blocks aren't Roblox's
+        // voxels, so it holds none (its size says the region's).
+        ("Terrain", "CopyRegion") => {
+            let owner = env.owner();
+            let rbx = env.rbx();
+            let region = rbx.make("TerrainRegion", Some(owner));
+            rbx.inst_mut(region).name = "TerrainRegion".into();
+            one(rbx.value(region))
+        }
         ("Terrain", _) => super::hstudio_rbx_query::terrain_method(env, lua, name, args),
         ("Workspace", "GetServerTimeNow") => one(Value::Num(now)),
         ("Camera", "WorldToViewportPoint" | "WorldToScreenPoint") => {
