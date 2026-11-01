@@ -1,5 +1,5 @@
 frame 1
-  log Info Horizon Studio 0.7.2. Type Lua and press Enter; help() lists the API.
+  log Info Horizon Studio 0.7.3. Type Lua and press Enter; help() lists the API.
   log Output [hello] hello loaded
 frame 2
   (the same for 28 more frames)

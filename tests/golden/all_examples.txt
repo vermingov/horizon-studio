@@ -26,7 +26,7 @@ frame 1
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
   dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
   dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
-  log Info Horizon Studio 0.7.2. Type Lua and press Enter; help() lists the API.
+  log Info Horizon Studio 0.7.3. Type Lua and press Enter; help() lists the API.
   log Output [hello] hello loaded
 frame 2
   world_mesh 8 tris, first Some([[1.3, 66.2, 0.5], [1.4243152369210341, 66.45, 0.5130660579084567], [1.2869339420915433, 66.45, 0.6243152369210342]]), sum 1638.000000, texture None, light None

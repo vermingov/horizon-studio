@@ -1,5 +1,5 @@
 frame 1
-  log Info Horizon Studio 0.7.2. Type Lua and press Enter; help() lists the API.
+  log Info Horizon Studio 0.7.3. Type Lua and press Enter; help() lists the API.
 frame 2
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
