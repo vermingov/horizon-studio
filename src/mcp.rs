@@ -544,7 +544,7 @@ pub fn tools() -> Json {
             "start_lesson",
             "Teaches in the player's editor: a lesson of numbered steps, each lines of a script with a note (in \
               a bubble, as mark_lines shows one), what it explains at more length (explain, shown in the Agent \
-              panel) and something to try (task). The player goes through it with Next and Back (Alt+Right, \
+              pane) and something to try (task). The player goes through it with Next and Back (Alt+Right, \
               Alt+Left), and Check on a step with a task asks you to look at their code: call wait_for_player to \
               hear it. A step's file is the lesson's (id, file, scratch; else the file open) unless it names its \
               own. The first step's file opens only while the player isn't using the studio (it waits up to 10 s) \
@@ -582,7 +582,7 @@ pub fn tools() -> Json {
               closed (the lesson ended), dismissed (they closed your notes), saved (they saved, with the mod's \
               state), message (what they wrote to you in the Agent pane), or timeout: nothing yet, call it again \
               to go on waiting. What they did while you weren't waiting comes first. While you wait the Agent \
-              panel says so, and Enter there sends you their answer. Live only.",
+              pane says so, and Enter there sends you their answer. Live only.",
             json!({
                 "timeout_s": { "type": "integer", "description": "How long to wait, in seconds (default 30, 5 to 50)." },
             }),
