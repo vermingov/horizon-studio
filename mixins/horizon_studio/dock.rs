@@ -403,8 +403,9 @@ impl Dock {
 
     /// `show`, but a closed Library or Docs whose home would take a pane's
     /// place in `ws` (or leave it no room itself) goes among the code's
-    /// tabs, at the front. Without `ws` (the Editor tab never drawn) it is
-    /// `show`.
+    /// tabs, at the front, where that takes no place either; where neither
+    /// does, it stays closed and nothing changes. Without `ws` (the Editor
+    /// tab never drawn) it is `show`.
     pub fn show_fitting(&mut self, p: Pane, ws: Option<[f32; 4]>, keep: Pane) -> bool {
         let Some(ws) = ws.filter(|_| !self.has(p)) else {
             return self.show(p);
@@ -417,8 +418,13 @@ impl Dock {
             *self = home;
             return true;
         }
+        let mut with_code = self.clone();
         let at = self.leaf_tabs(Pane::Code).len();
-        self.move_pane(p, DropAt::Into { anchor: Pane::Code, at })
+        if with_code.move_pane(p, DropAt::Into { anchor: Pane::Code, at }) && fits(self, &with_code, ws, keep, p, p) {
+            *self = with_code;
+            return true;
+        }
+        false
     }
 
     /// Takes the Library or the Docs out of the dock; the tab before it

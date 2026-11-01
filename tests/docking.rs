@@ -2193,6 +2193,77 @@ fn drops_and_shows_never_take_a_panes_place() {
     assert_eq!(st.s.ui.dock_drawn.len(), 4, "every group still drawn");
 }
 
+#[test]
+fn a_library_with_no_room_opens_its_page() {
+    let groups =
+        |st: &Studio| -> Vec<(Pane, bool)> { st.s.ui.dock_drawn.iter().map(|l| (l.active, l.collapsed)).collect() };
+    // In an 854 x 480 game's default window the Library has no room for
+    // its column, and among the code's tabs its least height would leave
+    // the panel no room for its strip under them: Panes › Library opens
+    // its page, the dock as it was.
+    let (mut game, mut st) = editing("dock-library-no-room");
+    st.s.ui.look.window = true;
+    st.s.ui.look.scale = 1.125;
+    redraw(&mut st, &mut game);
+    let px = |(x, y): (f32, f32)| (x * 1.125, y * 1.125);
+    let before = groups(&st);
+    assert_eq!(
+        before,
+        [(Pane::Scripts, false), (Pane::Console, true), (Pane::Code, false)]
+    );
+    let at = px(middle(tab_of(&st, Pane::Code)));
+    right_click(&mut st, &mut game, at);
+    choose(&mut st, &mut game, "Panes");
+    choose(&mut st, &mut game, "Library");
+    assert_eq!((st.s.ui.tab, &st.s.ui.dock), (Tab::Library, &Dock::default()));
+    assert_eq!(notice(&st), "No room for the Library in the Editor tab");
+    assert!(layout_txt(&st).is_empty(), "nothing written");
+    // Back on the Editor tab every group is drawn as before, the code with
+    // the keys.
+    press(&mut st, &mut game, Key::Char('2'), CTRL);
+    redraw(&mut st, &mut game);
+    assert_eq!(groups(&st), before);
+    assert_eq!(st.s.ui.focus, Pane::Code);
+    // Dock in the Editor, in the Library page's own menu: its page stays.
+    st.s.ui.tab = Tab::Library;
+    redraw(&mut st, &mut game);
+    let title = text_at(&game, "Script mods");
+    right_click(&mut st, &mut game, (title.0 + 2.0, title.1 + 2.0));
+    choose(&mut st, &mut game, "Dock in the Editor");
+    assert_eq!((st.s.ui.tab, &st.s.ui.dock), (Tab::Library, &Dock::default()));
+    assert_eq!(notice(&st), "No room for the Library in the Editor tab");
+    // An Editor area 468 wide: the script list, the code and the panel fit
+    // side by side, but the Library among the code's tabs would make that
+    // group 350 wide and push the script list out.
+    st.s.ui.look.scale = 1.0;
+    st.s.ui.look.rect = Some([10.0, 10.0, 502.0, 500.0]);
+    press(&mut st, &mut game, Key::Char('2'), CTRL);
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.ui.dock_ws.unwrap()[2], 468.0);
+    let before = groups(&st);
+    assert_eq!(
+        before,
+        [(Pane::Scripts, false), (Pane::Console, false), (Pane::Code, false)]
+    );
+    let at = middle(tab_of(&st, Pane::Code));
+    right_click(&mut st, &mut game, at);
+    choose(&mut st, &mut game, "Panes");
+    choose(&mut st, &mut game, "Library");
+    assert_eq!((st.s.ui.tab, &st.s.ui.dock), (Tab::Library, &Dock::default()));
+    press(&mut st, &mut game, Key::Char('2'), CTRL);
+    redraw(&mut st, &mut game);
+    assert_eq!(groups(&st), before);
+    // The Docs, whose least size the code's group takes in, still join
+    // the code's tabs there.
+    let at = middle(tab_of(&st, Pane::Code));
+    right_click(&mut st, &mut game, at);
+    choose(&mut st, &mut game, "Panes");
+    choose(&mut st, &mut game, "Docs");
+    assert_eq!(st.s.ui.tab, Tab::Editor);
+    assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Code), [Pane::Code, Pane::Docs]);
+    assert_eq!(st.s.ui.focus, Pane::Docs);
+}
+
 /// The colour of the plate drawn just before `text` (a pill's), and its alpha.
 fn plate_alpha(game: &FakeGame, text: &str) -> u32 {
     let i = drawn_index(game, text);

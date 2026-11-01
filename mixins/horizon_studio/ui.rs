@@ -2561,7 +2561,8 @@ pub(crate) fn focus_pane(st: &mut Studio, p: Pane) {
 }
 
 /// `p` shown and given the keys: a closed Library or Docs comes back at its
-/// home, or among the code's tabs where that has no room.
+/// home, or among the code's tabs where that has no room. Where neither has
+/// room without taking a pane's place, its own page shows instead.
 pub(crate) fn show_pane(st: &mut Studio, p: Pane) {
     let now = st.s.now;
     let ui = &mut st.s.ui;
@@ -2571,7 +2572,18 @@ pub(crate) fn show_pane(st: &mut Studio, p: Pane) {
     let ws = ui.dock_ws;
     let keep = ui.focus;
     ui.dock.show_fitting(p, ws, keep);
+    if !ui.dock.has(p) {
+        no_room_for(st, p);
+        return;
+    }
     focus_pane(st, p);
+}
+
+/// The Library's or the Docs' page, where the Editor tab has no room to
+/// dock it, and a notice saying so.
+fn no_room_for(st: &mut Studio, p: Pane) {
+    st.s.ui.tab = if p == Pane::Docs { Tab::Docs } else { Tab::Library };
+    notice(st, format!("No room for the {} in the Editor tab", p.title()));
 }
 
 /// The code at the front with the keys, for what the player does: a script

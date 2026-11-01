@@ -172,7 +172,7 @@ commands are in the chat's suggestions, beside the server's.
   keys) and Reset layout, which Undo reset layout takes back. The Menu key's menus end with Layout ›, which has the
   same, so the keys alone move and size every pane. The **Library** and the **Docs** dock as panes too, from Panes ›,
   from Dock in the Editor in their own menus or by dragging their tab at the top, and Show in Docs goes to a docked
-  Docs, leaving the keys in the code.
+  Docs, leaving the keys in the code. Where the Editor tab has no room for one, its page opens instead.
 - **The keys** go to the pane you click in (its strip's buttons leave them where they are), and Esc gives them back
   to the code; they never reach a pane that isn't drawn, and suggestions stay with the pane they opened in. In a
   small window the pane in use takes the room and a group stacked under or over it keeps its strip, a click away; a

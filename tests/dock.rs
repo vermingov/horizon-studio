@@ -731,6 +731,17 @@ fn only_library_and_docs_close_and_they_come_back_home() {
     let mut d = default.clone();
     assert!(d.show_fitting(Library, None, Code), "never drawn: its home");
     assert_eq!(d.to_text(), format!("row:0.700({DEFAULT},[library*])"));
+    // Where the code's tabs have no room for it either (its least size
+    // would make the code's group push the panel's strip out of an 854 x
+    // 480 game's window, or the script list out of an area 468 wide), it
+    // stays closed and nothing changes. The Docs, smaller, joins them.
+    for ws in [SMALL, [0.0, 0.0, 468.0, 359.0]] {
+        let mut d = default.clone();
+        assert!(!d.show_fitting(Library, Some(ws), Code), "{ws:?}");
+        assert_eq!(d, default, "{ws:?}");
+        assert!(d.show_fitting(Docs, Some(ws), Code), "{ws:?}");
+        assert_eq!(d.leaf_tabs(Code), [Code, Docs], "{ws:?}");
+    }
     // A pane in the dock is only brought to the front.
     let mut d = default.clone();
     assert!(d.show_fitting(Agent, Some([0.0, 0.0, 100.0, 100.0]), Code));
@@ -1005,7 +1016,11 @@ fn any_sequence_of_edits_keeps_the_layout_whole() {
                     d = after;
                     drops += 1;
                 } else {
-                    d.show_fitting(p, Some(ws), focus);
+                    // A pane shown takes no place either.
+                    let before = d.clone();
+                    if d.show_fitting(p, Some(ws), focus) && !before.has(p) {
+                        assert!(fits(&before, &d, ws, focus, p, p), "step {step}: {}", d.to_text());
+                    }
                 }
             }
         }
