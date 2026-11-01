@@ -296,6 +296,50 @@ pub fn executor_globals(lua: &mut Lua, genv: &TableRef, rbx: &mut Rbx) {
     aliases(genv);
 }
 
+/// Luau's vector library, in Roblox's environment `renv` (it has Vector3
+/// and math): in Roblox a vector is a Vector3.
+pub fn vector_lib(lua: &mut Lua, renv: &TableRef) {
+    if let Ok(f) = lua.load(VECTOR, "=[vector]", renv) {
+        let _ = lua.call(&mut super::hstudio_lua::NoHost::default(), &f, Vec::new());
+    }
+}
+
+/// Luau's vector library over Roblox's Vector3.
+const VECTOR: &str = r#"
+local V3 = Vector3
+local floor, ceil, abs, max, min, sign = math.floor, math.ceil, math.abs, math.max, math.min, math.sign
+local function each(v, f) return V3.new(f(v.X), f(v.Y), f(v.Z)) end
+vector = table.freeze({
+    create = function(x, y, z) return V3.new(x, y, z or 0) end,
+    magnitude = function(v) return v.Magnitude end,
+    normalize = function(v) return v.Unit end,
+    dot = function(a, b) return a:Dot(b) end,
+    cross = function(a, b) return a:Cross(b) end,
+    angle = function(a, b, axis)
+        local angle = math.atan2(a:Cross(b).Magnitude, a:Dot(b))
+        if axis and a:Cross(b):Dot(axis) < 0 then return -angle end
+        return angle
+    end,
+    floor = function(v) return each(v, floor) end,
+    ceil = function(v) return each(v, ceil) end,
+    abs = function(v) return each(v, abs) end,
+    sign = function(v) return each(v, sign) end,
+    clamp = function(v, lo, hi)
+        return V3.new(math.clamp(v.X, lo.X, hi.X), math.clamp(v.Y, lo.Y, hi.Y), math.clamp(v.Z, lo.Z, hi.Z))
+    end,
+    max = function(v, ...)
+        for _, w in {...} do v = V3.new(max(v.X, w.X), max(v.Y, w.Y), max(v.Z, w.Z)) end
+        return v
+    end,
+    min = function(v, ...)
+        for _, w in {...} do v = V3.new(min(v.X, w.X), min(v.Y, w.Y), min(v.Z, w.Z)) end
+        return v
+    end,
+    zero = V3.zero,
+    one = V3.one,
+})
+"#;
+
 /// Other executors' names for the same functions, and Synapse X's `syn`
 /// table, which scripts made for it call.
 fn aliases(genv: &TableRef) {

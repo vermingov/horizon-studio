@@ -58,6 +58,8 @@ pub fn new_env(lua: &mut Lua) -> TableRef {
         g.set_str("utf8", Value::Table(utf8_lib()));
         g.set_str("coroutine", Value::Table(coroutine_lib()));
         g.set_str("bit32", Value::Table(bit32_lib()));
+        g.set_str("buffer", Value::Table(buffer_lib()));
+        g.set_str("gcinfo", Native::builtin("gcinfo", gcinfo));
     }
     if lua.string_lib.is_none()
         && let Value::Table(s) = env.borrow().get_str("string")
@@ -248,17 +250,29 @@ fn setmetatable(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -
     one(args[0].clone())
 }
 
-fn getmetatable(_: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
-    match args.first() {
-        Some(Value::Table(t)) => {
-            let Some(mt) = t.borrow().meta.clone() else {
-                return one(Value::Nil);
-            };
-            let guard = mt.borrow().get_str("__metatable");
-            one(if guard.is_nil() { Value::Table(mt) } else { guard })
-        }
-        _ => one(Value::Nil),
-    }
+fn getmetatable(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let v = args.first().cloned().unwrap_or_default();
+    let mt = match &v {
+        // Strings share one, as in Luau: its __index the string library.
+        Value::Str(_) => Some(
+            lua.string_meta
+                .get_or_insert_with(|| {
+                    let mut t = Table::new();
+                    if let Some(s) = &lua.string_lib {
+                        t.set_str("__index", Value::Table(s.clone()));
+                    }
+                    t.set_readonly(true);
+                    Rc::new(RefCell::new(t))
+                })
+                .clone(),
+        ),
+        other => other.metatable(),
+    };
+    let Some(mt) = mt else {
+        return one(Value::Nil);
+    };
+    let guard = mt.borrow().get_str("__metatable");
+    one(if guard.is_nil() { Value::Table(mt) } else { guard })
 }
 
 fn error(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
@@ -481,6 +495,9 @@ fn string_lib() -> TableRef {
         ("trim", s_trim),
         ("startswith", s_startswith),
         ("endswith", s_endswith),
+        ("pack", s_pack),
+        ("unpack", s_unpack),
+        ("packsize", s_packsize),
     ])
 }
 
@@ -623,7 +640,7 @@ fn s_split(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res
             let mut start = 0;
             let mut pos = 0;
             while pos <= s.len() {
-                let mut ms = MatchState::new(&s, &sep, lua.steps);
+                let mut ms = MatchState::new(&s, &sep, pattern_steps(lua));
                 let found = ms.do_match(pos, 0).map_err(|e| lua.rt_error(e))?;
                 lua.steps = ms.steps;
                 match found {
@@ -799,6 +816,16 @@ const CAP_UNFINISHED: isize = -1;
 const CAP_POSITION: isize = -2;
 const MAX_CAPTURES: usize = 32;
 const MAX_MATCH_DEPTH: usize = 200;
+
+/// The steps a pattern may take: the call's, or while its deadline lasts
+/// (Roblox's script timeout) many more.
+fn pattern_steps(lua: &Lua) -> u64 {
+    if lua.deadline.is_some_and(|d| std::time::Instant::now() < d) {
+        lua.steps.max(1_000_000_000)
+    } else {
+        lua.steps
+    }
+}
 
 struct MatchState<'a> {
     src: &'a [u8],
@@ -1133,7 +1160,7 @@ fn find_aux(lua: &mut Lua, args: &[Value], find: bool) -> Res {
     } else {
         (false, 0)
     };
-    let mut ms = MatchState::new(&s, &p, lua.steps);
+    let mut ms = MatchState::new(&s, &p, pattern_steps(lua));
     let mut s1 = init - 1;
     let result = loop {
         ms.level = 0;
@@ -1185,7 +1212,7 @@ fn gmatch_step(lua: &mut Lua, _: &mut dyn Host, me: &Native, _: Vec<Value>) -> R
         };
         (s.clone(), p.clone(), *pos as usize)
     };
-    let mut ms = MatchState::new(&s, &p, lua.steps);
+    let mut ms = MatchState::new(&s, &p, pattern_steps(lua));
     while pos <= s.len() {
         ms.level = 0;
         let r = ms.do_match(pos, 0);
@@ -1239,7 +1266,7 @@ fn s_gsub(lua: &mut Lua, h: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res 
     let mut src = 0usize;
     let mut n = 0i64;
     while n < max_n {
-        let mut ms = MatchState::new(&s, &p, lua.steps);
+        let mut ms = MatchState::new(&s, &p, pattern_steps(lua));
         let r = ms.do_match(src, pstart);
         lua.steps = ms.steps;
         let e = r.map_err(|m| lua.rt_error(m))?;
@@ -2275,6 +2302,9 @@ fn utf8_lib() -> TableRef {
         ("len", u_len),
         ("offset", u_offset),
         ("codes", u_codes),
+        ("graphemes", u_graphemes),
+        ("nfcnormalize", u_normalize),
+        ("nfdnormalize", u_normalize),
     ]);
     t.borrow_mut()
         .set_str("charpattern", Value::bytes(b"[\x00-\x7F\xC2-\xFD][\x80-\xBF]*"));
@@ -2589,4 +2619,592 @@ fn os_date(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res
 /// A string argument as text, for the studio's API functions.
 pub fn text_of(v: &Str) -> String {
     String::from_utf8_lossy(v).into_owned()
+}
+
+// ----------------------------------------------------------------- buffer
+
+/// Luau's buffer library: fixed-size byte arrays (`type` "buffer").
+fn buffer_lib() -> TableRef {
+    lib(&[
+        ("create", b_create),
+        ("fromstring", b_fromstring),
+        ("tostring", b_tostring),
+        ("len", b_len),
+        ("readi8", b_read),
+        ("readu8", b_read),
+        ("readi16", b_read),
+        ("readu16", b_read),
+        ("readi32", b_read),
+        ("readu32", b_read),
+        ("readf32", b_read),
+        ("readf64", b_read),
+        ("writei8", b_write),
+        ("writeu8", b_write),
+        ("writei16", b_write),
+        ("writeu16", b_write),
+        ("writei32", b_write),
+        ("writeu32", b_write),
+        ("writef32", b_write),
+        ("writef64", b_write),
+        ("readstring", b_readstring),
+        ("writestring", b_writestring),
+        ("copy", b_copy),
+        ("fill", b_fill),
+        ("readbits", b_readbits),
+        ("writebits", b_writebits),
+    ])
+}
+
+/// The largest buffer: Luau's 1 GiB.
+const MAX_BUFFER: i64 = 1 << 30;
+
+fn new_buffer(bytes: Vec<u8>) -> Value {
+    super::hstudio_lua::Userdata::value(super::hstudio_lua::LuaBuffer(bytes), None)
+}
+
+/// Runs `f` on buffer argument `i`'s bytes.
+fn with_buffer<R>(
+    lua: &Lua,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    f: impl FnOnce(&mut Vec<u8>) -> R,
+) -> Result<R, Throw> {
+    if let Some(Value::Userdata(u)) = args.get(i) {
+        let mut d = u.data.borrow_mut();
+        if let Some(b) = d.downcast_mut::<super::hstudio_lua::LuaBuffer>() {
+            return Ok(f(&mut b.0));
+        }
+    }
+    Err(bad_arg(lua, i, fname, "buffer expected"))
+}
+
+fn oob(lua: &Lua) -> Throw {
+    lua.rt_error("buffer access out of bounds")
+}
+
+/// A range of `n` bytes at `offset` in a buffer of `len`, if inside it.
+fn range(offset: i64, n: i64, len: usize) -> Option<std::ops::Range<usize>> {
+    (offset >= 0 && n >= 0 && offset.checked_add(n)? as u64 <= len as u64)
+        .then(|| offset as usize..(offset + n) as usize)
+}
+
+fn b_create(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let n = check_int(lua, &args, 0, "create")?;
+    if !(0..=MAX_BUFFER).contains(&n) {
+        return Err(bad_arg(lua, 0, "create", "size out of range"));
+    }
+    lua.charge(n as usize)?;
+    one(new_buffer(vec![0; n as usize]))
+}
+
+fn b_fromstring(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let s = check_str(lua, &args, 0, "fromstring")?;
+    one(new_buffer(s.to_vec()))
+}
+
+fn b_tostring(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let s = with_buffer(lua, &args, 0, "tostring", |b| b.clone())?;
+    one(Value::bytes(&s))
+}
+
+fn b_len(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let n = with_buffer(lua, &args, 0, "len", |b| b.len())?;
+    one(Value::Num(n as f64))
+}
+
+/// A read or write function's width and kind, by its name.
+fn b_kind(name: &str) -> (usize, char) {
+    let kind = name
+        .chars()
+        .nth(if name.starts_with("read") { 4 } else { 5 })
+        .unwrap_or('u');
+    let width: usize = name
+        .trim_start_matches(|c: char| c.is_ascii_alphabetic())
+        .parse()
+        .unwrap_or(8);
+    (width / 8, kind)
+}
+
+fn b_read(lua: &mut Lua, _: &mut dyn Host, me: &Native, args: Vec<Value>) -> Res {
+    let (n, kind) = b_kind(&me.name);
+    let offset = check_int(lua, &args, 1, &me.name)?;
+    let bytes = with_buffer(lua, &args, 0, &me.name, |b| {
+        range(offset, n as i64, b.len()).map(|r| b[r].to_vec())
+    })?
+    .ok_or_else(|| oob(lua))?;
+    let mut raw = [0u8; 8];
+    raw[..n].copy_from_slice(&bytes);
+    let u = u64::from_le_bytes(raw);
+    let v = match (kind, n) {
+        ('f', 4) => f64::from(f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])),
+        ('f', _) => f64::from_le_bytes(raw),
+        ('i', _) => {
+            let shift = 64 - 8 * n as u32;
+            (((u << shift) as i64) >> shift) as f64
+        }
+        _ => u as f64,
+    };
+    one(Value::Num(v))
+}
+
+fn b_write(lua: &mut Lua, _: &mut dyn Host, me: &Native, args: Vec<Value>) -> Res {
+    let (n, kind) = b_kind(&me.name);
+    let offset = check_int(lua, &args, 1, &me.name)?;
+    let v = check_num(lua, &args, 2, &me.name)?;
+    let raw: [u8; 8] = match (kind, n) {
+        ('f', 4) => {
+            let b = (v as f32).to_le_bytes();
+            [b[0], b[1], b[2], b[3], 0, 0, 0, 0]
+        }
+        ('f', _) => v.to_le_bytes(),
+        // Integers wrap, as Luau's conversion does.
+        _ => (if v.is_finite() { v.trunc() as i128 as u64 } else { 0 }).to_le_bytes(),
+    };
+    with_buffer(lua, &args, 0, &me.name, |b| {
+        let r = range(offset, n as i64, b.len())?;
+        b[r].copy_from_slice(&raw[..n]);
+        Some(())
+    })?
+    .ok_or_else(|| oob(lua))?;
+    Ok(Vec::new())
+}
+
+fn b_readstring(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let offset = check_int(lua, &args, 1, "readstring")?;
+    let count = check_int(lua, &args, 2, "readstring")?;
+    let s = with_buffer(lua, &args, 0, "readstring", |b| {
+        range(offset, count, b.len()).map(|r| b[r].to_vec())
+    })?
+    .ok_or_else(|| oob(lua))?;
+    one(Value::bytes(&s))
+}
+
+fn b_writestring(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let offset = check_int(lua, &args, 1, "writestring")?;
+    let s = check_str(lua, &args, 2, "writestring")?;
+    let count = opt_int(lua, &args, 3, "writestring", s.len() as i64)?;
+    if count < 0 || count as usize > s.len() {
+        return Err(bad_arg(lua, 3, "writestring", "count out of range"));
+    }
+    with_buffer(lua, &args, 0, "writestring", |b| {
+        let r = range(offset, count, b.len())?;
+        b[r].copy_from_slice(&s[..count as usize]);
+        Some(())
+    })?
+    .ok_or_else(|| oob(lua))?;
+    Ok(Vec::new())
+}
+
+fn b_copy(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let t_off = check_int(lua, &args, 1, "copy")?;
+    let source = with_buffer(lua, &args, 2, "copy", |b| b.clone())?;
+    let s_off = opt_int(lua, &args, 3, "copy", 0)?;
+    let count = opt_int(lua, &args, 4, "copy", source.len() as i64 - s_off)?;
+    let src = range(s_off, count, source.len()).ok_or_else(|| oob(lua))?;
+    with_buffer(lua, &args, 0, "copy", |b| {
+        let r = range(t_off, count, b.len())?;
+        b[r].copy_from_slice(&source[src]);
+        Some(())
+    })?
+    .ok_or_else(|| oob(lua))?;
+    Ok(Vec::new())
+}
+
+fn b_fill(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let offset = check_int(lua, &args, 1, "fill")?;
+    let value = check_int(lua, &args, 2, "fill")? as u8;
+    let len = with_buffer(lua, &args, 0, "fill", |b| b.len())?;
+    let count = opt_int(lua, &args, 3, "fill", len as i64 - offset)?;
+    with_buffer(lua, &args, 0, "fill", |b| {
+        let r = range(offset, count, b.len())?;
+        b[r].fill(value);
+        Some(())
+    })?
+    .ok_or_else(|| oob(lua))?;
+    Ok(Vec::new())
+}
+
+fn b_readbits(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let bit = check_int(lua, &args, 1, "readbits")?;
+    let count = check_int(lua, &args, 2, "readbits")?;
+    if !(0..=32).contains(&count) {
+        return Err(bad_arg(lua, 2, "readbits", "bit count is out of range of [0; 32]"));
+    }
+    let v = with_buffer(lua, &args, 0, "readbits", |b| {
+        if bit < 0 || (bit + count) as u64 > b.len() as u64 * 8 {
+            return None;
+        }
+        let mut v: u64 = 0;
+        for k in 0..count {
+            let p = (bit + k) as usize;
+            v |= u64::from((b[p / 8] >> (p % 8)) & 1) << k;
+        }
+        Some(v)
+    })?
+    .ok_or_else(|| oob(lua))?;
+    one(Value::Num(v as f64))
+}
+
+fn b_writebits(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let bit = check_int(lua, &args, 1, "writebits")?;
+    let count = check_int(lua, &args, 2, "writebits")?;
+    let value = check_num(lua, &args, 3, "writebits")? as i128 as u64;
+    if !(0..=32).contains(&count) {
+        return Err(bad_arg(lua, 2, "writebits", "bit count is out of range of [0; 32]"));
+    }
+    with_buffer(lua, &args, 0, "writebits", |b| {
+        if bit < 0 || (bit + count) as u64 > b.len() as u64 * 8 {
+            return None;
+        }
+        for k in 0..count {
+            let p = (bit + k) as usize;
+            let on = (value >> k) & 1 == 1;
+            if on {
+                b[p / 8] |= 1 << (p % 8);
+            } else {
+                b[p / 8] &= !(1 << (p % 8));
+            }
+        }
+        Some(())
+    })?
+    .ok_or_else(|| oob(lua))?;
+    Ok(Vec::new())
+}
+
+// ----------------------------------------------------------------- string.pack
+
+/// One item of a pack format: its kind and size, read from `fmt` at `i`.
+enum PackItem {
+    Int {
+        size: usize,
+        signed: bool,
+    },
+    Float(usize),
+    /// A string with its length before it, in `size` bytes.
+    Prefixed(usize),
+    Fixed(usize),
+    Zero,
+    Pad,
+    Align(usize),
+}
+
+/// Lua 5.3's string.pack formats: endianness (`<`, `>`, `=`), `!` alignment
+/// (taken, not applied but for `X`), and the items.
+fn pack_items(lua: &Lua, fmt: &[u8], fname: &str) -> Result<Vec<(PackItem, bool)>, Throw> {
+    let mut out = Vec::new();
+    let mut little = true;
+    let mut i = 0;
+    let num = |i: &mut usize| -> Option<usize> {
+        let start = *i;
+        while *i < fmt.len() && fmt[*i].is_ascii_digit() {
+            *i += 1;
+        }
+        std::str::from_utf8(&fmt[start..*i]).ok()?.parse().ok()
+    };
+    while i < fmt.len() {
+        let c = fmt[i];
+        i += 1;
+        let item = match c {
+            b'<' | b'=' => {
+                little = true;
+                continue;
+            }
+            b'>' => {
+                little = false;
+                continue;
+            }
+            b'!' | b' ' => {
+                let _ = num(&mut i);
+                continue;
+            }
+            b'b' => PackItem::Int { size: 1, signed: true },
+            b'B' => PackItem::Int { size: 1, signed: false },
+            b'h' => PackItem::Int { size: 2, signed: true },
+            b'H' => PackItem::Int { size: 2, signed: false },
+            b'i' => PackItem::Int {
+                size: num(&mut i).unwrap_or(4),
+                signed: true,
+            },
+            b'I' => PackItem::Int {
+                size: num(&mut i).unwrap_or(4),
+                signed: false,
+            },
+            b'l' | b'j' => PackItem::Int { size: 8, signed: true },
+            b'L' | b'J' | b'T' => PackItem::Int { size: 8, signed: false },
+            b'f' => PackItem::Float(4),
+            b'd' | b'n' => PackItem::Float(8),
+            b's' => PackItem::Prefixed(num(&mut i).unwrap_or(8)),
+            b'c' => PackItem::Fixed(
+                num(&mut i).ok_or_else(|| lua.rt_error(format!("{fname}: missing size for format option 'c'")))?,
+            ),
+            b'z' => PackItem::Zero,
+            b'x' => PackItem::Pad,
+            b'X' => {
+                let size = match fmt.get(i) {
+                    Some(b'i' | b'I') => {
+                        i += 1;
+                        num(&mut i).unwrap_or(4)
+                    }
+                    Some(b'b' | b'B') => 1,
+                    Some(b'h' | b'H') => 2,
+                    Some(b'f') => 4,
+                    Some(_) => 8,
+                    None => return Err(lua.rt_error(format!("{fname}: invalid next option for option 'X'"))),
+                };
+                if fmt.get(i).is_some_and(|c| !c.is_ascii_digit()) && !matches!(fmt.get(i - 1), Some(b'i' | b'I')) {
+                    i += 1;
+                }
+                PackItem::Align(size)
+            }
+            _ => return Err(lua.rt_error(format!("{fname}: invalid format option '{}'", c as char))),
+        };
+        if let PackItem::Int { size, .. } = item
+            && !(1..=16).contains(&size)
+        {
+            return Err(lua.rt_error(format!("{fname}: integral size ({size}) out of limits [1,16]")));
+        }
+        out.push((item, little));
+    }
+    Ok(out)
+}
+
+fn put_int(out: &mut Vec<u8>, v: i128, size: usize, little: bool) {
+    let bytes = v.to_le_bytes();
+    let mut b: Vec<u8> = (0..size)
+        .map(|k| {
+            if k < 16 {
+                bytes[k]
+            } else if v < 0 {
+                0xFF
+            } else {
+                0
+            }
+        })
+        .collect();
+    if !little {
+        b.reverse();
+    }
+    out.extend_from_slice(&b);
+}
+
+fn s_pack(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let fmt = check_str(lua, &args, 0, "pack")?;
+    let mut out = Vec::new();
+    let mut a = 1;
+    for (item, little) in pack_items(lua, &fmt, "pack")? {
+        match item {
+            PackItem::Int { size, .. } => {
+                let v = check_num(lua, &args, a, "pack")?;
+                a += 1;
+                put_int(&mut out, v.trunc() as i128, size, little);
+            }
+            PackItem::Float(4) => {
+                let v = check_num(lua, &args, a, "pack")? as f32;
+                a += 1;
+                let mut b = v.to_le_bytes().to_vec();
+                if !little {
+                    b.reverse();
+                }
+                out.extend_from_slice(&b);
+            }
+            PackItem::Float(_) => {
+                let v = check_num(lua, &args, a, "pack")?;
+                a += 1;
+                let mut b = v.to_le_bytes().to_vec();
+                if !little {
+                    b.reverse();
+                }
+                out.extend_from_slice(&b);
+            }
+            PackItem::Prefixed(size) => {
+                let s = check_str(lua, &args, a, "pack")?;
+                a += 1;
+                put_int(&mut out, s.len() as i128, size, little);
+                out.extend_from_slice(&s);
+            }
+            PackItem::Fixed(n) => {
+                let s = check_str(lua, &args, a, "pack")?;
+                a += 1;
+                if s.len() > n {
+                    return Err(bad_arg(lua, a - 1, "pack", "string longer than given size"));
+                }
+                out.extend_from_slice(&s);
+                out.resize(out.len() + n - s.len(), 0);
+            }
+            PackItem::Zero => {
+                let s = check_str(lua, &args, a, "pack")?;
+                a += 1;
+                if s.contains(&0) {
+                    return Err(bad_arg(lua, a - 1, "pack", "string contains zeros"));
+                }
+                out.extend_from_slice(&s);
+                out.push(0);
+            }
+            PackItem::Pad => out.push(0),
+            PackItem::Align(size) => {
+                while out.len() % size != 0 {
+                    out.push(0);
+                }
+            }
+        }
+        if out.len() > MAX_STRING {
+            return Err(lua.rt_error("pack: result too large"));
+        }
+    }
+    one(Value::bytes(&out))
+}
+
+fn s_packsize(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let fmt = check_str(lua, &args, 0, "packsize")?;
+    let mut n = 0usize;
+    for (item, _) in pack_items(lua, &fmt, "packsize")? {
+        n += match item {
+            PackItem::Int { size, .. } => size,
+            PackItem::Float(size) | PackItem::Fixed(size) => size,
+            PackItem::Pad => 1,
+            PackItem::Align(size) => (size - n % size) % size,
+            PackItem::Prefixed(_) | PackItem::Zero => {
+                return Err(bad_arg(lua, 0, "packsize", "variable-size format in packsize"));
+            }
+        };
+    }
+    one(Value::Num(n as f64))
+}
+
+fn s_unpack(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let fmt = check_str(lua, &args, 0, "unpack")?;
+    let data = check_str(lua, &args, 1, "unpack")?;
+    let start = opt_int(lua, &args, 2, "unpack", 1)?;
+    let mut pos = if start < 0 {
+        (data.len() as i64 + start).max(0) as usize
+    } else {
+        (start.max(1) - 1) as usize
+    };
+    if pos > data.len() {
+        return Err(bad_arg(lua, 2, "unpack", "initial position out of string"));
+    }
+    let short = |lua: &Lua| bad_arg(lua, 1, "unpack", "data string too short");
+    let take = |pos: &mut usize, n: usize, lua: &Lua| -> Result<Vec<u8>, Throw> {
+        let end = pos
+            .checked_add(n)
+            .filter(|&e| e <= data.len())
+            .ok_or_else(|| short(lua))?;
+        let b = data[*pos..end].to_vec();
+        *pos = end;
+        Ok(b)
+    };
+    let mut out = Vec::new();
+    for (item, little) in pack_items(lua, &fmt, "unpack")? {
+        let int_of = |mut b: Vec<u8>, signed: bool| -> f64 {
+            if !little {
+                b.reverse();
+            }
+            let size = b.len().min(16);
+            let mut raw = [0u8; 16];
+            raw[..size].copy_from_slice(&b[..size]);
+            let u = u128::from_le_bytes(raw);
+            if signed && size < 16 {
+                let shift = 128 - 8 * size as u32;
+                (((u << shift) as i128) >> shift) as f64
+            } else {
+                u as f64
+            }
+        };
+        match item {
+            PackItem::Int { size, signed } => out.push(Value::Num(int_of(take(&mut pos, size, lua)?, signed))),
+            PackItem::Float(size) => {
+                let mut b = take(&mut pos, size, lua)?;
+                if !little {
+                    b.reverse();
+                }
+                let v = if size == 4 {
+                    f64::from(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                } else {
+                    f64::from_le_bytes(b.try_into().unwrap_or([0; 8]))
+                };
+                out.push(Value::Num(v));
+            }
+            PackItem::Prefixed(size) => {
+                let n = int_of(take(&mut pos, size, lua)?, false) as usize;
+                out.push(Value::bytes(&take(&mut pos, n, lua)?));
+            }
+            PackItem::Fixed(n) => out.push(Value::bytes(&take(&mut pos, n, lua)?)),
+            PackItem::Zero => {
+                let end = data[pos..]
+                    .iter()
+                    .position(|&c| c == 0)
+                    .ok_or_else(|| lua.rt_error("unpack: unfinished string for format 'z'"))?;
+                out.push(Value::bytes(&data[pos..pos + end]));
+                pos += end + 1;
+            }
+            PackItem::Pad => pos += 1,
+            PackItem::Align(size) => {
+                while pos % size != 0 {
+                    pos += 1;
+                }
+            }
+        }
+    }
+    out.push(Value::Num((pos + 1) as f64));
+    Ok(out)
+}
+
+fn gcinfo(_: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {
+    // Kilobytes in use, as Luau's gcinfo: an estimate (the studio's own
+    // allocator doesn't count per script).
+    one(Value::Num(2048.0))
+}
+
+/// Roblox's utf8.graphemes(s[, i[, j]]): the start and end of each grapheme
+/// cluster (a code point and the combining marks, variation selectors and
+/// zero-width joins after it).
+fn u_graphemes(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let s = check_str(lua, &args, 0, "graphemes")?;
+    let i = opt_int(lua, &args, 1, "graphemes", 1)?.max(1) as usize - 1;
+    let j = (opt_int(lua, &args, 2, "graphemes", s.len() as i64)?.max(0) as usize).min(s.len());
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut p = i;
+    let mut join = false;
+    while p < j {
+        let (cp, n) = utf8_at(&s, p).unwrap_or((u32::from(s[p]), 1));
+        let extends = matches!(cp, 0x300..=0x36F | 0x1AB0..=0x1AFF | 0x20D0..=0x20FF | 0xFE00..=0xFE0F | 0x1F3FB..=0x1F3FF | 0x200D | 0xE0020..=0xE007F);
+        match spans.last_mut() {
+            Some(last) if extends || join => last.1 = p + n,
+            _ => spans.push((p, p + n)),
+        }
+        join = cp == 0x200D;
+        p += n;
+    }
+    let mut t = Table::new();
+    for (k, (a, b)) in spans.iter().enumerate() {
+        let _ = t.set(Value::Num((2 * k + 1) as f64), Value::Num((a + 1) as f64));
+        let _ = t.set(Value::Num((2 * k + 2) as f64), Value::Num(*b as f64));
+    }
+    let state = Value::table(t);
+    let next = Native::with_state("graphemes_next", graphemes_next, vec![state, Value::Num(0.0)]);
+    one(next)
+}
+
+fn graphemes_next(_: &mut Lua, _: &mut dyn Host, me: &Native, _: Vec<Value>) -> Res {
+    let st = me.state.borrow();
+    let (Some(Value::Table(t)), Some(Value::Num(k))) = (st.first(), st.get(1)) else {
+        return Ok(Vec::new());
+    };
+    let k = *k as usize;
+    let a = t.borrow().get(&Value::Num((2 * k + 1) as f64));
+    let b = t.borrow().get(&Value::Num((2 * k + 2) as f64));
+    drop(st);
+    if a.is_nil() {
+        return Ok(Vec::new());
+    }
+    me.state.borrow_mut()[1] = Value::Num((k + 1) as f64);
+    Ok(vec![a, b])
+}
+
+/// utf8.nfcnormalize and nfdnormalize: the text as it is (the studio has no
+/// Unicode tables to compose or decompose with).
+fn u_normalize(lua: &mut Lua, _: &mut dyn Host, me: &Native, args: Vec<Value>) -> Res {
+    let s = check_str(lua, &args, 0, &me.name)?;
+    one(Value::bytes(&s))
 }

@@ -6590,6 +6590,604 @@ print(math.isfinite(1))
 "##
     ),
     e!(
+        "buffer.create",
+        "stdlib",
+        r##"
+`buffer.create(size)`
+
+Luau's buffer: a new buffer of `size` bytes (at most 1 GiB), all zero. `type` and `typeof` of one say `"buffer"`; offsets count from 0, and reading or writing past its end errors `buffer access out of bounds`.
+
+```lua
+local b = buffer.create(8)
+```
+"##
+    ),
+    e!(
+        "buffer.fromstring",
+        "stdlib",
+        r##"
+`buffer.fromstring(s)`
+
+A buffer holding the bytes of `s`.
+
+```lua
+local b = buffer.fromstring("hi")
+```
+"##
+    ),
+    e!(
+        "buffer.tostring",
+        "stdlib",
+        r##"
+`buffer.tostring(b)`
+
+The buffer's bytes as a string.
+
+```lua
+print(buffer.tostring(buffer.fromstring("hi")))
+```
+"##
+    ),
+    e!(
+        "buffer.len",
+        "stdlib",
+        r##"
+`buffer.len(b)`
+
+The buffer's size in bytes.
+
+```lua
+print(buffer.len(buffer.create(4)))
+```
+"##
+    ),
+    e!(
+        "buffer.readi8",
+        "stdlib",
+        r##"
+`buffer.readi8(b, offset)`
+
+Reads a signed byte (little-endian) at byte `offset`.
+
+```lua
+print(buffer.readi8(buffer.create(8), 0))
+```
+"##
+    ),
+    e!(
+        "buffer.writei8",
+        "stdlib",
+        r##"
+`buffer.writei8(b, offset, value)`
+
+Writes `value` as a signed byte (little-endian) at byte `offset`; whole numbers wrap to its range.
+
+```lua
+local b = buffer.create(8) buffer.writei8(b, 0, 7)
+```
+"##
+    ),
+    e!(
+        "buffer.readu8",
+        "stdlib",
+        r##"
+`buffer.readu8(b, offset)`
+
+Reads an unsigned byte (little-endian) at byte `offset`.
+
+```lua
+print(buffer.readu8(buffer.create(8), 0))
+```
+"##
+    ),
+    e!(
+        "buffer.writeu8",
+        "stdlib",
+        r##"
+`buffer.writeu8(b, offset, value)`
+
+Writes `value` as an unsigned byte (little-endian) at byte `offset`; whole numbers wrap to its range.
+
+```lua
+local b = buffer.create(8) buffer.writeu8(b, 0, 7)
+```
+"##
+    ),
+    e!(
+        "buffer.readi16",
+        "stdlib",
+        r##"
+`buffer.readi16(b, offset)`
+
+Reads a signed 16-bit integer (little-endian) at byte `offset`.
+
+```lua
+print(buffer.readi16(buffer.create(8), 0))
+```
+"##
+    ),
+    e!(
+        "buffer.writei16",
+        "stdlib",
+        r##"
+`buffer.writei16(b, offset, value)`
+
+Writes `value` as a signed 16-bit integer (little-endian) at byte `offset`; whole numbers wrap to its range.
+
+```lua
+local b = buffer.create(8) buffer.writei16(b, 0, 7)
+```
+"##
+    ),
+    e!(
+        "buffer.readu16",
+        "stdlib",
+        r##"
+`buffer.readu16(b, offset)`
+
+Reads an unsigned 16-bit integer (little-endian) at byte `offset`.
+
+```lua
+print(buffer.readu16(buffer.create(8), 0))
+```
+"##
+    ),
+    e!(
+        "buffer.writeu16",
+        "stdlib",
+        r##"
+`buffer.writeu16(b, offset, value)`
+
+Writes `value` as an unsigned 16-bit integer (little-endian) at byte `offset`; whole numbers wrap to its range.
+
+```lua
+local b = buffer.create(8) buffer.writeu16(b, 0, 7)
+```
+"##
+    ),
+    e!(
+        "buffer.readi32",
+        "stdlib",
+        r##"
+`buffer.readi32(b, offset)`
+
+Reads a signed 32-bit integer (little-endian) at byte `offset`.
+
+```lua
+print(buffer.readi32(buffer.create(8), 0))
+```
+"##
+    ),
+    e!(
+        "buffer.writei32",
+        "stdlib",
+        r##"
+`buffer.writei32(b, offset, value)`
+
+Writes `value` as a signed 32-bit integer (little-endian) at byte `offset`; whole numbers wrap to its range.
+
+```lua
+local b = buffer.create(8) buffer.writei32(b, 0, 7)
+```
+"##
+    ),
+    e!(
+        "buffer.readu32",
+        "stdlib",
+        r##"
+`buffer.readu32(b, offset)`
+
+Reads an unsigned 32-bit integer (little-endian) at byte `offset`.
+
+```lua
+print(buffer.readu32(buffer.create(8), 0))
+```
+"##
+    ),
+    e!(
+        "buffer.writeu32",
+        "stdlib",
+        r##"
+`buffer.writeu32(b, offset, value)`
+
+Writes `value` as an unsigned 32-bit integer (little-endian) at byte `offset`; whole numbers wrap to its range.
+
+```lua
+local b = buffer.create(8) buffer.writeu32(b, 0, 7)
+```
+"##
+    ),
+    e!(
+        "buffer.readf32",
+        "stdlib",
+        r##"
+`buffer.readf32(b, offset)`
+
+Reads a 32-bit float (little-endian) at byte `offset`.
+
+```lua
+print(buffer.readf32(buffer.create(8), 0))
+```
+"##
+    ),
+    e!(
+        "buffer.writef32",
+        "stdlib",
+        r##"
+`buffer.writef32(b, offset, value)`
+
+Writes `value` as a 32-bit float (little-endian) at byte `offset`; whole numbers wrap to its range.
+
+```lua
+local b = buffer.create(8) buffer.writef32(b, 0, 7)
+```
+"##
+    ),
+    e!(
+        "buffer.readf64",
+        "stdlib",
+        r##"
+`buffer.readf64(b, offset)`
+
+Reads a 64-bit float (little-endian) at byte `offset`.
+
+```lua
+print(buffer.readf64(buffer.create(8), 0))
+```
+"##
+    ),
+    e!(
+        "buffer.writef64",
+        "stdlib",
+        r##"
+`buffer.writef64(b, offset, value)`
+
+Writes `value` as a 64-bit float (little-endian) at byte `offset`; whole numbers wrap to its range.
+
+```lua
+local b = buffer.create(8) buffer.writef64(b, 0, 7)
+```
+"##
+    ),
+    e!(
+        "buffer.readstring",
+        "stdlib",
+        r##"
+`buffer.readstring(b, offset, count)`
+
+`count` bytes at `offset`, as a string.
+
+```lua
+print(buffer.readstring(buffer.fromstring("hello"), 1, 3))
+```
+"##
+    ),
+    e!(
+        "buffer.writestring",
+        "stdlib",
+        r##"
+`buffer.writestring(b, offset, s[, count])`
+
+Writes `s` (its first `count` bytes) at `offset`.
+
+```lua
+local b = buffer.create(5) buffer.writestring(b, 0, "hello")
+```
+"##
+    ),
+    e!(
+        "buffer.copy",
+        "stdlib",
+        r##"
+`buffer.copy(target, targetOffset, source[, sourceOffset[, count]])`
+
+Copies `count` bytes of `source` from `sourceOffset` (0) into `target` at `targetOffset`; the two may be the same buffer.
+
+```lua
+buffer.copy(a, 0, b)
+```
+"##
+    ),
+    e!(
+        "buffer.fill",
+        "stdlib",
+        r##"
+`buffer.fill(b, offset, value[, count])`
+
+Sets `count` bytes from `offset` (to the end) to the byte `value`.
+
+```lua
+buffer.fill(b, 0, 255)
+```
+"##
+    ),
+    e!(
+        "buffer.readbits",
+        "stdlib",
+        r##"
+`buffer.readbits(b, bitOffset, bitCount)`
+
+Reads `bitCount` bits (0 to 32) from bit `bitOffset`, the lowest bit first, as a number.
+
+```lua
+print(buffer.readbits(b, 3, 5))
+```
+"##
+    ),
+    e!(
+        "buffer.writebits",
+        "stdlib",
+        r##"
+`buffer.writebits(b, bitOffset, bitCount, value)`
+
+Writes the low `bitCount` bits (0 to 32) of `value` from bit `bitOffset`.
+
+```lua
+buffer.writebits(b, 3, 5, 17)
+```
+"##
+    ),
+    e!(
+        "string.pack",
+        "stdlib",
+        r##"
+`string.pack(fmt, ...)`
+
+Packs values into a binary string as Lua 5.3's format describes: `<` `>` `=` byte order, `b` `B` `h` `H` `i[n]` `I[n]` `l` `L` `j` `J` `T` integers, `f` `d` `n` floats, `s[n]` length-prefixed strings, `c<n>` fixed strings, `z` zero-ended strings, `x` a zero byte, `X` alignment.
+
+```lua
+local data = string.pack("<i4f", 7, 1.5)
+```
+"##
+    ),
+    e!(
+        "string.unpack",
+        "stdlib",
+        r##"
+`string.unpack(fmt, s[, pos])`
+
+The values `string.pack` would have packed into `s` (from byte `pos`, 1), then the position after them.
+
+```lua
+print(string.unpack("<i4", string.pack("<i4", 7)))
+```
+"##
+    ),
+    e!(
+        "string.packsize",
+        "stdlib",
+        r##"
+`string.packsize(fmt)`
+
+The size of what `fmt` packs (it must have no variable-size items).
+
+```lua
+print(string.packsize("i4i4"))
+```
+"##
+    ),
+    e!(
+        "gcinfo",
+        "stdlib",
+        r##"
+`gcinfo()`
+
+Luau's memory in use, in kilobytes: here an estimate.
+
+```lua
+print(gcinfo())
+```
+"##
+    ),
+    e!(
+        "utf8.graphemes",
+        "stdlib",
+        r##"
+`utf8.graphemes(s[, i[, j]])`
+
+Roblox's: an iterator over the grapheme clusters of `s` (a character with the accents, variation selectors and zero-width joins after it), giving each one's first and last byte.
+
+```lua
+for first, last in utf8.graphemes("hé") do print(first, last) end
+```
+"##
+    ),
+    e!(
+        "utf8.nfcnormalize",
+        "stdlib",
+        r##"
+`utf8.nfcnormalize(s)`
+
+Roblox's Unicode composition: here the text as it is.
+
+```lua
+print(utf8.nfcnormalize("é"))
+```
+"##
+    ),
+    e!(
+        "utf8.nfdnormalize",
+        "stdlib",
+        r##"
+`utf8.nfdnormalize(s)`
+
+Roblox's Unicode decomposition: here the text as it is.
+
+```lua
+print(utf8.nfdnormalize("é"))
+```
+"##
+    ),
+    e!(
+        "vector.create",
+        "stdlib",
+        r##"
+`vector.create(x, y[, z])`
+
+Luau's vector library; in Roblox a vector is a Vector3: this is `Vector3.new(x, y, z)`.
+
+```lua
+local v = vector.create(1, 2, 3)
+```
+"##
+    ),
+    e!(
+        "vector.magnitude",
+        "stdlib",
+        r##"
+`vector.magnitude(v)`
+
+The vector's length.
+
+```lua
+print(vector.magnitude(vector.create(3, 4, 0)))
+```
+"##
+    ),
+    e!(
+        "vector.normalize",
+        "stdlib",
+        r##"
+`vector.normalize(v)`
+
+The vector at length 1 (its Unit).
+
+```lua
+print(vector.normalize(vector.create(0, 5, 0)))
+```
+"##
+    ),
+    e!(
+        "vector.dot",
+        "stdlib",
+        r##"
+`vector.dot(a, b)`
+
+The dot product.
+
+```lua
+print(vector.dot(vector.one, vector.one))
+```
+"##
+    ),
+    e!(
+        "vector.cross",
+        "stdlib",
+        r##"
+`vector.cross(a, b)`
+
+The cross product.
+
+```lua
+print(vector.cross(Vector3.xAxis, Vector3.yAxis))
+```
+"##
+    ),
+    e!(
+        "vector.angle",
+        "stdlib",
+        r##"
+`vector.angle(a, b[, axis])`
+
+The angle between two vectors in radians, negative when `axis` says it turns the other way.
+
+```lua
+print(vector.angle(Vector3.xAxis, Vector3.yAxis))
+```
+"##
+    ),
+    e!(
+        "vector.floor",
+        "stdlib",
+        r##"
+`vector.floor(v)`
+
+Each component rounded down.
+
+```lua
+print(vector.floor(vector.create(1.5, 2.5, -0.5)))
+```
+"##
+    ),
+    e!(
+        "vector.ceil",
+        "stdlib",
+        r##"
+`vector.ceil(v)`
+
+Each component rounded up.
+
+```lua
+print(vector.ceil(vector.create(1.5, 2.5, -0.5)))
+```
+"##
+    ),
+    e!(
+        "vector.abs",
+        "stdlib",
+        r##"
+`vector.abs(v)`
+
+Each component's absolute value.
+
+```lua
+print(vector.abs(vector.create(-1, 2, -3)))
+```
+"##
+    ),
+    e!(
+        "vector.sign",
+        "stdlib",
+        r##"
+`vector.sign(v)`
+
+Each component's sign (-1, 0 or 1).
+
+```lua
+print(vector.sign(vector.create(-4, 0, 9)))
+```
+"##
+    ),
+    e!(
+        "vector.clamp",
+        "stdlib",
+        r##"
+`vector.clamp(v, min, max)`
+
+Each component kept between those of `min` and `max`.
+
+```lua
+print(vector.clamp(v, vector.zero, vector.one))
+```
+"##
+    ),
+    e!(
+        "vector.max",
+        "stdlib",
+        r##"
+`vector.max(v, ...)`
+
+The largest of each component.
+
+```lua
+print(vector.max(a, b))
+```
+"##
+    ),
+    e!(
+        "vector.min",
+        "stdlib",
+        r##"
+`vector.min(v, ...)`
+
+The smallest of each component.
+
+```lua
+print(vector.min(a, b))
+```
+"##
+    ),
+    e!(
         "bit32.band",
         "stdlib",
         r##"

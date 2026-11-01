@@ -33,8 +33,8 @@ pub type Builtin = fn(&mut Lua, &mut dyn Host, &Native, Vec<Value>) -> Res;
 
 /// The longest string a script can make.
 pub const MAX_STRING: usize = 4 << 20;
-/// The most entries one table can hold.
-pub const MAX_TABLE: usize = 1 << 20;
+/// The most entries one table can hold: Luau's limit (2^26).
+pub const MAX_TABLE: usize = 1 << 26;
 /// Lua frames one coroutine may have before "stack overflow", as many as
 /// Luau allows (they live on the heap, not the game's stack).
 pub const MAX_DEPTH: usize = 20_000;
@@ -99,6 +99,7 @@ impl Value {
             Value::Table(_) => "table",
             Value::Func(_) | Value::Native(_) => "function",
             Value::Thread(_) => "thread",
+            Value::Userdata(u) if u.data.borrow().is::<LuaBuffer>() => "buffer",
             Value::Userdata(_) => "userdata",
         }
     }
@@ -281,6 +282,24 @@ impl Throw {
         }
     }
 }
+
+/// What an index error says of what was indexed: its name where the code
+/// names it (a local, a global, a field), else the key it was indexed with,
+/// as Luau says (`with 'Name'`).
+fn index_desc(p: &Proto, pc: usize, key: &Value) -> String {
+    let d = p.desc(pc, 0);
+    if !d.is_empty() {
+        return d;
+    }
+    match key {
+        Value::Str(_) => format!(" with '{}'", key.plain_text()),
+        Value::Num(n) => format!(" with {}", fmt_num(*n)),
+        _ => String::new(),
+    }
+}
+
+/// A Luau buffer's bytes (`type` "buffer"), in a Userdata.
+pub struct LuaBuffer(pub Vec<u8>);
 
 /// A value a host makes for scripts: Rust data, a metatable (for its
 /// methods and operators) and identity by pointer.
@@ -4462,11 +4481,20 @@ fn arith_event(op: BinOp) -> Ev {
     }
 }
 
+/// Steps a call is given again, while its deadline lasts.
+const REFILL_STEPS: u64 = 1_000_000;
+
 pub struct Lua {
     /// Steps left before the running script is stopped.
     pub steps: u64,
+    /// Until when a call may go on once its steps run out (Roblox's script
+    /// timeout): they are given again, a million at a time, until then.
+    pub deadline: Option<std::time::Instant>,
     /// The `string` table: methods of strings (`s:upper()`).
     pub string_lib: Option<TableRef>,
+    /// The strings' metatable, as getmetatable("") gives it: read-only,
+    /// its `__index` the string library.
+    pub string_meta: Option<TableRef>,
     /// The random generator's state (math.random).
     pub rng: u64,
     pub started: std::time::Instant,
@@ -4495,7 +4523,9 @@ impl Lua {
     pub fn new() -> Lua {
         Lua {
             steps: 1_000_000,
+            deadline: None,
             string_lib: None,
+            string_meta: None,
             rng: 0x2545_F491_4F6C_DD1D,
             started: std::time::Instant::now(),
             cur: ThreadState::default(),
@@ -4586,8 +4616,17 @@ impl Lua {
         }
         lines.join("\n")
     }
+    /// Out of steps: more until the deadline (REFILL_STEPS at a time), else the error.
     #[cold]
-    fn out_of_steps(&self) -> Throw {
+    fn out_of_steps(&mut self) -> Option<Throw> {
+        if self.deadline.is_some_and(|d| std::time::Instant::now() < d) {
+            self.steps = REFILL_STEPS;
+            return None;
+        }
+        Some(self.steps_error())
+    }
+    #[cold]
+    fn steps_error(&self) -> Throw {
         let at = match self.here() {
             None => String::new(),
             Some((chunk, line)) => format!("{chunk}:{line}: "),
@@ -4596,8 +4635,10 @@ impl Lua {
     }
     #[inline]
     fn step(&mut self) -> Result<(), Throw> {
-        if self.steps == 0 {
-            return Err(self.out_of_steps());
+        if self.steps == 0
+            && let Some(e) = self.out_of_steps()
+        {
+            return Err(e);
         }
         self.steps -= 1;
         Ok(())
@@ -4831,14 +4872,18 @@ impl Lua {
                 match op {
                     Op::Step(line) => {
                         self.cur.frames[fi].line = line;
-                        if self.steps == 0 {
-                            break 'inner self.out_of_steps();
+                        if self.steps == 0
+                            && let Some(e) = self.out_of_steps()
+                        {
+                            break 'inner e;
                         }
                         self.steps -= 1;
                     }
                     Op::Tick => {
-                        if self.steps == 0 {
-                            break 'inner self.out_of_steps();
+                        if self.steps == 0
+                            && let Some(e) = self.out_of_steps()
+                        {
+                            break 'inner e;
                         }
                         self.steps -= 1;
                     }
@@ -5317,8 +5362,10 @@ impl Lua {
                         } else {
                             put_num(&mut r[3], 0.0);
                             put_num(&mut r[4], x);
-                            if self.steps == 0 {
-                                break 'inner self.out_of_steps();
+                            if self.steps == 0
+                                && let Some(e) = self.out_of_steps()
+                            {
+                                break 'inner e;
                             }
                             self.steps -= 1;
                         }
@@ -5330,12 +5377,14 @@ impl Lua {
                         let count = num(&r[3]) + 1.0;
                         let x = start + count * step;
                         if !((step > 0.0 && x > limit) || (step < 0.0 && x < limit)) {
-                            if self.steps == 0 {
-                                break 'inner self.out_of_steps();
-                            }
-                            self.steps -= 1;
                             put_num(&mut r[3], count);
                             put_num(&mut r[4], x);
+                            if self.steps == 0
+                                && let Some(e) = self.out_of_steps()
+                            {
+                                break 'inner e;
+                            }
+                            self.steps -= 1;
                             pc = pc.wrapping_add_signed(off as isize);
                         }
                     }
@@ -5371,8 +5420,10 @@ impl Lua {
                         }
                     }
                     Op::TForCall(a, n) => {
-                        if self.steps == 0 {
-                            break 'inner self.out_of_steps();
+                        if self.steps == 0
+                            && let Some(e) = self.out_of_steps()
+                        {
+                            break 'inner e;
                         }
                         self.steps -= 1;
                         let i = base + a as usize;
@@ -5807,7 +5858,11 @@ impl Lua {
     ) -> Result<(), Throw> {
         let obj = self.cur.stack[base + b].clone();
         if !matches!(obj, Value::Table(_) | Value::Str(_) | Value::Userdata(_)) {
-            return Err(self.rt_error(format!("attempt to index a {} value{}", obj.type_name(), p.desc(pc, 0))));
+            return Err(self.rt_error(format!(
+                "attempt to index a {} value{}",
+                obj.type_name(),
+                index_desc(p, pc, name)
+            )));
         }
         // A userdata's `__namecall` takes every method call on it (and a
         // table's, as executors' hookmetamethod needs).
@@ -5838,7 +5893,11 @@ impl Lua {
         match o {
             Value::Table(_) | Value::Str(_) => self.index(h, o, key),
             Value::Userdata(_) if self.meta(o, Ev::Index).is_some() => self.index(h, o, key),
-            _ => Err(self.rt_error(format!("attempt to index a {} value{}", o.type_name(), p.desc(pc, 0)))),
+            _ => Err(self.rt_error(format!(
+                "attempt to index a {} value{}",
+                o.type_name(),
+                index_desc(p, pc, key)
+            ))),
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -5855,7 +5914,11 @@ impl Lua {
         match o {
             Value::Table(_) => self.store(h, o, key, made, v),
             Value::Userdata(_) if self.meta(o, Ev::NewIndex).is_some() => self.set_index(h, o, key, v),
-            _ => Err(self.rt_error(format!("attempt to index a {} value{}", o.type_name(), p.desc(pc, 0)))),
+            _ => Err(self.rt_error(format!(
+                "attempt to index a {} value{}",
+                o.type_name(),
+                index_desc(p, pc, &key)
+            ))),
         }
     }
     /// `t[key] = v` on a table, its key made already when it is a constant.
@@ -6251,7 +6314,7 @@ impl Lua {
     #[allow(dead_code)]
     pub fn type_of(&self, v: &Value) -> String {
         match v {
-            Value::Userdata(u) => u.type_name().unwrap_or_else(|| "userdata".into()),
+            Value::Userdata(u) => u.type_name().unwrap_or_else(|| v.type_name().into()),
             other => other.type_name().into(),
         }
     }

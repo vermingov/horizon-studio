@@ -44,6 +44,8 @@ pub const OPEN_KEY: &str = "key.keyboard.f8";
 pub const LOAD_STEPS: u64 = 10_000_000;
 pub const EVENT_STEPS: u64 = 2_000_000;
 pub const CONSOLE_STEPS: u64 = 20_000_000;
+/// Roblox's script timeout: a run of a script stops after this many seconds.
+pub const SCRIPT_TIMEOUT: f64 = 10.0;
 /// How often the mods folder is checked for changes.
 pub const SCAN_SECONDS: f64 = 0.5;
 const MAX_LOG: usize = 1000;
@@ -1042,6 +1044,9 @@ pub struct State {
     pub rbx: super::hstudio_rbx::Rbx,
     /// The executor's globals (`getgenv`) and Roblox's (`getrenv`), shared by every mod.
     pub genv: Option<TableRef>,
+    /// How long one run of a script may go on (seconds), as Roblox's script
+    /// timeout: its steps are given again until then. 0: only its steps.
+    pub script_timeout: f64,
     pub renv: Option<TableRef>,
     /// The table of the screen the Roblox GUI takes the pointer with.
     rbx_screen: Option<TableRef>,
@@ -1213,6 +1218,7 @@ impl Studio {
                 frame_no: 0,
                 rbx: super::hstudio_rbx::Rbx::new(),
                 genv: None,
+                script_timeout: SCRIPT_TIMEOUT,
                 renv: None,
                 rbx_screen: None,
                 thread_errors: Vec::new(),
@@ -2507,6 +2513,7 @@ impl Studio {
             dest.borrow_mut().set_str(name, Value::table(t));
         }
         self.roblox_globals(&renv);
+        super::hstudio_sunc::vector_lib(&mut self.lua, &renv);
         super::hstudio_sunc::executor_globals(&mut self.lua, &genv, &mut self.s.rbx);
         let mut meta = Table::new();
         meta.set_str("__index", Value::Table(renv.clone()));
@@ -2562,6 +2569,8 @@ impl Studio {
     ) -> Outcome {
         self.lua.steps = budget;
         let started = Instant::now();
+        self.lua.deadline =
+            (self.s.script_timeout > 0.0).then(|| started + std::time::Duration::from_secs_f64(self.s.script_timeout));
         let mut ctx = Ctx {
             game,
             s: &mut self.s,
@@ -2592,6 +2601,8 @@ impl Studio {
         }
         self.lua.steps = budget;
         let started = Instant::now();
+        self.lua.deadline =
+            (self.s.script_timeout > 0.0).then(|| started + std::time::Duration::from_secs_f64(self.s.script_timeout));
         let mut ctx = Ctx {
             game,
             s: &mut self.s,

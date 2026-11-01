@@ -362,6 +362,9 @@ impl GameApi for FakeGame {
 /// A studio started on the fake game.
 pub fn studio(game: &mut FakeGame) -> Studio {
     let mut st = Studio::new();
+    // Tests stop an endless loop by its steps, at once, not after Roblox's
+    // ten seconds (a test of the timeout sets its own).
+    st.s.script_timeout = 0.0;
     st.frame(game, 0.016);
     st
 }

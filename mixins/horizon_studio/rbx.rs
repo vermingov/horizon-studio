@@ -431,6 +431,10 @@ pub static CLASSES: &[C] = &[
     },
     service("MarketplaceService", &[], &[]),
     service("LogService", &[], &["MessageOut"]),
+    C {
+        lenient: true,
+        ..service("TestService", &[], &["ServerCollectedResult", "ClientCollectedResult"])
+    },
     // Services scripts get at their top, though they can do nothing here.
     lenient_service("TeleportService"),
     lenient_service("VirtualUser"),
@@ -2332,6 +2336,14 @@ const METHODS: &[(&str, &str)] = &[
     ("Close", "WebSocket"),
     ("FindService", "DataModel"),
     ("IsLoaded", "DataModel"),
+    ("Message", "TestService"),
+    ("Warn", "TestService"),
+    ("Error", "TestService"),
+    ("Checkpoint", "TestService"),
+    ("Check", "TestService"),
+    ("Require", "TestService"),
+    ("Fail", "TestService"),
+    ("Done", "TestService"),
     ("Preload", "ContentProvider"),
     ("PreloadAsync", "ContentProvider"),
     ("BindToClose", "DataModel"),

@@ -355,6 +355,25 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             }
         }
         ("DataModel", "IsLoaded") => one(Value::Bool(true)),
+        // TestService's output goes to the console, as Roblox's Output.
+        ("TestService", "Message" | "Warn" | "Error" | "Checkpoint" | "Fail" | "Done") => {
+            let text = args.get(1).and_then(Value::as_text).unwrap_or_default();
+            let h: &mut dyn Host = env;
+            match name {
+                "Warn" | "Error" | "Fail" => h.print(&format!("warning: {text}")),
+                _ => h.print(&text),
+            }
+            none()
+        }
+        ("TestService", "Check" | "Require") => {
+            let ok = args.get(1).is_some_and(Value::truthy);
+            if !ok {
+                let text = args.get(2).and_then(Value::as_text).unwrap_or_default();
+                let h: &mut dyn Host = env;
+                h.print(&format!("warning: {text}"));
+            }
+            none()
+        }
         // Assets load as they are drawn here: nothing to wait for.
         ("ContentProvider", "Preload" | "PreloadAsync") => none(),
         ("DataModel", "BindToClose") => none(),

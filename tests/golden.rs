@@ -287,8 +287,11 @@ impl Session {
                 .collect(),
             log: vec!["[ViaProxy] Binding proxy server to 127.0.0.1:41234".into()],
         };
+        let mut st = Studio::new();
+        // Endless loops stop by their steps, at once (not Roblox's timeout).
+        st.s.script_timeout = 0.0;
         Session {
-            st: Studio::new(),
+            st,
             game: Rec {
                 g,
                 out: RefCell::new(Vec::new()),
