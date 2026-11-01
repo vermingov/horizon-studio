@@ -369,7 +369,7 @@ fn reset_item(ui: &Ui) -> MenuItem {
 
 /// Every pane of the Editor tab, the Library and the Docs too (docked when
 /// chosen), each marked where its body is drawn at the front of its group
-/// (the tab laid out as it was last drawn, so from any tab): choosing one
+/// (the tab laid out in the room it has now, so from any tab): choosing one
 /// shows it, with the keys.
 fn pane_list(st: &Studio) -> Vec<MenuItem> {
     let ui = &st.s.ui;

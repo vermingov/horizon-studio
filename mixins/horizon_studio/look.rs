@@ -871,6 +871,10 @@ fn studio_page(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32, wind
     let tab = st.s.ui.tab;
     let shown = progress(now, st.s.ui.tab_at, MOVE);
     let body = [x, y + 56.0, w, (h - 84.0).max(40.0)];
+    // The Editor tab's area, kept whichever tab shows: what a change of
+    // the panes would do (a Library or the Docs shown, Panes ›'s marks, the
+    // script list's room) is laid out in the room the Editor tab has now.
+    st.s.ui.dock_ws = Some(body);
     p.alpha = alpha * shown;
     p.dy = rise + (1.0 - shown) * RISE;
     page(st, p, tab, body, dt);
@@ -3329,7 +3333,7 @@ fn bubble_lines(lens: &[(usize, usize)], all: bool, fit: usize) -> (Vec<usize>, 
 /// stays inside the code's panel, never taller than the panel less two rows:
 /// its words are cut to fit, and to their share (eight lines of note) until
 /// its More is pressed. A lesson's step has what to try, its explanation
-/// when the Agent panel doesn't show it (the executor styles have none),
+/// when the Agent pane doesn't show it (the executor styles have none),
 /// and where the lesson is with Back, Check and Next (Done on its last
 /// step). Its × clears the mark, a step's ends the lesson; clicks elsewhere
 /// on it reach nothing under it. (`text_x`: where the code's text starts;

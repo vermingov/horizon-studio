@@ -1795,6 +1795,23 @@ fn ctrl_b_shows_and_hides_the_script_list() {
     assert_eq!((st.s.editor.title.as_str(), st.s.ui.focus), ("hello.lua", Pane::Code));
     redraw(&mut st, &mut game);
     assert!(!st.s.ui.dock_front[Pane::Scripts.index()], "the list gone");
+    // Drawn full screen on the Editor tab, then in that window again while
+    // the Console page shows: Panes ›, in the window's own menu, makes the
+    // list the pane in use, as the Editor tab now has no room for it beside
+    // the code.
+    st.s.ui.look.window = false;
+    redraw(&mut st, &mut game);
+    assert!(st.s.ui.dock_front[Pane::Scripts.index()]);
+    press(&mut st, &mut game, Key::Char('1'), CTRL);
+    st.s.ui.look.window = true;
+    redraw(&mut st, &mut game);
+    let name = text_at(&game, "Horizon Studio");
+    right_click(&mut st, &mut game, (name.0 + 4.0, name.1 + 4.0));
+    choose(&mut st, &mut game, "Panes");
+    choose(&mut st, &mut game, "Scripts");
+    assert_eq!((st.s.ui.tab, st.s.ui.focus), (Tab::Editor, Pane::Scripts));
+    redraw(&mut st, &mut game);
+    assert_eq!(leaf(&st, Pane::Scripts).rect, st.s.ui.dock_ws.unwrap());
 }
 
 #[test]
@@ -2017,6 +2034,25 @@ fn sizing_from_the_keys() {
     let ratio = st.s.ui.dock.ratio(3);
     press(&mut st, &mut game, Key::Down, NONE);
     assert_eq!((st.s.editor.row, st.s.ui.dock.ratio(3)), (1, ratio));
+    // In an Editor area 600 wide the script list's least holds it 140 wide,
+    // wider than its ratio would make it. The arrows step from where its
+    // bar is drawn: Left there changes nothing, the ratio kept for a wider
+    // area, and one Right widens the list 16 units.
+    st.s.ui.look.window = true;
+    st.s.ui.look.rect = Some([10.0, 10.0, 634.0, 500.0]);
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.ui.dock_ws.unwrap()[2], 600.0);
+    assert_eq!(leaf(&st, Pane::Scripts).rect[2], 140.0);
+    let (ratio, written) = (st.s.ui.dock.ratio(1), layout_txt(&st));
+    let at = middle(tab_of(&st, Pane::Scripts));
+    right_click(&mut st, &mut game, at);
+    choose(&mut st, &mut game, "Size...");
+    assert_eq!(st.s.ui.sizing, Some((Pane::Scripts, 1)));
+    press(&mut st, &mut game, Key::Left, NONE);
+    assert_eq!((st.s.ui.dock.ratio(1), layout_txt(&st)), (ratio, written));
+    press(&mut st, &mut game, Key::Right, NONE);
+    redraw(&mut st, &mut game);
+    assert_eq!(leaf(&st, Pane::Scripts).rect[2], 156.0);
 }
 
 #[test]
@@ -2421,13 +2457,37 @@ fn drops_and_shows_never_take_a_panes_place() {
 fn a_library_with_no_room_opens_its_page() {
     let groups =
         |st: &Studio| -> Vec<(Pane, bool)> { st.s.ui.dock_drawn.iter().map(|l| (l.active, l.collapsed)).collect() };
+    // Dock in the Editor, in the Library page's own menu.
+    fn dock_from_page(st: &mut Studio, game: &mut FakeGame) {
+        st.s.ui.notice = None;
+        press(st, game, Key::Char('3'), CTRL);
+        redraw(st, game);
+        let title = text_at(game, "Script mods");
+        right_click(st, game, (title.0 + 2.0, title.1 + 2.0));
+        choose(st, game, "Dock in the Editor");
+    }
+    // The Library's page shows, with a notice; the dock is as it was, and
+    // nothing is written.
+    let stayed = |st: &Studio| {
+        assert_eq!((st.s.ui.tab, &st.s.ui.dock), (Tab::Library, &Dock::default()));
+        assert_eq!(notice(st), "No room for the Library in the Editor tab");
+        assert!(layout_txt(st).is_empty(), "nothing written");
+    };
     // In an 854 x 480 game's default window the Library has no room for
     // its column, and among the code's tabs its least height would leave
-    // the panel no room for its strip under them: Panes › Library opens
-    // its page, the dock as it was.
+    // the panel no room for its strip under them, so its page shows
+    // instead. Before the Editor tab is first drawn too (the studio opens
+    // on the Console): Dock in the Editor, on the Library page, tries the
+    // room the Editor tab has in that window.
     let (mut game, mut st) = editing("dock-library-no-room");
     st.s.ui.look.window = true;
     st.s.ui.look.scale = 1.125;
+    press(&mut st, &mut game, Key::Char('1'), CTRL);
+    redraw(&mut st, &mut game);
+    dock_from_page(&mut st, &mut game);
+    stayed(&st);
+    // On the Editor tab, Panes › Library opens its page too.
+    press(&mut st, &mut game, Key::Char('2'), CTRL);
     redraw(&mut st, &mut game);
     let px = |(x, y): (f32, f32)| (x * 1.125, y * 1.125);
     let before = groups(&st);
@@ -2436,12 +2496,11 @@ fn a_library_with_no_room_opens_its_page() {
         [(Pane::Scripts, false), (Pane::Console, true), (Pane::Code, false)]
     );
     let at = px(middle(tab_of(&st, Pane::Code)));
+    st.s.ui.notice = None;
     right_click(&mut st, &mut game, at);
     choose(&mut st, &mut game, "Panes");
     choose(&mut st, &mut game, "Library");
-    assert_eq!((st.s.ui.tab, &st.s.ui.dock), (Tab::Library, &Dock::default()));
-    assert_eq!(notice(&st), "No room for the Library in the Editor tab");
-    assert!(layout_txt(&st).is_empty(), "nothing written");
+    stayed(&st);
     // Back on the Editor tab every group is drawn as before, the code with
     // the keys.
     press(&mut st, &mut game, Key::Char('2'), CTRL);
@@ -2449,13 +2508,36 @@ fn a_library_with_no_room_opens_its_page() {
     assert_eq!(groups(&st), before);
     assert_eq!(st.s.ui.focus, Pane::Code);
     // Dock in the Editor, in the Library page's own menu: its page stays.
-    st.s.ui.tab = Tab::Library;
+    dock_from_page(&mut st, &mut game);
+    stayed(&st);
+    // Drawn full screen on the Editor tab, then put in the window again
+    // from Settings: from the Library page, and from the window's own menu
+    // on the Console page, the room tried is the one the Editor tab has
+    // now, in the window.
+    st.s.ui.look.window = false;
+    st.s.ui.look.scale = 1.0;
+    press(&mut st, &mut game, Key::Char('2'), CTRL);
     redraw(&mut st, &mut game);
-    let title = text_at(&game, "Script mods");
-    right_click(&mut st, &mut game, (title.0 + 2.0, title.1 + 2.0));
-    choose(&mut st, &mut game, "Dock in the Editor");
-    assert_eq!((st.s.ui.tab, &st.s.ui.dock), (Tab::Library, &Dock::default()));
-    assert_eq!(notice(&st), "No room for the Library in the Editor tab");
+    assert_eq!(st.s.ui.dock_ws, Some([48.0, 80.0, 864.0, 408.0]));
+    press(&mut st, &mut game, Key::Char('5'), CTRL);
+    redraw(&mut st, &mut game);
+    st.s.ui.look.window = true;
+    st.s.ui.look.scale = 1.125;
+    dock_from_page(&mut st, &mut game);
+    stayed(&st);
+    st.s.ui.notice = None;
+    press(&mut st, &mut game, Key::Char('1'), CTRL);
+    redraw(&mut st, &mut game);
+    let name = text_at(&game, "Horizon Studio");
+    right_click(&mut st, &mut game, (name.0 + 4.0, name.1 + 4.0));
+    choose(&mut st, &mut game, "Panes");
+    // Panes ›'s marks are the window's too: the panel is only its strip there.
+    assert!(item(&st, "Code").checked && !item(&st, "Console").checked);
+    choose(&mut st, &mut game, "Library");
+    stayed(&st);
+    press(&mut st, &mut game, Key::Char('2'), CTRL);
+    redraw(&mut st, &mut game);
+    assert_eq!(groups(&st), before);
     // An Editor area 468 wide: the script list, the code and the panel fit
     // side by side, but the Library among the code's tabs would make that
     // group 350 wide and push the script list out.

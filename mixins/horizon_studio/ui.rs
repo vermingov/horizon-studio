@@ -852,8 +852,9 @@ pub struct Ui {
     pub dock_bars: Vec<Bar>,
     pub dock_drawn: Vec<DrawnLeaf>,
     pub dock_front: [bool; 7],
-    /// The Editor tab's area when it was last drawn (kept: what a change
-    /// would do is laid out there from any tab).
+    /// The Editor tab's area as the last frame of the studio's own layout
+    /// had it, whichever tab showed (kept: what a change would do is laid
+    /// out there from any tab).
     pub dock_ws: Option<[f32; 4]>,
     /// When each pane came to the front (its content's arrival).
     pub(crate) shown_at: [f64; 7],
@@ -2862,7 +2863,15 @@ fn sizing_key(st: &mut Studio, key: Key, mods: Mods) -> bool {
     let ui = &mut st.s.ui;
     let ratio = ui.dock.ratio(path).unwrap_or(0.5);
     let len = bar.len.max(1.0);
-    let at = (bar.start + ratio * len + by).clamp(bar.lo, bar.hi);
+    // From where the bar is drawn, as the dock lays it out: in an area
+    // smaller than when its ratio was set, the groups' least sizes can hold
+    // it from where the ratio would put it. A key that can't move it
+    // leaves the ratio as it is.
+    let now = (bar.start + (ratio * len).round()).clamp(bar.lo, bar.hi);
+    let at = (now + by).clamp(bar.lo, bar.hi);
+    if at == now {
+        return true;
+    }
     // Written at each step, as each key's change is: the game can close
     // the studio, and quit, while the bar is lit.
     if ui.dock.set_ratio(path, (at - bar.start) / len) {

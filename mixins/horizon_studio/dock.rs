@@ -414,8 +414,8 @@ impl Dock {
     /// `show`, but a closed Library or Docs whose home would take a pane's
     /// place in `ws` (or leave it no room itself) goes among the code's
     /// tabs, at the front, where that takes no place either; where neither
-    /// does, it stays closed and nothing changes. Without `ws` (the Editor
-    /// tab never drawn) it is `show`.
+    /// does, it stays closed and nothing changes. Without `ws` (the
+    /// studio's own layout not drawn yet) it is `show`.
     pub fn show_fitting(&mut self, p: Pane, ws: Option<[f32; 4]>, keep: Pane) -> bool {
         let Some(ws) = ws.filter(|_| !self.has(p)) else {
             return self.show(p);
