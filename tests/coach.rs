@@ -2610,6 +2610,84 @@ fn a_press_on_a_line_a_second_edit_replaces_is_for_the_line_under_it_now() {
 }
 
 #[test]
+fn a_press_on_old_text_in_the_frame_it_goes_is_for_the_line_there_once_in() {
+    // A change replaces lines 11-21 of 60 with 11 new lines (an agent's
+    // edit, or the file written on disk): it shows the old lines tinted,
+    // then a frame's step takes them away and the new ones type in. The
+    // player presses on v16 as drawn, in the frame whose step takes the
+    // old lines away (the draw before it still showed them). Nothing of
+    // the text drawn there is left, so the press is for the line under the
+    // pointer once the rest of the change is in (nw6), in the view as it
+    // is: not for what was under the pointer in the half typed text (a line
+    // from below the change, which the new lines then push down, out of
+    // the view), nor for the change's start.
+    let src: String = (1..=60).map(|i| format!("local v{i} = {i}\n")).collect();
+    let new_lines: Vec<String> = (1..=11).map(|i| format!("nw{i} = {i}")).collect();
+    for (first, left) in [("edit", true), ("edit", false), ("disk", true), ("disk", false)] {
+        let case = format!("first by {first}, left {left}");
+        let (mut game, mut st) = editing(&format!("coach-press-old-goes-{first}-{left}"), "po", &src);
+        st.s.ui
+            .dock
+            .set_hidden(horizon_studio::game::hstudio_ui::Pane::Console, true);
+        st.s.editor.click(6, 0, false);
+        st.s.editor.scroll = 5;
+        for _ in 0..5 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, 5, "{case}");
+        if first == "edit" {
+            let edit = json!({ "start_line": 11, "end_line": 21, "new_text": new_lines.join("\n") });
+            let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+            assert!(r["typing"].is_u64(), "{case}: {r}");
+        } else {
+            let mut lines: Vec<String> = (1..=60).map(|i| format!("local v{i} = {i}")).collect();
+            lines.splice(10..21, new_lines.iter().cloned());
+            std::fs::write(game.mods_dir().join("po.lua"), lines.join("\n") + "\n").unwrap();
+            st.s.now += 1.0;
+            redraw(&mut st, &mut game);
+            assert!(st.s.ui.coach.typing.is_some(), "{case}: the change on disk types in");
+        }
+        // Frames in the game's order, up to the one whose step takes the
+        // old lines away.
+        let mut n = 0;
+        loop {
+            n += 1;
+            assert!(n < 100, "{case}: the old lines never went");
+            redraw(&mut st, &mut game);
+            assert_eq!(st.s.ui.coach.typing.as_ref().unwrap().phase, Phase::ShowOld, "{case}");
+            run_for(&mut st, &mut game, 0.016);
+            if st.s.ui.coach.typing.as_ref().is_some_and(|t| t.phase == Phase::Typing) {
+                break;
+            }
+        }
+        let (x, y) = text_at(&game, "v16");
+        assert!(
+            !st.s.editor.lines.iter().any(|l| l == "local v16 = 16"),
+            "{case}: v16 as drawn is gone"
+        );
+        let inputs = [
+            Input::Mouse(x + 1.0, y + 2.0),
+            Input::Button { left, down: true },
+            Input::Button { left, down: false },
+        ];
+        coach::input_coming(&mut st, &inputs);
+        for input in inputs {
+            handle(&mut st, &mut game, input);
+        }
+        assert!(st.s.ui.coach.typing.is_none(), "{case}: the press put the rest in");
+        assert_eq!(st.s.editor.scroll, 5, "{case}: the view stays");
+        let ed = &st.s.editor;
+        assert_eq!(ed.lines[ed.row], "nw6 = 6", "{case}: the line under the press");
+        assert_eq!(st.s.ui.menu.is_some(), !left, "{case}: the right press's menu");
+        st.s.ui.menu = None;
+        game_frame(&mut st, &mut game);
+        assert_eq!(st.s.editor.scroll, 5, "{case}");
+        assert!(st.s.ui.caret_at.is_some(), "{case}: the caret in view");
+        assert_eq!(text_at(&game, "nw6").1, y, "{case}: nw6 drawn where the press was");
+    }
+}
+
+#[test]
 fn a_menu_about_the_code_goes_when_the_code_changes_under_it() {
     // The player opens greet's menu in print(greet()) and pauses, and an
     // agent's edit puts a line in at the top: the menu's Go to

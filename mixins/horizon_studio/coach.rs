@@ -297,7 +297,9 @@ pub struct Before {
 /// typed character or a press puts the rest of an edit being typed in at
 /// once, so whatever the input does (type at the player's own caret, save,
 /// run, clear, open another file) finds the edit whole. A press is for the
-/// text drawn under the pointer, wherever the rest of the edit moves it.
+/// text drawn under the pointer, wherever the rest of the edit moves it;
+/// on old text the edit has taken away since (nothing of it is left), for
+/// the line under the pointer once the rest is in.
 pub fn before_input(st: &mut Studio, game: &mut dyn GameApi, input: &Input) -> Before {
     let why = match input {
         Input::Key { down: true, .. } | Input::Text(_) => Some("the player typed"),
@@ -308,7 +310,10 @@ pub fn before_input(st: &mut Studio, game: &mut dyn GameApi, input: &Input) -> B
         let press = matches!(input, Input::Button { down: true, .. }) && st.s.ui.coach.typing.is_some();
         let at = st.s.ui.mouse;
         let drawn = st.s.ui.smooth[1];
-        let place = press
+        // The text under the pointer as it is now, half typed in, isn't
+        // what the press is for when the text drawn there is gone.
+        let gone = press && super::hstudio_ui::drawn_gone(st, game, at.0, at.1, drawn);
+        let place = (press && !gone)
             .then(|| super::hstudio_ui::editor_pos(st, game, at.0, at.1, drawn))
             .flatten();
         let ed = &mut st.s.editor;
@@ -318,10 +323,15 @@ pub fn before_input(st: &mut Studio, game: &mut dyn GameApi, input: &Input) -> B
         });
         finish_typing(st, why);
         let ed = &mut st.s.editor;
-        st.s.ui.coach.pressed = ed.held.take().map(|(row, byte)| {
+        let mut pressed = ed.held.take().map(|(row, byte)| {
             let col = ed.lines[row].char_indices().take_while(|(i, _)| *i < byte).count();
             (at, (row, col))
         });
+        if gone {
+            let drawn = st.s.ui.smooth[1];
+            pressed = super::hstudio_ui::editor_pos(st, game, at.0, at.1, drawn).map(|place| (at, place));
+        }
+        st.s.ui.coach.pressed = pressed;
     }
     if used(input) {
         st.s.ui.coach.input_at = st.s.now;
