@@ -2720,10 +2720,11 @@ fn toggle_group(st: &mut Studio, p: Pane) {
         return;
     }
     // The panel: hidden, it shows with its front pane in use, whichever
-    // that is (the agent's, during a lesson).
+    // that is (the agent's, during a lesson), or the console where that
+    // pane takes no keys (the script list dropped there).
     if !ui.dock.shown(p) {
         ui.dock.set_hidden(p, false);
-        let front = ui.dock.settled(p);
+        let front = panel_front(ui, p);
         focus_pane(st, front);
     } else if with_code {
         if away || ui.dock.is_front(Pane::Code) {
@@ -2731,12 +2732,18 @@ fn toggle_group(st: &mut Studio, p: Pane) {
         } else {
             show_code(st);
         }
-    } else if !away && ui.focus == ui.dock.settled(p) {
+    } else if !away && ui.focus == panel_front(ui, p) {
         hide_group(st, p);
     } else {
-        let front = ui.dock.settled(p);
+        let front = panel_front(ui, p);
         focus_pane(st, front);
     }
+}
+
+/// The pane of `p`'s group that Ctrl+` gives the keys: its front pane, or
+/// `p` itself where the front pane takes none.
+fn panel_front(ui: &Ui, p: Pane) -> Pane {
+    Some(ui.dock.settled(p)).filter(|f| f.takes_keys()).unwrap_or(p)
 }
 
 /// Settings' Reset layout and the menus': the default layout with the code
@@ -4300,6 +4307,16 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
         Action::MenuPick(i) => return menu_pick(st, game, i as usize),
         Action::ModelMenu => open_model_menu(st),
         Action::AgentJump(seq) => super::hstudio_coach::go(st, game, seq),
+        // The notes' or the lesson's chip clicked on the code's strip while
+        // the code is only its strip: the player asked to see the code, so
+        // it comes back with the keys, then shows the note or the step.
+        Action::NextMark | Action::LessonShow
+            if st.s.ui.look.theme().layout == super::hstudio_theme::Layout::Studio
+                && !st.s.ui.dock_front[Pane::Code.index()] =>
+        {
+            show_code(st);
+            super::hstudio_coach::act(st, game, action);
+        }
         Action::MarkOpen(_)
         | Action::MarkClose(_)
         | Action::MarkMore

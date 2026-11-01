@@ -836,6 +836,28 @@ fn ctrl_backtick_works_on_the_panel_wherever_it_is() {
     toggle(&mut st, &mut game);
     assert!(st.s.ui.dock.is_front(Pane::Code) && st.s.ui.focus == Pane::Code);
     assert!(st.s.ui.dock.shown(Pane::Console) && st.s.ui.dock.shown(Pane::Agent));
+    // The script list dropped on the panel's strip, at its front, takes no
+    // keys: the console takes them, and the next press hides the panel.
+    st.s.ui.dock = Dock::default();
+    st.s.ui.dock.move_pane(
+        Pane::Scripts,
+        DropAt::Into {
+            anchor: Pane::Console,
+            at: 3,
+        },
+    );
+    redraw(&mut st, &mut game);
+    assert!(st.s.ui.dock.is_front(Pane::Scripts) && st.s.ui.focus == Pane::Code);
+    toggle(&mut st, &mut game);
+    assert!(st.s.ui.dock.is_front(Pane::Console) && st.s.ui.focus == Pane::Console);
+    toggle(&mut st, &mut game);
+    assert!(!st.s.ui.dock.shown(Pane::Console) && st.s.ui.focus == Pane::Code);
+    // Hidden with the script list at its front, it shows with the console
+    // in use.
+    st.s.ui.dock = Dock::parse("col:0.600([code*],-[console,problems,agent,scripts*])").unwrap();
+    redraw(&mut st, &mut game);
+    toggle(&mut st, &mut game);
+    assert!(st.s.ui.dock.is_front(Pane::Console) && st.s.ui.focus == Pane::Console);
     // From another tab Ctrl+J opens the Editor tab, the panel's front pane
     // taking the keys.
     st.s.ui.dock = Dock::default();
@@ -1269,6 +1291,44 @@ fn an_agent_opening_a_file_never_takes_the_keys() {
     )
     .unwrap();
     assert!(r.get("typing").is_some(), "typed in: {r}");
+}
+
+#[test]
+fn the_codes_chips_bring_it_back_from_its_strip() {
+    // In an 854 x 480 game's window, with the console in use, the code is
+    // only its strip: a click on "2 notes" there brings the code back with
+    // the keys, its note shown.
+    let (mut game, mut st) = with_sum("dock-chips");
+    st.s.ui.look.window = true;
+    st.s.ui.look.scale = 1.125;
+    for line in [1, 3] {
+        let mark = json!({ "start_line": line, "note": "Look here." });
+        coach::call(&mut st, &mut game, &agent(), "mark", &mark).unwrap();
+    }
+    redraw(&mut st, &mut game);
+    let px = |(x, y): (f32, f32)| (x * 1.125, y * 1.125);
+    let console = px(middle(tab_of(&st, Pane::Console)));
+    click(&mut st, &mut game, console);
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.ui.focus, Pane::Console);
+    assert!(leaf(&st, Pane::Code).collapsed);
+    let chip = text_at(&game, "2 notes");
+    click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 4.0));
+    assert_eq!(st.s.ui.focus, Pane::Code);
+    redraw(&mut st, &mut game);
+    assert!(!leaf(&st, Pane::Code).collapsed);
+    assert!(st.s.ui.coach.bubble_at.is_some(), "its note shows");
+    // "Lesson 1/2" the same: its step shows again.
+    lesson(&mut st, &mut game, "Explained.");
+    let console = px(middle(tab_of(&st, Pane::Console)));
+    click(&mut st, &mut game, console);
+    redraw(&mut st, &mut game);
+    assert!(leaf(&st, Pane::Code).collapsed);
+    let chip = text_at(&game, "Lesson 1/2");
+    click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 4.0));
+    assert_eq!(st.s.ui.focus, Pane::Code);
+    redraw(&mut st, &mut game);
+    assert!(in_bubble(&st, &game, "Two is b."), "its step shows");
 }
 
 #[test]
@@ -2613,6 +2673,17 @@ fn library_and_docs_dock_beside_the_code_and_take_keys() {
     let at = text_at(&game, "Open folder");
     click(&mut st, &mut game, (at.0 + 2.0, at.1 + 4.0));
     assert_eq!(game.opened.last(), Some(&game.mods_dir()));
+    // There the chosen mod's name is drawn whole, its buttons on a line of
+    // their own under it.
+    game.write_mod("long.lua", "-- name: A Rather Long Name\nprint(1)\n");
+    st.scan(&mut game);
+    st.s.ui.library_sel = mod_index(&st, "long");
+    redraw(&mut st, &mut game);
+    let name = text_at(&game, "A Rather Long Name");
+    let edit = text_at(&game, "Edit");
+    assert!(edit.1 > name.1 + 14.0, "Edit at {edit:?}, the name at {name:?}");
+    click(&mut st, &mut game, (edit.0 + 2.0, edit.1 + 4.0));
+    assert_eq!(st.s.editor.title, "long.lua");
     // Close on its tab's menu takes it out, the Docs staying.
     redraw(&mut st, &mut game);
     let at = middle(tab_of(&st, Pane::Library));
@@ -2621,6 +2692,22 @@ fn library_and_docs_dock_beside_the_code_and_take_keys() {
     assert!(!st.s.ui.dock.has(Pane::Library));
     assert_eq!(st.s.ui.dock.leaf_tabs(Pane::Docs), [Pane::Docs]);
     assert!(!layout_txt(&st).contains("library"));
+    // Docked again with no mod to list, so no row to open a menu at: the
+    // Menu key opens the pane's own menu under its tab, its layout's items
+    // with it.
+    st.s.mods.clear();
+    st.s.ui.dock.show(Pane::Library);
+    st.s.ui.focus = Pane::Library;
+    redraw(&mut st, &mut game);
+    press(&mut st, &mut game, Key::Menu, NONE);
+    let items = menu_items(&st);
+    assert_eq!(items[0], "New script...");
+    for layout in ["Close Library", "Move", "Panes"] {
+        assert!(items.contains(&layout.to_owned()), "{layout} not in {items:?}");
+    }
+    let menu = st.s.ui.menu.as_ref().unwrap();
+    let tab = tab_of(&st, Pane::Library);
+    assert_eq!(menu.at, [tab[0] + 12.0, tab[1] + tab[3]], "under its tab");
 }
 
 #[test]

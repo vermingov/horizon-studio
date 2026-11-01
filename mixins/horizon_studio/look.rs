@@ -3658,6 +3658,14 @@ fn status(state: &ModState, enabled: bool) -> (&'static str, u32) {
     }
 }
 
+/// What a narrow Library row (`on`: the chosen mod's, its buttons on it)
+/// adds to its height to put its buttons on a line of their own under its
+/// name: where at its right they would leave the name under 100 units, as
+/// in a docked Library at its least width. Nothing for any other row.
+fn buttons_under(on: bool, list_w: f32) -> f32 {
+    if on && list_w - 52.0 - 274.0 < 100.0 { 32.0 } else { 0.0 }
+}
+
 fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let now = st.s.now;
     // Narrow (a small window): the list alone, the chosen mod's buttons on its row.
@@ -3729,7 +3737,8 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         let arrive = progress(now, st.s.ui.tab_at + (i - first) as f64 * STAGGER, ENTER);
         p.alpha = base_a * arrive;
         p.dy = base_dy + (1.0 - arrive) * RISE;
-        let r = [x, ly, list_w, row_h - 4.0];
+        let under = buttons_under(narrow && i == st.s.ui.library_sel, list_w);
+        let r = [x, ly, list_w, row_h - 4.0 + under];
         let selected = i == st.s.ui.library_sel;
         let over = inside(r, st.s.ui.mouse);
         let hv = hover(&mut st.s.ui, id("row", i), over, dt);
@@ -3739,7 +3748,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         let (_, dot) = status(&m.state, m.enabled);
         let cy = ly + (row_h - 4.0) / 2.0;
         p.rect([x + 16.0, cy - 4.0, 8.0, 8.0], 4.0, dot);
-        // A narrow row's buttons take its right side.
+        // A narrow row's buttons take its right side, or a line under it.
         let buttons = narrow && selected;
         let ver = if buttons { String::new() } else { m.version.clone() };
         let vw = if ver.is_empty() {
@@ -3747,7 +3756,11 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         } else {
             p.measure(&ver, 11.0, Font::Mono)
         };
-        let room = if buttons { list_w - 52.0 - 274.0 } else { list_w - 52.0 };
+        let room = if buttons && under == 0.0 {
+            list_w - 52.0 - 274.0
+        } else {
+            list_w - 52.0
+        };
         let name_w = room.max(40.0) - vw;
         let name = p.fit(&m.name, name_w, 14.0, Font::Medium);
         let failed = match &m.state {
@@ -3785,6 +3798,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             let enabled = st.s.mods[i].enabled;
             let toggle = if enabled { "Turn off" } else { "Turn on" };
             let mut bx = x + list_w - 8.0;
+            let by = if under > 0.0 { ly + row_h - 2.0 } else { cy - 13.0 };
             // Its "..." has the rest: a module's files, New file, Make it a module, Delete.
             for (key, label, action) in [
                 ("n-menu", "...", Action::LibraryMenu(i)),
@@ -3798,14 +3812,14 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
                 } else {
                     Style::Quiet
                 };
-                let bw = pill(&mut st.s.ui, p, key, label, bx, cy - 13.0, 26.0, style, action, dt);
+                let bw = pill(&mut st.s.ui, p, key, label, bx, by, 26.0, style, action, dt);
                 if action == Action::LibraryMenu(i) {
-                    st.s.ui.library_dots = Some([bx, cy - 13.0, bw, 26.0]);
+                    st.s.ui.library_dots = Some([bx, by, bw, 26.0]);
                 }
                 bx -= 4.0;
             }
         }
-        ly += row_h;
+        ly += row_h + under;
     }
     p.alpha = base_a;
     p.dy = base_dy;

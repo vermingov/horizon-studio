@@ -50,7 +50,8 @@ pub fn right_press(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
 /// The Menu key (or Shift+F10): the menu of what has the keys, where it
 /// is: the code's at the cursor (its line's own menu, the cursor left
 /// where it is), an input line's under the line, the Library's chosen mod
-/// at its row (the list's own menu under its title while it lists none),
+/// at its row (while it lists none, the list's own menu under its title,
+/// or docked the pane's own under its tab),
 /// the Problems' chosen problem at its row (the pane's own menu under its
 /// tab while it lists none); on the Editor tab with no pane taking the
 /// keys, or the Docs there, the pane's own menu under its tab; else the
@@ -116,7 +117,16 @@ pub fn key_menu(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
                     more(&mut items);
                     open(st, at, h, items, Some(r))
                 }
-                // No mod's row: the list's own menu, under its title.
+                // No mod's row: docked, the pane's own menu (its layout
+                // too) under its tab; on the Library tab the list's own
+                // menu, under its title.
+                None if docked => {
+                    let spot = Spot::Pane(Pane::Library);
+                    match spot_rect(st, spot) {
+                        Some(r) => open_spot(st, game, spot, r, below(r).0),
+                        None => false,
+                    }
+                }
                 None => match spot_rect(st, Spot::Scripts) {
                     Some(r) => open_spot(st, game, Spot::Scripts, r, [r[0] + 12.0, r[1] + 30.0]),
                     None => false,
