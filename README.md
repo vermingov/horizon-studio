@@ -5,8 +5,9 @@ native Horizon mod that adds:
 
 - **A code executor.** A console that runs Lua at once in the running game, like a Lua executor: type
   `player.pos()` and see where you are, or `game.run("time set day")`. `/lua <code>` does the same from chat.
-- **Script mods with hot reloading.** A script mod is a `.lua` file in your Horizon folder. Save it, from the in-game
-  editor or any other editor, and it reloads at once: no rebuild, no restart.
+- **Script mods with hot reloading.** A script mod is a script, one `.lua` file in your Horizon folder, or a module,
+  a folder of files (main, shared, lib...) that `require` each other. Save any of its files, from the in-game editor
+  or any other editor, and it reloads at once: no rebuild, no restart.
 - **An in-game editor, laid out like VS Code.** Lua highlighting, suggestions as you type (the whole API, events,
   keywords and your own names, with their signatures and docs), problems found as you type (syntax errors and
   misspelled names, underlined, with their message at the line's end), auto-indent that closes blocks with their
@@ -36,7 +37,7 @@ native Horizon mod that adds:
   and standard library, `task.wait` and `task.spawn` with a scheduler, and Roblox's API on Minecraft: `game`,
   `workspace`, `Instance.new`, `Vector3`, `CFrame`, `UDim2`, signals, TweenService and ScreenGuis drawn in game. A
   Roblox UI script or a general Luau script runs as a script mod; see [Luau and Roblox scripts](#luau-and-roblox-scripts).
-- **Libraries and modules.** A mod can export functions for other mods to `import`: a UI library, a pathfinder, a
+- **Libraries.** A mod can export functions for other mods to `import`: a UI library, a pathfinder, a
   shared config. Libraries load first, and mods using one reload with it. Mods send each other events, and
   `gfx.*` draws in Horizon's own style (rounded shapes, the Geist fonts) so a UI library can be written in Lua. The
   bundled **UI Kit** is one, installed with the studio.
@@ -360,7 +361,7 @@ Each part checks its own switch at the moment it runs, so turning one off takes 
 ## AI agents (MCP)
 
 `horizon-studio-mcp` is an [MCP](https://modelcontextprotocol.io) server that gives AI agents Horizon Studio: they
-write mods (single files, folders, libraries), check and test them, and drive the running game.
+write mods (scripts, modules, libraries), check and test them, and drive the running game.
 
 **Give your agent this prompt** and it sets everything up (it installs the server, checks Horizon Studio is in your
 game, and tells you when to restart it):
