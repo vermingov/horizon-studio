@@ -1395,10 +1395,14 @@ fn keep_view(st: &mut Studio, t: &Typing, rows: usize, held: bool) {
     let by = scroll as f32 - ed.scroll as f32;
     ed.scroll = scroll;
     let ui = &mut st.s.ui;
+    let was = ui.smooth[1];
     ui.smooth[1] = (ui.smooth[1] + by).max(0.0);
     if let Some(c) = ui.caret.as_mut() {
         c[0] = (c[0] + by).max(0.0);
     }
+    // A press this frame is for the row drawn under it: the rows as drawn
+    // (while an edit typed in) are that much further on.
+    ed.view_moved(ui.smooth[1] - was);
 }
 
 /// Byte `at` of a file's text as the editor has it (`Editor::normal`:

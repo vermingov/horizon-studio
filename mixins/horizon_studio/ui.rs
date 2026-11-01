@@ -1291,6 +1291,9 @@ pub(crate) struct Drawn {
     count: usize,
     /// Each splice since.
     splices: Vec<Splice>,
+    /// How far the view as drawn (`Ui::smooth`) was moved since, with the
+    /// text it shows: lines an agent's change put in at once above it.
+    moved: f32,
 }
 
 /// A splice: where it began and ended, and where the text it put in ends
@@ -1312,6 +1315,7 @@ impl Drawn {
             hscroll: ed.hscroll,
             count: ed.lines.len(),
             splices: Vec::new(),
+            moved: 0.0,
         }
     }
 }
@@ -1628,6 +1632,14 @@ impl Editor {
         }
         if let Some(d) = self.drawn.as_mut().filter(|d| d.rev == rev) {
             d.rev = self.revision;
+        }
+    }
+    /// The view as drawn moved `by` rows since the draw, with the text it
+    /// shows (lines an agent's change put in at once above it): the rows as
+    /// drawn are that much further on under the pointer.
+    pub(crate) fn view_moved(&mut self, by: f32) {
+        if let Some(d) = self.drawn.as_mut() {
+            d.moved += by;
         }
     }
     /// Puts `text` (already `normal`) in place of `from..to` and returns
@@ -3740,8 +3752,10 @@ fn as_drawn(st: &Studio, action: Action) -> Option<Action> {
 /// column. Rows glide as the view scrolls, so the view as drawn (its first
 /// row, not where it is going) says which, given as `drawn`; and an agent's
 /// edit may have typed more in since the text was drawn, so the place is
-/// found in the text as drawn, then where that is now (`Drawn`). Left of
-/// the text (over the line numbers) it is the line's start.
+/// found in the text as drawn, then where that is now (`Drawn`): the view
+/// as drawn moved since with the text it shows (`Drawn::moved`) is where
+/// it was for the rows as drawn. Left of the text (over the line numbers)
+/// it is the line's start.
 pub(crate) fn editor_pos(st: &Studio, game: &mut dyn GameApi, x: f32, y: f32, drawn: f32) -> Option<(usize, usize)> {
     // A press that put an agent's edit in whole is for the text drawn under
     // it, wherever the edit moved that.
@@ -3757,7 +3771,7 @@ pub(crate) fn editor_pos(st: &Studio, game: &mut dyn GameApi, x: f32, y: f32, dr
     // While an agent's edit typed in, the rows were drawn before the frame
     // typed more: the place drawn under the pointer, where its text is now.
     if let Some(d) = ed.drawn.as_ref().filter(|d| d.rev == ed.revision) {
-        let row = (at.floor() as usize).min(d.count.saturating_sub(1));
+        let row = ((at - d.moved).max(0.0).floor() as usize).min(d.count.saturating_sub(1));
         if let Some(line) = row.checked_sub(d.first).and_then(|i| d.lines.get(i)) {
             let col = if x < v.x {
                 0

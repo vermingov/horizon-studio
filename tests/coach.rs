@@ -1764,6 +1764,80 @@ fn a_press_after_the_frame_typed_more_is_for_the_line_drawn_under_it() {
 }
 
 #[test]
+fn a_press_in_a_second_edits_frame_is_for_the_line_drawn_under_it() {
+    // A first change types in (an agent's edit of line 33, or line 33
+    // changed on disk) in the view at line 30, and in one of the game's
+    // frames the player presses v35 while a second edit puts five lines in
+    // at line 2: the press, noted before the link's requests, holds the
+    // view, so the second lands at once and the view moves down with what it
+    // shows, as drawn too. The press is for v35, drawn under it, though the
+    // rows were drawn before the frame typed more of the first change in
+    // and before the second came: a left press's cursor goes there, and a
+    // right press's menu is for it.
+    let src: String = (1..=80).map(|i| format!("local v{i} = {i}\n")).collect();
+    let long = "local v33 = 'a line long enough to take a few frames to type in'";
+    for (first, left) in [("edit", true), ("edit", false), ("disk", true), ("disk", false)] {
+        let case = format!("first by {first}, left {left}");
+        let (mut game, mut st) = editing(&format!("coach-press-second-frame-{first}-{left}"), "pf", &src);
+        st.s.ui
+            .dock
+            .set_hidden(horizon_studio::game::hstudio_ui::Pane::Console, true);
+        st.s.editor.click(30, 0, false);
+        st.s.editor.scroll = 29;
+        for _ in 0..10 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, 29, "{case}");
+        if first == "edit" {
+            let edit = json!({ "start_line": 33, "end_line": 33, "new_text": long });
+            let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+            assert!(r["typing"].is_u64(), "{case}: {r}");
+        } else {
+            std::fs::write(game.mods_dir().join("pf.lua"), src.replace("local v33 = 33", long)).unwrap();
+        }
+        let mut n = 0;
+        while st.s.ui.coach.typing.as_ref().is_none_or(|t| t.phase != Phase::Typing) {
+            n += 1;
+            assert!(n < 30, "{case}: never typed in");
+            game_frame(&mut st, &mut game);
+        }
+        for _ in 0..3 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, 29, "{case}: the first types in in view");
+        // The press's frame, in the game's order: the studio draws (the
+        // first still typing), its frame runs, the input is noted, the
+        // second edit comes, then the input.
+        redraw(&mut st, &mut game);
+        assert!(st.s.ui.coach.typing.is_some(), "{case}: still typing at the draw");
+        let (x, y) = text_at(&game, "v35");
+        run_for(&mut st, &mut game, 0.05);
+        let inputs = [
+            Input::Mouse(x + 1.0, y + 2.0),
+            Input::Button { left, down: true },
+            Input::Button { left, down: false },
+        ];
+        coach::input_coming(&mut st, &inputs);
+        let block: Vec<String> = (1..=5).map(|i| format!("-- note {i}")).collect();
+        let second = json!({ "start_line": 2, "end_line": 1, "new_text": block.join("\n") });
+        let r = ask(&mut st, &mut game, "edit", second).unwrap();
+        assert_eq!(r["animated"], false, "{case}: {r}");
+        for input in inputs {
+            handle(&mut st, &mut game, input);
+        }
+        assert_eq!(st.s.editor.scroll, 34, "{case}: the view moved down with what it shows");
+        let ed = &st.s.editor;
+        assert_eq!(
+            ed.lines[ed.row], "local v35 = 35",
+            "{case}: the line drawn under the press"
+        );
+        assert_eq!(st.s.ui.menu.is_some(), !left, "{case}: the right press's menu");
+        game_frame(&mut st, &mut game);
+        assert_eq!(text_at(&game, "v35").1, y, "{case}: v35 stays where it is drawn");
+    }
+}
+
+#[test]
 fn a_menu_about_the_code_goes_when_the_code_changes_under_it() {
     // The player opens greet's menu in print(greet()) and pauses, and an
     // agent's edit puts a line in at the top: the menu's Go to
