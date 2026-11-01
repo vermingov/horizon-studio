@@ -614,7 +614,7 @@ In Roblox's style, each file of a module is also a ModuleScript under `script`: 
 The agent commands are those of Horizon's `horizon-ctl` ([agent control](https://github.com/horizon-rust/horizon/blob/main/docs/agent-control.md)),
 limited to reading the world and acting as the player: nothing that saves, quits or changes options.
 
-In the console only: `help([name])`, `clear()`, `reload([id])`, `mods()`, `edit(id[, file])` (a module's other
+In the console only: `help([name])`, `clear()`, `stop()` (stops what the console ran, loadstring scripts too; the Console pane's **Stop scripts** does the same), `reload([id])`, `mods()`, `edit(id[, file])` (a module's other
 files by their path in it: `edit("tool", "lib.lua")`), `new(name[, kind])` (`new("Tool", "module")` makes a
 module).
 

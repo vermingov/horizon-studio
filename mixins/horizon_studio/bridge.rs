@@ -36,6 +36,9 @@ thread_local! {
     static SCALE: Cell<f32> = const { Cell::new(1.0) };
     static MODS: Cell<Mods> = const { Cell::new(Mods { ctrl: false, shift: false, alt: false }) };
     static TOGGLE: Cell<bool> = const { Cell::new(false) };
+    /// Whether the game's chat is open with no screen of the studio's up:
+    /// the pointer is free, and reaches the scripts' Roblox GUI.
+    static CHAT_FREE: Cell<bool> = const { Cell::new(false) };
     static INPUTS: RefCell<Vec<Input>> = const { RefCell::new(Vec::new()) };
     /// Files dropped on the window, to install as script mods.
     static DROPPED: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
@@ -1262,6 +1265,7 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &ActiveEventLoop) {
             give_back(game);
         }
         OPEN.with(|o| o.set(st.overlay_open()));
+        CHAT_FREE.with(|c| c.set(game.screen == Screen::Chat && !st.overlay_open()));
     });
 }
 
@@ -1419,6 +1423,35 @@ pub(super) fn window_input(event: &mut WindowEvent) {
             && is_open_key(code)
         {
             TOGGLE.with(|t| t.set(true));
+        }
+        // The chat open: the pointer, free, reaches the scripts' GUI, which
+        // keeps a press or the wheel over it from the chat.
+        if CHAT_FREE.with(Cell::get) {
+            let scale = SCALE.with(Cell::get);
+            let scale = if scale > 0.0 { scale } else { 1.0 };
+            let input = match &*event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    Some(Input::Mouse(position.x as f32 / scale, position.y as f32 / scale))
+                }
+                WindowEvent::MouseInput { state, button, .. } => {
+                    let down = *state == ElementState::Pressed;
+                    match button {
+                        MouseButton::Left => Some(Input::Button { left: true, down }),
+                        MouseButton::Right => Some(Input::Button { left: false, down }),
+                        _ => None,
+                    }
+                }
+                WindowEvent::MouseWheel { delta, .. } => Some(Input::Wheel(match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y,
+                    MouseScrollDelta::PixelDelta(p) => (p.y / 30.0) as f32,
+                })),
+                _ => None,
+            };
+            if let Some(input) = input
+                && with(|st| st.chat_pointer(&input)).unwrap_or(false)
+            {
+                *event = WindowEvent::HoveredFileCancelled;
+            }
         }
         return;
     }

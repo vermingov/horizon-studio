@@ -190,6 +190,8 @@ pub enum Action {
     AgentStop,
     /// A new conversation (stopping the agent first if it works).
     AgentNew,
+    /// Stops what the console ran (console::stop()).
+    StopScripts,
     ClearLog,
     /// Over something that takes no click (it doesn't reach what is under it).
     Block,
@@ -4523,6 +4525,11 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
         Action::AgentNext => agent_next(st),
         Action::AgentStop => agent_stop(st),
         Action::AgentNew => agent_new_conversation(st),
+        Action::StopScripts => {
+            if st.s.stop_console() {
+                st.s.log(LogKind::Info, "Stopped what the console ran");
+            }
+        }
         Action::Block | Action::ScrollBar | Action::Spot(_) => {}
         Action::MenuPick(i) => return menu_pick(st, game, i as usize),
         Action::ModelMenu => open_model_menu(st),

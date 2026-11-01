@@ -215,6 +215,9 @@ const TEXT: &[P] = &[
     p("TextSize", Num, N(8.0)),
     p("TextScaled", Bool, B(false)),
     p("TextWrapped", Bool, B(false)),
+    // Older names Roblox still takes (scripts made for it set them).
+    p("FontSize", K::Enum("FontSize"), D::E("Size8")),
+    p("TextWrap", Bool, B(false)),
     p("TextWrap", Bool, B(false)),
     p("TextTransparency", Num, N(0.0)),
     p("TextStrokeColor3", K::C3, Rgb(0.0, 0.0, 0.0)),
@@ -422,7 +425,10 @@ pub static CLASSES: &[C] = &[
     service("Teams", &[], &[]),
     service("SoundService", &[p("RespectFilteringEnabled", Bool, B(true))], &[]),
     service("Chat", &[], &[]),
-    service("TextChatService", &[], &[]),
+    C {
+        lenient: true,
+        ..service("TextChatService", &[], &["MessageReceived", "SendingMessage"])
+    },
     service("MarketplaceService", &[], &[]),
     service("LogService", &[], &["MessageOut"]),
     // Services scripts get at their top, though they can do nothing here.
@@ -444,6 +450,34 @@ pub static CLASSES: &[C] = &[
     lenient_service("AssetService"),
     lenient_service("InsertService"),
     lenient_service("MaterialService"),
+    lenient_service("ExperienceService"),
+    lenient_service("AvatarEditorService"),
+    C {
+        lenient: true,
+        ..service(
+            "CaptureService",
+            &[],
+            &["CaptureBegan", "CaptureEnded", "UserCaptureSaved"],
+        )
+    },
+    C {
+        lenient: true,
+        ..service(
+            "ContentProvider",
+            &[
+                ro("BaseUrl", Str, S("https://www.roblox.com/")),
+                ro("RequestQueueSize", Int, N(0.0)),
+            ],
+            &[],
+        )
+    },
+    lenient_service("VoiceChatService"),
+    lenient_service("NetworkSettings"),
+    lenient_service("RenderSettings"),
+    lenient_service("UserGameSettings"),
+    lenient_service("ScriptContext"),
+    lenient_service("AnalyticsService"),
+    lenient_service("KeyframeSequenceProvider"),
     abstract_class(
         "Player",
         "Instance",
@@ -455,6 +489,11 @@ pub static CLASSES: &[C] = &[
             ro("AccountAge", Int, N(0.0)),
             p("CameraMaxZoomDistance", Num, N(128.0)),
             p("CameraMinZoomDistance", Num, N(0.5)),
+            p("CameraMode", K::Enum("CameraMode"), D::E("Classic")),
+            p("DevEnableMouseLock", Bool, B(true)),
+            p("CharacterAppearanceId", Num, N(1.0)),
+            ro("Guest", Bool, B(false)),
+            p("Neutral", Bool, B(true)),
         ],
         &[
             "Chatted",
@@ -462,6 +501,7 @@ pub static CLASSES: &[C] = &[
             "CharacterRemoving",
             "Idled",
             "CharacterAppearanceLoaded",
+            "OnTeleport",
         ],
     ),
     abstract_class(
@@ -494,6 +534,8 @@ pub static CLASSES: &[C] = &[
             "WheelForward",
             "WheelBackward",
             "Idle",
+            "KeyDown",
+            "KeyUp",
         ],
     ),
     abstract_class(
@@ -1311,6 +1353,9 @@ pub struct Pointer {
     pub bar: Option<(Id, bool, f64)>,
     pub held: HashSet<&'static str>,
     pub buttons: [bool; 3],
+    /// Presses the game's open chat gave the GUI (the left and right
+    /// buttons), whose releases are the GUI's too.
+    pub chat_held: [bool; 2],
 }
 
 pub struct Rbx {
@@ -1367,6 +1412,8 @@ pub struct Rbx {
     pub world: super::hstudio_rbx_world::World,
     /// A script has used the layer: until then it costs the game nothing.
     pub active: bool,
+    /// The frame-rate cap scripts asked for (setfpscap; 0: none).
+    pub fps_cap: f64,
     /// gethui's container: a Folder outside the DataModel whose ScreenGuis draw.
     pub hui: Id,
     /// HTTP requests on their way, with the threads that wait for them.
@@ -1495,6 +1542,7 @@ impl Rbx {
             last_health: None,
             world: super::hstudio_rbx_world::World::default(),
             active: false,
+            fps_cap: 0.0,
             hui: 0,
             http: Vec::new(),
             sockets: Vec::new(),
@@ -1897,6 +1945,11 @@ impl Rbx {
 
     /// Drops everything `owner` made: its instances, connections, tweens,
     /// waiting threads, actions and render steps.
+    /// Whether `owner` made an instance that is still there.
+    pub fn owns_any(&self, owner: Owner) -> bool {
+        self.insts.values().any(|i| i.owner == Some(owner) && !i.destroyed)
+    }
+
     pub fn forget(&mut self, owner: Owner) {
         let mine: Vec<Id> = self
             .insts
@@ -2164,6 +2217,8 @@ const METHODS: &[(&str, &str)] = &[
     ("Close", "WebSocket"),
     ("FindService", "DataModel"),
     ("IsLoaded", "DataModel"),
+    ("Preload", "ContentProvider"),
+    ("PreloadAsync", "ContentProvider"),
     ("BindToClose", "DataModel"),
     ("GetPlayers", "Players"),
     ("GetPlayerFromCharacter", "Players"),

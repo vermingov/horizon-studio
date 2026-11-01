@@ -4323,6 +4323,22 @@ clear()
 "##
     ),
     e!(
+        "stop",
+        "console",
+        r##"
+`stop()`
+
+Console only. Stops everything the console ran: code typed there, run from an executor style's Execute, or loaded by such code (`loadstring(game:HttpGet(url))()`). Its threads, timers, handlers and Roblox events stop, and the Roblox instances it made (its GUIs) go. The executor's shared globals (`getgenv()`) start afresh, so a script that marks itself loaded there can run again. The console's log stays. The Console pane's **Stop scripts** does the same.
+
+- Returns: nothing; the console says whether anything was running.
+- Where: the console only.
+
+```lua
+stop()
+```
+"##
+    ),
+    e!(
         "reload",
         "console",
         r##"
@@ -9463,10 +9479,218 @@ messagebox("done", "Info", 0)
         r##"
 `setfpscap(cap)`
 
-Does nothing: Horizon's frame rate is the game's.
+Keeps the cap for `getfpscap`; Horizon's frame rate stays the game's.
 
 ```lua
 setfpscap(60)
+```
+"##
+    ),
+    e!(
+        "getfpscap",
+        "executor",
+        r##"
+`getfpscap()`
+
+The cap `setfpscap` was given, or 60 when none was.
+
+```lua
+print(getfpscap())
+```
+"##
+    ),
+    e!(
+        "keypress",
+        "executor",
+        r##"
+`keypress(keycode)`
+
+Presses a key, by its Windows virtual-key code (`0x41` is A, `0x20` Space, `0x0D` Enter), as the game's own key would: UserInputService's InputBegan, the mouse's KeyDown and ContextActionService get it. `keyrelease` lets it go, `keyclick` does both.
+
+```lua
+keypress(0x57) task.wait(1) keyrelease(0x57)
+```
+"##
+    ),
+    e!(
+        "keyrelease",
+        "executor",
+        r##"
+`keyrelease(keycode)`
+
+Lets go of a key `keypress` pressed (its Windows virtual-key code).
+
+```lua
+keyrelease(0x57)
+```
+"##
+    ),
+    e!(
+        "keyclick",
+        "executor",
+        r##"
+`keyclick(keycode)`
+
+Presses and lets go of a key, by its Windows virtual-key code.
+
+```lua
+keyclick(0x45)
+```
+"##
+    ),
+    e!(
+        "getclipboard",
+        "executor",
+        r##"
+`getclipboard()`
+
+The text on the clipboard.
+
+```lua
+print(getclipboard())
+```
+"##
+    ),
+    e!(
+        "getsynasset",
+        "executor",
+        r##"
+`getsynasset(path)`
+
+Synapse X's name for `getcustomasset`.
+
+```lua
+image.Image = getsynasset("logo.png")
+```
+"##
+    ),
+    e!(
+        "iswindowactive",
+        "executor",
+        r##"
+`iswindowactive()`
+
+Another name for `isrbxactive`: whether the game has the keys (no screen of its own up).
+
+```lua
+print(iswindowactive())
+```
+"##
+    ),
+    e!(
+        "printconsole",
+        "executor",
+        r##"
+`printconsole(...)`
+
+Another name for `rconsoleprint`.
+
+```lua
+printconsole("hi")
+```
+"##
+    ),
+    e!(
+        "openfile",
+        "executor",
+        r##"
+`openfile(path)`
+
+Another name for `readfile`: a file's text in the workspace folder.
+
+```lua
+print(openfile("notes.txt"))
+```
+"##
+    ),
+    e!(
+        "syn.request",
+        "executor",
+        r##"
+`syn.request(options)`
+
+Synapse X's name for `request`.
+
+```lua
+print(syn.request({ Url = "https://example.com" }).StatusCode)
+```
+"##
+    ),
+    e!(
+        "syn.queue_on_teleport",
+        "executor",
+        r##"
+`syn.queue_on_teleport(code)`
+
+Synapse X's name for `queue_on_teleport`: nothing teleports here.
+
+```lua
+syn.queue_on_teleport("print('back')")
+```
+"##
+    ),
+    e!(
+        "syn.write_clipboard",
+        "executor",
+        r##"
+`syn.write_clipboard(text)`
+
+Synapse X's name for `setclipboard`.
+
+```lua
+syn.write_clipboard("hi")
+```
+"##
+    ),
+    e!(
+        "syn.set_thread_identity",
+        "executor",
+        r##"
+`syn.set_thread_identity(n)`
+
+Synapse X's name for `setthreadidentity`.
+
+```lua
+syn.set_thread_identity(8)
+```
+"##
+    ),
+    e!(
+        "syn.get_thread_identity",
+        "executor",
+        r##"
+`syn.get_thread_identity()`
+
+Synapse X's name for `getthreadidentity`.
+
+```lua
+print(syn.get_thread_identity())
+```
+"##
+    ),
+    e!(
+        "syn.protect_gui",
+        "executor",
+        r##"
+`syn.protect_gui(gui)`
+
+Hides a ScreenGui from the game's own scripts in Synapse X; here no game script looks, so it does nothing (parent it to `gethui()` to draw it over everything).
+
+```lua
+syn.protect_gui(gui) gui.Parent = game:GetService("CoreGui")
+```
+"##
+    ),
+    e!(
+        "syn.unprotect_gui",
+        "executor",
+        r##"
+`syn.unprotect_gui(gui)`
+
+The reverse of `syn.protect_gui`: does nothing here.
+
+```lua
+syn.unprotect_gui(gui)
 ```
 "##
     ),

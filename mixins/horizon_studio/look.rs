@@ -1859,6 +1859,19 @@ fn pane_buttons(st: &mut Studio, p: &mut P, active: Pane, [from, y, rx]: [f32; 3
                 &mut rx,
                 dt,
             );
+            // Stop: what the console ran, while something of it runs.
+            if st.s.console_running() {
+                strip_button(
+                    &mut st.s.ui,
+                    p,
+                    "panel-stop",
+                    "Stop scripts",
+                    Action::StopScripts,
+                    [from, y],
+                    &mut rx,
+                    dt,
+                );
+            }
         }
         Pane::Agent => {
             // New starts over: while it works, or once something was said.

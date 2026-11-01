@@ -120,24 +120,31 @@ fn commands_can_wait_and_handlers_say_why_they_cannot() {
 }
 
 #[test]
-fn a_failing_thread_stops_its_mod() {
+fn a_failing_thread_is_printed_and_its_mod_goes_on() {
+    // As in Roblox: an error in a thread (task.delay, task.spawn, an event's
+    // handler) is printed with its traceback, and the script goes on.
     let mut game = FakeGame::new("task-fail");
     let mut st = studio(&mut game);
     game.write_mod(
         "bad.lua",
-        "task.delay(0.1, function() error('boom') end)\nprint('loaded')\n",
+        "task.delay(0.1, function() error('boom') end)\ntask.delay(0.3, function() print('still here') end)\nprint('loaded')\n",
     );
-    run_for(&mut st, &mut game, 0.6);
+    run_for(&mut st, &mut game, 1.2);
     let i = mod_index(&st, "bad");
-    match &st.s.mods[i].state {
-        ModState::Failed(msg, _) => assert!(msg.contains("boom"), "{msg}"),
+    assert_eq!(st.s.mods[i].state, ModState::Running);
+    assert!(
+        log(&st).iter().any(|l| l.starts_with("[bad] ") && l.contains("boom")),
+        "{:?}",
+        log(&st)
+    );
+    assert!(printed(&st, "bad").contains(&"still here".to_owned()), "{:?}", log(&st));
+    // An error in its main chunk still stops it.
+    game.write_mod("bad.lua", "error('main boom')\n");
+    run_for(&mut st, &mut game, 1.2);
+    match &st.s.mods[mod_index(&st, "bad")].state {
+        ModState::Failed(msg, _) => assert!(msg.contains("main boom"), "{msg}"),
         other => panic!("{other:?}"),
     }
-    // A reload drops its threads.
-    game.write_mod("bad.lua", "task.delay(0.1, function() print('fixed') end)\n");
-    run_for(&mut st, &mut game, 1.2);
-    assert_eq!(st.s.mods[mod_index(&st, "bad")].state, ModState::Running);
-    assert!(printed(&st, "bad").contains(&"fixed".to_owned()));
 }
 
 #[test]

@@ -10,8 +10,8 @@
 
 use super::hstudio::{Ctx, GameApi, Owner};
 use super::hstudio_lua::{
-    Lua, MAX_STRING, Native, Res, Table, TableRef, Throw, Userdata, Value, bad_arg, check_str, check_text, opt_num,
-    opt_str,
+    Lua, MAX_STRING, Native, Res, Table, TableRef, Throw, Userdata, Value, bad_arg, check_num, check_str, check_text,
+    opt_num, opt_str,
 };
 use super::hstudio_rbx::{ConnRef, Env, Id, InstRef, Rbx, SignalRef, is_a};
 use super::hstudio_rbx_types::{Color3, Vector2};
@@ -106,7 +106,57 @@ pub const FUNCTIONS: &[(&str, u32)] = &[
     ("queue_on_teleport", 2123),
     ("queueonteleport", 2123),
     ("setrbxclipboard", 2124),
+    ("keypress", 2125),
+    ("keyrelease", 2126),
+    ("keyclick", 2129),
+    ("getclipboard", 2127),
+    ("getfpscap", 2128),
 ];
+
+/// The game's name for the key a Windows virtual-key code is (keypress).
+fn vk_key(vk: i64) -> Option<String> {
+    let k = |s: &str| Some(format!("key.keyboard.{s}"));
+    match vk {
+        0x41..=0x5A => k(&((b'a' + (vk - 0x41) as u8) as char).to_string()),
+        0x30..=0x39 => k(&((b'0' + (vk - 0x30) as u8) as char).to_string()),
+        0x60..=0x69 => k(&format!("keypad.{}", vk - 0x60)),
+        0x70..=0x7B => k(&format!("f{}", vk - 0x6F)),
+        0x08 => k("backspace"),
+        0x09 => k("tab"),
+        0x0D => k("enter"),
+        0x10 | 0xA0 => k("left.shift"),
+        0xA1 => k("right.shift"),
+        0x11 | 0xA2 => k("left.control"),
+        0xA3 => k("right.control"),
+        0x12 | 0xA4 => k("left.alt"),
+        0xA5 => k("right.alt"),
+        0x14 => k("caps.lock"),
+        0x1B => k("escape"),
+        0x20 => k("space"),
+        0x21 => k("page.up"),
+        0x22 => k("page.down"),
+        0x23 => k("end"),
+        0x24 => k("home"),
+        0x25 => k("left"),
+        0x26 => k("up"),
+        0x27 => k("right"),
+        0x28 => k("down"),
+        0x2D => k("insert"),
+        0x2E => k("delete"),
+        0xBA => k("semicolon"),
+        0xBB => k("equal"),
+        0xBC => k("comma"),
+        0xBD => k("minus"),
+        0xBE => k("period"),
+        0xBF => k("slash"),
+        0xC0 => k("grave.accent"),
+        0xDB => k("left.bracket"),
+        0xDC => k("backslash"),
+        0xDD => k("right.bracket"),
+        0xDE => k("apostrophe"),
+        _ => None,
+    }
+}
 
 /// The `cache` table's host ids.
 const CACHE: &[(&str, u32)] = &[("invalidate", 2100), ("iscached", 2101), ("replace", 2102)];
@@ -162,6 +212,13 @@ function M.RequestAsync(self, options)
     local r = request(options)
     if r.StatusCode == 0 then error(r.StatusMessage, 2) end
     return r
+end
+-- As in Roblox, Invoke before OnInvoke is set waits until it is.
+function M.Invoke(self, ...)
+    while type(self.OnInvoke) ~= "function" do
+        task.wait()
+    end
+    return self.OnInvoke(...)
 end
 local function connect(url)
     local ws, err = ws_open(url)
@@ -227,6 +284,7 @@ pub fn executor_globals(lua: &mut Lua, genv: &TableRef, rbx: &mut Rbx) {
             ("HttpService", "GetAsync"),
             ("HttpService", "PostAsync"),
             ("HttpService", "RequestAsync"),
+            ("BindableFunction", "Invoke"),
         ] {
             rbx.lua_methods.push((class, name, m.borrow().get_str(name)));
         }
@@ -235,6 +293,43 @@ pub fn executor_globals(lua: &mut Lua, genv: &TableRef, rbx: &mut Rbx) {
         ws.set_str("Connect", connect.clone());
         genv.borrow_mut().set_str("WebSocket", Value::table(ws));
     }
+    aliases(genv);
+}
+
+/// Other executors' names for the same functions, and Synapse X's `syn`
+/// table, which scripts made for it call.
+fn aliases(genv: &TableRef) {
+    let mut g = genv.borrow_mut();
+    for (alias, name) in [
+        ("getsynasset", "getcustomasset"),
+        ("iswindowactive", "isrbxactive"),
+        ("printconsole", "rconsoleprint"),
+        ("openfile", "readfile"),
+    ] {
+        let f = g.get_str(name);
+        if !f.is_nil() {
+            g.set_str(alias, f);
+        }
+    }
+    let mut syn = Table::new();
+    for (key, name) in [
+        ("request", "request"),
+        ("queue_on_teleport", "queue_on_teleport"),
+        ("write_clipboard", "setclipboard"),
+        ("set_thread_identity", "setthreadidentity"),
+        ("get_thread_identity", "getthreadidentity"),
+    ] {
+        syn.set_str(key, g.get_str(name));
+    }
+    // protect_gui and unprotect_gui hide a GUI from the game's scripts in
+    // Synapse: here nothing looks, so they do nothing.
+    let nothing = Native::host("protect_gui", 2105);
+    super::hstudio_exec::mark(&nothing);
+    syn.set_str("protect_gui", nothing.clone());
+    syn.set_str("unprotect_gui", nothing);
+    syn.set_str("crypt", g.get_str("crypt"));
+    syn.set_str("websocket", g.get_str("WebSocket"));
+    g.set_str("syn", Value::table(syn));
 }
 
 // ---------------------------------------------------------------- files
@@ -1692,10 +1787,38 @@ impl Ctx<'_> {
                 // Roblox's MessageBox returns the button pressed; 1 (OK).
                 one(Value::Num(1.0))
             }
-            2122..=2124 => {
-                // setfpscap, queue_on_teleport, setrbxclipboard: nothing to do here.
+            2122 => {
+                // The game keeps its own frame rate: the cap is kept for getfpscap.
+                let cap = opt_num(lua, &args, 0, fname, 0.0)?;
+                self.s.rbx.fps_cap = if cap.is_finite() && cap > 0.0 { cap } else { 0.0 };
+                none()
+            }
+            2123 | 2124 => {
+                // queue_on_teleport, setrbxclipboard: nothing to do here.
                 one(if id == 2124 { Value::Bool(true) } else { Value::Nil })
             }
+            // keypress, keyrelease, keyclick: a Windows virtual-key code, as
+            // the game's own key would come (UserInputService, the mouse's
+            // KeyDown, ContextActionService).
+            2125 | 2126 | 2129 => {
+                let vk = check_num(lua, &args, 0, fname)? as i64;
+                let key = vk_key(vk).ok_or_else(|| lua.rt_error(format!("{fname}: no key with code {vk}")))?;
+                let rbx = &mut self.s.rbx;
+                rbx.active = true;
+                if id != 2126 {
+                    super::hstudio_rbx_draw::game_input(rbx, &key, true, false);
+                }
+                if id != 2125 {
+                    super::hstudio_rbx_draw::game_input(rbx, &key, false, false);
+                }
+                none()
+            }
+            2127 => one(Value::str(&self.game.clipboard())),
+            2128 => one(Value::Num(if self.s.rbx.fps_cap > 0.0 {
+                self.s.rbx.fps_cap
+            } else {
+                60.0
+            })),
             _ => Err(lua.rt_error(format!("unknown executor function {id}"))),
         }
     }

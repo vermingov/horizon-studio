@@ -629,6 +629,11 @@
       "doc": "`clear()`\n\nConsole only. Empties the console's log and drops everything the console registered: its handlers, commands, timers, HUD panel, zoom and models. The console's globals stay.\n\n- Returns: nothing.\n- Where: the console only.\n\n```lua\nclear()\n```"
     },
     {
+      "name": "stop",
+      "topic": "console",
+      "doc": "`stop()`\n\nConsole only. Stops everything the console ran: code typed there, run from an executor style's Execute, or loaded by such code (`loadstring(game:HttpGet(url))()`). Its threads, timers, handlers and Roblox events stop, and the Roblox instances it made (its GUIs) go. The executor's shared globals (`getgenv()`) start afresh, so a script that marks itself loaded there can run again. The console's log stays. The Console pane's **Stop scripts** does the same.\n\n- Returns: nothing; the console says whether anything was running.\n- Where: the console only.\n\n```lua\nstop()\n```"
+    },
+    {
       "name": "reload",
       "topic": "console",
       "doc": "`reload([id])`\n\nConsole only. Reloads one script mod (turning it on if it was off in the Library), or every mod without an id, once the console line has finished. Mods that import it are not reloaded by this call; saving the file or the MCP tool `reload_mod` reloads them too.\n\n- `id` (string, optional): a mod id.\n- Returns: nothing.\n- Where: the console only.\n- Errors: `no script mod 'x'`.\n\n```lua\nreload(\"waypoints\")\n```"
@@ -2486,7 +2491,87 @@
     {
       "name": "setfpscap",
       "topic": "executor",
-      "doc": "`setfpscap(cap)`\n\nDoes nothing: Horizon's frame rate is the game's.\n\n```lua\nsetfpscap(60)\n```"
+      "doc": "`setfpscap(cap)`\n\nKeeps the cap for `getfpscap`; Horizon's frame rate stays the game's.\n\n```lua\nsetfpscap(60)\n```"
+    },
+    {
+      "name": "getfpscap",
+      "topic": "executor",
+      "doc": "`getfpscap()`\n\nThe cap `setfpscap` was given, or 60 when none was.\n\n```lua\nprint(getfpscap())\n```"
+    },
+    {
+      "name": "keypress",
+      "topic": "executor",
+      "doc": "`keypress(keycode)`\n\nPresses a key, by its Windows virtual-key code (`0x41` is A, `0x20` Space, `0x0D` Enter), as the game's own key would: UserInputService's InputBegan, the mouse's KeyDown and ContextActionService get it. `keyrelease` lets it go, `keyclick` does both.\n\n```lua\nkeypress(0x57) task.wait(1) keyrelease(0x57)\n```"
+    },
+    {
+      "name": "keyrelease",
+      "topic": "executor",
+      "doc": "`keyrelease(keycode)`\n\nLets go of a key `keypress` pressed (its Windows virtual-key code).\n\n```lua\nkeyrelease(0x57)\n```"
+    },
+    {
+      "name": "keyclick",
+      "topic": "executor",
+      "doc": "`keyclick(keycode)`\n\nPresses and lets go of a key, by its Windows virtual-key code.\n\n```lua\nkeyclick(0x45)\n```"
+    },
+    {
+      "name": "getclipboard",
+      "topic": "executor",
+      "doc": "`getclipboard()`\n\nThe text on the clipboard.\n\n```lua\nprint(getclipboard())\n```"
+    },
+    {
+      "name": "getsynasset",
+      "topic": "executor",
+      "doc": "`getsynasset(path)`\n\nSynapse X's name for `getcustomasset`.\n\n```lua\nimage.Image = getsynasset(\"logo.png\")\n```"
+    },
+    {
+      "name": "iswindowactive",
+      "topic": "executor",
+      "doc": "`iswindowactive()`\n\nAnother name for `isrbxactive`: whether the game has the keys (no screen of its own up).\n\n```lua\nprint(iswindowactive())\n```"
+    },
+    {
+      "name": "printconsole",
+      "topic": "executor",
+      "doc": "`printconsole(...)`\n\nAnother name for `rconsoleprint`.\n\n```lua\nprintconsole(\"hi\")\n```"
+    },
+    {
+      "name": "openfile",
+      "topic": "executor",
+      "doc": "`openfile(path)`\n\nAnother name for `readfile`: a file's text in the workspace folder.\n\n```lua\nprint(openfile(\"notes.txt\"))\n```"
+    },
+    {
+      "name": "syn.request",
+      "topic": "executor",
+      "doc": "`syn.request(options)`\n\nSynapse X's name for `request`.\n\n```lua\nprint(syn.request({ Url = \"https://example.com\" }).StatusCode)\n```"
+    },
+    {
+      "name": "syn.queue_on_teleport",
+      "topic": "executor",
+      "doc": "`syn.queue_on_teleport(code)`\n\nSynapse X's name for `queue_on_teleport`: nothing teleports here.\n\n```lua\nsyn.queue_on_teleport(\"print('back')\")\n```"
+    },
+    {
+      "name": "syn.write_clipboard",
+      "topic": "executor",
+      "doc": "`syn.write_clipboard(text)`\n\nSynapse X's name for `setclipboard`.\n\n```lua\nsyn.write_clipboard(\"hi\")\n```"
+    },
+    {
+      "name": "syn.set_thread_identity",
+      "topic": "executor",
+      "doc": "`syn.set_thread_identity(n)`\n\nSynapse X's name for `setthreadidentity`.\n\n```lua\nsyn.set_thread_identity(8)\n```"
+    },
+    {
+      "name": "syn.get_thread_identity",
+      "topic": "executor",
+      "doc": "`syn.get_thread_identity()`\n\nSynapse X's name for `getthreadidentity`.\n\n```lua\nprint(syn.get_thread_identity())\n```"
+    },
+    {
+      "name": "syn.protect_gui",
+      "topic": "executor",
+      "doc": "`syn.protect_gui(gui)`\n\nHides a ScreenGui from the game's own scripts in Synapse X; here no game script looks, so it does nothing (parent it to `gethui()` to draw it over everything).\n\n```lua\nsyn.protect_gui(gui) gui.Parent = game:GetService(\"CoreGui\")\n```"
+    },
+    {
+      "name": "syn.unprotect_gui",
+      "topic": "executor",
+      "doc": "`syn.unprotect_gui(gui)`\n\nThe reverse of `syn.protect_gui`: does nothing here.\n\n```lua\nsyn.unprotect_gui(gui)\n```"
     },
     {
       "name": "queue_on_teleport",

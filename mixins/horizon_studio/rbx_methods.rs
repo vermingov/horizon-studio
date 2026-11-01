@@ -355,6 +355,8 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             }
         }
         ("DataModel", "IsLoaded") => one(Value::Bool(true)),
+        // Assets load as they are drawn here: nothing to wait for.
+        ("ContentProvider", "Preload" | "PreloadAsync") => none(),
         ("DataModel", "BindToClose") => none(),
         (
             "Players",

@@ -2133,6 +2133,40 @@ pub fn game_input(rbx: &mut Rbx, key: &str, down: bool, processed: bool) {
     }
 }
 
+/// What the mouse's KeyDown names key `k`: a letter in lower case, a digit,
+/// or the character a few others type.
+fn key_char(k: &str) -> Option<String> {
+    let named = match k {
+        "Space" => " ",
+        "Return" => "\r",
+        "Tab" => "\t",
+        "Backspace" => "\u{8}",
+        "Semicolon" => ";",
+        "Comma" => ",",
+        "Period" => ".",
+        "Slash" => "/",
+        "Minus" => "-",
+        "Equals" => "=",
+        "LeftBracket" => "[",
+        "RightBracket" => "]",
+        "Quote" => "'",
+        "BackSlash" => "\\",
+        _ => "",
+    };
+    if !named.is_empty() {
+        return Some(named.to_owned());
+    }
+    if k.len() == 1 {
+        return Some(k.to_ascii_lowercase());
+    }
+    let digit = [
+        "Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+    ]
+    .iter()
+    .position(|d| *d == k)?;
+    Some(digit.to_string())
+}
+
 fn key_input(rbx: &mut Rbx, k: &'static str, down: bool, processed: bool) {
     if down {
         rbx.pointer.held.insert(k);
@@ -2146,6 +2180,12 @@ fn key_input(rbx: &mut Rbx, k: &'static str, down: bool, processed: bool) {
     rbx.fire(uis, event, vec![input.clone(), Value::Bool(processed)]);
     if down && k == "Space" && !processed {
         rbx.fire(uis, "JumpRequest", Vec::new());
+    }
+    // The mouse's older KeyDown and KeyUp: the key as a lower-case letter
+    // (or digit, or what it types), outside a TextBox.
+    if !processed && let Some(c) = key_char(k) {
+        let mouse = rbx.mouse;
+        rbx.fire(mouse, if down { "KeyDown" } else { "KeyUp" }, vec![Value::str(&c)]);
     }
     if processed {
         return;
@@ -2503,6 +2543,11 @@ fn live(rbx: &Rbx, id: Id) -> bool {
 }
 
 /// The topmost Active object under the pointer, and the button there.
+/// Whether the pointer is over a GuiObject that takes it.
+pub fn over_gui(rbx: &Rbx) -> bool {
+    hits(rbx).0.is_some()
+}
+
 fn hits(rbx: &Rbx) -> (Option<Id>, Option<Id>) {
     let Some(f) = &rbx.layout else { return (None, None) };
     let p = Vector2::new(rbx.pointer.x, rbx.pointer.y);

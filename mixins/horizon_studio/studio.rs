@@ -23,7 +23,7 @@ use super::hstudio_lualib::{inspect, new_env, quote, text_of};
 use super::hstudio_modfiles::{
     TEMPLATE, file_name, find_mod, find_mods, id_taken, lua_files, path_in, prune_empty, rel_in, require_path, to_trash,
 };
-use super::hstudio_ui::{Editor, ScriptScreen, Ui};
+use super::hstudio_ui::{Editor, Input, ScriptScreen, Ui};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -1025,8 +1025,8 @@ pub struct State {
     /// The table of the screen the Roblox GUI takes the pointer with.
     rbx_screen: Option<TableRef>,
 
-    /// Errors of threads that a call resumed (`task.spawn`), for their
-    /// owners to fail with once the call is over.
+    /// Errors of threads that a call resumed (`task.spawn`), printed for
+    /// their owners once the call is over (as in Roblox, the script goes on).
     thread_errors: Vec<(Owner, String, String)>,
     /// 3D quads, particles and sounds this frame (they are capped).
     world_quads: usize,
@@ -1044,6 +1044,34 @@ enum Request {
 }
 
 impl State {
+    /// Whether something the console ran still runs: a thread or a timer
+    /// of it, or a Roblox instance it made (a GUI).
+    pub fn console_running(&self) -> bool {
+        let c = &self.console_mod;
+        !c.tasks.is_empty() || !c.timers.is_empty() || self.rbx.owns_any(Owner::Console)
+    }
+
+    /// Stops everything the console ran (typed there, run from an executor
+    /// style's Execute, or loaded by such code, as loadstring scripts are):
+    /// its threads, timers, handlers and events, its Roblox instances (its
+    /// GUIs) and its screen. The executor's shared globals (getgenv) start
+    /// afresh, so a script that marks itself loaded there runs again.
+    /// Whether anything ran.
+    pub fn stop_console(&mut self) -> bool {
+        let ran = self.console_running();
+        self.console_mod.clear();
+        self.console_mod.state = ModState::Running;
+        self.rbx.forget(Owner::Console);
+        if self.screen.as_ref().is_some_and(|sc| sc.owner == Owner::Console) {
+            self.screen = None;
+        }
+        if self.screen_request.as_ref().is_some_and(|r| r.0 == Owner::Console) {
+            self.screen_request = None;
+        }
+        self.console_env = None;
+        self.genv = None;
+        ran
+    }
     pub fn log(&mut self, kind: LogKind, text: impl Into<String>) {
         let text: String = text.into();
         for line in text.split('\n') {
@@ -1697,6 +1725,43 @@ impl Studio {
     }
 
     /// The studio's screen or a script's is up (the game's input is ours).
+    /// While the game's chat is open (the pointer free) and no screen of
+    /// the studio's or a script's is up, the pointer reaches the Roblox GUI
+    /// the scripts show: it moves over it (hover, drags), and a press or the
+    /// wheel over one of its objects goes to it rather than to the chat, as
+    /// does the release of a press it took. `input` in GUI pixels, as the
+    /// window gives them. Whether the GUI took it.
+    pub fn chat_pointer(&mut self, input: &Input) -> bool {
+        if self.overlay_open() {
+            return false;
+        }
+        let k = f64::from(self.s.ui.dp_factor());
+        let rbx = &mut self.s.rbx;
+        match *input {
+            Input::Mouse(x, y) => {
+                super::hstudio_rbx_draw::pointer_moved(rbx, f64::from(x) * k, f64::from(y) * k);
+                false
+            }
+            Input::Button { left, down } => {
+                let i = usize::from(!left);
+                if down && !super::hstudio_rbx_draw::over_gui(rbx) {
+                    return false;
+                }
+                if !down && !rbx.pointer.chat_held[i] {
+                    return false;
+                }
+                rbx.pointer.chat_held[i] = down;
+                super::hstudio_rbx_draw::pointer_button(rbx, left, down);
+                true
+            }
+            Input::Wheel(steps) if super::hstudio_rbx_draw::over_gui(rbx) => {
+                super::hstudio_rbx_draw::wheel(rbx, f64::from(steps));
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn overlay_open(&self) -> bool {
         self.s.ui.open || self.s.screen.is_some()
     }
@@ -2524,11 +2589,13 @@ impl Studio {
         }
     }
 
-    /// Stops the owners of threads that failed inside a call.
+    /// Prints the errors of threads that failed inside a call (task.spawn
+    /// ran them at once): as in Roblox, their scripts go on.
     fn thread_failures(&mut self, game: &mut dyn GameApi) {
+        let _ = game;
         for (owner, msg, trace) in std::mem::take(&mut self.s.thread_errors) {
             if self.s.owner_mod(owner).running() {
-                self.fail(game, owner, msg, trace);
+                self.thread_error(owner, msg, trace);
             }
         }
     }
@@ -2591,10 +2658,38 @@ impl Studio {
                 if !self.s.owner_mod(owner).running() {
                     continue;
                 }
+                let main = {
+                    let m = self.s.owner_mod(owner);
+                    m.main_thread
+                        .as_ref()
+                        .and_then(std::rc::Weak::upgrade)
+                        .is_some_and(|t| Rc::ptr_eq(&t, &co))
+                };
                 if let Some(Err(e)) = self.resume_in(game, owner, &co, args, EVENT_STEPS, Phase::Normal) {
-                    self.fail(game, owner, e.message(), e.traceback().to_owned());
+                    // Its main chunk, after a wait, fails it as at its start.
+                    if main {
+                        self.fail(game, owner, e.message(), e.traceback().to_owned());
+                    } else {
+                        self.thread_error(owner, e.message(), e.traceback().to_owned());
+                    }
                 }
             }
+        }
+    }
+
+    /// An error in one of a script's threads (task.spawn, delay, a wait it
+    /// woke from, a Roblox event's handler): as in Roblox, it is printed
+    /// with its traceback and the script goes on (its other threads and
+    /// handlers run); only its main chunk failing stops it.
+    fn thread_error(&mut self, owner: Owner, msg: String, trace: String) {
+        let trace = if trace.contains('\n') { trace } else { String::new() };
+        let msg = match owner {
+            Owner::Console => msg,
+            Owner::Mod(i) => format!("[{}] {msg}", self.s.mods[i].id),
+        };
+        self.s.log(LogKind::Error, msg);
+        if !trace.is_empty() {
+            self.s.log(LogKind::Trace, trace);
         }
     }
 
@@ -4677,6 +4772,11 @@ pub const CONSOLE_API: &[(&str, u32, &str)] = &[
         "clear(): empty the console and drop what the console registered",
     ),
     ("reload", 202, "reload([id]): reload one script mod, or all"),
+    (
+        "stop",
+        206,
+        "stop(): stop what the console ran (scripts typed or executed there, loadstring ones too): their threads, events, timers and GUIs",
+    ),
     ("mods", 203, "mods(): the script mods and their state"),
     (
         "edit",
@@ -6635,6 +6735,16 @@ impl Host for Ctx<'_> {
                     lines.push("nothing by that name".into());
                 }
                 self.s.log(LogKind::Info, lines.join("\n"));
+                none()
+            }
+            206 => {
+                let ran = self.s.stop_console();
+                let said = if ran {
+                    "Stopped what the console ran"
+                } else {
+                    "Nothing the console ran is running"
+                };
+                self.s.log(LogKind::Info, said);
                 none()
             }
             201 => {
