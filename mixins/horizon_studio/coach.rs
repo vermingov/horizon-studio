@@ -3293,7 +3293,8 @@ fn lesson_go(st: &mut Studio, game: &mut dyn GameApi, i: usize) {
 /// lines as they are now and the live check's problems; else the game's own
 /// agent is asked to check the step, in a new turn of the conversation, and
 /// the Agent pane, where it answers, comes to the front of its group, its
-/// group shown, as for the menus' Ask (it is the player's own click).
+/// group shown, as for the menus' Ask (it is the player's own click); the
+/// step stays in the rows the code has then.
 fn lesson_check(st: &mut Studio) {
     let c = &st.s.ui.coach;
     let Some(l) = &c.lesson else {
@@ -3349,6 +3350,10 @@ fn lesson_check(st: &mut Studio) {
         }
         ui.dock.show(Pane::Agent);
         super::hstudio_ui::dock_changed(st);
+        // The pane may take rows from the code: the step stays in those it has.
+        if st.s.editor.path.as_ref() == Some(&path) {
+            reveal_rows(st, first, last);
+        }
         super::hstudio_ui::agent_ask(st, &ask);
     }
 }

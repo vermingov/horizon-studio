@@ -4531,6 +4531,59 @@ fn check_asks_the_games_agent_when_none_is_waiting() {
 }
 
 #[test]
+fn check_keeps_its_step_in_the_rows_the_code_has_once_the_agent_pane_shows() {
+    // A lesson's steps on lines 14 and 27 of a long script, the panel hidden
+    // (the code as high as the Editor tab), the player on step 2. Check asks
+    // the game's own agent and shows the Agent pane, which takes rows from
+    // the code: the step stays in the rows the code has then, its note too.
+    use horizon_studio::game::hstudio_agent::AgentSpec;
+    use horizon_studio::game::hstudio_ui::Pane;
+    let src: String = (1..=200).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-check-in-view", "long", &src);
+    st.s.ui.agent.agents = Some(vec![AgentSpec {
+        id: "custom".into(),
+        name: "Echo".into(),
+        program: "/bin/echo".into(),
+        args: vec!["{prompt}".into()],
+        json: false,
+    }]);
+    let lesson = json!({ "title": "Values", "steps": [
+        { "start_line": 14, "note": "Fourteen.", "task": "Make it 140." },
+        { "start_line": 27, "note": "Twenty-seven.", "task": "Make it 270." },
+    ] });
+    ask(&mut st, &mut game, "lesson", lesson).unwrap();
+    // The player hides the panel for room.
+    st.s.ui.dock.set_hidden(Pane::Agent, true);
+    still(&mut st, &mut game);
+    let next = text_at(&game, "Next");
+    click(&mut st, &mut game, (next.0 + 2.0, next.1 + 4.0));
+    still(&mut st, &mut game);
+    let in_view = |st: &Studio, row: usize| {
+        let (scroll, rows) = (st.s.editor.scroll, st.s.ui.pages[Pane::Code.index()]);
+        (scroll..scroll + rows).contains(&row)
+    };
+    let tall = st.s.ui.pages[Pane::Code.index()];
+    assert!(in_view(&st, 26), "step 2 in view: scroll {}", st.s.editor.scroll);
+    assert!(!texts_at(&game, "Twenty-seven.").is_empty(), "its note");
+    let check = text_at(&game, "Check");
+    click(&mut st, &mut game, (check.0 + 2.0, check.1 + 4.0));
+    assert!(st.s.ui.dock.is_front(Pane::Agent), "the Agent pane shows");
+    still(&mut st, &mut game);
+    still(&mut st, &mut game);
+    let rows = st.s.ui.pages[Pane::Code.index()];
+    assert!(rows < tall, "the panel took rows from the code: {rows} of {tall}");
+    assert!(in_view(&st, 26), "step 2 in {rows} rows: scroll {}", st.s.editor.scroll);
+    assert!(!texts_at(&game, "Twenty-seven.").is_empty(), "its note");
+    for _ in 0..200 {
+        run_for(&mut st, &mut game, 0.05);
+        if !horizon_studio::game::hstudio_ui::agent_busy(&st) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
 fn every_style_draws_a_lesson_inside_its_code() {
     use horizon_studio::game::hstudio_theme::{Look, THEMES};
     let (mut game, mut st) = editing("coach-lesson-styles", "sum", TEN);
