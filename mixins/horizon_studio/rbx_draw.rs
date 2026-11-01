@@ -2189,8 +2189,12 @@ fn mouse_input(rbx: &mut Rbx, kind: &'static str, down: bool, processed: bool) {
     }
 }
 
+/// Gives the focus to TextBox `id` (None: to none). A box that went
+/// (destroyed, with its GUI or alone) takes none, as in Roblox: a handler
+/// that takes the focus back as the box loses it (FocusLost, which fires as
+/// the box goes) leaves the GUI without it, and the game its keys.
 pub fn focus(rbx: &mut Rbx, id: Option<Id>) {
-    if rbx.pointer.focus == id {
+    if rbx.pointer.focus == id || id.is_some_and(|id| rbx.try_inst(id).is_none_or(|i| i.destroyed)) {
         return;
     }
     unfocus(rbx, false);

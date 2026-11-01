@@ -983,6 +983,59 @@ fn a_text_box_destroyed_while_edited_gives_the_keys_back() {
 }
 
 #[test]
+fn a_destroyed_text_box_takes_no_focus() {
+    // A box that takes the focus back whenever it loses it (an always
+    // focused command bar): its GUI destroyed by a command, or by its own
+    // close button (whose press lets go of the box first), the box loses
+    // the focus as it goes, and CaptureFocus can't give it back to a box
+    // that went, as in Roblox.
+    let src = format!(
+        "{BOX}
+        box.FocusLost:Connect(function() box:CaptureFocus() end)
+        local close = Instance.new('TextButton', gui)
+        close.Position = UDim2.fromOffset(0, 40)
+        close.Size = UDim2.fromOffset(100, 30)
+        close.Activated:Connect(function() gui:Destroy() end)
+        command('gone', function() gui:Destroy() end)
+        command('focused', function() return tostring(box:IsFocused()) end)
+        "
+    );
+    for button in [false, true] {
+        let mut game = FakeGame::new(&format!("rbx-box-refocus-{button}"));
+        let mut st = studio(&mut game);
+        load(&mut game, &mut st, "bar", &src, 0.6);
+        focus_box(&mut st, &mut game);
+        if button {
+            // A click: the press lets go of the box, whose handler takes the
+            // focus back before Activated's destroys the GUI.
+            handle_screen(&mut st, &mut game, Input::Mouse(10.0, 55.0));
+            handle_screen(&mut st, &mut game, Input::Button { left: true, down: true });
+            handle_screen(
+                &mut st,
+                &mut game,
+                Input::Button {
+                    left: true,
+                    down: false,
+                },
+            );
+        } else {
+            say(&mut st, &mut game, "gone");
+        }
+        for _ in 0..5 {
+            hud(&mut st, &mut game);
+            st.frame(&mut game, 0.016);
+        }
+        assert_eq!(say(&mut st, &mut game, "focused"), "false", "button {button}");
+        assert_eq!(st.s.rbx.pointer.focus, None, "button {button}");
+        assert!(st.s.screen.is_none(), "button {button}: the game has its keys back");
+        assert!(
+            st.s.rbx.layout.as_ref().is_some_and(|l| l.node_inst.is_empty()),
+            "the GUI went"
+        );
+    }
+}
+
+#[test]
 fn another_mod_reloading_leaves_the_gui_as_it_is() {
     // Mod a's TextBox is being edited when mod b reloads (its file changed
     // on disk): a's screen stays up through it, with the box's focus, so
