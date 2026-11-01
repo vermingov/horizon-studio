@@ -4502,3 +4502,74 @@ fn the_library_shows_each_commands_usage() {
     text_at(&game, "/here");
     text_at(&game, "Marks this place");
 }
+
+/// The `+` drawn on the row whose label is at `ly`.
+fn plus_on_row(game: &FakeGame, ly: f32) -> (f32, f32) {
+    game.drawn
+        .iter()
+        .filter(|d| d.starts_with("text + @"))
+        .map(|d| {
+            let v: Vec<f32> = d
+                .split(" @[")
+                .nth(1)
+                .unwrap()
+                .split(']')
+                .next()
+                .unwrap()
+                .split(", ")
+                .map(|v| v.parse().unwrap())
+                .collect();
+            (v[0], v[1])
+        })
+        .find(|(_, y)| (y - ly).abs() < 20.0)
+        .expect("a + on the row")
+}
+
+#[test]
+fn settings_has_the_voice_chat_where_the_game_has_it() {
+    use horizon_studio::game::hstudio::{VoiceChange, VoiceInfo};
+    let mut game = FakeGame::new("ui-voice");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.s.ui.tab = Tab::Settings;
+    // Headless (no voice chat): no section.
+    redraw(&mut st, &mut game);
+    for _ in 0..40 {
+        handle(&mut st, &mut game, key(Key::Down, NONE));
+    }
+    redraw(&mut st, &mut game);
+    assert!(!game.drawn.iter().any(|d| d.starts_with("text Voice chat @")));
+    game.voice = VoiceInfo {
+        available: true,
+        state: "connected".into(),
+        connected: true,
+        ptt_key: "key.keyboard.caps.lock".into(),
+        players: vec!["Alex".into(), "Steve".into()],
+        ..VoiceInfo::default()
+    };
+    for _ in 0..40 {
+        handle(&mut st, &mut game, key(Key::Down, NONE));
+    }
+    redraw(&mut st, &mut game);
+    text_at(&game, "Voice chat");
+    text_at(&game, "Connected (2 players)");
+    text_at(&game, "Push to talk (Caps Lock)");
+    let (x, y) = text_at(&game, "Voice activation");
+    click(&mut st, &mut game, (x + 2.0, y + 2.0));
+    let (_, ly) = text_at(&game, "Voice volume");
+    let plus = plus_on_row(&game, ly);
+    click(&mut st, &mut game, (plus.0 + 1.0, plus.1 + 2.0));
+    text_at(&game, "100%");
+    let (_, ly) = text_at(&game, "Activation threshold");
+    let plus = plus_on_row(&game, ly);
+    click(&mut st, &mut game, (plus.0 + 1.0, plus.1 + 2.0));
+    assert_eq!(
+        game.voice_changes,
+        vec![
+            VoiceChange::Activation("voice".into()),
+            VoiceChange::Volume(1.1),
+            VoiceChange::Threshold(-45.0)
+        ]
+    );
+}

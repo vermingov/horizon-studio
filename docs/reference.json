@@ -99,6 +99,12 @@
       "text": "ViaHorizon lets the game join servers of other Minecraft versions: every join goes through ViaProxy, which runs beside the game and translates Horizon's 26.3 to the server's version (Classic to 26.3, and Bedrock, experimental). The bundled `viahorizon` mod gives it a screen (`/via`) and `/vialog`; Options > Mods > Horizon Studio has it on the title screen. Changes apply from the next join.\n\n- `via.status()`: `{enabled, version, label, text, ready}`.\n- `via.versions()`: every version it can join as, newest first: `{{id = \"1.8.x\", label = \"1.8.x\"}, ...}`; `\"auto\"` asks the server.\n- `via.enable(on)`: join through ViaProxy (true) or straight (false).\n- `via.version(id)`: the version joins go as.\n- `via.log()`: ViaProxy's last lines (up to 40), for when a join fails.\n\nHeadless tests have no ViaHorizon: `via.status()` says \"Not in a headless test\", `via.versions()` and `via.log()` are empty, and `via.enable`/`via.version` raise \"ViaHorizon isn't available here\"."
     },
     {
+      "id": "voice",
+      "title": "Voice chat (Simple Voice Chat servers)",
+      "summary": "voice.*: talking to and hearing the players of a server with Simple Voice Chat: its state, who is talking, mute, deafen, the volume, the microphone and groups.",
+      "text": "Horizon Studio is a client for Simple Voice Chat (henkelmax's mod for Fabric and NeoForge, and its Paper plugin): on a server that runs it, the player talks to and hears the other players, their voices from where they stand, louder the nearer. Both of its live versions are spoken (2.6.x, compatibility 20, and 2.7.x, compatibility 21); the version a server answered in is remembered for it.\n\n- Push to talk (Caps Lock) is the default; voice activation sends while the voice is louder than its threshold. Mute (M) and deafen (N, SVC's \"disable voice chat\": nothing heard, nothing sent) are keys too. All three keys are chosen in Options > Mods > Horizon Studio, and its page has the settings: the microphone's mode, mute, deafen, the voices' volume, the microphone's gain and the threshold. They are kept in `voice.txt` in the studio's folder.\n- The HUD shows the microphone while it sends, \"Muted\", \"Deafened\" or \"Voice chat unavailable\" (the server has voice chat, but it can't connect), and the names of those talking.\n- Groups: their voices are heard (without a place); `voice.join_group` joins one.\n\nA mod reads and changes it with `voice.*`:\n\n- `voice.status()`: `{state, connected, unavailable, talking, muted, deafened, activation, ptt_key, volume, gain, threshold, level, players, compat, error, mic}`; `state` is `\"off\"` (not on a server), `\"asking\"`, `\"none\"` (the server has no voice chat), `\"incompatible\"`, `\"connecting\"`, `\"connected\"`, `\"lost\"` or `\"failed\"`.\n- `voice.connected()`, `voice.talking()`, `voice.speakers()`.\n- `voice.mute([on])`, `voice.deafen([on])`, `voice.volume([x])`, `voice.gain([db])`, `voice.threshold([db])`, `voice.activation([mode])`: each sets it when given a value, and returns it.\n- `voice.groups()`, `voice.join_group(id[, password])`, `voice.leave_group()`.\n\nHeadless tests have no voice chat: `voice.status().state` is `\"off\"`, the reads are false or empty, and the changes raise \"voice chat isn't available here\"."
+    },
+    {
       "id": "tests",
       "title": "Testing mods (test_mod steps)",
       "summary": "Every step and expectation of test_mod with examples, the headless game it runs on, and live tests.",
@@ -617,6 +623,71 @@
       "name": "via.log",
       "topic": "via",
       "doc": "`via.log()`\n\nViaProxy's last lines (up to 40), oldest first, for when a join fails.\n\n- Returns: a list of strings. Headless: empty.\n- Where: anywhere.\n\n```lua\ncommand(\"vialines\", function()\n  for _, line in ipairs(via.log()) do print(line) end\n  return \"In the console (F8)\"\nend)\n```"
+    },
+    {
+      "name": "voice.status",
+      "topic": "voice",
+      "doc": "`voice.status()`\n\nThe voice chat's state on a Simple Voice Chat server: `{state, connected, unavailable, talking, muted, deafened, activation, ptt_key, volume, gain, threshold, level, players, compat, error, mic}`. `state` is `\"off\"` (not on a server), `\"asking\"`, `\"none\"` (the server has no voice chat), `\"incompatible\"`, `\"connecting\"`, `\"connected\"`, `\"lost\"` (the voice server stopped answering; it reconnects) or `\"failed\"`; `unavailable` is true when the server has voice chat but it isn't working. `level` is the microphone's level in dBFS, `compat` the version the server speaks (20 or 21), `mic` the microphone's device (or why there is none).\n\n- Returns: a table. Headless: `state = \"off\"`, the settings' defaults.\n- Where: anywhere.\n\n```lua\non(\"tick\", function()\n  local v = voice.status()\n  if v.state ~= \"connected\" then hud.panel(nil) return end\n  hud.panel(\"top-right\", {\"Voice: \" .. v.players .. \" players\", string.format(\"Mic: %.0f dB\", v.level)})\nend)\n```"
+    },
+    {
+      "name": "voice.connected",
+      "topic": "voice",
+      "doc": "`voice.connected()`\n\nWhether this server's voice chat is connected (voices come and the microphone can go).\n\n- Returns: a boolean. Headless: false.\n- Where: anywhere.\n\n```lua\nevery(5, function()\n  if voice.connected() then print(\"voice chat is up\") end\nend)\n```"
+    },
+    {
+      "name": "voice.talking",
+      "topic": "voice",
+      "doc": "`voice.talking()`\n\nWhether the microphone is sending now (push to talk held, or the voice above the threshold; not while muted).\n\n- Returns: a boolean. Headless: false.\n- Where: anywhere.\n\n```lua\non(\"tick\", function()\n  if voice.talking() then hud.panel(\"bottom-right\", {\"On air\"}) else hud.panel(nil) end\nend)\n```"
+    },
+    {
+      "name": "voice.speakers",
+      "topic": "voice",
+      "doc": "`voice.speakers()`\n\nWho is heard now: `{{name = \"Alex\", whispering = false}, ...}`, by name. Someone counts for a quarter of a second after their last sound, and only while heard (near enough, or in the group).\n\n- Returns: a list. Headless: empty.\n- Where: anywhere.\n\n```lua\non(\"tick\", function()\n  local names = {}\n  for _, s in ipairs(voice.speakers()) do names[#names + 1] = s.name end\n  if #names == 0 then hud.panel(nil) return end\n  hud.panel(\"top-right\", {\"Talking: \" .. table.concat(names, \", \")})\nend)\n```"
+    },
+    {
+      "name": "voice.mute",
+      "topic": "voice",
+      "doc": "`voice.mute([on])`\n\nMutes the microphone (true) or unmutes it (false); without a value only reads it. The server is told, as SVC's mute does. Kept in `voice.txt`.\n\n- `on` (any value, optional; truthy mutes).\n- Returns: whether it is muted.\n- Where: anywhere.\n- Errors: headless `voice chat isn't available here` (when a value is given).\n\n```lua\ncommand(\"mute\", function()\n  local now = voice.mute(not voice.mute())\n  return now and \"Muted\" or \"Unmuted\"\nend)\n```"
+    },
+    {
+      "name": "voice.deafen",
+      "topic": "voice",
+      "doc": "`voice.deafen([on])`\n\nDeafens (true): nothing is heard and nothing sent, SVC's \"disable voice chat\" (the server stops sending voices). False hears again; without a value only reads it.\n\n- `on` (any value, optional; truthy deafens).\n- Returns: whether it is deafened.\n- Where: anywhere.\n- Errors: headless `voice chat isn't available here` (when a value is given).\n\n```lua\ncommand(\"deafen\", function()\n  return voice.deafen(not voice.deafen()) and \"Deafened\" or \"Hearing again\"\nend)\n```"
+    },
+    {
+      "name": "voice.volume",
+      "topic": "voice",
+      "doc": "`voice.volume([x])`\n\nThe voices' volume, 0 to 3 (1 as they come; outside that range it is clamped); without a value only reads it.\n\n- `x` (number, optional).\n- Returns: the volume.\n- Where: anywhere.\n- Errors: a value that isn't a finite number; headless `voice chat isn't available here` (when a value is given).\n\n```lua\ncommand(\"loud\", function()\n  return \"Voice volume \" .. voice.volume(voice.volume() + 0.25)\nend)\n```"
+    },
+    {
+      "name": "voice.gain",
+      "topic": "voice",
+      "doc": "`voice.gain([db])`\n\nThe microphone's gain in dB, -40 to 24 (0 as it comes; -40 is silence), as SVC's microphone gain; a limiter keeps it from clipping. Without a value only reads it.\n\n- `db` (number, optional).\n- Returns: the gain in dB.\n- Where: anywhere.\n- Errors: a value that isn't a finite number; headless `voice chat isn't available here` (when a value is given).\n\n```lua\ncommand(\"micboost\", function()\n  return \"Microphone gain \" .. voice.gain(6) .. \" dB\"\nend)\n```"
+    },
+    {
+      "name": "voice.threshold",
+      "topic": "voice",
+      "doc": "`voice.threshold([db])`\n\nVoice activation's threshold, in dBFS from -127 to 0 (-50 by default, as SVC's): the microphone sends while a frame's peak is above it, and half a second after. Without a value only reads it.\n\n- `db` (number, optional).\n- Returns: the threshold.\n- Where: anywhere.\n- Errors: a value that isn't a finite number; headless `voice chat isn't available here` (when a value is given).\n\n```lua\ncommand(\"noisy\", function()\n  voice.activation(\"voice\")\n  return \"Voice activation above \" .. voice.threshold(-35) .. \" dB\"\nend)\n```"
+    },
+    {
+      "name": "voice.activation",
+      "topic": "voice",
+      "doc": "`voice.activation([mode])`\n\nHow the microphone is turned on: `\"ptt\"` (push to talk, while its key is held: Caps Lock unless chosen otherwise in Options > Mods) or `\"voice\"` (voice activation, above `voice.threshold()`). Without a value only reads it.\n\n- `mode` (string, optional): `\"ptt\"` or `\"voice\"`.\n- Returns: the mode.\n- Where: anywhere.\n- Errors: another mode; headless `voice chat isn't available here` (when a value is given).\n\n```lua\ncommand(\"ptt\", function()\n  local m = voice.activation(voice.activation() == \"ptt\" and \"voice\" or \"ptt\")\n  return \"Microphone: \" .. m\nend)\n```"
+    },
+    {
+      "name": "voice.groups",
+      "topic": "voice",
+      "doc": "`voice.groups()`\n\nThe server's voice groups (when it has them on): `{{id = \"<uuid>\", name = \"Friends\", password = false, joined = true}, ...}`, by name. A group's voices are heard by its members without a place.\n\n- Returns: a list. Headless: empty.\n- Where: anywhere.\n\n```lua\ncommand(\"groups\", function()\n  for _, g in ipairs(voice.groups()) do\n    print(g.name .. (g.joined and \" (joined)\" or \"\") .. (g.password and \" (password)\" or \"\"))\n  end\n  return \"In the console (F8)\"\nend)\n```"
+    },
+    {
+      "name": "voice.join_group",
+      "topic": "voice",
+      "doc": "`voice.join_group(id[, password])`\n\nJoins a voice group, by its id from `voice.groups()` (and its password if it has one). The server answers; `voice.groups()` then marks it joined.\n\n- `id` (string), `password` (string, optional).\n- Returns: nothing.\n- Where: anywhere.\n- Errors: `no such group`; `this server's voice chat has no groups`; headless `voice chat isn't available here`.\n\n```lua\ncommand(\"join\", function(args)\n  for _, g in ipairs(voice.groups()) do\n    if g.name == args[1] then voice.join_group(g.id, args[2]) return \"Joining \" .. g.name end\n  end\n  return \"No group \" .. tostring(args[1])\nend)\n```"
+    },
+    {
+      "name": "voice.leave_group",
+      "topic": "voice",
+      "doc": "`voice.leave_group()`\n\nLeaves the voice group joined (nothing when none is).\n\n- Returns: nothing.\n- Where: anywhere.\n- Errors: headless `voice chat isn't available here`.\n\n```lua\ncommand(\"leave\", function() voice.leave_group() return \"Left the group\" end)\n```"
     },
     {
       "name": "help",

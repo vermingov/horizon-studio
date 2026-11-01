@@ -4,6 +4,7 @@
 
 use horizon_studio::game::hstudio::{
     Camera, Corner, EntityInfo, Font, GameApi, PlayerEntry, PlayerInfo, PlayerPose, Reply, Studio, ViaInfo,
+    VoiceChange, VoiceInfo,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -52,6 +53,11 @@ pub struct FakeGame {
     pub entities: Vec<EntityInfo>,
     pub players: Option<Vec<PlayerEntry>>,
     pub entity_asks: usize,
+    /// The voice chat as the game reports it, and the changes asked of it;
+    /// with `voice_glue`, a real voice chat (hstudio_voicechat) answers instead.
+    pub voice: VoiceInfo,
+    pub voice_changes: Vec<VoiceChange>,
+    pub voice_glue: Option<horizon_studio::game::hstudio_voicechat::Glue>,
 }
 
 /// A particle spawned: its id, place, speed and colour.
@@ -140,6 +146,9 @@ impl FakeGame {
             entities: Vec::new(),
             players: None,
             entity_asks: 0,
+            voice: VoiceInfo::default(),
+            voice_changes: Vec::new(),
+            voice_glue: None,
         }
     }
     pub fn mods_dir(&self) -> PathBuf {
@@ -377,6 +386,20 @@ impl GameApi for FakeGame {
     }
     fn players(&mut self) -> Option<Vec<PlayerEntry>> {
         self.players.clone()
+    }
+    fn voice(&self) -> VoiceInfo {
+        match &self.voice_glue {
+            Some(g) => g.info(std::time::Instant::now()),
+            None => self.voice.clone(),
+        }
+    }
+    fn voice_set(&mut self, change: VoiceChange) -> Result<(), String> {
+        self.voice_changes.push(change.clone());
+        match &mut self.voice_glue {
+            Some(g) => g.set(change),
+            None if self.voice.available => Ok(()),
+            None => Err("voice chat isn't available here".into()),
+        }
     }
 }
 

@@ -824,6 +824,12 @@ impl GameApi for Host<'_, '_> {
         }
         Ok(())
     }
+    fn voice(&self) -> super::hstudio::VoiceInfo {
+        super::hstudio_voicechat::global(|v| v.info(Instant::now()))
+    }
+    fn voice_set(&mut self, change: super::hstudio::VoiceChange) -> Result<(), String> {
+        super::hstudio_voicechat::global(|v| v.set(change))
+    }
     fn camera(&self) -> Option<Camera> {
         if let Some((_, cam)) = &self.world {
             return Some(*cam);
@@ -1837,11 +1843,13 @@ pub(super) fn zoom() -> Option<f32> {
 }
 
 pub(super) fn listed() -> super::native_hooks::NativeMod {
+    let mut keys = vec![["open".into(), "Open Horizon Studio".into(), OPEN_KEY.into()]];
+    keys.extend(super::hstudio_voicechat::mod_keys());
     super::native_hooks::NativeMod {
         id: ID.into(),
         title: format!("{NAME} {VERSION}"),
         description: super::hstudio::DESCRIPTION.into(),
-        keys: vec![["open".into(), "Open Horizon Studio".into(), OPEN_KEY.into()]],
+        keys,
     }
 }
 
@@ -1917,7 +1925,12 @@ pub(super) fn settings(buttons: &mut Vec<String>) {
         "Copy AI setup prompt".into()
     });
     buttons.push(horizon_client::net::hstudio_mcp_update::label());
+    // The voice chat's rows, from VOICE_ROW on.
+    buttons.extend(super::hstudio_voicechat::global(|v| v.settings_buttons()));
 }
+
+/// The first of the voice chat's rows in the settings page.
+const VOICE_ROW: usize = 9;
 
 pub(super) fn settings_click(game: &mut Game<'_>, button: usize) {
     match button {
@@ -1952,6 +1965,7 @@ pub(super) fn settings_click(game: &mut Game<'_>, button: usize) {
         }
         // The MCP server: updated in place; running ones switch at their next call.
         8 => horizon_client::net::hstudio_mcp_update::click(),
+        n if n >= VOICE_ROW => super::hstudio_voicechat::global(|v| v.settings_click(n - VOICE_ROW)),
         _ => {}
     }
 }

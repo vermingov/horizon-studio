@@ -154,6 +154,8 @@ pub enum Action {
     Accent(u8),
     Step(u8, bool),
     Motion,
+    /// Settings' voice chat rows (hstudio_voicechat::settings_action says which is which).
+    Voice(u8),
     ResetWindow,
     /// Settings shown, or back to the editor (the executor styles).
     Settings,
@@ -4458,6 +4460,7 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
             st.s.ui.look.motion = !st.s.ui.look.motion;
             st.s.ui.look.save(&st.s.dir);
         }
+        Action::Voice(n) => super::hstudio_voicechat::settings_action(game, n),
         Action::ResetWindow => {
             st.s.ui.look.rect = None;
             st.s.ui.look.maximized = false;

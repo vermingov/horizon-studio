@@ -4469,7 +4469,10 @@ fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let card_h = 98.0;
     let grid_h = THEMES.len().div_ceil(cols) as f32 * (card_h + gap);
     let row_h = 46.0;
-    let total = 30.0 + grid_h + 14.0 + row_h * 8.0;
+    // The voice chat's rows, where the game has it.
+    let voice = p.g.voice();
+    let voice_h = if voice.available { 30.0 + row_h * 6.0 } else { 0.0 };
+    let total = 30.0 + grid_h + 14.0 + row_h * 8.0 + voice_h;
     let ui = &mut st.s.ui;
     ui.settings_scroll = ui.settings_scroll.clamp(0.0, (total - h).max(0.0));
     smooth(&mut ui.smooth[3], ui.settings_scroll, dt);
@@ -4610,6 +4613,128 @@ fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             }
         }
     }
+    if voice.available {
+        voice_settings(st, p, &voice, [x, cy, cw, vx], &shown, dt);
+    }
+}
+
+/// Settings' voice chat section (Simple Voice Chat servers), from `y` on:
+/// the microphone's mode, mute, deafen, and the volume, gain and threshold
+/// a step at a time (`Action::Voice`, which hstudio_voicechat::settings_action does).
+fn voice_settings(
+    st: &mut Studio,
+    p: &mut P,
+    v: &super::hstudio::VoiceInfo,
+    [x, y, cw, vx]: [f32; 4],
+    shown: &dyn Fn([f32; 4]) -> bool,
+    dt: f32,
+) {
+    let row_h = 46.0;
+    let mut cy = y;
+    if shown([x, cy, cw, 20.0]) {
+        p.text(
+            "Voice chat",
+            x,
+            top(cy + 10.0, 13.0),
+            13.0,
+            Font::Medium,
+            pal().ink_soft,
+        );
+        let state = super::hstudio_voicechat::state_line(v);
+        let t = p.fit(&state, cw - 120.0, 12.0, Font::Regular);
+        let tw = p.measure(&t, 12.0, Font::Regular);
+        p.text(&t, x + cw - tw, top(cy + 10.0, 12.0), 12.0, Font::Regular, pal().muted);
+    }
+    cy += 30.0;
+    let rows = [
+        "Microphone",
+        "Mute",
+        "Deafen",
+        "Voice volume",
+        "Microphone gain",
+        "Activation threshold",
+    ];
+    for (n, label) in rows.into_iter().enumerate() {
+        let r = [x, cy, cw, row_h];
+        let mid = cy + row_h / 2.0;
+        cy += row_h;
+        if !shown(r) {
+            continue;
+        }
+        if n > 0 {
+            p.rect([x, r[1], cw, 1.0], 0.0, fade(pal().rule, 0.6));
+        }
+        p.text(label, x, top(mid, 14.0), 14.0, Font::Regular, pal().ink);
+        let ui = &mut st.s.ui;
+        match n {
+            0 => {
+                let key = super::hstudio_voicechat::key_label(&v.ptt_key);
+                let ptt = format!("Push to talk ({key})");
+                segmented(
+                    ui,
+                    p,
+                    vx,
+                    mid,
+                    &[
+                        (&ptt, v.activation != "voice", Action::Voice(0)),
+                        ("Voice activation", v.activation == "voice", Action::Voice(1)),
+                    ],
+                    dt,
+                );
+            }
+            1 | 2 => {
+                let on = if n == 1 { v.muted } else { v.deafened };
+                let r = [vx, mid - 11.0, 40.0, 22.0];
+                let t = glide(ui, id("voice-toggle", n), on, dt);
+                p.rect(r, 11.0, mix(pal().plate, pal().accent, t));
+                p.rect(
+                    [r[0] + 3.0 + 18.0 * t, mid - 8.0, 16.0, 16.0],
+                    8.0,
+                    mix(pal().ink_soft, pal().ink, t),
+                );
+                ui.hits
+                    .push(([vx - 4.0, mid - 15.0, 48.0, 30.0], Action::Voice(n as u8 + 1)));
+            }
+            _ => {
+                let value = match n {
+                    3 => format!("{:.0}%", v.volume * 100.0),
+                    4 => format!("{:+.0} dB", v.gain_db),
+                    _ => format!("{:.0} dB", v.threshold_db),
+                };
+                // Down and up: Voice(4, 5) the volume, (6, 7) the gain, (8, 9) the threshold.
+                let down = 4 + 2 * (n as u8 - 3);
+                voice_stepper(ui, p, vx, mid, &value, [down, down + 1], dt);
+            }
+        }
+    }
+}
+
+/// `stepper`, with the voice chat's actions.
+fn voice_stepper(ui: &mut Ui, p: &mut P, x: f32, cy: f32, value: &str, actions: [u8; 2], dt: f32) {
+    for (i, glyph) in ["−", "+"].into_iter().enumerate() {
+        let r = [x + 92.0 * i as f32, cy - 14.0, 28.0, 28.0];
+        let hv = hover(ui, id("voice-step", usize::from(actions[i])), inside(r, ui.mouse), dt);
+        p.rect(r, 14.0, mix(fade(pal().ink, 0.08), fade(pal().ink, 0.16), hv));
+        let gw = p.measure(glyph, 15.0, Font::Medium);
+        p.text(
+            glyph,
+            r[0] + (28.0 - gw) / 2.0,
+            top(cy, 15.0),
+            15.0,
+            Font::Medium,
+            pal().ink,
+        );
+        ui.hits.push((r, Action::Voice(actions[i])));
+    }
+    let vw = p.measure(value, 13.0, Font::Mono);
+    p.text(
+        value,
+        x + 28.0 + (64.0 - vw) / 2.0,
+        top(cy, 13.0),
+        13.0,
+        Font::Mono,
+        pal().ink_soft,
+    );
 }
 
 /// Settings' Layout row, from `vx` on its middle `mid`, up to `right`: Reset
