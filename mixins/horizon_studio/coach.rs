@@ -722,6 +722,16 @@ fn using(st: &Studio) -> bool {
     ui.coach.player_busy(st.s.now) || (ui.open && ui.dragging_any())
 }
 
+/// Whether the view is the player's: they changed the code a moment ago,
+/// or hold the button down for a drag (selecting, the scroll bar, the
+/// panel's edge, the window), however long ago it began. An agent's edit
+/// then lands at once, and nothing an agent asks moves the view: a drag
+/// would go on selecting in the lines it moved to.
+fn view_held(st: &Studio) -> bool {
+    let ui = &st.s.ui;
+    ui.coach.player_editing(st.s.now) || (ui.open && ui.dragging_any())
+}
+
 /// Whether the player has a prompt or a menu open in the studio.
 fn prompted(st: &Studio) -> bool {
     let ui = &st.s.ui;
@@ -760,16 +770,16 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let create = flag(params, "create") == Some(true);
     let t = target(st, params, create)?;
     let line = line_param(params, "line")?;
-    let now = st.s.now;
     let already = st.s.editor.path.as_deref() == Some(t.path.as_path());
     if already {
         // Its tab comes forward when another file could open.
         if switch_waits(st).is_none() {
             st.s.ui.tab = Tab::Editor;
         }
-        // The view moves to the line; the player's cursor stays theirs.
+        // The view moves to the line, unless it is the player's; their
+        // cursor stays theirs.
         if let Some(n) = line
-            && !st.s.ui.coach.player_editing(now)
+            && !view_held(st)
         {
             show_line(st, n, false);
         }
@@ -1193,7 +1203,7 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     let now = st.s.now;
     let ui = &st.s.ui;
     let seen = ui.open && ui.tab == Tab::Editor && !ui.collapsed;
-    let hands_off = ui.coach.player_editing(now);
+    let hands_off = view_held(st);
     let animated = seen && !hands_off && ui.look.motion && flag(params, "typing") != Some(false);
     let page = ui.page.max(1);
     let player_edits = match &ui.coach.unsaved {
@@ -2960,7 +2970,7 @@ pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -
     // the keys in another of the panel's tabs or a prompt or a menu is up;
     // the Editor tab comes forward when another file could open.
     let now = st.s.now;
-    let (prompt, editing) = (prompted(st), st.s.ui.coach.player_editing(now));
+    let (prompt, held) = (prompted(st), view_held(st));
     let busy = prompt || using(st);
     let ui = &mut st.s.ui;
     if ui.look.theme().layout == super::hstudio_theme::Layout::Studio
@@ -2976,7 +2986,7 @@ pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -
     if !busy {
         ui.tab = Tab::Editor;
     }
-    show_step(st, game, 0, !editing);
+    show_step(st, game, 0, !held);
     if !st.s.ui.open {
         st.s.toast(format!("{} started a lesson in the editor: \"{title}\"", by.name));
     }

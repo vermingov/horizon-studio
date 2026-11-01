@@ -538,6 +538,60 @@ fn a_drag_held_or_a_prompt_up_keeps_the_players_file_and_tab() {
 }
 
 #[test]
+fn a_drag_held_keeps_the_view_under_it() {
+    // The player drags a selection from line 2 to line 5, slowly. Meanwhile
+    // an agent's edit far below, a lesson there and open_script of a line
+    // there leave the view where it is (the edit lands at once, as while
+    // the player types), so the drag selects the lines the player sees.
+    let src: String = (1..=80).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-drag-view", "dr", &src);
+    let (x, y) = text_at(&game, "v2");
+    let (_, y5) = text_at(&game, "v5");
+    let drag_to = |st: &mut Studio, game: &mut FakeGame, k: usize| {
+        st.s.now += 0.1;
+        handle(st, game, Input::Mouse(x + 1.0, y + 2.0 + (y5 - y) * k as f32 / 30.0));
+    };
+    handle(&mut st, &mut game, Input::Mouse(x + 1.0, y + 2.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    for k in 1..=25 {
+        drag_to(&mut st, &mut game, k);
+    }
+    for (method, params) in [
+        (
+            "edit",
+            json!({ "start_line": 70, "end_line": 70, "new_text": "local v70 = 700" }),
+        ),
+        (
+            "lesson",
+            json!({ "title": "Down", "steps": [{ "start_line": 70, "note": "Down here." }] }),
+        ),
+        ("open", json!({ "id": "dr", "line": 70 })),
+    ] {
+        ask(&mut st, &mut game, method, params).unwrap();
+        for _ in 0..3 {
+            run_for(&mut st, &mut game, 0.05);
+            redraw(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, 0, "{method}: the view stays");
+        assert!(st.s.ui.dragging_any(), "the drag goes on");
+    }
+    assert_eq!(st.s.editor.lines[69], "local v70 = 700");
+    for k in 26..=30 {
+        drag_to(&mut st, &mut game, k);
+    }
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    let ((r1, _), (r2, _)) = st.s.editor.selection().expect("a selection");
+    assert_eq!((r1, r2), (1, 4), "lines 2 to 5");
+}
+
+#[test]
 fn a_file_the_editor_couldnt_read_is_never_read_changed_or_saved_through_it() {
     let mut game = FakeGame::new("coach-unreadable");
     let mut st = studio(&mut game);

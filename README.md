@@ -223,16 +223,16 @@ game) opens any script, reads it as you have it, unsaved edits included, and typ
 own with its name on a flag: the code it replaces shows in red a moment, then the new code comes in, in 2 s at most.
 Your cursor and selection keep their place, and the view follows the agent until you scroll. Any key or click puts
 the rest of its change in at once, so your key lands where you type; Ctrl+Z takes a whole change back, and Ctrl+Y
-puts it back. With Motion off, or while you are typing, its changes land at once. It never switches your file or tab
-while you use the studio: a change to a file you don't have open is written to disk (the mod reloads), and a note
-over the code shows it. Its changes stay unsaved until it saves them or you press Ctrl+S (with the studio closed they
-are saved at once, unless the file has unsaved edits of yours); nothing you are typing is saved for you, and a file
-changed on disk meanwhile isn't written over. Asking the game's own agent is the one exception: Enter in its panel,
-the menus' Ask, Explain and Fix, and a lesson's Check save the file you have open first, so its turn starts from
-what you see (the mod reloads with it, half-typed code too). When the game's own agent finishes a turn
-well, its unsaved edits are saved; otherwise the panel says they aren't, and how to keep them or take them back.
-Each thing it did in the editor has a line in the panel (*Typed lines 12-19 into timer.lua*), and **Show** on it
-goes to that code.
+puts it back. With Motion off, or while you are typing or dragging a selection, its changes land at once. It never
+switches your file or tab while you use the studio: a change to a file you don't have open is written to disk (the
+mod reloads), and a note over the code shows it. Its changes stay unsaved until it saves them or you press Ctrl+S
+(with the studio closed they are saved at once, unless the file has unsaved edits of yours); nothing you are typing
+is saved for you, and a file changed on disk meanwhile isn't written over. Asking the game's own agent is the one
+exception: Enter in its panel, the menus' Ask, Explain and Fix, and a lesson's Check save the file you have open
+first, so its turn starts from what you see (the mod reloads with it, half-typed code too). When the game's own agent
+finishes a turn well, its unsaved edits are saved; otherwise the panel says they aren't, and how to keep them or take
+them back. Each thing it did in the editor has a line in the panel (*Typed lines 12-19 into timer.lua*), and **Show**
+on it goes to that code.
 
 **It points at code.** Ask *why does my timer never stop?* and the agent can highlight the lines at fault, in red
 for an error (amber for a warning, green for something right, the accent for a note), with a note beside them: the
