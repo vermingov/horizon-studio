@@ -558,7 +558,8 @@ fn a_modules_files_are_module_scripts_under_script() {
         .into_iter()
         .map(|(_, t)| t)
         .collect();
-    assert_eq!(out, ["3"]);
+    // The kit's three and CoreGui's Constants, which Roblox's client loaded.
+    assert_eq!(out, ["4"]);
 }
 
 #[test]

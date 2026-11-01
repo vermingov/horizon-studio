@@ -1350,6 +1350,44 @@ impl Ctx<'_> {
     /// A script that runs, as the mod it is in and the function it runs:
     /// a running mod's `script` (its main file), or the ModuleScript of a
     /// file of a running module that `require` has run (the file).
+    /// The environment Roblox's own script `id` runs in: `script` is it, and
+    /// the rest is the game's globals.
+    fn script_env(&mut self, id: Id) -> Value {
+        if let Some((_, v)) = self.s.rbx.script_envs.iter().find(|(i, _)| *i == id) {
+            return v.clone();
+        }
+        let mut env = Table::new();
+        env.set_str("script", self.s.rbx.value(id));
+        if let Some(renv) = self.s.renv.clone() {
+            let mut mt = Table::new();
+            mt.set_str("__index", Value::Table(renv));
+            if let Value::Table(m) = Value::table(mt) {
+                env.meta = Some(m);
+            }
+        }
+        let v = Value::table(env);
+        self.s.rbx.script_envs.push((id, v.clone()));
+        v
+    }
+    /// A script's Source compiled to a function, in its own environment
+    /// (none when it has no source or the source doesn't compile).
+    fn compile_source(&mut self, lua: &mut Lua, id: Id) -> Option<Value> {
+        let rbx = &self.s.rbx;
+        let n = rbx.inst(id);
+        if !is_a(n.class, "LuaSourceContainer") {
+            return None;
+        }
+        let src = match n.props.iter().find(|(k, _)| **k == "Source").map(|(_, v)| v) {
+            Some(v) if v.as_bytes().is_some_and(|b| !b.is_empty()) => v.as_bytes().map(<[u8]>::to_vec),
+            _ => n.extra.get("Source").and_then(Value::as_bytes).map(<[u8]>::to_vec),
+        }
+        .filter(|b| !b.is_empty())?;
+        let chunk = rbx.full_name(id);
+        let Value::Table(env) = self.script_env(id) else {
+            return None;
+        };
+        lua.load_bytes(&src, &chunk, &env).ok()
+    }
     fn running_script(&self, id: Id) -> Option<(usize, Value)> {
         self.s
             .mods
@@ -1479,9 +1517,12 @@ impl Ctx<'_> {
                 let p = sandboxed(lua, &self.workspace(), &path, fname)?;
                 let src = std::fs::read(&p).map_err(|_| lua.rt_error(format!("{fname}: '{path}' does not exist")))?;
                 let env = super::hstudio_exec::caller_env(lua).ok_or_else(|| lua.rt_error("no environment"))?;
-                let f = lua
-                    .load_bytes(&src, &format!("@{path}"), &env)
-                    .map_err(|e| lua.rt_error(e))?;
+                let f = match lua.load_bytes(&src, &format!("@{path}"), &env) {
+                    Ok(f) => f,
+                    // As loadstring: loadfile gives nil and the error.
+                    Err(e) if id == 2009 => return Ok(vec![Value::Nil, Value::str(&e)]),
+                    Err(e) => return Err(lua.rt_error(e)),
+                };
                 if id == 2009 {
                     return one(f);
                 }
@@ -1507,6 +1548,7 @@ impl Ctx<'_> {
                     // A module's file: its own environment (`script` is its ModuleScript).
                     Some((i, Value::Func(f))) if self.s.mods[i].script != Some(sid) => one(Value::Table(f.env())),
                     Some((i, _)) => one(self.s.mods[i].env.clone().map_or(Value::Nil, Value::Table)),
+                    None if self.s.rbx.core_scripts.contains(&sid) => one(self.script_env(sid)),
                     None => Err(lua.rt_error("getsenv: the script is not running")),
                 }
             }
@@ -1726,21 +1768,36 @@ impl Ctx<'_> {
                     .values()
                     .filter(|i| !i.destroyed && is_a(i.class, "LuaSourceContainer"))
                     .map(|i| i.id)
-                    .filter(|&i| id == 2060 || self.running_script(i).is_some())
+                    .filter(|&i| id == 2060 || self.running_script(i).is_some() || rbx.core_scripts.contains(&i))
                     .collect();
                 ids.sort_unstable();
                 one(rbx.list(&ids))
             }
             2062 => {
                 let rbx = &self.s.rbx;
-                let ids: Vec<Id> = rbx.loaded_modules.iter().map(|m| m.0).collect();
+                // Roblox's own modules ran when the client started.
+                let mut ids: Vec<Id> = rbx
+                    .core_scripts
+                    .iter()
+                    .copied()
+                    .filter(|&i| !rbx.inst(i).destroyed && rbx.inst(i).class.name == "ModuleScript")
+                    .collect();
+                for &(m, _) in &rbx.loaded_modules {
+                    if !ids.contains(&m) {
+                        ids.push(m);
+                    }
+                }
                 one(rbx.list(&ids))
             }
             // Every thread here is the executor's: no game script calls.
             2063 | 2067 => one(Value::Nil),
             2064..=2066 => {
                 let sid = inst(self, lua, &args, 0, fname)?;
-                let main = self.running_script(sid).map(|(_, f)| f);
+                let mut main = self.running_script(sid).map(|(_, f)| f);
+                if main.is_none() {
+                    // A script that isn't running: what its Source compiles to.
+                    main = self.compile_source(lua, sid);
+                }
                 match (id, main) {
                     (2064, Some(Value::Func(c))) => {
                         one(Value::Func(Rc::new(super::hstudio_lua::Closure::from_body(c.body()))))
@@ -1767,7 +1824,13 @@ impl Ctx<'_> {
                 if let Some((_, v)) = n.props.iter().find(|(k, _)| **k == prop) {
                     return Ok(vec![v.clone(), Value::Bool(false)]);
                 }
-                Ok(vec![n.extra.get(&prop).cloned().unwrap_or_default(), Value::Bool(true)])
+                let v = n
+                    .extra
+                    .get(&prop)
+                    .cloned()
+                    .or_else(|| super::hstudio_rbx::hidden_default(n.class.name, &prop).map(Value::Num))
+                    .unwrap_or_default();
+                Ok(vec![v, Value::Bool(true)])
             }
             2071 => {
                 let i = inst(self, lua, &args, 0, fname)?;
@@ -1793,7 +1856,8 @@ impl Ctx<'_> {
                 let n = rbx.inst_mut(i);
                 let declared =
                     matches!(prop.as_str(), "Name" | "Parent" | "ClassName") || n.props.keys().any(|k| **k == prop);
-                let hidden = n.extra.contains_key(&prop);
+                let hidden =
+                    n.extra.contains_key(&prop) || super::hstudio_rbx::hidden_default(n.class.name, &prop).is_some();
                 if !declared && !hidden {
                     return one(Value::Nil);
                 }

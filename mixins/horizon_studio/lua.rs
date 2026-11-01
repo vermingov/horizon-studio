@@ -1454,7 +1454,7 @@ struct Parser {
     stack_base: usize,
     /// Globals the chunk assigns to (they are read with GetGlobal, not as imports).
     written: HashSet<Str>,
-    /// The chunk names getfenv or setfenv: no imports at all.
+    /// The chunk names getfenv or setfenv: closures aren't shared.
     fenv: bool,
 }
 
@@ -3073,7 +3073,10 @@ impl<'a> Compiler<'a> {
         }
     }
     fn can_import(&self, root: &Str) -> bool {
-        !self.fenv && !self.written.contains(root)
+        // As Luau, getfenv and setfenv in the chunk don't stop imports (their
+        // constants stay in the function's): an import is looked up in the
+        // function's environment as it is then, each time.
+        !self.written.contains(root)
     }
     /// A global path of up to three names (`a`, `a.b`, `a.b.c`) in R[dest].
     fn import(&mut self, names: &[&Str], dest: usize) {

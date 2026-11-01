@@ -255,6 +255,7 @@ pub fn build_character(rbx: &mut Rbx, name: &str) -> Rig {
     for id in [model, root, head, humanoid].into_iter().chain(limbs) {
         rbx.inst_mut(id).locked = true;
     }
+    rbx.add_animate(model);
     Rig {
         model,
         root,

@@ -552,8 +552,11 @@ fn inactive(lua: &Lua, p: &Rc<Proto>, env: TableRef) -> Value {
     Value::Func(c)
 }
 
-fn inactive_call(lua: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {
-    Err(lua.rt_error("attempt to call an inactive proto (debug.getproto with activated = true gives live ones)"))
+/// An inactive proto called: it returns nothing, as executors' do (UNC's
+/// "proto return values are disabled"); `debug.getproto(f, i, true)` gives
+/// ones that run.
+fn inactive_call(_: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {
+    Ok(Vec::new())
 }
 
 fn d_getprotos(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
@@ -573,12 +576,18 @@ fn d_getproto(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> 
         .cloned()
         .ok_or_else(|| bad_arg(lua, 1, "getproto", "proto index out of range"))?;
     if args.get(2).is_some_and(Value::truthy) {
-        let live: Vec<Value> = lua
+        let mut live: Vec<Value> = lua
             .live_closures()
             .into_iter()
             .filter(|f| Rc::ptr_eq(&f.proto(), &p) && f.redirect().is_none())
             .map(Value::Func)
             .collect();
+        // None made yet (the function around it never ran): one that runs,
+        // its upvalues nil, as executors give.
+        if live.is_empty() {
+            let upvals = p.upvals.iter().map(|_| Rc::new(RefCell::new(Value::Nil))).collect();
+            live.push(Value::Func(Rc::new(Closure::new(p.clone(), upvals, c.env()))));
+        }
         return one(Value::table(Table::from_list(live)));
     }
     one(inactive(lua, &p, c.env()))

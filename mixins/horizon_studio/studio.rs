@@ -2495,7 +2495,8 @@ impl Studio {
         // Roblox's own globals go in its environment; the rest are the studio's.
         let roblox = |table: &str, name: &str| {
             matches!(table, "task" | "game")
-                || (table.is_empty() && matches!(name, "wait" | "spawn" | "delay" | "tick" | "time" | "warn"))
+                || (table.is_empty()
+                    && matches!(name, "wait" | "spawn" | "delay" | "tick" | "time" | "warn" | "require"))
         };
         for (table, name, id, _) in API {
             let f = Native::host(name, *id);
@@ -4922,16 +4923,19 @@ impl Ctx<'_> {
         if let Some((_, v)) = rbx.loaded_modules.iter().find(|(id, _)| *id == m) {
             return Ok(vec![v.clone()]);
         }
-        let Some(src) = rbx
-            .inst(m)
-            .extra
-            .get("Source")
-            .and_then(Value::as_bytes)
+        let n = rbx.inst(m);
+        let declared = n
+            .props
+            .iter()
+            .find(|(k, _)| **k == "Source")
+            .and_then(|(_, v)| v.as_bytes());
+        let Some(src) = declared
+            .filter(|b| !b.is_empty())
+            .or_else(|| n.extra.get("Source").and_then(Value::as_bytes))
+            .filter(|b| !b.is_empty())
             .map(<[u8]>::to_vec)
         else {
-            return Err(lua.rt_error(
-                "require: the ModuleScript has no source (set it with sethiddenproperty(module, \"Source\", code))",
-            ));
+            return Err(lua.rt_error("require: the ModuleScript has no source (set its Source to the code)"));
         };
         let chunk = rbx.full_name(m);
         let env = super::hstudio_exec::caller_env(lua).ok_or_else(|| lua.rt_error("require: no environment"))?;

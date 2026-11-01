@@ -686,7 +686,7 @@ pub static CLASSES: &[C] = &[
         &["Completed"],
     ),
     abstract_class("Tween", "TweenBase", &[ro("Instance", Obj, D::Nil)], &[]),
-    abstract_class("LuaSourceContainer", "Instance", &[], &[]),
+    abstract_class("LuaSourceContainer", "Instance", &[p("Source", Str, S(""))], &[]),
     abstract_class(
         "BaseScript",
         "LuaSourceContainer",
@@ -1081,7 +1081,19 @@ pub static CLASSES: &[C] = &[
     kept("SpotLight", "Instance"),
     kept("SurfaceLight", "Instance"),
     kept("ParticleEmitter", "Instance"),
-    kept("Fire", "Instance"),
+    class(
+        "Fire",
+        "Instance",
+        &[
+            p("Size", Num, N(5.0)),
+            p("Heat", Num, N(9.0)),
+            p("Color", K::C3, Rgb(236.0, 139.0, 70.0)),
+            p("SecondaryColor", K::C3, Rgb(139.0, 80.0, 55.0)),
+            p("Enabled", Bool, B(true)),
+            p("TimeScale", Num, N(1.0)),
+        ],
+        &[],
+    ),
     kept("Smoke", "Instance"),
     kept("Sparkles", "Instance"),
     kept("Beam", "Instance"),
@@ -1546,6 +1558,11 @@ pub struct Rbx {
     pub lua_methods: Vec<(&'static str, &'static str, Value)>,
     /// ModuleScripts `require` ran, and what they returned.
     pub loaded_modules: Vec<(Id, Value)>,
+    /// Roblox's own scripts the place has from the start: every character's
+    /// Animate and CoreGui's RobloxGui modules. They count as running, and
+    /// `getsenv` gives each its environment (`script_envs`).
+    pub core_scripts: Vec<Id>,
+    pub script_envs: Vec<(Id, Value)>,
     /// The studio's workspace folder (getcustomasset's files), and the images
     /// the GUI and the Drawings draw, on the HUD or on the GUI's own screen.
     pub workspace_dir: std::path::PathBuf,
@@ -1669,6 +1686,8 @@ impl Rbx {
             next_drawing: 1,
             lua_methods: Vec::new(),
             loaded_modules: Vec::new(),
+            core_scripts: Vec::new(),
+            script_envs: Vec::new(),
             workspace_dir: std::path::PathBuf::new(),
             screen_images: super::hstudio_sunc::ImageCache::default(),
             gui_epoch: 1,
@@ -1698,6 +1717,7 @@ impl Rbx {
         self.workspace = self.services["Workspace"];
         self.players = self.services["Players"];
         self.core_gui = self.services["CoreGui"];
+        self.core_modules();
         let camera = self.make("Camera", None);
         self.camera = camera;
         let _ = self.set_parent(camera, Some(self.workspace));
@@ -2912,6 +2932,101 @@ fn env_snapshot(env: &mut dyn Env) -> Option<Snapshot> {
 }
 
 impl Rbx {
+    /// CoreGui.RobloxGui and the modules under it that scripts look for
+    /// (Modules.Common.Constants), as Roblox's client has them.
+    fn core_modules(&mut self) {
+        let gui = self.make("ScreenGui", None);
+        self.inst_mut(gui).name = "RobloxGui".into();
+        let _ = self.set_parent(gui, Some(self.core_gui));
+        let modules = self.make("Folder", None);
+        self.inst_mut(modules).name = "Modules".into();
+        let _ = self.set_parent(modules, Some(gui));
+        let common = self.make("Folder", None);
+        self.inst_mut(common).name = "Common".into();
+        let _ = self.set_parent(common, Some(modules));
+        let constants = self.make("ModuleScript", None);
+        self.inst_mut(constants).name = "Constants".into();
+        self.raw_set(constants, "Source", Value::str(CONSTANTS_SOURCE));
+        let _ = self.set_parent(constants, Some(common));
+        for id in [gui, modules, common, constants] {
+            self.lock(id);
+        }
+        self.core_scripts.push(constants);
+    }
+    /// Adds Roblox's Animate script to a character.
+    pub fn add_animate(&mut self, model: Id) {
+        let animate = self.make("LocalScript", None);
+        self.inst_mut(animate).name = "Animate".into();
+        self.raw_set(animate, "Source", Value::str(ANIMATE_SOURCE));
+        let _ = self.set_parent(animate, Some(model));
+        self.core_scripts.push(animate);
+    }
+}
+
+/// The source of CoreGui's Modules.Common.Constants.
+const CONSTANTS_SOURCE: &str = r#"local Constants = {
+	COLORS = {
+		SLATE = Color3.fromRGB(35, 37, 39),
+		FLINT = Color3.fromRGB(57, 59, 61),
+		GRAPHITE = Color3.fromRGB(101, 102, 104),
+		PUMICE = Color3.fromRGB(189, 190, 190),
+		WHITE = Color3.fromRGB(255, 255, 255),
+	},
+	ERROR_PROMPT_HEIGHT = { Default = 236, XBox = 180 },
+	ERROR_PROMPT_MIN_WIDTH = { Default = 320, XBox = 400 },
+	ERROR_PROMPT_MAX_WIDTH = { Default = 400, XBox = 400 },
+	ERROR_TITLE_FRAME_HEIGHT = { Default = 50 },
+	SPLIT_LINE_THICKNESS = 1,
+	BUTTON_CELL_PADDING = 10,
+	BUTTON_HEIGHT = 36,
+	SIDE_PADDING = 20,
+	LAYOUT_PADDING = 20,
+	SIDE_MARGIN = 20,
+	PRIMARY_BUTTON_TEXTURE = "rbxasset://textures/ui/ErrorPrompt/PrimaryButton.png",
+	SECONDARY_BUTTON_TEXTURE = "rbxasset://textures/ui/ErrorPrompt/SecondaryButton.png",
+	SHIMMER_TEXTURE = "rbxasset://textures/ui/LuaApp/graphic/shimmer_wide.png",
+	OVERLAY_TEXTURE = "rbxasset://textures/ui/ErrorPrompt/ShimmerOverlay.png",
+}
+return Constants
+"#;
+
+/// The source of a character's Animate script (its first lines, as the
+/// client has them: it plays the character's animations).
+const ANIMATE_SOURCE: &str = r#"local Character = script.Parent
+local Humanoid = Character:WaitForChild("Humanoid")
+local pose = "Standing"
+local currentAnim = ""
+local currentAnimInstance = nil
+local currentAnimTrack = nil
+local animTable = {}
+local animNames = {
+	idle = { { id = "http://www.roblox.com/asset/?id=180435571", weight = 9 } },
+	walk = { { id = "http://www.roblox.com/asset/?id=180426354", weight = 10 } },
+	run = { { id = "run.xml", weight = 10 } },
+	jump = { { id = "http://www.roblox.com/asset/?id=125750702", weight = 10 } },
+	fall = { { id = "http://www.roblox.com/asset/?id=180436148", weight = 10 } },
+	climb = { { id = "http://www.roblox.com/asset/?id=180436334", weight = 10 } },
+	sit = { { id = "http://www.roblox.com/asset/?id=178130996", weight = 10 } },
+}
+function onRunning(speed)
+	if speed > 0.01 then
+		pose = "Running"
+	else
+		pose = "Standing"
+	end
+end
+function onJumping()
+	pose = "Jumping"
+end
+function onDied()
+	pose = "Dead"
+end
+Humanoid.Died:Connect(onDied)
+Humanoid.Running:Connect(onRunning)
+Humanoid.Jumping:Connect(onJumping)
+"#;
+
+impl Rbx {
     /// Brings a property the game decides up to date before it is read.
     fn refresh(&mut self, id: Id, key: &str, snap: Option<&Snapshot>) {
         let Some(snap) = snap else { return };
@@ -3057,6 +3172,21 @@ fn newindex(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Result<(), Thro
             rbx.full_name(id)
         ))),
     }
+}
+
+/// Hidden properties (not scriptable, `gethiddenproperty` reads them) and
+/// their defaults, by class: Roblox's serialized names.
+pub const HIDDEN: &[(&str, &str, f64)] = &[
+    ("Fire", "size_xml", 5.0),
+    ("Fire", "heat_xml", 9.0),
+    ("Smoke", "size_xml", 1.0),
+    ("Smoke", "opacity_xml", 0.5),
+    ("Smoke", "riseVelocity_xml", 1.0),
+];
+
+/// A hidden property's default for an instance of `class`.
+pub fn hidden_default(class: &str, prop: &str) -> Option<f64> {
+    HIDDEN.iter().find(|(c, p, _)| *c == class && *p == prop).map(|h| h.2)
 }
 
 impl Rbx {

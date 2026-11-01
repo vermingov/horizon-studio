@@ -387,5 +387,5 @@ pub fn mod_index(st: &Studio, id: &str) -> usize {
     st.s.mods
         .iter()
         .position(|m| m.id == id)
-        .unwrap_or_else(|| panic!("no mod {id}"))
+        .unwrap_or_else(|| panic!("no mod {id}: {:?}", log(st)))
 }

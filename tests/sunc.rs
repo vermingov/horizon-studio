@@ -250,11 +250,8 @@ fn debug_library() {
     );
     assert!(p[0].starts_with("true\ttrue\tfalse\t"), "{}", p[0]);
     assert_eq!(p[1], "Players");
-    assert!(
-        p[2].starts_with("proto_1\tproto_2\tfalse\t") && p[2].contains("inactive proto"),
-        "{}",
-        p[2]
-    );
+    // An inactive proto runs nothing and returns nothing, as executors' (UNC).
+    assert_eq!(p[2], "proto_1\tproto_2\ttrue");
     assert_eq!(p[3], "true\thi");
     // The middle pcall keeps only its first result (false) in the list.
     assert!(
@@ -406,7 +403,12 @@ fn filesystem() {
         "{}",
         p[10]
     );
-    assert!(p[11].starts_with("false\t"), "{}", p[11]);
+    // loadfile gives nil and the error, as loadstring does.
+    assert!(
+        p[11].starts_with("true\tnil\t") && p[11].contains("syntax error"),
+        "{}",
+        p[11]
+    );
     assert_eq!(p[12], "rbxasset://horizon-studio/pic.png");
     // Everything stayed in the studio's workspace folder.
     assert!(st.s.dir.join("workspace").join("file4.txt").is_file());

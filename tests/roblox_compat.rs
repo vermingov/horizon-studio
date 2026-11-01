@@ -190,3 +190,31 @@ fn fly_noclip_and_speed_move_the_player_in_the_client_with_no_command() {
     // Never a command or a chat line.
     assert!(game.sent.is_empty(), "{:?}", game.sent);
 }
+
+#[test]
+fn roblox_s_own_scripts_are_there_for_the_script_functions() {
+    let p = run(
+        "compat-core",
+        r#"
+        local module = game:GetService("CoreGui").RobloxGui.Modules.Common.Constants
+        local constants = getrenv().require(module)
+        local generated = getscriptclosure(module)()
+        print(constants ~= generated, constants.BUTTON_HEIGHT == generated.BUTTON_HEIGHT)
+        local loaded = false
+        for _, m in getloadedmodules() do if m == module then loaded = true end end
+        print(loaded)
+        local animate = game.Players.LocalPlayer.Character.Animate
+        print(animate.ClassName, getsenv(animate).script == animate, type(getscriptbytecode(animate)))
+        print(type(loadstring(getscriptbytecode(animate))))
+        local copy = animate:Clone()
+        local hash = getscripthash(copy)
+        copy.Source = "print('Hello, world!')"
+        print(hash ~= getscripthash(copy), getscripthash(copy) == getscripthash(copy))
+        "#,
+        0.8,
+    );
+    assert_eq!(
+        p,
+        ["true\ttrue", "true", "LocalScript\ttrue\tstring", "nil", "true\ttrue"]
+    );
+}

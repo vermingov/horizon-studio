@@ -1029,7 +1029,14 @@ fn a_destroyed_text_box_takes_no_focus() {
         assert_eq!(st.s.rbx.pointer.focus, None, "button {button}");
         assert!(st.s.screen.is_none(), "button {button}: the game has its keys back");
         assert!(
-            st.s.rbx.layout.as_ref().is_some_and(|l| l.node_inst.is_empty()),
+            // Only CoreGui's own RobloxGui and its modules are left.
+            st.s.rbx.layout.as_ref().is_some_and(|l| l.node_inst.iter().all(|&i| [
+                "RobloxGui",
+                "Modules",
+                "Common",
+                "Constants"
+            ]
+            .contains(&st.s.rbx.inst(i).name.as_str()))),
             "the GUI went"
         );
     }
