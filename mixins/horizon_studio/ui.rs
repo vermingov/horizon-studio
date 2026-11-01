@@ -4179,10 +4179,12 @@ fn finish_naming(st: &mut Studio, game: &mut dyn GameApi) {
     }
 }
 
-/// The models offered for an agent ("claude", "omp" or "custom"): a label
-/// and the name passed with --model (None: the agent's own default). Claude
-/// Code takes these aliases for its newest models; omp's names depend on
-/// its providers, so it offers its default and a name typed in.
+/// The models offered for an agent ("claude", "omp", "opencode" or "custom"):
+/// a label and the name passed with --model (None: the agent's own default).
+/// Claude Code takes these aliases for its newest models; omp's and
+/// OpenCode's names depend on their providers (OpenCode's are
+/// provider/model, such as anthropic/claude-sonnet-4-5), so they offer their
+/// default and a name typed in.
 pub fn model_choices(agent_id: &str) -> &'static [(&'static str, Option<&'static str>)] {
     match agent_id {
         "claude" => &[
@@ -4192,7 +4194,7 @@ pub fn model_choices(agent_id: &str) -> &'static [(&'static str, Option<&'static
             ("Haiku", Some("haiku")),
             ("Fable", Some("fable")),
         ],
-        "omp" => &[("Default", None)],
+        "omp" | "opencode" => &[("Default", None)],
         _ => &[],
     }
 }
@@ -4225,7 +4227,7 @@ fn models(st: &mut Studio) -> &mut std::collections::HashMap<String, String> {
     st.s.ui.agent.models.get_or_insert_with(Default::default)
 }
 
-/// The id of the agent in use ("claude", "omp", "custom"), if one was found.
+/// The id of the agent in use ("claude", "omp", "opencode", "custom"), if one was found.
 pub fn agent_id(st: &mut Studio) -> Option<String> {
     let dir = st.s.dir.clone();
     st.s.ui.agent.spec(&dir).map(|s| s.id)
@@ -4562,7 +4564,7 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
             game.set_clipboard(super::hstudio_link::SETUP_PROMPT);
             st.s.ui.copied_at = Some(st.s.now);
             st.s.toast = Some((
-                "Copied the AI setup prompt: paste it into Claude Code, omp or another agent".into(),
+                "Copied the AI setup prompt: paste it into Claude Code, OpenCode, omp or another agent".into(),
                 st.s.now + 3.5,
             ));
         }
@@ -4884,7 +4886,7 @@ pub fn agent_ask(st: &mut Studio, text: &str) {
     }) else {
         st.s.ui.agent.say(
             AgentLineKind::Error,
-            "No agent found: install Claude Code (claude) or omp and set it up with the AI setup prompt, or name one in agent.txt in the studio's folder.",
+            "No agent found: install Claude Code (claude), OpenCode (opencode) or omp and set it up with the AI setup prompt, or name one in agent.txt in the studio's folder.",
             now,
         );
         return;
@@ -5040,7 +5042,7 @@ pub fn agent_next(st: &mut Studio) {
         pane.chosen = 0;
         pane.say(
             AgentLineKind::Error,
-            "No agent found: install Claude Code (claude) or omp, or name one in agent.txt in the studio's folder.",
+            "No agent found: install Claude Code (claude), OpenCode (opencode) or omp, or name one in agent.txt in the studio's folder.",
             now,
         );
         return;
@@ -5115,7 +5117,7 @@ pub fn agent_rescan(st: &mut Studio) {
         pane.chosen = 0;
         pane.say(
             AgentLineKind::Error,
-            "No agent found: install Claude Code (claude) or omp, or name one in agent.txt in the studio's folder.",
+            "No agent found: install Claude Code (claude), OpenCode (opencode) or omp, or name one in agent.txt in the studio's folder.",
             now,
         );
         return;

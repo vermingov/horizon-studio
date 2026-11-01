@@ -343,6 +343,7 @@ fn echo() -> horizon_studio::game::hstudio_agent::AgentSpec {
         program: "/bin/echo".into(),
         args: vec!["{prompt}".into()],
         json: false,
+        env: Vec::new(),
     }
 }
 

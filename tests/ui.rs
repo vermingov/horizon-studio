@@ -1075,6 +1075,7 @@ fn the_agent_answers_in_its_panel() {
         program: "/bin/echo".into(),
         args: vec!["{prompt}".into()],
         json: false,
+        env: Vec::new(),
     }]);
     let i = mod_index(&st, "hello");
     st.edit_mod(i);
@@ -1131,6 +1132,7 @@ fn the_agent_hears_the_scratch_file_is_open() {
         program: "/bin/echo".into(),
         args: vec!["{prompt}".into()],
         json: false,
+        env: Vec::new(),
     }]);
     assert_eq!(st.s.editor.title, "scratch.lua");
     st.s.editor.set_text("print(plyer.pos())\n");
@@ -3714,6 +3716,7 @@ fn the_agent_tab_menu_chooses_an_agent_and_starts_over() {
         program: "/bin/echo".into(),
         args: vec!["{prompt}".into()],
         json: false,
+        env: Vec::new(),
     };
     st.s.ui.agent.agents = Some(vec![echo, AgentSpec::claude(std::path::PathBuf::from("claude"))]);
     st.s.ui.agent.session = Some("before".into());
@@ -3965,6 +3968,7 @@ fn explain_this_line_asks_the_agent_with_the_line() {
         program: "/bin/echo".into(),
         args: vec!["{prompt}".into()],
         json: false,
+        env: Vec::new(),
     }]);
     st.s.ui.dock.set_hidden(Pane::Agent, true);
     redraw(&mut st, &mut game);
@@ -4258,6 +4262,7 @@ fn a_failed_mods_menu_copies_its_error_and_asks_the_agent_to_fix_it() {
         program: "/bin/echo".into(),
         args: vec!["{prompt}".into()],
         json: false,
+        env: Vec::new(),
     }]);
     st.create_module(&mut game, "Kit").unwrap();
     let dir = game.mods_dir().join("kit");
@@ -4324,6 +4329,7 @@ fn the_agents_line_sends_and_stops_from_its_menu() {
         program: "/bin/sleep".into(),
         args: vec!["5".into()],
         json: false,
+        env: Vec::new(),
     }]);
     st.s.ui.dock.activate(Pane::Agent);
     redraw(&mut st, &mut game);
@@ -4366,6 +4372,7 @@ fn the_agents_slash_commands_start_over_stop_and_help() {
         program: "/bin/sleep".into(),
         args: vec!["30".into()],
         json: false,
+        env: Vec::new(),
     }]);
     st.s.ui.dock.activate(Pane::Agent);
     st.s.ui.focus = Pane::Agent;

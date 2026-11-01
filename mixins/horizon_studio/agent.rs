@@ -78,6 +78,27 @@
 //   task), which with no UI fails ("requires approval but no interactive UI
 //   available"): the agent can't run commands, as with Claude Code.
 //
+// OpenCode (sst/opencode, opencode.ai/docs/cli; its run command,
+// packages/cli/src/run/noninteractive.ts; checked 2026-11-01):
+// - `opencode run <message> --format json` answers one prompt and exits,
+//   printing one JSON object per line: `{"type","timestamp","sessionID",...}`
+//   with type `step_start`, `text` (`"part":{"type":"text","text"}`, a whole
+//   text part), `reasoning`, `tool_use` (`"part":{"type":"tool","tool","id"?,
+//   "callID"?,"state":{"status":"completed"|"error","input","output"|"error",
+//   "title"}}`, sent once the tool has run), `step_finish` (`"part":{"reason",
+//   "cost","tokens"}`) and `error` (`"error":{"type"|"name","message" or
+//   "data":{"message"}}`). There is no result line: the exit status says how
+//   it went. Without a message argument it reads the prompt on stdin.
+// - `--session <id>` continues a session; `--model provider/model`.
+// - MCP tools are named `<server>_<tool>`: `horizon-studio_write_mod`;
+//   `horizon-studio-mcp install` adds the server to ~/.config/opencode/
+//   opencode.json (`"mcp":{"horizon-studio":{"type":"local","command":[...]}}`).
+// - Permissions: most tools are allowed by default, and in `run` a tool that
+//   would ask is rejected (nobody can answer). OPENCODE_CONFIG_CONTENT, inline
+//   JSON merged over the person's config, denies `bash` and `edit` here: as
+//   with Claude Code, the agent works through Horizon Studio's tools and reads,
+//   but neither runs commands nor edits files itself.
+//
 // A custom agent: `agent.txt` in the studio's folder, its first line
 // optionally `name: My agent`, then a command line such as
 // `aider --message {prompt}` (split like a shell's, with quotes); its stdout
@@ -109,7 +130,7 @@ pub const SERVER: &str = "horizon-studio";
 /// An agent the game can run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentSpec {
-    /// "claude", "omp" or "custom".
+    /// "claude", "omp", "opencode" or "custom".
     pub id: String,
     /// Its name for the player: "Claude Code".
     pub name: String,
@@ -120,8 +141,11 @@ pub struct AgentSpec {
     /// bare `{session}` with it.
     pub args: Vec<String>,
     /// Whether it prints a JSON event stream (omp's `--mode json` when the id
-    /// is "omp", else Claude Code's stream-json), else plain text.
+    /// is "omp", OpenCode's `--format json` when it is "opencode", else Claude
+    /// Code's stream-json), else plain text.
     pub json: bool,
+    /// Environment variables the agent runs with.
+    pub env: Vec<(String, String)>,
 }
 
 impl AgentSpec {
@@ -130,12 +154,16 @@ impl AgentSpec {
     /// an empty model, as they are.
     pub fn with_model(&self, model: &str) -> AgentSpec {
         let model = model.trim();
-        if model.is_empty() || !matches!(self.id.as_str(), "claude" | "omp") {
+        if model.is_empty() || !matches!(self.id.as_str(), "claude" | "omp" | "opencode") {
             return self.clone();
         }
         let mut spec = self.clone();
-        // Right after -p: Claude Code's --allowedTools must stay last.
-        let at = spec.args.iter().position(|a| a == "-p").map_or(0, |i| i + 1);
+        // Right after -p (OpenCode: run): Claude Code's --allowedTools must stay last.
+        let at = spec
+            .args
+            .iter()
+            .position(|a| a == "-p" || a == "run")
+            .map_or(0, |i| i + 1);
         spec.args.insert(at, "--model".into());
         spec.args.insert(at + 1, model.into());
         spec
@@ -168,6 +196,7 @@ impl AgentSpec {
             program,
             args,
             json: true,
+            env: Vec::new(),
         }
     }
 
@@ -189,9 +218,33 @@ impl AgentSpec {
             program,
             args: args.map(str::to_owned).to_vec(),
             json: true,
+            env: Vec::new(),
+        }
+    }
+
+    /// OpenCode at `program`.
+    pub fn opencode(program: PathBuf) -> AgentSpec {
+        let mut args: Vec<String> = ["run", "--format", "json", "--session", "{session}"]
+            .map(str::to_owned)
+            .to_vec();
+        // A .cmd shim (npm on Windows) runs through cmd.exe: the prompt goes to stdin.
+        if !(cfg!(windows) && is_batch(&program)) {
+            args.push("{prompt}".into());
+        }
+        AgentSpec {
+            id: "opencode".into(),
+            name: "OpenCode".into(),
+            program,
+            args,
+            json: true,
+            env: vec![("OPENCODE_CONFIG_CONTENT".into(), OPENCODE_CONFIG.into())],
         }
     }
 }
+
+/// What OpenCode runs with over the person's own configuration: no commands
+/// and no edits of its own (see the top of this file).
+pub const OPENCODE_CONFIG: &str = r#"{"permission":{"bash":"deny","edit":"deny"}}"#;
 
 // ------------------------------------------------------------------ finding them
 
@@ -214,6 +267,9 @@ pub fn usual_places(home: Option<&Path>) -> Vec<PathBuf> {
             &[".npm-global", "bin"],
             &[".bun", "bin"],
             &[".volta", "bin"],
+            // OpenCode's installer (opencode.ai/install), and Scoop's shims on Windows.
+            &[".opencode", "bin"],
+            &["scoop", "shims"],
         ] {
             out.push(dir.iter().fold(h.to_path_buf(), |p, d| p.join(d)));
         }
@@ -291,6 +347,9 @@ pub fn detect_in(studio_dir: &Path, path: &[PathBuf], home: Option<&Path>) -> Ve
     if let Some(p) = find_program("omp", &dirs) {
         out.push(AgentSpec::omp(p));
     }
+    if let Some(p) = find_program("opencode", &dirs) {
+        out.push(AgentSpec::opencode(p));
+    }
     if let Some(custom) = std::fs::read_to_string(studio_dir.join("agent.txt"))
         .ok()
         .and_then(|text| parse_custom(&text, &dirs, home))
@@ -333,6 +392,7 @@ pub fn parse_custom(text: &str, dirs: &[PathBuf], home: Option<&Path>) -> Option
         program,
         args: words.collect(),
         json: false,
+        env: Vec::new(),
     })
 }
 
@@ -572,11 +632,17 @@ pub const EDITOR_TOOLS: &[&str] = &[
 /// A tool's name without the horizon-studio MCP prefix (Claude Code's
 /// `mcp__horizon-studio__`, omp's `mcp__horizon_studio_`).
 pub fn tool_name(full: &str) -> &str {
-    ["mcp__horizon-studio__", "mcp__horizon_studio__", "mcp__horizon_studio_"]
-        .iter()
-        .find_map(|p| full.strip_prefix(p))
-        .filter(|s| !s.is_empty())
-        .unwrap_or(full)
+    [
+        "mcp__horizon-studio__",
+        "mcp__horizon_studio__",
+        "mcp__horizon_studio_",
+        "horizon-studio_",
+        "horizon_studio_",
+    ]
+    .iter()
+    .find_map(|p| full.strip_prefix(p))
+    .filter(|s| !s.is_empty())
+    .unwrap_or(full)
 }
 
 /// The arguments that say what a call is about, by preference.
@@ -808,12 +874,61 @@ pub fn parse_omp_line(line: &str) -> Vec<AgentEvent> {
     }
 }
 
+/// The events in one line of OpenCode's `--format json` output (see the top
+/// of this file). Every line names the session; the run's reader keeps the
+/// first Started.
+pub fn parse_opencode_line(line: &str) -> Vec<AgentEvent> {
+    let j = match parse_json(line) {
+        Ok(j) => j,
+        Err(events) => return events,
+    };
+    let mut out = vec![AgentEvent::Started {
+        session: some_text(&j["sessionID"]),
+    }];
+    let part = &j["part"];
+    match j["type"].as_str().unwrap_or("") {
+        "text" => {
+            if let Some(t) = some_text(&part["text"]).filter(|t| !t.trim().is_empty()) {
+                out.push(AgentEvent::Text(t));
+            }
+        }
+        "tool_use" => {
+            let name = part["tool"].as_str().unwrap_or("tool");
+            let state = &part["state"];
+            let id = some_text(&part["callID"]).or_else(|| some_text(&part["id"]));
+            out.push(AgentEvent::Tool {
+                id: id.clone(),
+                name: tool_name(name).to_owned(),
+                summary: tool_summary(name, &state["input"]),
+            });
+            let ok = state["status"] != "error";
+            let summary = if ok {
+                result_summary(&state["output"])
+            } else {
+                some_text(&state["error"]).unwrap_or_else(|| "failed".into())
+            };
+            out.push(AgentEvent::ToolResult { id, ok, summary });
+        }
+        "error" => {
+            let e = &j["error"];
+            let message = some_text(&e["message"])
+                .or_else(|| some_text(&e["data"]["message"]))
+                .or_else(|| some_text(&e["name"]))
+                .unwrap_or_else(|| "OpenCode reported an error".into());
+            out.push(AgentEvent::Error(message));
+        }
+        _ => {}
+    }
+    out
+}
+
 // ------------------------------------------------------------------ running one
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Format {
     Claude,
     Omp,
+    OpenCode,
     Text,
 }
 
@@ -822,6 +937,7 @@ impl Format {
         match (spec.json, spec.id.as_str()) {
             (false, _) => Format::Text,
             (true, "omp") => Format::Omp,
+            (true, "opencode") => Format::OpenCode,
             (true, _) => Format::Claude,
         }
     }
@@ -1008,6 +1124,9 @@ impl AgentRun {
         if format == Format::Text {
             cmd.env("NO_COLOR", "1");
         }
+        for (k, v) in &spec.env {
+            cmd.env(k, v);
+        }
         #[cfg(unix)]
         {
             // Its own process group, to stop it with what it started (MCP servers, tools).
@@ -1110,13 +1229,20 @@ impl AgentRun {
                 let mut gap = false;
                 each_line(stdout, |line| {
                     match format {
-                        Format::Claude | Format::Omp if !seen.done => {
-                            let events = if format == Format::Claude {
-                                parse_claude_line(line)
-                            } else {
-                                parse_omp_line(line)
+                        Format::Claude | Format::Omp | Format::OpenCode if !seen.done => {
+                            let events = match format {
+                                Format::Claude => parse_claude_line(line),
+                                Format::Omp => parse_omp_line(line),
+                                _ => parse_opencode_line(line),
                             };
                             for e in events {
+                                // OpenCode names its session on every line: the first is Started.
+                                if format == Format::OpenCode
+                                    && matches!(e, AgentEvent::Started { .. })
+                                    && seen.session.is_some()
+                                {
+                                    continue;
+                                }
                                 send(&mut seen, e);
                             }
                         }
@@ -1155,7 +1281,9 @@ impl AgentRun {
                 let success = status.is_some_and(|s| s.success());
                 let ok = success && format != Format::Claude;
                 let summary = if ok {
-                    seen.last_text.take().filter(|_| format == Format::Omp)
+                    seen.last_text
+                        .take()
+                        .filter(|_| matches!(format, Format::Omp | Format::OpenCode))
                 } else {
                     let mut why = if success {
                         format!("{name} ended without a result")

@@ -4,7 +4,7 @@
 
 use horizon_studio::game::hstudio_agent::{
     AgentContext, AgentEvent, AgentRun, AgentSpec, expand_args, parse_claude_line, parse_custom, parse_omp_line,
-    prompt, result_summary, split_command, tool_name, tool_summary,
+    parse_opencode_line, prompt, result_summary, split_command, tool_name, tool_summary,
 };
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -670,6 +670,7 @@ fn a_plain_text_agent_prints_text() {
         program: PathBuf::new(),
         args: vec!["{prompt}".into()],
         json: false,
+        env: Vec::new(),
     };
     let script = "echo \"You asked: $1\"\necho\nprintf '\\033[1mbold\\033[0m done\\n'\n";
     let mut run = start_fake(&dir, script, spec, None);
@@ -706,6 +707,7 @@ fn without_a_prompt_argument_the_prompt_goes_to_stdin() {
         program: PathBuf::new(),
         args: vec![],
         json: false,
+        env: Vec::new(),
     };
     let mut run = start_fake(&dir, "cat\n", spec, None);
     let events = to_the_end(&mut run, 10);
@@ -756,6 +758,7 @@ fn stderr_is_shown_but_not_flooded() {
         program: PathBuf::new(),
         args: vec!["{prompt}".into()],
         json: false,
+        env: Vec::new(),
     };
     let mut run = start_fake(&dir, script, spec, None);
     let events = to_the_end(&mut run, 10);
@@ -794,6 +797,7 @@ fn stop_kills_the_agent_and_what_it_started() {
         program: PathBuf::new(),
         args: vec!["{prompt}".into()],
         json: false,
+        env: Vec::new(),
     };
     let mut run = start_fake(&dir, script, spec, None);
     let mut seen = Vec::new();
@@ -845,6 +849,7 @@ fn dropping_a_run_stops_it() {
         program: PathBuf::new(),
         args: vec![],
         json: false,
+        env: Vec::new(),
     };
     let run = start_fake(&dir, "sleep 60\n", spec, None);
     let pid = run.pid();
@@ -880,6 +885,7 @@ fn an_agent_whose_output_something_else_keeps_open_is_still_done() {
         program: PathBuf::new(),
         args: vec!["{prompt}".into()],
         json: false,
+        env: Vec::new(),
     };
     let script = "echo working on it\n(sleep 60) &\nexit 0\n";
     let started = Instant::now();
@@ -922,6 +928,151 @@ fn a_model_is_passed_where_each_agent_takes_it() {
         program: PathBuf::from("aider"),
         args: vec!["--message".into(), "{prompt}".into()],
         json: false,
+        env: Vec::new(),
     };
     assert_eq!(custom.with_model("opus"), custom);
+}
+
+/// An OpenCode run (`opencode run --format json`), as its run command prints it.
+const OPENCODE_RUN: &[&str] = &[
+    r#"{"type":"step_start","timestamp":1,"sessionID":"ses_abc","part":{"type":"step-start"}}"#,
+    r#"{"type":"text","timestamp":2,"sessionID":"ses_abc","part":{"type":"text","text":"Let me check the docs."}}"#,
+    r#"{"type":"tool_use","timestamp":3,"sessionID":"ses_abc","part":{"type":"tool","id":"prt_1","callID":"call_1","tool":"horizon-studio_docs","state":{"status":"completed","input":{"query":"set block"},"output":"world.set_block(x, y, z, id): places a block","title":"docs"}}}"#,
+    r#"{"type":"tool_use","timestamp":4,"sessionID":"ses_abc","part":{"type":"tool","id":"prt_2","callID":"call_2","tool":"horizon-studio_run_lua","state":{"status":"error","input":{"code":"print(world.block(0, 64, 0))"},"error":"not linked: the game isn't running"}}}"#,
+    r#"{"type":"text","timestamp":5,"sessionID":"ses_abc","part":{"type":"text","text":"Saved statue."}}"#,
+    r#"{"type":"step_finish","timestamp":6,"sessionID":"ses_abc","part":{"type":"step-finish","reason":"stop"}}"#,
+];
+
+#[test]
+fn opencode_json_becomes_events() {
+    let events: Vec<AgentEvent> = OPENCODE_RUN
+        .iter()
+        .flat_map(|l| parse_opencode_line(l))
+        .filter(|e| !matches!(e, Started { .. }))
+        .collect();
+    assert_eq!(
+        events,
+        vec![
+            Text("Let me check the docs.".into()),
+            Tool {
+                id: Some("call_1".into()),
+                name: "docs".into(),
+                summary: "docs set block".into()
+            },
+            ToolResult {
+                id: Some("call_1".into()),
+                ok: true,
+                summary: "world.set_block(x, y, z, id): places a block".into()
+            },
+            Tool {
+                id: Some("call_2".into()),
+                name: "run_lua".into(),
+                summary: "run_lua print(world.block(0, 64, 0))".into()
+            },
+            ToolResult {
+                id: Some("call_2".into()),
+                ok: false,
+                summary: "not linked: the game isn't running".into()
+            },
+            Text("Saved statue.".into()),
+        ]
+    );
+    assert_eq!(
+        parse_opencode_line(OPENCODE_RUN[0]),
+        vec![Started {
+            session: Some("ses_abc".into())
+        }]
+    );
+    let failed = r#"{"type":"error","timestamp":7,"sessionID":"ses_abc","error":{"name":"APIError","data":{"message":"429 rate limited"}}}"#;
+    assert_eq!(
+        parse_opencode_line(failed),
+        vec![
+            Started {
+                session: Some("ses_abc".into())
+            },
+            Error("429 rate limited".into())
+        ]
+    );
+    assert_eq!(tool_name("horizon-studio_write_mod"), "write_mod");
+}
+
+#[test]
+fn opencode_runs_without_commands_or_edits_and_takes_a_model() {
+    let spec = AgentSpec::opencode(PathBuf::from("opencode"));
+    assert_eq!(spec.name, "OpenCode");
+    assert_eq!(&spec.args[..3], ["run", "--format", "json"]);
+    let (k, v) = &spec.env[0];
+    assert_eq!(k, "OPENCODE_CONFIG_CONTENT");
+    let config: serde_json::Value = serde_json::from_str(v).unwrap();
+    assert_eq!(config["permission"]["bash"], "deny");
+    assert_eq!(config["permission"]["edit"], "deny");
+    let with = spec.with_model("anthropic/claude-sonnet-4-5");
+    assert_eq!(&with.args[..3], ["run", "--model", "anthropic/claude-sonnet-4-5"]);
+    let args = expand_args(&spec.args, "Build a statue", None);
+    assert_eq!(args, ["run", "--format", "json", "Build a statue"]);
+    let args = expand_args(&spec.args, "Build a statue", Some("ses_abc"));
+    assert_eq!(
+        args,
+        ["run", "--format", "json", "--session", "ses_abc", "Build a statue"]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fake_opencode_runs_to_its_end_with_its_config() {
+    let dir = temp("opencode");
+    let script = format!(
+        "printf '%s' \"$OPENCODE_CONFIG_CONTENT\" > \"$(dirname \"$0\")/config.txt\"\n{}",
+        printing(OPENCODE_RUN)
+    );
+    let mut run = start_fake(
+        &dir,
+        &script,
+        AgentSpec::opencode(PathBuf::from("opencode")),
+        Some("ses_abc"),
+    );
+    let events = to_the_end(&mut run, 10);
+    assert_eq!(
+        events.first(),
+        Some(&Started {
+            session: Some("ses_abc".into())
+        })
+    );
+    assert_eq!(
+        events.iter().filter(|e| matches!(e, Started { .. })).count(),
+        1,
+        "{events:?}"
+    );
+    assert_eq!(
+        events.last(),
+        Some(&Done {
+            ok: true,
+            session: Some("ses_abc".into()),
+            summary: Some("Saved statue.".into())
+        })
+    );
+    let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    assert!(args.windows(2).any(|w| w == ["--session", "ses_abc"]), "{args:?}");
+    assert_eq!(args.last(), Some(&"Build a statue"));
+    let config = std::fs::read_to_string(dir.join("config.txt")).unwrap();
+    assert!(config.contains("\"bash\":\"deny\""), "{config}");
+}
+
+#[cfg(unix)]
+#[test]
+fn opencode_is_found_where_its_installer_puts_it() {
+    let dir = temp("opencode-find");
+    let home = dir.join("home");
+    let bin = home.join(".opencode").join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let exe = bin.join("opencode");
+    std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let found = detect_in(&dir, &[], Some(&home));
+    assert!(
+        found.iter().any(|a| a.id == "opencode" && a.program == exe),
+        "{found:?}"
+    );
 }

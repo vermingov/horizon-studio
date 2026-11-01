@@ -1,6 +1,6 @@
 // horizon-studio-mcp: Horizon Studio's MCP server for AI agents (stdio), and
 // its installer: `horizon-studio-mcp install` registers it with the agents on
-// this machine (Claude Code, omp, Codex, Cursor, Gemini CLI, Claude Desktop).
+// this machine (Claude Code, OpenCode, omp, Codex, Cursor, Gemini CLI, Claude Desktop).
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -33,7 +33,7 @@ fn main() {
             println!(
                 "horizon-studio-mcp {}: Horizon Studio for AI agents (MCP over stdio)\n\n\
                  Usage:\n  horizon-studio-mcp            serve MCP on stdin/stdout (what agents run)\n  \
-                 horizon-studio-mcp install    register it with Claude Code, omp, Codex, Cursor, Gemini CLI, Claude Desktop\n  \
+                 horizon-studio-mcp install    register it with Claude Code, OpenCode, omp, Codex, Cursor, Gemini CLI, Claude Desktop\n  \
                  horizon-studio-mcp uninstall  remove it from them\n  \
                  horizon-studio-mcp update     update to the newest release (running servers switch at their next call)\n  \
                  horizon-studio-mcp docs-json  print the reference it serves, as published in docs/reference.json\n  \

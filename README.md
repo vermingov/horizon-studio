@@ -13,7 +13,7 @@ native Horizon mod that adds:
   misspelled names, underlined, with their message at the line's end), auto-indent that closes blocks with their
   `end`, brackets and quotes that close themselves, undo and redo, and around the code panes for the script list,
   the console, the problems and an AI agent, which you size and move about as in VS Code.
-- **An AI agent in the game.** Ask Claude Code or omp, the one installed on your computer, to write or fix the
+- **An AI agent in the game.** Ask Claude Code, OpenCode or omp, the one installed on your computer, to write or fix the
   script open in the editor: it sees the file, what you selected and its problems, works through Horizon Studio's
   MCP, and types its changes into the editor as you watch, at a caret of its own. It points at the code it means
   with notes, and teaches with lessons you step through in the editor.
@@ -246,14 +246,14 @@ at the bottom of the studio a moment.
 
 ### The agent
 
-The Agent tab runs the coding agent installed on your computer: **Claude Code** (`claude`) or **omp**, found on your
-PATH or where their installers put them. Set up the MCP server first (see [AI agents](#ai-agents-mcp)), so the agent
+The Agent tab runs the coding agent installed on your computer: **Claude Code** (`claude`), **OpenCode**
+(`opencode`) or **omp**, found on your PATH or where their installers put them (on Linux and Windows alike). Set up the MCP server first (see [AI agents](#ai-agents-mcp)), so the agent
 has Horizon Studio's tools. Type what you want (*make the waypoints glow at night*, *why does this error?*) and Enter
 sends it, with the file open in the editor, what you selected and its problems. The answer, and each tool it uses,
 come in as it works, and its edits show in the editor as they land; the next question continues the conversation.
 **Stop** ends its work, and the button with its name switches agent when you have several. **Model** chooses the
-model it uses: for Claude Code its default, Opus, Sonnet, Haiku or Fable, and for either agent any model by name
-(*Other model...*); the choice is kept for each agent in `agent-models.txt` in the studio's folder. Drag over its
+model it uses: for Claude Code its default, Opus, Sonnet, Haiku or Fable, and for any agent any model by name
+(*Other model...*; OpenCode's are `provider/model`, such as `anthropic/claude-sonnet-4-5`); the choice is kept for each agent in `agent-models.txt` in the studio's folder. Drag over its
 answers or the console's lines to select them, and Ctrl+C copies them. It can also look at the game: its
 `screenshot` tool sees the window as you do, without the studio over it.
 
@@ -302,7 +302,9 @@ own agent to answer in.
 
 It works in your mods folder and runs with its own permissions: Claude Code may use Horizon Studio's MCP tools and
 read files, and asks for nothing else (in a run from the game, anything that needs your approval is refused); omp
-runs with `--approval-mode write`, which refuses shell commands. To use another agent, put its command line in
+runs with `--approval-mode write`, which refuses shell commands; OpenCode runs with its `bash` and `edit` permissions
+set to deny (through `OPENCODE_CONFIG_CONTENT`, over your own configuration), so it too works through Horizon
+Studio's tools and reads files, but neither runs commands nor edits files itself. To use another agent, put its command line in
 `horizon-mods/.horizon-mod-data/horizon_studio/agent.txt` (`{prompt}` where the request goes, or it is sent on its
 input; a first line `name: My agent` names it).
 

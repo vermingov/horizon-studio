@@ -3024,6 +3024,7 @@ fn saving_or_switching_files_never_saves_half_typed_code() {
             program: "/bin/echo".into(),
             args: vec!["{prompt}".into()],
             json: false,
+            env: Vec::new(),
         }]);
         ask(&mut st, &mut game, "edit", new).unwrap();
         run_for(&mut st, &mut game, 0.4);
@@ -5141,6 +5142,7 @@ fn check_asks_the_games_agent_when_none_is_waiting() {
         program: "/bin/echo".into(),
         args: vec!["{prompt}".into()],
         json: false,
+        env: Vec::new(),
     }]);
     ask(
         &mut st,
@@ -5237,6 +5239,7 @@ fn check_keeps_its_step_in_the_rows_the_code_has_once_the_agent_pane_shows() {
         program: "/bin/echo".into(),
         args: vec!["{prompt}".into()],
         json: false,
+        env: Vec::new(),
     }]);
     let lesson = json!({ "title": "Values", "steps": [
         { "start_line": 14, "note": "Fourteen.", "task": "Make it 140." },
