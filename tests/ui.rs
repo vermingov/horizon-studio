@@ -2032,6 +2032,58 @@ fn menu_items(st: &horizon_studio::game::hstudio::Studio) -> Vec<String> {
 }
 
 #[test]
+fn clear_in_an_executor_style_leaves_no_selection_behind() {
+    // Clear empties the code: a selection made before it, backwards (its
+    // other end after the cursor) or lower in the file, goes with the text,
+    // so the next draw, key or letter has nothing past the end to reach.
+    // Ctrl+Z brings the text back.
+    use horizon_studio::game::hstudio_theme::THEMES;
+    let shift = Mods {
+        ctrl: false,
+        shift: true,
+        alt: false,
+    };
+    let text: String = (1..=30).map(|i| format!("print('line {i}')\n")).collect();
+    for theme in ["synapse", "protosmasher", "protoclassic", "rc7"] {
+        let mut game = FakeGame::new(&format!("ui-style-clear-{theme}"));
+        let mut st = studio(&mut game);
+        st.s.ui.open = true;
+        st.s.ui.look.motion = false;
+        st.s.ui.look.theme = THEMES.iter().position(|t| t.id == theme).unwrap();
+        st.s.ui.tab = Tab::Editor;
+        let backwards = [key(Key::End, NONE), key(Key::Home, shift)];
+        let lower = [key(Key::Right, shift), key(Key::Right, shift), key(Key::Right, shift)];
+        for (row, keys) in [(0, &backwards[..]), (19, &lower[..])] {
+            let case = format!("{theme}, row {row}");
+            st.s.editor.replace_text(&text);
+            st.s.editor.click(row, 0, false);
+            for k in keys {
+                handle(&mut st, &mut game, k.clone());
+            }
+            assert!(st.s.editor.selection().is_some(), "{case}");
+            redraw(&mut st, &mut game);
+            let clear = ["Clear", "CLEAR"]
+                .iter()
+                .find(|t| game.drawn.iter().any(|d| d.starts_with(&format!("text {t} @"))))
+                .unwrap_or_else(|| panic!("{case}: no Clear drawn"));
+            let at = text_at(&game, clear);
+            click(&mut st, &mut game, (at.0 + 2.0, at.1 + 2.0));
+            assert_eq!(st.s.editor.text(), "", "{case}");
+            assert_eq!(st.s.editor.selection(), None, "{case}");
+            redraw(&mut st, &mut game);
+            handle(&mut st, &mut game, key(Key::Right, NONE));
+            type_text(&mut st, &mut game, "a");
+            redraw(&mut st, &mut game);
+            assert_eq!(st.s.editor.text(), "a", "{case}");
+            assert_eq!((st.s.editor.row, st.s.editor.col), (0, 1), "{case}");
+            st.s.editor.undo();
+            st.s.editor.undo();
+            assert_eq!(st.s.editor.text(), text, "{case}: Clear undoes");
+        }
+    }
+}
+
+#[test]
 fn the_executor_styles_reach_a_modules_files_from_the_library() {
     use horizon_studio::game::hstudio_theme::THEMES;
     for theme in ["protosmasher", "protoclassic", "rc7"] {

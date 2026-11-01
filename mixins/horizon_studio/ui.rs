@@ -1562,6 +1562,9 @@ impl Editor {
         while !self.lines[self.row].is_char_boundary(self.col) {
             self.col -= 1;
         }
+        // The selection's other end, and a press's place, stay in the text.
+        self.anchor = self.anchor.map(|a| self.clamp_pos(a));
+        self.held = self.held.map(|h| self.clamp_pos(h));
         // Whatever set it, the live check looks again.
         self.revision += 1;
     }
@@ -4425,10 +4428,8 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
                 Tab::Settings
             };
         }
-        Action::ClearEditor => {
-            st.s.editor.set_text("");
-            st.s.editor.dirty = true;
-        }
+        // One edit, which Ctrl+Z takes back; the selection goes with the text.
+        Action::ClearEditor => st.s.editor.replace_text(""),
         Action::Suggest(i) => {
             if let Some(sg) = &mut st.s.ui.suggest {
                 sg.sel = usize::from(i);
