@@ -1172,6 +1172,28 @@ fn a_press_after_the_frame_typed_more_is_for_the_line_drawn_under_it() {
         }
     };
     press(&mut st, &mut game, &word, false);
+    // A second edit comes in the press's frame (the link's requests come
+    // before the input): it puts the 40 lines in whole and begins its own.
+    for left in [false, true] {
+        let (mut game, mut st) = open(&format!("coach-press-second-{left}"));
+        let edit = json!({ "start_line": 2, "end_line": 1, "new_text": lines.join("\n") });
+        ask(&mut st, &mut game, "edit", edit).unwrap();
+        for _ in 0..8 {
+            game_frame(&mut st, &mut game);
+        }
+        redraw(&mut st, &mut game);
+        // A line near the view's foot: the rest of the 40 lines moves it down.
+        let word = format!("v{}", lowest(&game)[1..].parse::<usize>().unwrap() - 1);
+        let drawn = st.s.editor.lines.len();
+        st.frame(&mut game, 0.05);
+        let second = json!({ "start_line": 1, "end_line": 1, "new_text": "local v1 = 100" });
+        ask(&mut st, &mut game, "edit", second).unwrap();
+        let ed = &st.s.editor;
+        assert_eq!(ed.lines.iter().filter(|l| l.starts_with("-- ")).count(), 40);
+        assert!(drawn + 20 < ed.lines.len(), "most of it came in after the draw");
+        assert!(st.s.ui.coach.typing.is_some(), "the second types in");
+        press(&mut st, &mut game, &word, left);
+    }
 }
 
 #[test]
