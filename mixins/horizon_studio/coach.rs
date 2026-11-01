@@ -2484,6 +2484,74 @@ pub fn file_gone(st: &mut Studio, path: &Path) {
     }
 }
 
+/// A file the studio moved, or a folder with its files (a mod renamed, a
+/// module's file renamed, a script made a module), now at `to`, whether
+/// the editor shows it or not: its marks go along, a lesson's steps too,
+/// and so do the record of an agent's unsaved edits and the Agent panel's
+/// lines about it, named as the editor names the file now. Marks already
+/// at `to` are another file's, gone from there (a lesson's steps stay).
+pub fn file_moved(st: &mut Studio, from: &Path, to: &Path) {
+    let place = |p: &Path| {
+        let rest = p.strip_prefix(from).ok()?;
+        Some(if rest.as_os_str().is_empty() {
+            to.to_path_buf()
+        } else {
+            to.join(rest)
+        })
+    };
+    let c = &st.s.ui.coach;
+    let mut named: Vec<&Path> = c.marks.iter().map(|m| m.path.as_path()).collect();
+    named.extend(c.unsaved.iter().map(|u| u.path.as_path()));
+    named.extend(
+        st.s.ui
+            .agent
+            .lines
+            .iter()
+            .filter_map(|l| Some(l.jump.as_ref()?.path.as_path())),
+    );
+    named.sort();
+    named.dedup();
+    // Where each file named is now, and its title there.
+    let moved: Vec<(PathBuf, PathBuf, String)> = named
+        .into_iter()
+        .filter_map(|p| {
+            let new = place(p)?;
+            let title = st.file_title(&new);
+            Some((p.to_path_buf(), new, title))
+        })
+        .collect();
+    let now = |p: &Path| {
+        moved
+            .iter()
+            .find(|(old, ..)| old == p)
+            .map(|(_, new, f)| (new.clone(), f.clone()))
+    };
+    let c = &mut st.s.ui.coach;
+    c.marks
+        .retain(|m| m.step.is_some() || m.path.starts_with(from) || !m.path.starts_with(to));
+    for m in &mut c.marks {
+        if let Some((path, file)) = now(&m.path) {
+            (m.path, m.file) = (path, file);
+        }
+    }
+    if let Some(u) = c.unsaved.as_mut()
+        && let Some((path, file)) = now(&u.path)
+    {
+        (u.path, u.file) = (path, file);
+    }
+    // The editor's file, if it is the one: the marks have followed it.
+    if let Some(f) = c.followed.as_mut()
+        && let Some(path) = place(&f.path)
+    {
+        f.path = path;
+    }
+    for jump in st.s.ui.agent.lines.iter_mut().filter_map(|l| l.jump.as_mut()) {
+        if let Some((path, file)) = now(&jump.path) {
+            (jump.path, jump.file) = (path, file);
+        }
+    }
+}
+
 /// The open mark, while the editor has its file open.
 pub fn shown_mark<'a>(c: &'a Coach, ed: &Editor) -> Option<&'a Mark> {
     let id = c.open_mark?;

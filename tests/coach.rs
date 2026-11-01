@@ -2088,6 +2088,122 @@ fn a_file_deleted_takes_its_marks_and_one_renamed_to_its_name_has_none() {
 }
 
 #[test]
+fn marks_steps_and_jumps_follow_a_file_the_studio_moves() {
+    // A script the New prompt made (its name line is its id), renamed from
+    // its menu while open: the name line changes in the editor, and the
+    // mark goes along on its line.
+    let mut game = FakeGame::new("coach-studio-moves");
+    let mut st = studio(&mut game);
+    let greet = st.create_mod(&mut game, "greet", None).unwrap();
+    st.open_file(&greet);
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    st.s.now = 10.0;
+    still(&mut st, &mut game);
+    ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "start_line": 6, "note": "It says so." }),
+    )
+    .unwrap();
+    st.rename_mod(&mut game, "greet", "salut").unwrap();
+    still(&mut st, &mut game);
+    assert_eq!(st.s.editor.lines[0], "-- name: salut");
+    let m = &st.s.ui.coach.marks[0];
+    assert_eq!(
+        (&m.path, m.file.as_str()),
+        (&game.mods_dir().join("salut.lua"), "salut.lua")
+    );
+    assert_eq!(marked(&st), [(5, 5)]);
+    // A module's file that isn't open, renamed from the script list: a
+    // lesson's step there, a mark and the Agent panel's line about an
+    // agent's edit to it all go to its new name.
+    let (mut game, mut st) = with_module("coach-studio-moves-files");
+    let kit = game.mods_dir().join("kit");
+    st.open_file(&kit.join("main.lua"));
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    st.s.now = 10.0;
+    st.s.ui.look.motion = false;
+    let mut lesson = kit_lesson();
+    lesson["steps"][1] = lesson["steps"][2].clone();
+    lesson["steps"].as_array_mut().unwrap().truncate(2);
+    ask(&mut st, &mut game, "lesson", lesson).unwrap();
+    let util = json!({ "id": "kit", "file": "lib/util.lua" });
+    let mut edit = util.clone();
+    edit["old_text"] = json!("return 2");
+    edit["new_text"] = json!("return 3");
+    ask(&mut st, &mut game, "edit", edit).unwrap();
+    // Its line's number (the panel numbers its lines from 1).
+    let edited = st.s.ui.agent.lines.len() as u64;
+    let mut mark = util.clone();
+    mark["start_line"] = json!(1);
+    mark["note"] = json!("The helper.");
+    ask(&mut st, &mut game, "mark", mark).unwrap();
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    let helpers = st
+        .rename_file(&mut game, &kit.join("lib/util.lua"), "lib/helpers")
+        .unwrap();
+    for m in &st.s.ui.coach.marks[1..] {
+        assert_eq!((&m.path, m.file.as_str()), (&helpers, "kit/lib/helpers.lua"));
+    }
+    for jump in st.s.ui.agent.lines.iter().filter_map(|l| l.jump.as_ref()) {
+        assert!(jump.path.is_file(), "{jump:?}");
+    }
+    handle(&mut st, &mut game, key(Key::Right, ALT));
+    assert_eq!(st.s.editor.title, "kit/lib/helpers.lua", "Next goes to the step");
+    assert_eq!(marked(&st), [(0, 0), (0, 0)]);
+    st.open_file(&kit.join("main.lua"));
+    coach::go(&mut st, &mut game, edited);
+    assert_eq!(st.s.editor.title, "kit/lib/helpers.lua", "Show goes to the edit");
+    // A script that isn't open made a module: its mark goes to main.lua.
+    let mut game = FakeGame::new("coach-studio-moves-module");
+    let mut st = studio(&mut game);
+    game.write_mod("hello.lua", GREET);
+    game.write_mod("other.lua", GREET);
+    st.scan(&mut game);
+    st.edit_mod(mod_index(&st, "other"));
+    ask(
+        &mut st,
+        &mut game,
+        "mark",
+        json!({ "id": "hello", "start_line": 2, "note": "It says hi." }),
+    )
+    .unwrap();
+    st.make_module(&mut game, mod_index(&st, "hello")).unwrap();
+    let m = &st.s.ui.coach.marks[0];
+    let main = game.mods_dir().join("hello/main.lua");
+    assert_eq!((&m.path, m.file.as_str()), (&main, "hello/main.lua"));
+    // A module renamed: the marks in its files, open or not, go along.
+    let (mut game, mut st) = with_module("coach-studio-moves-folder");
+    let kit = game.mods_dir().join("kit");
+    st.open_file(&kit.join("main.lua"));
+    for file in ["main.lua", "lib/util.lua"] {
+        let at = json!({ "id": "kit", "file": file, "start_line": 1, "note": "Here." });
+        ask(&mut st, &mut game, "mark", at).unwrap();
+    }
+    st.rename_mod(&mut game, "kit", "tools").unwrap();
+    let tools = game.mods_dir().join("tools");
+    let moved: Vec<_> =
+        st.s.ui
+            .coach
+            .marks
+            .iter()
+            .map(|m| (m.path.clone(), m.file.clone()))
+            .collect();
+    assert_eq!(
+        moved,
+        [
+            (tools.join("main.lua"), "tools/main.lua".to_owned()),
+            (tools.join("lib/util.lua"), "tools/lib/util.lua".to_owned())
+        ]
+    );
+    still(&mut st, &mut game);
+    assert_eq!(marked(&st), [(0, 0)]);
+}
+
+#[test]
 fn marks_are_cleared_by_number_by_file_or_all() {
     let (mut game, mut st) = editing("coach-unmark", "sum", TEN);
     game.write_mod("other.lua", "print('other')\n");

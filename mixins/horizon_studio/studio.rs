@@ -1365,7 +1365,11 @@ impl Studio {
     /// file changed on disk. A file of a mod that is gone gives way to its
     /// module's main.lua, or to the scratch file when the whole mod went;
     /// with unsaved edits it stays, marked as removed (a save writes it back).
+    /// Agents' marks in a file that moved go along, whether it is open or not.
     fn follow_open(&mut self, moved: &[(PathBuf, PathBuf)]) {
+        for (from, to) in moved {
+            super::hstudio_coach::file_moved(self, from, to);
+        }
         let Some(path) = self.s.editor.path.clone() else {
             return;
         };
@@ -1832,6 +1836,8 @@ impl Studio {
         let new = super::hstudio_modfiles::rename_file(&folder, &from, &to)?;
         self.s.log(LogKind::Info, format!("Renamed {from} to {to}"));
         self.file_moved(path, Some(&new), &new);
+        // Agents' marks in it go along.
+        super::hstudio_coach::file_moved(self, path, &new);
         self.scan(game);
         self.settle_open();
         Ok(new)
@@ -1895,6 +1901,7 @@ impl Studio {
         self.s
             .log(LogKind::Info, format!("Made {id} a module: {}", main.display()));
         self.file_moved(&old, Some(&main), &main);
+        // The scan finds its main file moved: agents' marks in it go along.
         self.scan(game);
         self.settle_open();
         Ok(main)
@@ -2053,6 +2060,9 @@ impl Studio {
             self.s.ui.expanded.insert(new_id.clone());
         }
         self.file_moved(&from, Some(&to), &main);
+        // Agents' marks in its files go along, before its name line changes
+        // (in the editor too), so they follow that change where they are.
+        super::hstudio_coach::file_moved(self, &from, &to);
         self.rename_header(&main, id, typed.trim());
         let m = &mut self.s.mods[i];
         m.stamp = Self::stamp(&m.main, m.folder.as_deref());
