@@ -20,6 +20,8 @@ pub mod game {
     pub mod hstudio_coach;
     #[path = "../../mixins/horizon_studio/crypt.rs"]
     pub mod hstudio_crypt;
+    #[path = "../../mixins/horizon_studio/dock.rs"]
+    pub mod hstudio_dock;
     #[path = "../../mixins/horizon_studio/examples.rs"]
     pub mod hstudio_examples;
     #[path = "../../mixins/horizon_studio/exec.rs"]

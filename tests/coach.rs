@@ -1386,7 +1386,9 @@ fn a_press_after_the_frame_typed_more_is_for_the_line_drawn_under_it() {
     // The file open, with room for all of it (no panel under the code).
     let open = |name: &str| {
         let (game, mut st) = editing(name, "ps", &src);
-        st.s.ui.panel_hidden = true;
+        st.s.ui
+            .dock
+            .set_hidden(horizon_studio::game::hstudio_ui::Pane::Console, true);
         (game, st)
     };
     // The lowest of the file's own lines drawn.
@@ -2094,6 +2096,8 @@ fn edits_work_in_a_modules_files_and_the_scratch_file() {
     st.s.ui.open = true;
     st.s.ui.tab = Tab::Editor;
     st.s.now = 10.0;
+    // (The code is drawn: what the player sees is typed in.)
+    redraw(&mut st, &mut game);
     // A module's file open in the editor: typed in, checked with its other files.
     let r = ask(&mut st, &mut game, "open", json!({ "id": "kit" })).unwrap();
     assert_eq!(r["file"], "kit/main.lua");
@@ -2410,7 +2414,7 @@ fn typed_says_when_it_knows_no_such_edit() {
 
 #[test]
 fn the_agent_panel_shows_what_the_agent_did_and_goes_there() {
-    use horizon_studio::game::hstudio_ui::Panel;
+    use horizon_studio::game::hstudio_ui::Pane;
     let (mut game, mut st) = editing("coach-jump", "greet", GREET);
     st.s.ui.look.motion = false;
     let long: Vec<String> = (1..=60).map(|i| format!("print({i})")).collect();
@@ -2435,8 +2439,8 @@ fn the_agent_panel_shows_what_the_agent_did_and_goes_there() {
     // Its line in the Agent panel goes there too, from another file.
     let scratch = st.scratch_path();
     st.s.editor.open(&scratch, "scratch.lua");
-    st.s.ui.panel = Panel::Agent;
-    st.s.ui.panel_focus = true;
+    st.s.ui.dock.activate(Pane::Agent);
+    st.s.ui.focus = Pane::Agent;
     redraw(&mut st, &mut game);
     let line = text_at(&game, "Claude Code: Changed line 40 in long.lua");
     let show = text_at(&game, "Show");
@@ -2446,7 +2450,7 @@ fn the_agent_panel_shows_what_the_agent_did_and_goes_there() {
     assert_eq!((st.s.editor.row, st.s.editor.col), (39, 0));
     let scroll = st.s.editor.scroll;
     assert!(scroll > 20 && scroll < 39, "line 40 a third of the way down: {scroll}");
-    assert!(!st.s.ui.panel_focus, "the keys go back to the code");
+    assert_eq!(st.s.ui.focus, Pane::Code, "the keys go back to the code");
     let lit = st.s.ui.coach.flash.as_ref().map(|f| (f.first, f.last));
     assert_eq!(lit, Some((39, 39)), "the line it changed is lit a moment");
     // The line's text stays for selecting and copying.
@@ -3257,7 +3261,7 @@ fn several_marks_show_their_notes_at_the_line_end_and_the_chip_cycles() {
 
 #[test]
 fn marking_another_file_never_switches_the_players_and_show_goes_there() {
-    use horizon_studio::game::hstudio_ui::Panel;
+    use horizon_studio::game::hstudio_ui::Pane;
     let (mut game, mut st) = editing("coach-mark-elsewhere", "sum", TEN);
     let scratch = st.scratch_path();
     st.open_file(&scratch);
@@ -3276,9 +3280,8 @@ fn marking_another_file_never_switches_the_players_and_show_goes_there() {
     assert_eq!(st.s.ui.input.text, "print(1)", "their keys stay theirs");
     // In the Editor tab a note over the code says so; the panel's line goes there.
     st.s.ui.tab = Tab::Editor;
-    st.s.ui.panel = Panel::Agent;
-    st.s.ui.panel_hidden = false;
-    st.s.ui.panel_focus = true;
+    st.s.ui.dock.activate(Pane::Agent);
+    st.s.ui.focus = Pane::Agent;
     still(&mut st, &mut game);
     text_at(&game, "Claude Code marked lines 3-4 in sum.lua · Show");
     let line = text_at(&game, "Claude Code: Highlighted lines 3-4 in sum.lua");
@@ -3289,7 +3292,7 @@ fn marking_another_file_never_switches_the_players_and_show_goes_there() {
     click(&mut st, &mut game, (show.0 + 4.0, show.1 + 4.0));
     assert_eq!(st.s.editor.title, "sum.lua");
     assert_eq!((st.s.editor.row, st.s.editor.col), (2, 0));
-    assert!(!st.s.ui.panel_focus);
+    assert_eq!(st.s.ui.focus, Pane::Code);
     assert_eq!(
         st.s.ui.coach.open_mark,
         Some(st.s.ui.coach.marks[0].id),
@@ -3441,7 +3444,7 @@ fn a_lesson_steps_through_its_notes_once_each_in_the_panel() {
             (AgentLineKind::Said, "A module's files load with require.".into()),
         ]
     );
-    assert_eq!(st.s.ui.panel, horizon_studio::game::hstudio_ui::Panel::Agent);
+    assert!(st.s.ui.dock.is_front(horizon_studio::game::hstudio_ui::Pane::Agent));
     // Alt+Right goes on, and a step in another file opens it.
     handle(&mut st, &mut game, key(Key::Right, ALT));
     assert_eq!(st.s.ui.coach.open_mark, Some(marks[1]));
@@ -3567,7 +3570,7 @@ fn a_lesson_is_stepped_with_its_buttons_and_its_chip() {
 
 #[test]
 fn the_players_lesson_events_reach_a_waiting_agent() {
-    use horizon_studio::game::hstudio_ui::Panel;
+    use horizon_studio::game::hstudio_ui::Pane;
     let (mut game, mut st) = editing("coach-events", "greet", GREET);
     st.s.ui.agent.agents = Some(Vec::new());
     let r = ask(
@@ -3653,9 +3656,8 @@ fn the_players_lesson_events_reach_a_waiting_agent() {
             .any(|l| l.kind == AgentLineKind::You && l.text == "Check step 1: Print hello instead.")
     );
     // What the player writes in the Agent panel goes to the agent waiting.
-    st.s.ui.panel = Panel::Agent;
-    st.s.ui.panel_hidden = false;
-    st.s.ui.panel_focus = true;
+    st.s.ui.dock.activate(Pane::Agent);
+    st.s.ui.focus = Pane::Agent;
     still(&mut st, &mut game);
     text_at(&game, "Claude Code is waiting for you");
     handle(&mut st, &mut game, Input::Text("why?".into()));
@@ -3681,7 +3683,7 @@ fn the_players_lesson_events_reach_a_waiting_agent() {
     // (While the Agent panel's input has the keys, Alt+arrows are its own.)
     handle(&mut st, &mut game, key(Key::Right, ALT));
     assert_eq!(st.s.ui.coach.lesson.as_ref().unwrap().at, 0);
-    st.s.ui.panel_focus = false;
+    st.s.ui.focus = Pane::Code;
     for _ in 0..10 {
         handle(&mut st, &mut game, key(Key::Right, ALT));
         handle(&mut st, &mut game, key(Key::Left, ALT));
@@ -3791,10 +3793,14 @@ fn check_asks_the_games_agent_when_none_is_waiting() {
         ] }),
     )
     .unwrap();
-    st.s.ui.panel_hidden = true;
+    st.s.ui
+        .dock
+        .set_hidden(horizon_studio::game::hstudio_ui::Pane::Agent, true);
     still(&mut st, &mut game);
     let check = text_at(&game, "Check");
     click(&mut st, &mut game, (check.0 + 2.0, check.1 + 4.0));
+    // The Agent pane, hidden with its group, comes back with the answer.
+    assert!(st.s.ui.dock.is_front(horizon_studio::game::hstudio_ui::Pane::Agent));
     let asked = "I did step 1 of the lesson \"Printing\" (greet.lua line 2): Print hello instead. Check my code and \
                  tell me how I did.";
     assert!(
@@ -3848,8 +3854,8 @@ fn check_asks_the_games_agent_when_none_is_waiting() {
         .filter(|l| l.kind == AgentLineKind::You)
         .count();
     assert_eq!(asked, 1, "only the waiting agent's line");
-    // With the panel hidden, the explanation is the bubble's: none here; and
-    // with no agent at all (none found, none waiting), no Check.
+    // Back in the studio's own layout, with no agent at all (none found, none
+    // waiting), no Check.
     st.s.ui.look.theme = 0;
     st.s.now += 5.0;
     st.s.ui.agent.agents = Some(Vec::new());
@@ -3874,7 +3880,9 @@ fn every_style_draws_a_lesson_inside_its_code() {
         ] }),
     )
     .unwrap();
-    st.s.ui.panel_hidden = true;
+    st.s.ui
+        .dock
+        .set_hidden(horizon_studio::game::hstudio_ui::Pane::Agent, true);
     let mut drawn = 0;
     for i in 0..THEMES.len() {
         for rect in [Some([10.0, 10.0, 330.0, 230.0]), None] {

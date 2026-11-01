@@ -32,6 +32,9 @@ struct Canvas {
     h: usize,
     px: Vec<[f32; 3]>,
     fonts: [FontRef<'static>; 3],
+    /// Where painting reaches, in pixels (left, top, right, bottom): a
+    /// pane's body is cut to its place, as the game cuts it.
+    scissor: Option<[f32; 4]>,
 }
 
 fn fonts_dir() -> PathBuf {
@@ -87,6 +90,7 @@ impl Canvas {
             h: 0,
             px: Vec::new(),
             fonts: fonts(),
+            scissor: None,
         }
     }
     fn new() -> Canvas {
@@ -110,11 +114,18 @@ impl Canvas {
             h,
             px,
             fonts: fonts(),
+            scissor: None,
         }
     }
     fn blend(&mut self, x: usize, y: usize, argb: u32, cover: f32) {
         if x >= self.w || y >= self.h {
             return;
+        }
+        if let Some([l, t, r, b]) = self.scissor {
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            if px < l || py < t || px >= r || py >= b {
+                return;
+            }
         }
         let a = ((argb >> 24) as f32 / 255.0) * cover.clamp(0.0, 1.0);
         let c = [
@@ -239,10 +250,45 @@ impl Canvas {
     }
 }
 
-/// The fake game, with a canvas for the studio's design-system drawing.
+/// Something drawn, kept to be painted once the frame is done: a rounded
+/// rectangle (or its ring) or a line of text, in dp.
+enum Paint {
+    Rect([f32; 4], f32, u32, bool),
+    Text(String, [f32; 2], f32, Font, u32),
+}
+
+/// The fake game, with a canvas for the studio's design-system drawing. It
+/// keeps what is drawn in order, with the rect each is cut to (`dp_clip`),
+/// and paints it all when the frame is done (`paint`), so the shots show
+/// the panes' bodies cut to their places as the game draws them.
 struct Preview {
     game: FakeGame,
     canvas: Canvas,
+    drawn: Vec<(Paint, Option<[f32; 4]>)>,
+}
+
+impl Preview {
+    fn new(game: FakeGame, canvas: Canvas) -> Preview {
+        Preview {
+            game,
+            canvas,
+            drawn: Vec::new(),
+        }
+    }
+    /// What was drawn, in order, each cut to its rect.
+    fn paint(&mut self) {
+        let d = DENSITY;
+        for (what, clip) in std::mem::take(&mut self.drawn) {
+            self.canvas.scissor = clip.map(|r| [r[0] * d, r[1] * d, (r[0] + r[2]) * d, (r[1] + r[3]) * d]);
+            match what {
+                Paint::Rect(r, radius, argb, ring) => self.canvas.rounded(r, radius, argb, ring),
+                Paint::Text(t, at, size, font, argb) => {
+                    self.canvas.text(&t, at, size, font, argb);
+                }
+            }
+        }
+        self.canvas.scissor = None;
+    }
 }
 
 impl GameApi for Preview {
@@ -290,12 +336,15 @@ impl GameApi for Preview {
         self.canvas.measure(text, 8.0, Font::Regular)
     }
     fn fill(&mut self, r: [f32; 4], argb: u32) {
-        self.canvas
-            .rounded([r[0] * 2.0, r[1] * 2.0, r[2] * 2.0, r[3] * 2.0], 0.0, argb, false);
+        let r = [r[0] * 2.0, r[1] * 2.0, r[2] * 2.0, r[3] * 2.0];
+        self.drawn.push((Paint::Rect(r, 0.0, argb, false), None));
     }
     fn text(&mut self, text: &str, at: [f32; 2], rgb: u32, _: bool) {
-        self.canvas
-            .text(text, [at[0] * 2.0, at[1] * 2.0], 16.0, Font::Regular, 0xFF00_0000 | rgb);
+        let at = [at[0] * 2.0, at[1] * 2.0];
+        self.drawn.push((
+            Paint::Text(text.into(), at, 16.0, Font::Regular, 0xFF00_0000 | rgb),
+            None,
+        ));
     }
     fn place(&mut self, _: Corner, _: f32, _: f32) -> (f32, f32) {
         (4.0, 4.0)
@@ -316,13 +365,32 @@ impl GameApi for Preview {
         (size().0, size().1, 2.0)
     }
     fn dp_rect(&mut self, r: [f32; 4], radius: f32, argb: u32) {
-        self.canvas.rounded(r, radius, argb, false);
+        self.drawn.push((Paint::Rect(r, radius, argb, false), None));
     }
     fn dp_border(&mut self, r: [f32; 4], radius: f32, argb: u32) {
-        self.canvas.rounded(r, radius, argb, true);
+        self.drawn.push((Paint::Rect(r, radius, argb, true), None));
     }
     fn dp_text(&mut self, text: &str, at: [f32; 2], size: f32, font: Font, argb: u32) -> f32 {
-        self.canvas.text(text, at, size, font, argb)
+        self.drawn.push((Paint::Text(text.into(), at, size, font, argb), None));
+        self.canvas.measure(text, size, font)
+    }
+    // A mark is where the next drawing goes; a clip cuts what was drawn
+    // since to `r`, within any cut it had.
+    fn dp_mark(&mut self) -> Option<usize> {
+        Some(self.drawn.len())
+    }
+    fn dp_clip(&mut self, mark: usize, r: [f32; 4]) {
+        for (_, clip) in self.drawn.iter_mut().skip(mark) {
+            *clip = Some(match *clip {
+                None => r,
+                Some(c) => {
+                    let (x, y) = (c[0].max(r[0]), c[1].max(r[1]));
+                    let w = ((c[0] + c[2]).min(r[0] + r[2]) - x).max(0.0);
+                    let h = ((c[1] + c[3]).min(r[1] + r[3]) - y).max(0.0);
+                    [x, y, w, h]
+                }
+            });
+        }
     }
     fn dp_measure(&mut self, text: &str, size: f32, font: Font) -> f32 {
         self.canvas.measure(text, size, font)
@@ -334,23 +402,18 @@ fn draw_settle(st: &mut Studio, p: &mut Preview, f: &impl Fn(&mut Studio, &mut P
 }
 
 fn shot(st: &mut Studio, name: &str, f: impl Fn(&mut Studio, &mut Preview)) {
-    let mut p = Preview {
-        game: FakeGame::new(name),
-        canvas: Canvas::new(),
-    };
+    let mut p = Preview::new(FakeGame::new(name), Canvas::new());
     p.game.dir = st.s.dir.clone();
     // Draw once (a tab change starts its transition), let every animation
     // finish, then draw what shows.
     st.s.now += 5.0;
-    let mut first = Preview {
-        game: FakeGame::new(&format!("{name}-warm")),
-        canvas: Canvas::new(),
-    };
+    let mut first = Preview::new(FakeGame::new(&format!("{name}-warm")), Canvas::blind());
     first.game.dir = st.s.dir.clone();
     draw_settle(st, &mut first, &f);
     std::mem::forget(first.game);
     st.s.now += 5.0;
     f(st, &mut p);
+    p.paint();
     let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/preview");
     std::fs::create_dir_all(&out).unwrap();
     p.canvas.save(&out.join(format!("{name}.png")));
@@ -425,10 +488,7 @@ fn render_the_screens() {
     shot(&mut st, "kit", |st, p| {
         for _ in 0..40 {
             st.s.now += 0.05;
-            let mut warm = Preview {
-                game: FakeGame::new("kit-warm"),
-                canvas: Canvas::new(),
-            };
+            let mut warm = Preview::new(FakeGame::new("kit-warm"), Canvas::blind());
             warm.game.dir = st.s.dir.clone();
             draw_screen(st, &mut warm);
             std::mem::forget(warm.game);
@@ -728,7 +788,9 @@ fn render_the_statue_meshes() {
 #[ignore]
 fn render_the_editor_at_every_size() {
     use horizon_studio::game::hstudio_theme::Look;
-    use horizon_studio::game::hstudio_ui::{AgentLine, AgentLineKind, Panel, refresh_suggest};
+    use horizon_studio::game::hstudio_ui::{
+        AgentLine, AgentLineKind, Dock, DropAt, Key, Mods, Pane, Side, handle, refresh_suggest,
+    };
     let mut game = FakeGame::new("preview-sizes");
     let mut st = studio(&mut game);
     for (i, ex) in horizon_studio::game::hstudio_examples::EXAMPLES.iter().enumerate() {
@@ -780,10 +842,7 @@ fn render_the_editor_at_every_size() {
         // Frames a 60th of a second apart, so everything settles.
         for _ in 0..60 {
             st.s.now += 1.0 / 60.0;
-            let mut warm = Preview {
-                game: FakeGame::new("sizes-warm"),
-                canvas: Canvas::blind(),
-            };
+            let mut warm = Preview::new(FakeGame::new("sizes-warm"), Canvas::blind());
             warm.game.dir = st.s.dir.clone();
             draw(st, &mut warm);
             std::mem::forget(warm.game);
@@ -797,22 +856,20 @@ fn render_the_editor_at_every_size() {
                 window: windowed,
                 ..Look::default()
             };
-            for panel in [Panel::Problems, Panel::Console, Panel::Agent] {
-                st.s.ui.panel = panel;
-                st.s.ui.panel_hidden = false;
-                st.s.ui.panel_focus = panel == Panel::Agent;
+            for pane in [Pane::Problems, Pane::Console, Pane::Agent] {
+                st.s.ui.dock.activate(pane);
                 // The suggestions for what is typed on the line with the typo.
-                st.s.ui.panel_focus = false;
+                st.s.ui.focus = Pane::Code;
                 let row = st.s.editor.lines.iter().position(|l| l.contains("plyer")).unwrap();
                 st.s.editor.click(row, "local plyer = player.po".len(), false);
                 refresh_suggest(&mut st);
-                st.s.ui.panel_focus = panel == Panel::Agent;
+                st.s.ui.focus = if pane == Pane::Agent { Pane::Agent } else { Pane::Code };
                 let name = format!(
                     "sizes-{}x{}{}-{:?}",
                     w as u32,
                     h as u32,
                     if windowed { "-window" } else { "" },
-                    panel
+                    pane
                 )
                 .to_lowercase();
                 shot(&mut st, &name, settle);
@@ -825,8 +882,8 @@ fn render_the_editor_at_every_size() {
     st.s.ui.suggest = None;
     let broken = text.replacen("local colors = {", "local colors = {{", 1);
     st.s.editor.set_text(&broken);
-    st.s.ui.panel = Panel::Problems;
-    st.s.ui.panel_focus = false;
+    st.s.ui.dock.activate(Pane::Problems);
+    st.s.ui.focus = Pane::Code;
     shot(&mut st, "sizes-syntax-error", settle);
     st.s.editor.set_text(&text);
     // The other tabs, and the executor styles, at the smallest and largest.
@@ -853,6 +910,95 @@ fn render_the_editor_at_every_size() {
             shot(&mut st, &format!("sizes-{}x{}-{}", w as u32, h as u32, t.id), settle);
         }
     }
+    // The panes moved, at the smallest and largest, full screen and in a
+    // window: the Agent beside the code, the Docs docked at the right, the
+    // panel hidden, and the Agent's tab lifted over the code's right quarter
+    // with the preview of where it lands.
+    let frame = |st: &mut Studio| {
+        let mut warm = Preview::new(FakeGame::new("panes-warm"), Canvas::blind());
+        warm.game.dir = st.s.dir.clone();
+        draw(st, &mut warm);
+        std::mem::forget(warm.game);
+    };
+    // Where a pane's tab and group were drawn, as the pointer gives them
+    // (GUI pixels, 2 dp each, at Size 100%).
+    let tab_of = |st: &Studio, pane: Pane| {
+        let l =
+            st.s.ui
+                .dock_drawn
+                .iter()
+                .find(|l| l.tabs.iter().any(|(p, _)| *p == pane))
+                .unwrap();
+        let r = l.tabs.iter().find(|(p, _)| *p == pane).unwrap().1;
+        ((r[0] + r[2] / 2.0) / 2.0, (r[1] + r[3] / 2.0) / 2.0, l.rect)
+    };
+    st.s.ui.suggest = None;
+    for (w, h) in [(640.0, 400.0), (1920.0, 1080.0)] {
+        SIZE.with(|c| c.set((w, h)));
+        for windowed in [false, true] {
+            st.s.ui.look = Look {
+                window: windowed,
+                ..Look::default()
+            };
+            st.s.ui.tab = Tab::Editor;
+            st.s.ui.focus = Pane::Code;
+            let size = format!("{}x{}{}", w as u32, h as u32, if windowed { "-window" } else { "" });
+            st.s.ui.dock = Dock::default();
+            st.s.ui.dock.move_pane(
+                Pane::Agent,
+                DropAt::Beside {
+                    anchor: Pane::Code,
+                    side: Side::Right,
+                },
+            );
+            shot(&mut st, &format!("panes-{size}-agent-beside"), settle);
+            st.s.ui.dock = Dock::default();
+            st.s.ui.dock.show(Pane::Docs);
+            shot(&mut st, &format!("panes-{size}-docs"), settle);
+            st.s.ui.dock = Dock::default();
+            st.s.ui.dock.set_hidden(Pane::Console, true);
+            shot(&mut st, &format!("panes-{size}-panel-hidden"), settle);
+            // The Agent's tab pressed, a frame drawn (as the game draws one),
+            // then dragged over the code's right quarter.
+            st.s.ui.dock = Dock::default();
+            frame(&mut st);
+            let (x, y, _) = tab_of(&st, Pane::Agent);
+            handle(&mut st, &mut game, Input::Mouse(x, y));
+            handle(&mut st, &mut game, Input::Button { left: true, down: true });
+            frame(&mut st);
+            let (_, _, code) = tab_of(&st, Pane::Code);
+            let to = ((code[0] + code[2] - 30.0) / 2.0, (code[1] + code[3] / 2.0) / 2.0);
+            handle(&mut st, &mut game, Input::Mouse(to.0, to.1));
+            assert!(st.s.ui.dock_spot.is_some(), "{size}: a place to land");
+            shot(&mut st, &format!("panes-{size}-drag"), settle);
+            let esc = Input::Key {
+                key: Key::Escape,
+                down: true,
+                repeat: false,
+                mods: Mods::default(),
+            };
+            handle(&mut st, &mut game, esc);
+            handle(
+                &mut st,
+                &mut game,
+                Input::Button {
+                    left: true,
+                    down: false,
+                },
+            );
+            st.s.ui.focus = Pane::Code;
+        }
+    }
+    // In an 854 x 480 game's window the code takes the room, the panel's
+    // strip under it.
+    SIZE.with(|c| c.set((854.0, 480.0)));
+    st.s.ui.look = Look {
+        window: true,
+        ..Look::default()
+    };
+    st.s.ui.dock = Dock::default();
+    shot(&mut st, "panes-854x480-window", settle);
+    st.s.ui.look = Look::default();
     SIZE.with(|c| c.set((W, H)));
 }
 
@@ -861,7 +1007,7 @@ fn render_the_editor_at_every_size() {
 fn render_the_agent_in_the_editor() {
     use horizon_studio::game::hstudio_coach::{self as coach, By};
     use horizon_studio::game::hstudio_theme::{Look, THEMES};
-    use horizon_studio::game::hstudio_ui::Panel;
+    use horizon_studio::game::hstudio_ui::Pane;
     use serde_json::json;
     let mut game = FakeGame::new("preview-agent");
     let mut st = studio(&mut game);
@@ -875,8 +1021,7 @@ fn render_the_agent_in_the_editor() {
     let i = st.s.mods.iter().position(|m| m.id == "waypoints").unwrap();
     st.edit_mod(i);
     st.s.ui.tab = Tab::Editor;
-    st.s.ui.panel = Panel::Agent;
-    st.s.ui.panel_hidden = false;
+    st.s.ui.dock.activate(Pane::Agent);
     let by = By {
         name: "Claude Code".into(),
         conn: 1,
@@ -884,10 +1029,7 @@ fn render_the_agent_in_the_editor() {
     let settle = |st: &mut Studio, p: &mut Preview| {
         for _ in 0..60 {
             st.s.now += 1.0 / 60.0;
-            let mut warm = Preview {
-                game: FakeGame::new("agent-warm"),
-                canvas: Canvas::blind(),
-            };
+            let mut warm = Preview::new(FakeGame::new("agent-warm"), Canvas::blind());
             warm.game.dir = st.s.dir.clone();
             draw(st, &mut warm);
             std::mem::forget(warm.game);

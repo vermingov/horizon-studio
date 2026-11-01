@@ -3,13 +3,18 @@
 // the launcher's logical pixels. Neutrals do the work and the violet marks
 // the main action; selection is ink. Motion follows the tokens: QUICK for
 // hovers, MOVE for selection and pages, ENTER (a fade and an 8 dp rise)
-// for content arriving, rows 40 ms apart.
+// for content arriving, rows 40 ms apart. The Editor tab is drawn from the
+// dock: each group of panes with its tab strip (the code's has the file's
+// name, its chips, Save and Run), the bars between the groups, each pane's
+// body kept to its place (the game clips it, and its clicks are cut with
+// it), the group with the keys last, and where a dragged tab would land.
 
 use super::hstudio::{API, CONSOLE_API, Font, GameApi, LogKind, ModState, Studio};
+use super::hstudio_dock::{Bar, DrawnLeaf, Pane, Placed, STRIP};
 use super::hstudio_examples::EXAMPLES;
 use super::hstudio_theme::{ACCENTS, Layout, Look, Palette, THEMES};
 use super::hstudio_ui::{
-    Action, EditorView, LineEdit, Long, Panel, Spot, Tab, Tint, Ui, field, field_num, field_text, highlight, kind,
+    Action, EditorView, LineEdit, Long, Spot, Tab, Tint, Ui, field, field_num, field_text, highlight, key_pane, kind,
     slider_text, widgets,
 };
 
@@ -20,6 +25,60 @@ thread_local! {
     static MOTION: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
     /// The studio's palette easing to a newly chosen one: from, to, since.
     static EASE: std::cell::Cell<Option<(Palette, Palette, f64)>> = const { std::cell::Cell::new(None) };
+    /// A pane's body being drawn, which `clip_end` keeps to its place.
+    static CLIP: std::cell::Cell<Option<Clip>> = const { std::cell::Cell::new(None) };
+}
+
+/// Where a pane's body is kept (in units, and in dp as drawn), the game's
+/// mark before it (None where what was drawn can't be cut), and how many
+/// hits and text areas there were then.
+#[derive(Clone, Copy)]
+struct Clip {
+    rect: [f32; 4],
+    at: [f32; 4],
+    mark: Option<usize>,
+    hits: usize,
+    areas: usize,
+}
+
+/// Begins a pane's body in `rect`: what it draws from here, and the
+/// clicks and text it marks, stay inside, once `clip_end` comes.
+fn clip_begin(st: &mut Studio, p: &mut P, rect: [f32; 4]) {
+    clip_end(st, p);
+    let clip = Clip {
+        rect,
+        at: p.at(rect),
+        mark: p.g.dp_mark(),
+        hits: st.s.ui.hits.len(),
+        areas: st.s.ui.text_areas.len(),
+    };
+    CLIP.with(|c| c.set(Some(clip)));
+}
+
+/// Ends the pane's body begun last, if one is: the game cuts what it drew
+/// to its place, and its hits and text areas are cut to it too (those left
+/// with nothing go). What is drawn after, as suggestions are, is over the
+/// panes around it.
+fn clip_end(st: &mut Studio, p: &mut P) {
+    let Some(clip) = CLIP.with(std::cell::Cell::take) else {
+        return;
+    };
+    if let Some(mark) = clip.mark {
+        p.g.dp_clip(mark, clip.at);
+    }
+    let ui = &mut st.s.ui;
+    let cut = |r: [f32; 4]| {
+        let (x, y) = (r[0].max(clip.rect[0]), r[1].max(clip.rect[1]));
+        let w = (r[0] + r[2]).min(clip.rect[0] + clip.rect[2]) - x;
+        let h = (r[1] + r[3]).min(clip.rect[1] + clip.rect[3]) - y;
+        (w > 0.0 && h > 0.0).then_some([x, y, w, h])
+    };
+    let hits = ui.hits.split_off(clip.hits.min(ui.hits.len()));
+    ui.hits
+        .extend(hits.into_iter().filter_map(|(r, a)| cut(r).map(|r| (r, a))));
+    let areas = ui.text_areas.split_off(clip.areas.min(ui.text_areas.len()));
+    ui.text_areas
+        .extend(areas.into_iter().filter_map(|(k, r)| cut(r).map(|r| (k, r))));
 }
 
 /// This frame's palette.
@@ -152,7 +211,19 @@ pub fn code_size() -> f32 {
     CODE.with(std::cell::Cell::get)
 }
 pub fn code_line() -> f32 {
-    (code_size() * 1.54).round()
+    line_of(code_size())
+}
+
+/// A line of code's height with the code at `size`.
+fn line_of(size: f32) -> f32 {
+    (size * 1.54).round()
+}
+
+/// The lines of code a panel `h` high shows with the code at `size` (None:
+/// too few for one, when its text isn't drawn).
+pub fn code_rows(h: f32, size: f32) -> Option<usize> {
+    let line = line_of(size);
+    (h >= 24.0 + line).then(|| ((h - 24.0) / line).max(1.0) as usize)
 }
 
 #[derive(Clone, Copy)]
@@ -487,9 +558,12 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
     // Back after a while (opened again): nothing glides from before.
     let fresh = now - st.s.ui.last_draw > 0.25;
     // Back since the last frame (opened again, or from a script's screen):
-    // what the left button held then has ended, its release gone elsewhere.
+    // what the left button held then has ended, its release gone elsewhere,
+    // and so has sizing from the keys (the game closes the studio without
+    // a key).
     if st.s.ui.opened_at > st.s.ui.last_draw {
         super::hstudio_ui::let_go(st);
+        super::hstudio_ui::end_sizing(st);
     }
     let dt = {
         let ui = &mut st.s.ui;
@@ -514,6 +588,17 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         ui.scripts_at = None;
         ui.library_dots = None;
         ui.drawn_files.clear();
+        // Set again where they are drawn: a scroll bar not drawn this
+        // frame can't be held, and the coach reads no stale place. No
+        // pane's body is begun yet (a mark is the frame's own).
+        ui.scrollbar = None;
+        ui.coach.code_at = None;
+        ui.coach.bubble_at = None;
+        ui.model_chip = None;
+        ui.new_button = None;
+        ui.dock_bars.clear();
+        ui.dock_drawn.clear();
+        CLIP.with(|c| c.set(None));
         tick(ui, now)
     };
     // The hits name mods by their place in this list.
@@ -526,6 +611,13 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
             st.s.editor.reloaded_at = Some(now);
         }
     }
+    // Agents' marks on their lines as they are now, and the live check:
+    // each frame, so they keep up wherever the code is, drawn or not.
+    super::hstudio_coach::follow_marks(st);
+    live_check(st);
+    // The panes whose body this frame draws (the disk's sync above went by
+    // the last frame's): none, until the Editor tab says.
+    st.s.ui.dock_front = [false; 7];
     let (alpha, rise) = presence(&st.s.ui, now);
     let mut p = P {
         g: game,
@@ -797,6 +889,10 @@ fn studio_page(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32, wind
     let tab = st.s.ui.tab;
     let shown = progress(now, st.s.ui.tab_at, MOVE);
     let body = [x, y + 56.0, w, (h - 84.0).max(40.0)];
+    // The Editor tab's area, kept whichever tab shows: what a change of
+    // the panes would do (a Library or the Docs shown, Panes ›'s marks, the
+    // script list's room) is laid out in the room the Editor tab has now.
+    st.s.ui.dock_ws = Some(body);
     p.alpha = alpha * shown;
     p.dy = rise + (1.0 - shown) * RISE;
     page(st, p, tab, body, dt);
@@ -1060,61 +1156,91 @@ fn header(st: &mut Studio, p: &mut P, x: f32, y: f32, w: f32, dt: f32, windowed:
     }
 }
 
+/// The Library's keys and the Docs', as a page or a pane.
+const LIBRARY_KEYS: &[(&str, &str)] = &[
+    ("⏎", "edit"),
+    ("Space", "on or off"),
+    ("R", "reload"),
+    ("N", "new mod"),
+    (".", "menu"),
+];
+const DOCS_KEYS: &[(&str, &str)] = &[("↑ ↓", "scroll"), ("PgUp PgDn", "page")];
+
+/// The Editor tab's keys, for the pane that has them: the code's (an
+/// agent's lesson's first, while one is on), a panel pane's, or with none
+/// the way back to the code.
+fn editor_hints(ui: &Ui) -> Vec<(&'static str, &'static str)> {
+    let back = ("Esc", "back to the code");
+    match key_pane(ui) {
+        Some(Pane::Console) => vec![("⏎", "run"), ("Tab", "complete"), ("↑ ↓", "history"), back],
+        Some(Pane::Problems) => vec![("↑ ↓", "choose"), ("⏎", "go to it"), back],
+        Some(Pane::Agent) => {
+            let panel = ui.dock.leaf_tabs(Pane::Agent).contains(&Pane::Console);
+            let toggle = if panel {
+                ("Ctrl `", "hide the panel")
+            } else {
+                ("Ctrl `", "panel")
+            };
+            vec![("⏎", "ask"), back, toggle]
+        }
+        Some(Pane::Library) => LIBRARY_KEYS.to_vec(),
+        Some(Pane::Docs) => DOCS_KEYS.to_vec(),
+        None | Some(Pane::Scripts) => vec![back, ("Ctrl B", "script list")],
+        // An agent's lesson: its keys first, and Esc while its note shows.
+        Some(Pane::Code) if ui.coach.lesson.is_some() => {
+            let mut keys = vec![("Alt →", "next step"), ("Alt ←", "back")];
+            if ui.coach.bubble_at.is_some() {
+                keys.push(("Esc", "close the note"));
+            }
+            keys.extend([("Ctrl S", "save and reload"), ("Ctrl Z", "undo")]);
+            keys
+        }
+        Some(Pane::Code) => {
+            let mut keys = vec![
+                ("Ctrl S", "save and reload"),
+                ("Ctrl ⏎", "run"),
+                ("Ctrl Space", "suggest"),
+                ("Ctrl `", "panel"),
+            ];
+            if !ui.dock_front[Pane::Scripts.index()] {
+                keys.push(("Ctrl B", "script list"));
+            }
+            keys.extend([("Ctrl Z", "undo"), ("Ctrl /", "comment")]);
+            keys
+        }
+    }
+}
+
 fn footer(st: &mut Studio, p: &mut P, x: f32, cy: f32, w: f32) {
-    let menu: &[(&str, &str)] = &[("↑ ↓", "choose"), ("⏎", "do it"), ("Esc", "close")];
-    let hints: &[(&str, &str)] = match st.s.ui.tab {
-        // An open menu has the keys.
-        _ if st.s.ui.menu.is_some() => menu,
-        Tab::Console => &[
+    let ui = &st.s.ui;
+    let sized = ui
+        .sizing
+        .and_then(|(_, path)| ui.dock_bars.iter().find(|b| b.path == path))
+        .map(|b| b.row);
+    let hints: Vec<(&str, &str)> = match ui.tab {
+        // An open menu has the keys, then a bar lit for sizing, then a
+        // lifted tab.
+        _ if ui.menu.is_some() => vec![("↑ ↓", "choose"), ("⏎", "do it"), ("Esc", "close")],
+        _ if sized.is_some() => vec![
+            (if sized == Some(true) { "← →" } else { "↑ ↓" }, "move the bar"),
+            ("Shift", "faster"),
+            ("Tab", "next bar"),
+            ("⏎", "done"),
+        ],
+        _ if ui.lifted().is_some() => vec![("release", "drop"), ("Esc", "cancel")],
+        Tab::Console => vec![
             ("⏎", "run"),
             ("↑ ↓", "history"),
             ("Tab", "complete"),
             ("Ctrl L", "clear"),
         ],
-        Tab::Editor if st.s.ui.panel_focus && !st.s.ui.panel_hidden => match st.s.ui.panel {
-            Panel::Console => &[
-                ("⏎", "run"),
-                ("Tab", "complete"),
-                ("↑ ↓", "history"),
-                ("Esc", "back to the code"),
-            ],
-            Panel::Problems => &[("↑ ↓", "choose"), ("⏎", "go to it"), ("Esc", "back to the code")],
-            Panel::Agent => &[("⏎", "ask"), ("Esc", "back to the code"), ("Ctrl `", "hide the panel")],
-        },
-        // An agent's lesson: its keys first, and Esc while its note shows.
-        Tab::Editor if st.s.ui.coach.lesson.is_some() && st.s.ui.coach.bubble_at.is_some() => &[
-            ("Alt →", "next step"),
-            ("Alt ←", "back"),
-            ("Esc", "close the note"),
-            ("Ctrl S", "save and reload"),
-            ("Ctrl Z", "undo"),
-        ],
-        Tab::Editor if st.s.ui.coach.lesson.is_some() => &[
-            ("Alt →", "next step"),
-            ("Alt ←", "back"),
-            ("Ctrl S", "save and reload"),
-            ("Ctrl Z", "undo"),
-        ],
-        Tab::Editor => &[
-            ("Ctrl S", "save and reload"),
-            ("Ctrl ⏎", "run"),
-            ("Ctrl Space", "suggest"),
-            ("Ctrl `", "panel"),
-            ("Ctrl Z", "undo"),
-            ("Ctrl /", "comment"),
-        ],
-        Tab::Library => &[
-            ("⏎", "edit"),
-            ("Space", "on or off"),
-            ("R", "reload"),
-            ("N", "new mod"),
-            (".", "menu"),
-        ],
-        Tab::Docs => &[("↑ ↓", "scroll"), ("PgUp PgDn", "page")],
-        Tab::Settings => &[("↑ ↓", "scroll"), ("Esc", "close")],
+        Tab::Editor => editor_hints(ui),
+        Tab::Library => LIBRARY_KEYS.to_vec(),
+        Tab::Docs => DOCS_KEYS.to_vec(),
+        Tab::Settings => vec![("↑ ↓", "scroll"), ("Esc", "close")],
     };
     let mut hx = x;
-    for (keys, what) in hints {
+    for (keys, what) in &hints {
         if hx > x + w - 120.0 {
             break;
         }
@@ -1287,7 +1413,7 @@ pub(super) fn draw_log(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], scrol
     let skip = scroll.min(shown.len().saturating_sub(rows));
     // Scrolling back glides, a line at a time.
     let back = if scrolled {
-        st.s.ui.page = rows;
+        st.s.ui.pages[Pane::Console.index()] = rows;
         st.s.ui.log_scroll = skip;
         smooth(&mut st.s.ui.smooth[0], skip as f32, dt);
         st.s.ui.smooth[0]
@@ -1350,67 +1476,460 @@ pub(super) fn tint(t: Tint) -> u32 {
     }
 }
 
-/// The bottom panel's tab strip, and the bar between it and the code.
-const STRIP: f32 = 32.0;
-const SPLIT: f32 = 8.0;
-/// The least the code keeps of the editor's height with the panel open,
-/// and the least the panel takes (room allowing) to show a few lines.
-const CODE_MIN: f32 = 100.0;
-const PANEL_MIN: f32 = 150.0;
+/// The Editor tab, as in Visual Studio: its panes in groups of tabs, side
+/// by side or stacked as the dock has them (`hstudio_dock`), sized by the
+/// bars between them. The group of the pane in use is drawn last, so what
+/// it opens over the others (its suggestions) is on top.
+fn draw_editor(st: &mut Studio, p: &mut P, body: [f32; 4], dt: f32) {
+    super::hstudio_ui::settle_focus(&mut st.s.ui);
+    let keep = st.s.ui.focus;
+    let (bars, placed) = st.s.ui.dock.layout(body, keep);
+    let ui = &mut st.s.ui;
+    ui.dock_ws = Some(body);
+    // The panes whose body is drawn, known before any is (what the coach
+    // and the notes read as shown).
+    for l in placed.iter().filter(|l| l.has_body()) {
+        ui.dock_front[l.active.index()] = true;
+    }
+    for bar in &bars {
+        draw_bar(st, p, bar, dt);
+    }
+    st.s.ui.dock_bars = bars;
+    let last = placed.iter().position(|l| l.tabs.contains(&keep));
+    for (i, l) in placed.iter().enumerate() {
+        if Some(i) != last {
+            draw_leaf(st, p, l, dt);
+        }
+    }
+    if let Some(i) = last {
+        draw_leaf(st, p, &placed[i], dt);
+    }
+    drop_preview(&st.s.ui, p);
+}
 
-/// The editor's page, as in VS Code: the file's name and its problems, Save
-/// and Run, the code, and under it the panel (the console, the problems,
-/// the agent), sized by the bar between them.
-fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
-    let title = st.s.editor.title.clone();
-    let tmax = (w * 0.45).max(80.0);
-    let title = p.fit(&title, tmax, 15.0, Font::Medium);
-    let tw = p.text(&title, x, top(y + 16.0, 15.0), 15.0, Font::Medium, pal().ink);
-    st.s.ui.hits.push(([x, y, tw + 22.0, 32.0], Action::Spot(Spot::File)));
-    let dirty = glide(&mut st.s.ui, id("dirty", 0), st.s.editor.dirty, dt);
-    if dirty > 0.01 {
-        let d = 7.0 * dirty;
-        p.rect(
-            [x + tw + 13.5 - d / 2.0, y + 16.5 - d / 2.0, d, d],
-            d / 2.0,
-            pal().accent,
-        );
+/// Where a lifted tab's pane would land, drawn in place over the groups:
+/// the place its group would take, tinted, and where it would join a
+/// strip's tabs a bar between them.
+fn drop_preview(ui: &Ui, p: &mut P) {
+    let (Some(_), Some(spot)) = (ui.lifted(), ui.dock_spot) else {
+        return;
+    };
+    p.rect(spot.rect, 14.0, fade(pal().accent, 0.16));
+    p.border(spot.rect, 14.0, pal().accent);
+    if let Some(bar) = spot.bar {
+        p.rect(bar, 1.0, pal().accent);
     }
-    let mut bx = x + w;
-    {
-        let rw = p.measure("Run", 13.0, Font::Medium) + 28.0;
-        bx -= rw;
-        pill(
-            &mut st.s.ui,
-            p,
-            "run",
-            "Run",
-            bx,
-            y,
-            32.0,
-            Style::Primary,
-            Action::Run,
-            dt,
-        );
-        let sw = p.measure("Save", 13.0, Font::Medium) + 28.0;
-        bx -= sw + 8.0;
-        pill(
-            &mut st.s.ui,
-            p,
-            "save",
-            "Save",
-            bx,
-            y,
-            32.0,
-            Style::Secondary,
-            Action::Save,
-            dt,
-        );
+}
+
+/// A bar between two groups: a grip that widens under the pointer (not
+/// under a lifted tab, which can't land on it) and is the accent while it
+/// is held or lit for sizing from the keys. A bar with too little room to
+/// move is a plain gap: no grip, nothing to press.
+fn draw_bar(st: &mut Studio, p: &mut P, bar: &Bar, dt: f32) {
+    use super::hstudio_ui::DockDrag;
+    if !bar.movable() {
+        return;
     }
-    // Its problems at a glance; a click shows them.
-    let mut px = x + tw + 28.0;
+    let ui = &mut st.s.ui;
+    let held = matches!(ui.dock_drag, Some(DockDrag::Bar { bar: b, .. }) if b.path == bar.path)
+        || ui.sizing.is_some_and(|(_, path)| path == bar.path);
+    let over = inside(bar.rect, ui.mouse) && ui.lifted().is_none();
+    let hv = hover(ui, id("dock-bar", usize::from(bar.path)), held || over, dt);
+    let c = if held {
+        pal().accent
+    } else {
+        fade(pal().ink, 0.14 + 0.22 * hv)
+    };
+    let len = 36.0 + 24.0 * hv;
+    let [x, y, w, h] = bar.rect;
+    let grip = if bar.row {
+        [x + w / 2.0 - 1.5, y + (h - len) / 2.0, 3.0, len]
+    } else {
+        [x + (w - len) / 2.0, y + h / 2.0 - 1.5, len, 3.0]
+    };
+    p.rect(grip, 1.5, c);
+    ui.hits.push((bar.rect, Action::DockBar(bar.path)));
+}
+
+/// A group of tabs placed at `l`: its plate, the ring of its front pane
+/// while that has the keys (not the code's, which fills its plate), its
+/// strip, and the front pane's body, kept to its place under the strip. A
+/// group that gave way to the pane in use is its strip only.
+fn draw_leaf(st: &mut Studio, p: &mut P, l: &Placed, dt: f32) {
+    let now = st.s.now;
+    let [x, y, w, h] = l.rect;
+    let active = l.active;
+    let name = if active == Pane::Agent {
+        super::hstudio_ui::agent_name(st)
+    } else {
+        None
+    };
+    let keys = key_pane(&st.s.ui) == Some(active);
+    let ui = &mut st.s.ui;
+    let f = glide(ui, id("leaf-focus", active.index()), keys, dt);
+    p.rect([x, y, w, h], 14.0, pal().plate_soft);
+    if active != Pane::Code && !l.collapsed {
+        p.border([x, y, w, h], 14.0, fade(pal().accent, 0.35 * f));
+    }
+    // A press where nothing else takes it brings the group in use, and a
+    // right click there opens its front pane's menu.
+    ui.hits.push((l.rect, Action::Focus(active)));
+    ui.hits.push((l.rect, Action::Spot(Spot::Pane(active))));
+    let tabs = draw_strip(st, p, l, f, name.as_deref(), dt);
+    st.s.ui.dock_drawn.push(DrawnLeaf {
+        rect: l.rect,
+        strip: [x, y, w, STRIP],
+        tabs,
+        active,
+        collapsed: l.collapsed,
+    });
+    if !l.has_body() {
+        return;
+    }
+    // What it shows comes in as its tab comes to the front.
+    let (alpha, dy) = (p.alpha, p.dy);
+    let shown = progress(now, st.s.ui.tab_at, MOVE) * progress(now, st.s.ui.shown_at[active.index()], MOVE);
+    p.alpha = alpha * shown;
+    p.dy += (1.0 - shown) * RISE * 0.5;
+    clip_begin(st, p, [x, y + STRIP, w, h - STRIP]);
+    draw_pane(st, p, active, active.body(l.rect), name.as_deref(), dt);
+    clip_end(st, p);
+    p.alpha = alpha;
+    p.dy = dy;
+}
+
+/// What pane `pane` shows in its group's body (`name`: the agent's).
+fn draw_pane(st: &mut Studio, p: &mut P, pane: Pane, body: [f32; 4], name: Option<&str>, dt: f32) {
+    match pane {
+        Pane::Scripts => draw_scripts(st, p, body, dt),
+        Pane::Code => draw_code(st, p, body, dt),
+        Pane::Console => panel_console(st, p, body, dt),
+        Pane::Problems => panel_problems(st, p, body, dt),
+        Pane::Agent => panel_agent(st, p, body, name, dt),
+        Pane::Library => draw_library(st, p, body, dt),
+        Pane::Docs => draw_docs(st, p, body, dt),
+    }
+}
+
+/// A tab's label (the code's: its file's name, cut to `most`), how wide
+/// what follows it is (the problems' count, the agent's busy dot, the code's
+/// unsaved dot), and for the code how far its dot has come in.
+fn pane_label(st: &mut Studio, p: &mut P, pane: Pane, most: f32, dt: f32) -> (String, f32, f32) {
+    match pane {
+        Pane::Code => {
+            let title = p.fit(&st.s.editor.title, most, 12.0, Font::Medium);
+            let dirty = glide(&mut st.s.ui, id("dirty", 0), st.s.editor.dirty, dt);
+            (title, if dirty > 0.01 { 14.0 } else { 0.0 }, dirty)
+        }
+        Pane::Problems => {
+            let n = st.s.editor.problems.len();
+            let badge = if n > 0 {
+                p.measure(&n.to_string(), 10.5, Font::Medium) + 18.0
+            } else {
+                0.0
+            };
+            ("Problems".into(), badge, 0.0)
+        }
+        Pane::Agent => (
+            "Agent".into(),
+            if super::hstudio_ui::agent_busy(st) { 14.0 } else { 0.0 },
+            0.0,
+        ),
+        other => (other.title().into(), 0.0, 0.0),
+    }
+}
+
+/// The widest a label may be for all of `widths` to fit in `room`
+/// together, the longest cut first, none under `least`.
+fn label_cap(widths: &[f32], room: f32, least: f32) -> f32 {
+    let mut ws = widths.to_vec();
+    ws.sort_by(f32::total_cmp);
+    let mut left = room;
+    for (i, w) in ws.iter().enumerate() {
+        let share = left / (ws.len() - i) as f32;
+        if *w > share {
+            return share.max(least);
+        }
+        left -= w;
+    }
+    f32::INFINITY
+}
+
+/// A group's tab strip, its top STRIP: its tabs, cut to fit, the line under
+/// the front one (the accent while it has the keys, `keys`), the × that
+/// hides the group (none for the code's, nor the script list's alone,
+/// which Ctrl+B hides), the front pane's buttons at the right, the code's
+/// chips between, and the panel's tip until a tab or a bar is first moved.
+/// Returns the tabs and where they were drawn.
+fn draw_strip(st: &mut Studio, p: &mut P, l: &Placed, keys: f32, name: Option<&str>, dt: f32) -> Vec<(Pane, [f32; 4])> {
+    let [x, y, w, _] = l.rect;
+    let cy = y + STRIP / 2.0 + 1.0;
+    let mut labels = Vec::new();
+    for &t in &l.tabs {
+        let (label, badge, dot) = pane_label(st, p, t, w * 0.45, dt);
+        let lw = p.measure(&label, 12.0, Font::Medium);
+        labels.push((t, label, lw, badge, dot));
+    }
+    // The tabs at their least: each label 28 wide, or whole if less.
+    let least: f32 = labels
+        .iter()
+        .map(|(_, _, lw, badge, _)| lw.min(28.0) + 26.0 + badge)
+        .sum();
+    let mut rx = x + w - 8.0;
+    if !l.tabs.contains(&Pane::Code) && l.tabs != [Pane::Scripts] {
+        let ui = &mut st.s.ui;
+        let r = [rx - 26.0, y + 4.0, 26.0, STRIP - 6.0];
+        let hv = hover(ui, id("leaf-hide", l.active.index()), inside(r, ui.mouse), dt);
+        p.rect(r, 9.0, fade(pal().ink, 0.08 * hv));
+        let xw = p.measure("×", 16.0, Font::Regular);
+        p.text(
+            "×",
+            r[0] + (26.0 - xw) / 2.0,
+            top(cy - 1.0, 16.0),
+            16.0,
+            Font::Regular,
+            mix(pal().muted, pal().ink, hv),
+        );
+        ui.hits.push((r, Action::HideGroup(l.active)));
+        rx = r[0] - 4.0;
+    }
+    let rx = pane_buttons(st, p, l.active, [x + 8.0 + least, y, rx], name, dt);
+    // The labels cut to what is left of the buttons, the longest first.
+    let room = rx - 8.0 - (x + 8.0) - labels.iter().map(|(_, _, _, badge, _)| 26.0 + badge).sum::<f32>();
+    let widths: Vec<f32> = labels.iter().map(|l| l.2).collect();
+    let cap = label_cap(&widths, room, 28.0);
+    let mut tx = x + 8.0;
+    let mut line = [8.0, 0.0];
+    let mut out = Vec::new();
+    // A tab lifted to be dropped elsewhere stays where it was, faded.
+    let lifted = st.s.ui.lifted();
+    let alpha = p.alpha;
+    for (t, label, lw, badge, dot) in labels {
+        p.alpha = if lifted == Some(t) { alpha * 0.5 } else { alpha };
+        let (label, lw) = if lw > cap {
+            let cut = p.fit(&label, cap, 12.0, Font::Medium);
+            let cw = p.measure(&cut, 12.0, Font::Medium);
+            (cut, cw)
+        } else {
+            (label, lw)
+        };
+        let r = [tx, y + 4.0, lw + 24.0 + badge, STRIP - 6.0];
+        let on = t == l.active;
+        let ui = &mut st.s.ui;
+        let hv = hover(ui, id("pane-tab", t.index()), inside(r, ui.mouse), dt);
+        p.rect(r, 9.0, fade(pal().ink, 0.07 * hv));
+        let c = if on { pal().ink } else { mix(pal().muted, pal().ink, hv) };
+        p.text(&label, tx + 12.0, top(cy, 12.0), 12.0, Font::Medium, c);
+        // What follows the label: the problems' count, the agent at work,
+        // the code's unsaved edits.
+        let bx = tx + 12.0 + lw + 6.0;
+        match t {
+            Pane::Problems if badge > 0.0 => {
+                let (errors, warnings) = counts(&st.s.editor.problems);
+                let n = (errors + warnings).to_string();
+                let nw = p.measure(&n, 10.5, Font::Medium) + 10.0;
+                let bc = if errors > 0 { pal().danger } else { warn() };
+                p.rect([bx, cy - 8.0, nw, 16.0], 8.0, fade(bc, 0.18));
+                p.text(&n, bx + 5.0, top(cy, 10.5), 10.5, Font::Medium, bc);
+            }
+            Pane::Agent if badge > 0.0 => {
+                let pulse = 0.45 + 0.55 * (st.s.now as f32 * 4.0).sin().abs();
+                p.rect([bx + 1.0, cy - 3.5, 7.0, 7.0], 3.5, fade(pal().accent, pulse));
+            }
+            Pane::Code if badge > 0.0 => {
+                let d = 7.0 * dot;
+                p.rect([bx + 4.5 - d / 2.0, cy - d / 2.0, d, d], d / 2.0, pal().accent);
+            }
+            _ => {}
+        }
+        if on {
+            line = [r[0] + 8.0 - x, r[2] - 16.0];
+        }
+        let ui = &mut st.s.ui;
+        ui.hits.push((r, Action::PaneTab(t)));
+        ui.hits.push((r, Action::Spot(Spot::Pane(t))));
+        out.push((t, r));
+        tx += r[2] + 2.0;
+    }
+    // The line under the front tab glides to it (faded with it, lifted).
+    p.alpha = if lifted == Some(l.active) { alpha * 0.5 } else { alpha };
+    let ui = &mut st.s.ui;
+    let first = l.tabs.first().copied().unwrap_or_default();
+    let (key, wkey) = (id("leaf-line", first.index()), id("leaf-line-w", first.index()));
+    let mut lx = ui.anim.get(&key).copied().unwrap_or(line[0]);
+    smooth(&mut lx, line[0], dt);
+    ui.anim.insert(key, lx);
+    let mut lw = ui.anim.get(&wkey).copied().unwrap_or(line[1]);
+    smooth(&mut lw, line[1], dt);
+    ui.anim.insert(wkey, lw);
+    p.rect(
+        [x + lx, y + STRIP - 3.0, lw, 2.0],
+        1.0,
+        mix(pal().ink_soft, pal().accent, keys),
+    );
+    p.alpha = alpha;
+    p.rect([x + 10.0, y + STRIP - 1.0, w - 20.0, 1.0], 0.0, fade(pal().rule, 0.8));
+    let free = if l.active == Pane::Code {
+        code_chips(st, p, tx + 6.0, y, rx - 8.0, dt)
+    } else {
+        tx
+    };
+    // Until a tab or a bar is first moved, the panel's strip says how (not
+    // while a tab is lifted: the footer says what to do then).
+    if st.s.ui.dock_tips && lifted.is_none() && l.tabs.contains(&Pane::Console) {
+        let tip = "Drag a tab to move it · right-click a tab for more";
+        let tw = p.measure(tip, 12.0, Font::Regular);
+        if free + 12.0 + tw <= rx - 12.0 {
+            p.text(tip, free + 12.0, top(cy, 12.0), 12.0, Font::Regular, pal().muted);
+        }
+    }
+    out
+}
+
+/// A button of a strip, `label` at the left of `rx` (which moves past it),
+/// drawn only where it leaves `from` room: its place.
+#[allow(clippy::too_many_arguments)]
+fn strip_button(
+    ui: &mut Ui,
+    p: &mut P,
+    key: &str,
+    label: &str,
+    action: Action,
+    [from, y]: [f32; 2],
+    rx: &mut f32,
+    dt: f32,
+) -> Option<[f32; 4]> {
+    let cy = y + STRIP / 2.0 + 1.0;
+    let bw = p.measure(label, 12.0, Font::Medium) + 20.0;
+    if *rx - bw < from + 12.0 {
+        return None;
+    }
+    *rx -= bw;
+    let r = [*rx, y + 5.0, bw, STRIP - 8.0];
+    let hv = hover(ui, id(key, 0), inside(r, ui.mouse), dt);
+    let danger = action == Action::AgentStop;
+    let c = if danger { pal().danger } else { pal().ink };
+    p.rect(r, (STRIP - 8.0) / 2.0, fade(c, 0.07 + 0.09 * hv));
+    p.text(
+        label,
+        *rx + 10.0,
+        top(cy, 12.0),
+        12.0,
+        Font::Medium,
+        if danger { c } else { mix(pal().ink_soft, c, hv) },
+    );
+    ui.hits.push((r, action));
+    *rx -= 6.0;
+    Some(r)
+}
+
+/// The front pane's buttons at the right of its strip, from `rx` leftward,
+/// each where it leaves the tabs (at their least, ending at `from`) room:
+/// the code's Run and Save, the console's Clear, the agent's Stop while it
+/// works, its name (the next agent found) and its model, the script list's
+/// +. Returns where the last one drawn begins.
+fn pane_buttons(st: &mut Studio, p: &mut P, active: Pane, [from, y, rx]: [f32; 3], name: Option<&str>, dt: f32) -> f32 {
+    let mut rx = rx;
+    match active {
+        Pane::Code => {
+            for (key, label, style, action) in [
+                ("run", "Run", Style::Primary, Action::Run),
+                ("save", "Save", Style::Secondary, Action::Save),
+            ] {
+                let bw = p.measure(label, 13.0, Font::Medium) + 28.0;
+                if rx - bw < from + 12.0 {
+                    break;
+                }
+                rx -= bw;
+                pill(&mut st.s.ui, p, key, label, rx, y + 5.0, STRIP - 8.0, style, action, dt);
+                rx -= 6.0;
+            }
+        }
+        Pane::Console => {
+            strip_button(
+                &mut st.s.ui,
+                p,
+                "panel-clear",
+                "Clear",
+                Action::ClearLog,
+                [from, y],
+                &mut rx,
+                dt,
+            );
+        }
+        Pane::Agent => {
+            if super::hstudio_ui::agent_busy(st) {
+                strip_button(
+                    &mut st.s.ui,
+                    p,
+                    "agent-stop",
+                    "Stop",
+                    Action::AgentStop,
+                    [from, y],
+                    &mut rx,
+                    dt,
+                );
+            }
+            let label = name.map_or_else(|| "Look for an agent".to_owned(), str::to_owned);
+            strip_button(
+                &mut st.s.ui,
+                p,
+                "agent-next",
+                &label,
+                Action::AgentNext,
+                [from, y],
+                &mut rx,
+                dt,
+            );
+            // Its model, for an agent that takes one.
+            let agent = super::hstudio_ui::agent_id(st);
+            if let Some(agent) = agent.filter(|i| !super::hstudio_ui::model_choices(i).is_empty()) {
+                let model = super::hstudio_ui::agent_model(st);
+                let label = format!("Model: {}", super::hstudio_ui::model_label(&agent, model.as_deref()));
+                st.s.ui.model_chip = strip_button(
+                    &mut st.s.ui,
+                    p,
+                    "agent-model",
+                    &label,
+                    Action::ModelMenu,
+                    [from, y],
+                    &mut rx,
+                    dt,
+                );
+            }
+        }
+        Pane::Scripts if rx - 24.0 >= from + 12.0 => {
+            // A new script, module or file.
+            let plus = [rx - 24.0, y + 5.0, 24.0, 24.0];
+            let ui = &mut st.s.ui;
+            let hv = hover(ui, id("scripts-new", 0), inside(plus, ui.mouse), dt);
+            p.rect(plus, 8.0, fade(pal().ink, 0.08 * hv));
+            let pw = p.measure("+", 15.0, Font::Medium);
+            p.text(
+                "+",
+                plus[0] + (plus[2] - pw) / 2.0,
+                top(y + STRIP / 2.0 + 1.0, 15.0),
+                15.0,
+                Font::Medium,
+                mix(pal().muted, pal().ink, hv),
+            );
+            ui.hits.push((plus, Action::NewMenu));
+            ui.new_button = Some(plus);
+            rx = plus[0] - 6.0;
+        }
+        _ => {}
+    }
+    rx
+}
+
+/// The code's chips in its strip, from `x` to `right` (the strip's top
+/// `y`), in this order where each fits: its problems at a glance (a click
+/// shows them), the file its module failed in, agents' notes or lesson, and
+/// a file that couldn't be read. Returns where they end.
+fn code_chips(st: &mut Studio, p: &mut P, x: f32, y: f32, right: f32, dt: f32) -> f32 {
+    let mut px = x + 8.0;
     let (errors, warnings) = counts(&st.s.editor.problems);
-    if errors + warnings > 0 && px + 90.0 < bx - 16.0 {
+    if errors + warnings > 0 && px + 90.0 < right {
         let shown: Vec<(String, u32)> = [(errors, pal().danger), (warnings, warn())]
             .into_iter()
             .filter(|(n, _)| *n > 0)
@@ -1420,95 +1939,47 @@ fn draw_editor(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             .iter()
             .map(|(l, _)| 12.0 + p.measure(l, 12.0, Font::Medium) + 10.0)
             .sum();
-        let chip = [px - 8.0, y + 4.0, cw + 6.0, 24.0];
+        let chip = [px - 8.0, y + 5.0, cw + 6.0, 24.0];
         let ui = &mut st.s.ui;
         let hv = hover(ui, id("problem-chip", 0), inside(chip, ui.mouse), dt);
         p.rect(chip, 12.0, fade(pal().ink, 0.04 + 0.06 * hv));
         let mut cx = px;
         for (label, c) in shown {
-            p.rect([cx, y + 12.5, 7.0, 7.0], 3.5, c);
+            p.rect([cx, y + 13.5, 7.0, 7.0], 3.5, c);
             cx +=
                 12.0 + p.text(
                     &label,
                     cx + 12.0,
-                    top(y + 16.0, 12.0),
+                    top(y + 17.0, 12.0),
                     12.0,
                     Font::Medium,
                     mix(pal().ink_soft, pal().ink, hv),
                 ) + 10.0;
         }
-        ui.hits.push((chip, Action::PanelTab(Panel::Problems)));
+        ui.hits.push((chip, Action::ShowPane(Pane::Problems)));
         px += cw + 14.0;
     }
-    let chip = failed_chip(st, p, px - 8.0, y + 4.0, bx - 16.0, dt);
+    let chip = failed_chip(st, p, px - 8.0, y + 5.0, right, dt);
     if chip > 0.0 {
         px += chip + 6.0;
     }
     // Agents' notes in the code.
-    let chip = coach_chip(st, p, px - 8.0, y + 4.0, bx - 16.0, dt);
+    let chip = coach_chip(st, p, px - 8.0, y + 5.0, right, dt);
     if chip > 0.0 {
         px += chip + 6.0;
     }
-    if let Some(problem) = st.s.editor.problem.clone() {
+    if let Some(problem) = st.s.editor.problem.clone()
+        && right - px > 60.0
+    {
         let msg = p.fit(
             &format!("Could not read the file: {problem}"),
-            bx - px - 16.0,
+            right - px,
             13.0,
             Font::Regular,
         );
-        p.text(&msg, px, top(y + 16.0, 13.0), 13.0, Font::Regular, pal().danger);
+        px += p.text(&msg, px, top(y + 17.0, 13.0), 13.0, Font::Regular, pal().danger) + 8.0;
     }
-    let by = y + 46.0;
-    let bh = h - 46.0;
-    // The scripts at the left, as VS Code's explorer, when there is room.
-    let (x, w) = if w >= 640.0 {
-        let sw = (w * 0.18).clamp(150.0, 210.0).floor();
-        draw_scripts(st, p, [x, by, sw, bh], dt);
-        (x + sw + 10.0, w - sw - 10.0)
-    } else {
-        (x, w)
-    };
-    // The panel's height glides to its share of the page (none while
-    // hidden); sizing it, and the window, follow the pointer at once.
-    let ui = &mut st.s.ui;
-    if ui.panel_h <= 0.0 {
-        ui.panel_h = 0.4;
-    }
-    ui.panel_room = bh;
-    let room = (bh - CODE_MIN - SPLIT).max(0.0);
-    let open = !ui.panel_hidden && room >= STRIP + 60.0;
-    let want = if open {
-        (bh * ui.panel_h).clamp(PANEL_MIN.min(room), room)
-    } else {
-        0.0
-    };
-    if ui.panel_drag.is_some() || ui.drag.is_some() {
-        ui.smooth[4] = want;
-    } else {
-        smooth(&mut ui.smooth[4], want, dt);
-    }
-    let ph = ui.smooth[4].min(room).round();
-    if ph >= 2.0 {
-        let gap = SPLIT * (ph / STRIP).min(1.0);
-        let code_h = bh - ph - gap;
-        let sy = by + code_h;
-        let split = [x, sy, w, gap];
-        let held = ui.panel_drag.is_some();
-        let hv = hover(ui, id("splitter", 0), held || inside(split, ui.mouse), dt);
-        let c = if held {
-            pal().accent
-        } else {
-            fade(pal().ink, 0.14 + 0.22 * hv)
-        };
-        let bw = 36.0 + 24.0 * hv;
-        p.rect([x + (w - bw) / 2.0, sy + gap / 2.0 - 1.5, bw, 3.0], 1.5, c);
-        ui.hits.push((split, Action::PanelResize));
-        draw_panel(st, p, [x, sy + gap, w, ph], dt);
-        draw_code(st, p, [x, by, w, code_h], dt);
-    } else {
-        ui.panel_at = None;
-        draw_code(st, p, [x, by, w, bh], dt);
-    }
+    px - 8.0
 }
 
 /// When the module of the editor's file failed in another of its files:
@@ -1589,46 +2060,22 @@ pub(super) fn state_dot(state: &ModState) -> u32 {
 /// module as a folder that folds, its files under it. A click opens a file
 /// or folds a module; the row under the pointer (and the open one) shows
 /// "..." for its menu, which a right press opens too, and a module's row
-/// has a "+" for a new file of it. The "+" at the top makes a script or a
-/// module. The wheel scrolls it, and it brings the open file's row into
-/// view.
+/// has a "+" for a new file of it. The "+" in its strip makes a script or
+/// a module. The wheel scrolls it (over its rows, within its place), and it
+/// brings the open file's row into view.
 fn draw_scripts(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     use super::hstudio_ui::{ScriptRow, open_row, row_label, script_rows, scripts_first};
     p.rect([x, y, w, h], 14.0, pal().plate_soft);
     // Its own menu, under its rows' and its buttons.
     st.s.ui.hits.push(([x, y, w, h], Action::Spot(Spot::Scripts)));
-    p.text(
-        "Scripts",
-        x + 14.0,
-        top(y + 18.0, 11.0),
-        11.0,
-        Font::Medium,
-        pal().muted,
-    );
-    let plus = [x + w - 32.0, y + 6.0, 24.0, 24.0];
-    {
-        let ui = &mut st.s.ui;
-        let hv = hover(ui, id("scripts-new", 0), inside(plus, ui.mouse), dt);
-        p.rect(plus, 8.0, fade(pal().ink, 0.08 * hv));
-        let pw = p.measure("+", 15.0, Font::Medium);
-        p.text(
-            "+",
-            plus[0] + (plus[2] - pw) / 2.0,
-            top(y + 18.0, 15.0),
-            15.0,
-            Font::Medium,
-            mix(pal().muted, pal().ink, hv),
-        );
-        ui.hits.push((plus, Action::NewMenu));
-        ui.new_button = Some(plus);
-    }
     let row_h = 26.0;
-    let list_y = y + 36.0;
-    let rows = (((h - 44.0) / row_h).floor() as usize).max(1);
+    let list_y = y + 6.0;
+    let rows = (((h - 14.0) / row_h).floor() as usize).max(1);
     let all = script_rows(st);
     let open = open_row(st, &all);
     let first = scripts_first(st, all.len(), rows, open);
-    st.s.ui.scripts_at = Some([x, list_y, w, row_h * rows as f32]);
+    let list_h = (row_h * rows as f32).min(y + h - list_y);
+    st.s.ui.scripts_at = (list_h > 0.0).then_some([x, list_y, w, list_h]);
     for (k, row) in all.iter().enumerate().skip(first).take(rows) {
         let r = [x + 6.0, list_y + row_h * (k - first) as f32, w - 12.0, row_h - 2.0];
         let label = row_label(st, row);
@@ -1716,168 +2163,12 @@ fn counts(problems: &[super::hstudio_assist::Problem]) -> (usize, usize) {
     (errors, problems.len() - errors)
 }
 
-/// The bottom panel in `r`: its tabs, what each tab shows.
-fn draw_panel(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
-    let ui = &mut st.s.ui;
-    ui.panel_at = Some([x, y, w, h]);
-    let focus = glide(ui, id("panel-focus", 0), ui.panel_focus, dt);
-    p.rect([x, y, w, h], 14.0, pal().plate_soft);
-    p.border([x, y, w, h], 14.0, fade(pal().accent, 0.35 * focus));
-    ui.hits.push(([x, y, w, h], Action::FocusPanel));
-    // The tab shown's menu, under what its tab's content marks.
-    ui.hits.push(([x, y, w, h], Action::Spot(Spot::Panel(ui.panel))));
-    let (errors, warnings) = counts(&st.s.editor.problems);
-    let busy = super::hstudio_ui::agent_busy(st);
-    let ui = &mut st.s.ui;
-    let cy = y + STRIP / 2.0 + 1.0;
-    let mut tx = x + 8.0;
-    let mut active = [tx, 0.0];
-    for (panel, label) in [
-        (Panel::Console, "Console"),
-        (Panel::Problems, "Problems"),
-        (Panel::Agent, "Agent"),
-    ] {
-        let lw = p.measure(label, 12.0, Font::Medium);
-        let badge = match panel {
-            Panel::Problems if errors + warnings > 0 => {
-                let n = (errors + warnings).to_string();
-                p.measure(&n, 10.5, Font::Medium) + 18.0
-            }
-            Panel::Agent if busy => 14.0,
-            _ => 0.0,
-        };
-        let r = [tx, y + 4.0, lw + 24.0 + badge, STRIP - 6.0];
-        let on = ui.panel == panel;
-        let hv = hover(ui, id("panel-tab", panel as usize), inside(r, ui.mouse), dt);
-        p.rect(r, 9.0, fade(pal().ink, 0.07 * hv));
-        let c = if on { pal().ink } else { mix(pal().muted, pal().ink, hv) };
-        p.text(label, tx + 12.0, top(cy, 12.0), 12.0, Font::Medium, c);
-        let bx = tx + 12.0 + lw + 6.0;
-        match panel {
-            Panel::Problems if errors + warnings > 0 => {
-                let n = (errors + warnings).to_string();
-                let nw = p.measure(&n, 10.5, Font::Medium) + 10.0;
-                let bc = if errors > 0 { pal().danger } else { warn() };
-                p.rect([bx, cy - 8.0, nw, 16.0], 8.0, fade(bc, 0.18));
-                p.text(&n, bx + 5.0, top(cy, 10.5), 10.5, Font::Medium, bc);
-            }
-            Panel::Agent if busy => {
-                let pulse = 0.45 + 0.55 * (st.s.now as f32 * 4.0).sin().abs();
-                p.rect([bx + 1.0, cy - 3.5, 7.0, 7.0], 3.5, fade(pal().accent, pulse));
-            }
-            _ => {}
-        }
-        if on {
-            active = [r[0] + 8.0, r[2] - 16.0];
-        }
-        ui.hits.push((r, Action::PanelTab(panel)));
-        ui.hits.push((r, Action::Spot(Spot::Panel(panel))));
-        tx += r[2] + 2.0;
-    }
-    // The line under the tab shown glides to it.
-    let key = id("panel-tab-line", 0);
-    let mut lx = ui.anim.get(&key).copied().unwrap_or(active[0] - x);
-    smooth(&mut lx, active[0] - x, dt);
-    ui.anim.insert(key, lx);
-    let wkey = id("panel-tab-width", 0);
-    let mut lw = ui.anim.get(&wkey).copied().unwrap_or(active[1]);
-    smooth(&mut lw, active[1], dt);
-    ui.anim.insert(wkey, lw);
-    let line_c = mix(pal().ink_soft, pal().accent, focus);
-    p.rect([x + lx, y + STRIP - 3.0, lw, 2.0], 1.0, line_c);
-    p.rect([x + 10.0, y + STRIP - 1.0, w - 20.0, 1.0], 0.0, fade(pal().rule, 0.8));
-    // At the right: the tab's own buttons, and hiding the panel.
-    let mut rx = x + w - 8.0;
-    let hide = [rx - 26.0, y + 4.0, 26.0, STRIP - 6.0];
-    let hv = hover(ui, id("panel-hide", 0), inside(hide, ui.mouse), dt);
-    p.rect(hide, 9.0, fade(pal().ink, 0.08 * hv));
-    let xw = p.measure("×", 16.0, Font::Regular);
-    p.text(
-        "×",
-        hide[0] + (26.0 - xw) / 2.0,
-        top(cy - 1.0, 16.0),
-        16.0,
-        Font::Regular,
-        mix(pal().muted, pal().ink, hv),
-    );
-    ui.hits.push((hide, Action::TogglePanel));
-    rx = hide[0] - 4.0;
-    let panel = ui.panel;
-    let name = super::hstudio_ui::agent_name(st);
-    let ui = &mut st.s.ui;
-    let button = |ui: &mut Ui, p: &mut P, key: &str, label: &str, action: Action, rx: &mut f32| -> Option<[f32; 4]> {
-        let bw = p.measure(label, 12.0, Font::Medium) + 20.0;
-        if *rx - bw < tx + 12.0 {
-            return None;
-        }
-        *rx -= bw;
-        let r = [*rx, y + 5.0, bw, STRIP - 8.0];
-        let hv = hover(ui, id(key, 0), inside(r, ui.mouse), dt);
-        let danger = action == Action::AgentStop;
-        let c = if danger { pal().danger } else { pal().ink };
-        p.rect(r, (STRIP - 8.0) / 2.0, fade(c, 0.07 + 0.09 * hv));
-        p.text(
-            label,
-            *rx + 10.0,
-            top(cy, 12.0),
-            12.0,
-            Font::Medium,
-            if danger { c } else { mix(pal().ink_soft, c, hv) },
-        );
-        ui.hits.push((r, action));
-        *rx -= 6.0;
-        Some(r)
-    };
-    match panel {
-        Panel::Console => {
-            button(ui, p, "panel-clear", "Clear", Action::ClearLog, &mut rx);
-        }
-        Panel::Agent => {
-            if busy {
-                button(ui, p, "agent-stop", "Stop", Action::AgentStop, &mut rx);
-            }
-            let label = name.clone().unwrap_or_else(|| "Look for an agent".into());
-            button(ui, p, "agent-next", &label, Action::AgentNext, &mut rx);
-            // Its model, for an agent that takes one.
-            let id = super::hstudio_ui::agent_id(st);
-            let chip = match id.filter(|i| !super::hstudio_ui::model_choices(i).is_empty()) {
-                Some(id) => {
-                    let model = super::hstudio_ui::agent_model(st);
-                    let label = format!("Model: {}", super::hstudio_ui::model_label(&id, model.as_deref()));
-                    button(&mut st.s.ui, p, "agent-model", &label, Action::ModelMenu, &mut rx)
-                }
-                None => None,
-            };
-            st.s.ui.model_chip = chip;
-        }
-        Panel::Problems => {}
-    }
-    // What the tab shows, coming in as the panel opens.
-    let body = [x + 14.0, y + STRIP + 5.0, w - 28.0, h - STRIP - 10.0];
-    if body[3] < 18.0 {
-        return;
-    }
-    let base = p.alpha;
-    let shown = progress(st.s.now, st.s.ui.tab_at, MOVE) * progress(st.s.now, st.s.ui.panel_tab_at, MOVE);
-    p.alpha = base * ((h - STRIP) / 60.0).clamp(0.0, 1.0) * shown;
-    p.dy += (1.0 - shown) * RISE * 0.5;
-    match panel {
-        Panel::Console => panel_console(st, p, body, dt),
-        Panel::Problems => panel_problems(st, p, body, dt),
-        Panel::Agent => panel_agent(st, p, body, name.as_deref(), dt),
-    }
-    p.alpha = base;
-    p.dy -= (1.0 - shown) * RISE * 0.5;
-}
-
 /// The console in the panel: the same log and input as the Console tab.
 fn panel_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let now = st.s.now;
     let field_h = 30.0;
-    let page = st.s.ui.page;
     draw_log(st, p, [x, y, w, h - field_h - 6.0], true, dt);
-    st.s.ui.page = page;
-    let focused = st.s.ui.panel_focus && st.s.ui.panel == Panel::Console;
+    let focused = key_pane(&st.s.ui) == Some(Pane::Console);
     let f = [x - 4.0, y + h - field_h, w + 8.0, field_h];
     let fo = glide(&mut st.s.ui, id("panel-input", 0), focused, dt);
     p.rect(f, 9.0, pal().page);
@@ -1910,6 +2201,8 @@ fn panel_console(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         pal().ink,
         focused,
     );
+    // Its suggestions are over the code, out of the panel's place.
+    clip_end(st, p);
     if focused {
         console_suggest(st, p, &input, [tx, f[1], field_h], start, size, dt);
     }
@@ -1950,7 +2243,7 @@ fn panel_problems(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     }
     first = first.min(n.saturating_sub(rows));
     ui.anim.insert(first_key, first as f32);
-    let focused = ui.panel_focus && ui.panel == Panel::Problems;
+    let focused = key_pane(ui) == Some(Pane::Problems);
     let base = p.alpha;
     let problems = st.s.editor.problems.clone();
     let lines = st.s.editor.lines.clone();
@@ -2216,7 +2509,7 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
         );
     }
     // What to ask.
-    let focused = st.s.ui.panel_focus && st.s.ui.panel == Panel::Agent;
+    let focused = key_pane(&st.s.ui) == Some(Pane::Agent);
     let f = [x - 4.0, y + h - field_h, w + 8.0, field_h];
     let fo = glide(&mut st.s.ui, id("agent-input", 0), focused, dt);
     p.rect(f, 9.0, pal().page);
@@ -2421,6 +2714,27 @@ fn draw_suggest(st: &mut Studio, p: &mut P, [wx, ly, lh]: [f32; 3], typed: &str,
 /// How long typing pauses before the live check looks again.
 pub const CHECK_PAUSE: f64 = 1.0;
 
+/// The live check, once typing pauses; a module's file with its siblings
+/// (read again, and checked again, when they change). Each frame, whether
+/// the code is drawn or not, so its problems are always the file's.
+fn live_check(st: &mut Studio) {
+    let now = st.s.now;
+    let siblings = super::hstudio_ui::editor_siblings(st);
+    let s = &mut st.s;
+    let ed = &mut s.editor;
+    // (A file opened or read again is checked at once; typing, at a pause.)
+    let typing = ed.edited_at > 0.0 && now - ed.edited_at < CHECK_PAUSE;
+    if ed.checked != Some(ed.revision) && !typing {
+        ed.problems = super::hstudio_assist::check(&ed.lines, &ed.title, siblings.as_deref());
+        ed.checked = Some(ed.revision);
+        let old = std::mem::take(&mut s.ui.problem_at);
+        for pr in &ed.problems {
+            let k = problem_key(pr, &ed.lines);
+            s.ui.problem_at.insert(k, old.get(&k).copied().unwrap_or(now));
+        }
+    }
+}
+
 /// A wavy line under `[x, y, w]`, as editors mark problems.
 fn squiggle(p: &mut P, x: f32, y: f32, w: f32, c: u32) {
     const LIFT: [f32; 4] = [0.0, 0.9, 1.8, 0.9];
@@ -2448,28 +2762,7 @@ fn floor_char(s: &str, i: usize) -> usize {
 /// scrollbar, the suggestions, and the file changing on disk.
 pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     let now = st.s.now;
-    // Agents' marks on their lines as they are now.
-    super::hstudio_coach::follow_marks(st);
     st.s.ui.coach.code_at = Some(panel);
-    st.s.ui.coach.bubble_at = None;
-    // The live check, once typing pauses; a module's file with its siblings
-    // (read again, and checked again, when they change).
-    let siblings = super::hstudio_ui::editor_siblings(st);
-    {
-        let s = &mut st.s;
-        let ed = &mut s.editor;
-        // (A file opened or read again is checked at once; typing, at a pause.)
-        let typing = ed.edited_at > 0.0 && now - ed.edited_at < CHECK_PAUSE;
-        if ed.checked != Some(ed.revision) && !typing {
-            ed.problems = super::hstudio_assist::check(&ed.lines, &ed.title, siblings.as_deref());
-            ed.checked = Some(ed.revision);
-            let old = std::mem::take(&mut s.ui.problem_at);
-            for pr in &ed.problems {
-                let k = problem_key(pr, &ed.lines);
-                s.ui.problem_at.insert(k, old.get(&k).copied().unwrap_or(now));
-            }
-        }
-    }
     p.rect(panel, 14.0, pal().plate_soft);
     if let Some(at) = st.s.editor.reloaded_at {
         // Read again after a change elsewhere: a flash.
@@ -2479,14 +2772,13 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
         }
     }
     let top_y = panel[1] + 12.0;
-    if panel[3] < 24.0 + code_line() {
+    let Some(rows) = code_rows(panel[3], code_size()) else {
         return;
-    }
+    };
     // A right click on the code (its line numbers too) opens its menu; the
     // scroll bar, a banner and the suggestions, drawn later, are over it.
     st.s.ui.hits.push((panel, Action::Spot(Spot::Code)));
-    let rows = ((panel[3] - 24.0) / code_line()).max(1.0) as usize;
-    st.s.ui.page = rows;
+    st.s.ui.pages[Pane::Code.index()] = rows;
     let gutter = p.measure("0000", 12.0, Font::Mono) + 30.0;
     let text_x = panel[0] + gutter;
     let text_w = panel[2] - gutter - 18.0;
@@ -2760,6 +3052,9 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     note_bubble(st, p, panel, [text_x, top_y, bottom, s], dt);
     file_changed(st, p, panel, dt);
     agent_notice(st, p, panel, dt);
+    // What the code drew stays in its place; its suggestions, drawn after,
+    // are over the panes around it and take their clicks there.
+    clip_end(st, p);
     // The suggestions, at the word being typed.
     if st.s.ui.suggest.as_ref().is_some_and(|sg| !sg.console) {
         let ed = &st.s.editor;
@@ -2936,18 +3231,22 @@ fn agent_caret(
 
 /// At the bottom right of the code, a moment: an agent changed a file the
 /// editor doesn't show ("Claude Code changed lib/util.lua"); a click shows it.
+/// Cut to the code's width where that is narrow (a pane beside it), and
+/// not drawn where not even a few letters of it would fit.
 fn agent_notice(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     use super::hstudio_coach::NOTICE_SECS;
     let now = st.s.now;
     let Some((text, seq, at)) = st.s.ui.coach.notice.as_ref().map(|n| (n.text.clone(), n.seq, n.at)) else {
         return;
     };
-    let label = format!("{text} · Show");
-    let lw = p.measure(&label, 12.0, Font::Medium) + 30.0;
-    let r = [panel[0] + panel[2] - lw - 14.0, panel[1] + panel[3] - 36.0, lw, 24.0];
-    if panel[3] < 72.0 || r[0] < panel[0] + 10.0 {
+    let show = " · Show";
+    let room = panel[2] - 54.0 - p.measure(show, 12.0, Font::Medium);
+    if panel[3] < 72.0 || room <= 60.0 {
         return;
     }
+    let label = format!("{}{show}", p.fit(&text, room, 12.0, Font::Medium));
+    let lw = p.measure(&label, 12.0, Font::Medium) + 30.0;
+    let r = [panel[0] + panel[2] - lw - 14.0, panel[1] + panel[3] - 36.0, lw, 24.0];
     let age = now - at;
     let base = p.alpha;
     p.alpha = base * progress(now, at, QUICK) * (1.0 - ((age - (NOTICE_SECS - 0.6)) / 0.6).clamp(0.0, 1.0) as f32);
@@ -3061,13 +3360,12 @@ fn bubble_lines(lens: &[(usize, usize)], all: bool, fit: usize) -> (Vec<usize>, 
 /// stays inside the code's panel, never taller than the panel less two rows:
 /// its words are cut to fit, and to their share (eight lines of note) until
 /// its More is pressed. A lesson's step has what to try, its explanation
-/// when the Agent panel doesn't show it (the executor styles have none),
+/// when the Agent pane doesn't show it (the executor styles have none),
 /// and where the lesson is with Back, Check and Next (Done on its last
 /// step). Its × clears the mark, a step's ends the lesson; clicks elsewhere
 /// on it reach nothing under it. (`text_x`: where the code's text starts;
 /// the code's top and bottom; the view's row at its top, as drawn.)
 fn note_bubble(st: &mut Studio, p: &mut P, panel: [f32; 4], [text_x, top_y, bottom, s]: [f32; 4], dt: f32) {
-    use super::hstudio_ui::Panel;
     const LINE: f32 = 17.0;
     const PAD: f32 = 10.0;
     const FOOT: f32 = 32.0;
@@ -3076,11 +3374,10 @@ fn note_bubble(st: &mut Studio, p: &mut P, panel: [f32; 4], [text_x, top_y, bott
         return;
     };
     let step = super::hstudio_coach::step_view(st, mark);
+    // The Agent pane has a step's explanation where its body is drawn (at
+    // the front of its group, which neither gave way nor is hidden).
     let ui = &st.s.ui;
-    let explained = ui.look.theme().layout == Layout::Studio
-        && !ui.panel_hidden
-        && ui.panel == Panel::Agent
-        && ui.panel_at.is_some();
+    let explained = ui.look.theme().layout == Layout::Studio && ui.dock_front[Pane::Agent.index()];
     let ed = &st.s.editor;
     let coach = &st.s.ui.coach;
     let Some(m) = coach.marks.iter().find(|m| m.id == mark) else {
@@ -3224,7 +3521,7 @@ fn note_bubble(st: &mut Studio, p: &mut P, panel: [f32; 4], [text_x, top_y, bott
     p.alpha = base;
 }
 
-/// In the editor's header (at `x`, its top `y`, up to `right`), while
+/// In the code's tab strip (at `x`, its top `y`, up to `right`), while
 /// agents have marked code: "3 notes" in the newest mark's colour, which
 /// goes to the next mark, and a × that clears them; while a lesson is on,
 /// "Lesson 2/5" instead, which shows its step again, and a × that ends it.
@@ -3392,6 +3689,14 @@ fn status(state: &ModState, enabled: bool) -> (&'static str, u32) {
     }
 }
 
+/// What a narrow Library row (`on`: the chosen mod's, its buttons on it)
+/// adds to its height to put its buttons on a line of their own under its
+/// name: where at its right they would leave the name under 100 units, as
+/// in a docked Library at its least width. Nothing for any other row.
+fn buttons_under(on: bool, list_w: f32) -> f32 {
+    if on && list_w - 52.0 - 274.0 < 100.0 { 32.0 } else { 0.0 }
+}
+
 fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let now = st.s.now;
     // Narrow (a small window): the list alone, the chosen mod's buttons on its row.
@@ -3463,7 +3768,8 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         let arrive = progress(now, st.s.ui.tab_at + (i - first) as f64 * STAGGER, ENTER);
         p.alpha = base_a * arrive;
         p.dy = base_dy + (1.0 - arrive) * RISE;
-        let r = [x, ly, list_w, row_h - 4.0];
+        let under = buttons_under(narrow && i == st.s.ui.library_sel, list_w);
+        let r = [x, ly, list_w, row_h - 4.0 + under];
         let selected = i == st.s.ui.library_sel;
         let over = inside(r, st.s.ui.mouse);
         let hv = hover(&mut st.s.ui, id("row", i), over, dt);
@@ -3473,7 +3779,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         let (_, dot) = status(&m.state, m.enabled);
         let cy = ly + (row_h - 4.0) / 2.0;
         p.rect([x + 16.0, cy - 4.0, 8.0, 8.0], 4.0, dot);
-        // A narrow row's buttons take its right side.
+        // A narrow row's buttons take its right side, or a line under it.
         let buttons = narrow && selected;
         let ver = if buttons { String::new() } else { m.version.clone() };
         let vw = if ver.is_empty() {
@@ -3481,7 +3787,11 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         } else {
             p.measure(&ver, 11.0, Font::Mono)
         };
-        let room = if buttons { list_w - 52.0 - 274.0 } else { list_w - 52.0 };
+        let room = if buttons && under == 0.0 {
+            list_w - 52.0 - 274.0
+        } else {
+            list_w - 52.0
+        };
         let name_w = room.max(40.0) - vw;
         let name = p.fit(&m.name, name_w, 14.0, Font::Medium);
         let failed = match &m.state {
@@ -3519,6 +3829,7 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
             let enabled = st.s.mods[i].enabled;
             let toggle = if enabled { "Turn off" } else { "Turn on" };
             let mut bx = x + list_w - 8.0;
+            let by = if under > 0.0 { ly + row_h - 2.0 } else { cy - 13.0 };
             // Its "..." has the rest: a module's files, New file, Make it a module, Delete.
             for (key, label, action) in [
                 ("n-menu", "...", Action::LibraryMenu(i)),
@@ -3532,14 +3843,14 @@ fn draw_library(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
                 } else {
                     Style::Quiet
                 };
-                let bw = pill(&mut st.s.ui, p, key, label, bx, cy - 13.0, 26.0, style, action, dt);
+                let bw = pill(&mut st.s.ui, p, key, label, bx, by, 26.0, style, action, dt);
                 if action == Action::LibraryMenu(i) {
-                    st.s.ui.library_dots = Some([bx, cy - 13.0, bw, 26.0]);
+                    st.s.ui.library_dots = Some([bx, by, bw, 26.0]);
                 }
                 bx -= 4.0;
             }
         }
-        ly += row_h;
+        ly += row_h + under;
     }
     p.alpha = base_a;
     p.dy = base_dy;
@@ -3926,7 +4237,7 @@ fn docs() -> Vec<Doc> {
         Doc::Heading("Script mods".into()),
         Doc::Para("Script mods live in horizon-mods/.horizon-mod-data/horizon_studio/mods/. A script is one file, name.lua. A module is a folder, name/, whose main.lua loads its other files with require(\"lib\") for lib.lua: each file runs once, however its name is written, and the files share the mod's globals. The New prompt (the Library's New mod, or + in the Editor's script list) makes either; a new module has main.lua, shared.lua and lib.lua. The main file runs when the mod loads; what it registers with on(), command() and every() then runs in the game. Save any of its files, in the Editor or any other editor, and the mod reloads at once. A mod that fails stops alone: the Library shows the error, and the Editor marks its line in the file it is in.".into()),
         Doc::Para("In the Editor's script list a module is a folder that folds open to its files. A row's ... (or a right click) adds, renames and deletes a module's files, deletes a mod and makes a script a module; what is deleted goes to the trash folder beside mods, where an older copy of the same name stays, numbered. In the Library each mod's ... (or the . key) has the same, with a module's files to open. Right-click a script or a module, in the Editor's list or the Library, to rename, duplicate or delete it: a copy starts turned off, and a rename keeps its saved data and its on/off state. Ctrl+Enter on a module's file saves it and reloads the module.".into()),
-        Doc::Para("Right-click anything for what can be done with it: the code (Go to definition, the clipboard, Toggle comment, Run, and the agent's Ask, Explain and Fix), a row of the script list or the Library, a problem, the panels and the title bar. The Menu key, or Shift+F10, opens the menu of what has the keys: the code's at the cursor.".into()),
+        Doc::Para("Right-click anything for what can be done with it: the code (Go to definition, the clipboard, Toggle comment, Run, and the agent's Ask, Explain and Fix), a row of the script list or the Library, a problem, a pane's tab or strip and the title bar. The Menu key, or Shift+F10, opens the menu of what has the keys: the code's at the cursor.".into()),
         Doc::Para("Drop a .lua file, a mod folder or a .zip on the game window to install it. Lines -- name:, -- version:, -- author: and -- description: at the top name it in the Library.".into()),
         Doc::Heading("Libraries".into()),
         Doc::Para("A mod can be a library for others: it calls export(table), or its main file returns a table, and other mods take it with local kit = import(\"uikit\"). Libraries load first; when one reloads, the mods that use it reload too. A library's functions run as the mod that calls them, so what they draw, register or store belongs to that mod. Mods talk to each other with emit(\"name:event\", ...) and on(\"name:event\", fn), and json.encode and json.decode turn tables into text and back.".into()),
@@ -3956,13 +4267,15 @@ fn docs() -> Vec<Doc> {
         }
     }
     out.push(Doc::Heading("Looks".into()));
-    out.push(Doc::Para("Settings, the last tab, changes how the studio looks: the theme (Horizon, Horizon Light, Midnight, Nord, Rose, Forest, Solar, or one of four styles after the script executors of old Roblox days), full screen or a window, the accent colour, the size of everything, how much of the game shows behind it, the code's size and whether things move. A window is dragged by its title bar and sized from its bottom right corner; its buttons roll it up, fill the screen and close it. Right-click the title bar for the window and the theme.".into()));
-    out.push(Doc::Para("The executor styles are always a window. Their buttons do the studio's work: Execute runs the editor's code, Clear empties it, Execute File saves the file and reloads its mod, Open File shows the Library, Attach and Inject reload every mod, and Options shows Settings, where the console, the Library and the docs are a click away too.".into()));
+    out.push(Doc::Para("Settings, the last tab, changes how the studio looks: the theme (Horizon, Horizon Light, Midnight, Nord, Rose, Forest, Solar, or one of four styles after the script executors of old Roblox days), full screen or a window, the accent colour, the size of everything, how much of the game shows behind it, the code's size and whether things move. A window is dragged by its title bar and sized from its bottom right corner; its buttons roll it up, fill the screen and close it. Right-click the title bar for the window, the theme and the panes.".into()));
+    out.push(Doc::Para("The executor styles are always a window. Their buttons do the studio's work: Execute runs the editor's code, Clear empties it, Execute File saves the file and reloads its mod, Open File shows the Library, Attach and Inject reload every mod, and Options shows Settings, where the console, the Library and the docs are a click away too. Their layouts are fixed: the panes move in the Horizon themes.".into()));
+    out.push(Doc::Heading("The Editor's panes".into()));
+    out.push(Doc::Para("The Editor tab is groups of panes, each with a strip of tabs: the script list, the code (its strip has the file's name, its problems, Save and Run) and the panel, with the console, the problems and the agent. Drag the bar between two groups to size them. Drag a tab to move its pane: a tinted area shows where it lands, among a group's tabs, beside a group (in its outer quarter), among its tabs (in its middle) or along the left, right or bottom edge, and where there is no room beside a group it joins that group's tabs instead; Esc cancels. The Console, Library and Docs tabs at the top drag in the same way. A strip's × hides its group; Ctrl+` or Ctrl+J shows, focuses and hides the panel, wherever it is, and Ctrl+B the script list. A tab's right-click menu has Hide, Close (the Library and the Docs), Move ›, Size..., Panes › and Reset layout, and the Menu key's menus end with Layout ›, so the keys alone move and size every pane. A click in a pane gives it the keys, and Esc gives them back to the code. In a small window the pane in use takes the room, and a group stacked against it keeps its strip. The layout is kept in layout.txt in the studio's folder. Settings stays a page, as it restyles the whole studio, the panes included, and the executor styles keep their own layouts.".into()));
     out.push(Doc::Heading("AI agents".into()));
     out.push(Doc::Para("horizon-studio-mcp lets AI agents (Claude Code, omp, Codex, Cursor...) make mods here: they write and test them, headless and in this game, run Lua in the console and read what happened. Copy AI setup prompt, at the top right, copies a prompt for your agent that sets it all up; once one is connected, its name shows there. Options > Mods > Horizon Studio turns the AI link off.".into()));
-    out.push(Doc::Para("An agent can work in this editor as you watch: it opens any script, reads it as you have it (unsaved edits too), and types its changes in at a caret of its own with its name on it. Your cursor stays where it is, the view follows the agent until you scroll, and any key or click puts the rest of its change in at once. Ctrl+Z takes a whole change back; a change it writes to the file on disk is typed in too. Its changes stay unsaved until it saves them (or you do); nothing you are typing is saved for you, but asking the game's own agent (Enter in the Agent panel, Ask, Explain or Fix in a menu, a lesson's Check) saves the file you have open first, so its turn starts from what you see (the mod reloads with it). A file you don't have open is changed on disk instead, and a note over the code shows it. The Agent panel says what it did, and Show there goes to that code.".into()));
-    out.push(Doc::Para("It can point at code too: lines highlighted in a colour (red for an error, amber for a warning, green for something right) with a note. The newest note shows in a bubble under its lines, the others at the end of their line (a click opens them); the bubble's × removes a note and Esc closes it. The editor's header counts the notes: a click goes to the next, its × clears them. Notes stay on their lines as you edit.".into()));
-    out.push(Doc::Para("And it can teach: a lesson is numbered steps over your code, each a note with something to try, and an explanation in the Agent panel (in the note, in the executor styles). Next and Back, or Alt+Right and Alt+Left, go through it; Check asks the agent to look at what you did; Done or the × ends it. While the agent waits for you the panel says so, and Enter sends it your answer.".into()));
+    out.push(Doc::Para("An agent can work in this editor as you watch: it opens any script, reads it as you have it (unsaved edits too), and types its changes in at a caret of its own with its name on it. Your cursor stays where it is, the view follows the agent until you scroll, and any key or click puts the rest of its change in at once. Ctrl+Z takes a whole change back; a change it writes to the file on disk is typed in too. Its changes stay unsaved until it saves them (or you do); nothing you are typing is saved for you, but asking the game's own agent (Enter in the Agent pane, Ask, Explain or Fix in a menu, a lesson's Check) saves the file you have open first, so its turn starts from what you see (the mod reloads with it). A file you don't have open is changed on disk instead, and a note over the code shows it. The Agent pane says what it did, and Show there goes to that code.".into()));
+    out.push(Doc::Para("It can point at code too: lines highlighted in a colour (red for an error, amber for a warning, green for something right) with a note. The newest note shows in a bubble under its lines, the others at the end of their line (a click opens them); the bubble's × removes a note and Esc closes it. The code's tab strip counts the notes: a click goes to the next, its × clears them. Notes stay on their lines as you edit.".into()));
+    out.push(Doc::Para("And it can teach: a lesson is numbered steps over your code, each a note with something to try, and an explanation in the Agent pane (in the note where that pane isn't shown, as in the executor styles). Next and Back, or Alt+Right and Alt+Left, go through it; Check asks the agent to look at what you did; Done or the × ends it. While the agent waits for you the Agent pane says so, and Enter sends it your answer.".into()));
     out.push(Doc::Heading("Commands in chat".into()));
     out.push(Doc::Para(
         "/studio opens this screen, /studio reload reloads every script mod, /studio help lists the commands the studio takes, /lua <code> runs code.".into(),
@@ -4022,7 +4335,7 @@ fn draw_docs(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let total: f32 = lines.iter().map(|l| l.4).sum();
     let step = 22.0;
     let max = ((total - h) / step).max(0.0).ceil() as usize;
-    st.s.ui.page = (h / step) as usize;
+    st.s.ui.pages[Pane::Docs.index()] = (h / step) as usize;
     // Show in Docs: the entry asked for at the top, at once, and tinted a moment.
     if let Some(name) = st.s.ui.docs_find.take()
         && let Some((_, first, _)) = entries.iter().find(|(n, ..)| *n == name)
@@ -4070,10 +4383,9 @@ fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     let card_h = 98.0;
     let grid_h = THEMES.len().div_ceil(cols) as f32 * (card_h + gap);
     let row_h = 46.0;
-    let total = 30.0 + grid_h + 14.0 + row_h * 7.0;
+    let total = 30.0 + grid_h + 14.0 + row_h * 8.0;
     let ui = &mut st.s.ui;
     ui.settings_scroll = ui.settings_scroll.clamp(0.0, (total - h).max(0.0));
-    ui.page = (h / 40.0) as usize;
     smooth(&mut ui.smooth[3], ui.settings_scroll, dt);
     let shown = |r: [f32; 4]| r[1] >= y - 0.5 && r[1] + r[3] <= y + h + 0.5;
     let mut cy = y - ui.smooth[3];
@@ -4099,7 +4411,16 @@ fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     }
     cy += grid_h + 14.0;
     let vx = x + if cw < 460.0 { 110.0 } else { 170.0 };
-    let rows: [&str; 7] = ["Window", "Accent", "Size", "Backdrop", "Code size", "Animations", ""];
+    let rows: [&str; 8] = [
+        "Window",
+        "Accent",
+        "Size",
+        "Backdrop",
+        "Code size",
+        "Animations",
+        "Layout",
+        "",
+    ];
     for (n, label) in rows.into_iter().enumerate() {
         let r = [x, cy, cw, row_h];
         let mid = cy + row_h / 2.0;
@@ -4107,7 +4428,7 @@ fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         if !shown(r) {
             continue;
         }
-        if n > 0 && n < 6 {
+        if n > 0 && n < 7 {
             p.rect([x, r[1], cw, 1.0], 0.0, fade(pal().rule, 0.6));
         }
         p.text(label, x, top(mid, 14.0), 14.0, Font::Regular, pal().ink);
@@ -4191,12 +4512,70 @@ fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
                 );
                 ui.hits.push(([vx - 4.0, mid - 15.0, 48.0, 30.0], Action::Motion));
             }
+            6 => layout_row(st, p, [vx, mid, x + cw], dt),
             _ => {
-                let t = p.fit("Kept in look.txt, in the studio's folder.", cw, 12.0, Font::Regular);
+                let t = p.fit(
+                    "Kept in look.txt and layout.txt, in the studio's folder.",
+                    cw,
+                    12.0,
+                    Font::Regular,
+                );
                 p.text(&t, x, top(mid, 12.0), 12.0, Font::Regular, pal().muted);
             }
         }
     }
+}
+
+/// Settings' Layout row, from `vx` on its middle `mid`, up to `right`: Reset
+/// layout (greyed, taking no click, while the panes are where they start),
+/// or Undo reset layout after one. An executor style keeps its own layout,
+/// as its row says, and its Reset the panes is for when a Horizon theme is
+/// chosen again.
+fn layout_row(st: &mut Studio, p: &mut P, [vx, mid, right]: [f32; 3], dt: f32) {
+    let ui = &mut st.s.ui;
+    let studio = ui.look.theme().layout == Layout::Studio;
+    let (label, action) = match ui.dock_undo {
+        Some(_) => ("Undo reset layout", Action::UndoReset),
+        None if studio => ("Reset layout", Action::ResetLayout),
+        None => ("Reset the panes", Action::ResetLayout),
+    };
+    let mut bx = vx;
+    if !studio {
+        let say = "This style keeps its own layout; the panes move in the Horizon themes";
+        let room = right - vx - p.measure(label, 13.0, Font::Medium) - 40.0;
+        // On two lines where one is too short, the second cut to fit.
+        let lines = match p.wrap(say, room, 13.0, Font::Regular).as_slice() {
+            [first, rest @ ..] if !rest.is_empty() => {
+                vec![first.clone(), p.fit(&rest.join(" "), room, 13.0, Font::Regular)]
+            }
+            lines => lines.to_vec(),
+        };
+        let mut widest: f32 = 0.0;
+        for (i, line) in lines.iter().enumerate() {
+            let ly = mid + (i as f32 - (lines.len() as f32 - 1.0) / 2.0) * 17.0;
+            widest = widest.max(p.text(line, bx, top(ly, 13.0), 13.0, Font::Regular, pal().muted));
+        }
+        bx += widest + 12.0;
+    }
+    let idle = action == Action::ResetLayout && ui.dock.is_default();
+    let alpha = p.alpha;
+    if idle {
+        p.alpha = alpha * 0.45;
+    }
+    let action = if idle { Action::Block } else { action };
+    pill(
+        ui,
+        p,
+        "reset-layout",
+        label,
+        bx,
+        mid - 14.0,
+        28.0,
+        Style::Quiet,
+        action,
+        dt,
+    );
+    p.alpha = alpha;
 }
 
 /// A theme to pick: a small picture of it and its name.

@@ -12,6 +12,7 @@
 // what they are typing is never saved for them.
 
 use super::hstudio::{GameApi, ModState, Studio, mod_id};
+use super::hstudio_dock::Pane;
 use super::hstudio_modfiles::{file_name, path_in, plan_mod};
 use super::hstudio_ui::{Action, AgentLineKind, Editor, Input, Key, Mods, Tab};
 use serde_json::{Value as Json, json};
@@ -131,7 +132,7 @@ fn run_id() -> u64 {
     h.finish() >> 11
 }
 
-/// A note over the code: what an agent changed elsewhere, its Agent panel
+/// A note over the code: what an agent changed elsewhere, its Agent pane
 /// line (whose jump shows it), and when.
 pub struct Notice {
     pub text: String,
@@ -176,7 +177,7 @@ impl Default for Coach {
     }
 }
 
-/// Some code an Agent panel line is about: a file and its rows (from 0),
+/// Some code an Agent pane line is about: a file and its rows (from 0),
 /// and the mark there, whose note opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Jump {
@@ -722,24 +723,31 @@ fn busy(why: impl Into<String>) -> Json {
     json!({ "ok": false, "busy": true, "error": why.into() })
 }
 
+/// Whether the player holds something in the open studio, however long ago
+/// it began: the button down for a drag (selecting, the scroll bar, a bar
+/// between panes, a pane's tab, the window), or a bar lit for sizing from
+/// the keys, which the arrows move until another key or a click ends it.
+fn holding(ui: &super::hstudio_ui::Ui) -> bool {
+    ui.open && (ui.dragging_any() || ui.sizing.is_some())
+}
+
 /// Whether the player is using the studio: they used it a moment ago, or
-/// hold the button down for a drag (selecting, the scroll bar, the panel's
-/// edge, the window), however long ago it began.
+/// hold something in it (a drag, sizing from the keys).
 fn using(st: &Studio) -> bool {
-    let ui = &st.s.ui;
-    ui.coach.player_busy(st.s.now) || (ui.open && ui.dragging_any())
+    st.s.ui.coach.player_busy(st.s.now) || holding(&st.s.ui)
 }
 
 /// Whether the view is the player's: they changed the code a moment ago,
 /// press a button in this frame's input (still to come, after the link's
-/// requests), or hold the button down for a drag (selecting, the scroll
-/// bar, the panel's edge, the window), however long ago it began. An
-/// agent's edit (or a change on disk to the file open) then lands at once,
-/// and nothing an agent asks moves the view: a drag would go on selecting
-/// in the lines it moved to, and a click would leave the cursor out of it.
+/// requests), or hold something (a drag of a selection, the scroll bar, a
+/// bar between panes, a pane's tab or the window, sizing from the keys),
+/// however long ago it began. An agent's edit (or a change on disk to the
+/// file open) then lands at once, and nothing an agent asks moves the
+/// view: a drag would go on selecting in the lines it moved to, and a click
+/// would leave the cursor out of it.
 fn view_held(st: &Studio) -> bool {
     let ui = &st.s.ui;
-    ui.coach.player_editing(st.s.now) || ui.coach.press_coming || (ui.open && ui.dragging_any())
+    ui.coach.player_editing(st.s.now) || ui.coach.press_coming || holding(ui)
 }
 
 /// Whether the player has a prompt or a menu open in the studio.
@@ -757,10 +765,40 @@ fn switch_waits(st: &Studio) -> Option<Json> {
     using(st).then(|| busy("the player is using the studio"))
 }
 
+/// The rows the code shows: in the studio's own layout, as the dock has its
+/// panes now, laid out in the Editor tab's room (a pane shown or hidden, or
+/// the code brought to the front, a moment ago counts before the next draw
+/// has it); else, or while its body isn't drawn, as it was last drawn (0:
+/// never).
+fn code_page(ui: &super::hstudio_ui::Ui) -> usize {
+    let drawn = ui.pages[Pane::Code.index()];
+    let studio = ui.look.theme().layout == super::hstudio_theme::Layout::Studio;
+    let Some(ws) = ui.dock_ws.filter(|_| studio) else {
+        return drawn;
+    };
+    let (_, placed) = ui.dock.layout(ws, ui.dock.settled(ui.focus));
+    placed
+        .iter()
+        .find(|l| l.active == Pane::Code && l.has_body())
+        .and_then(|l| super::hstudio_look::code_rows(Pane::Code.body(l.rect)[3], ui.look.code))
+        .unwrap_or(drawn)
+}
+
+/// Whether the player sees the code: the studio open on its Editor tab, not
+/// rolled up, and in the studio's own layout the code's body drawn last
+/// frame (not behind another tab, nor given way to another pane). An
+/// agent's change to code not seen lands at once instead of being typed in.
+fn code_seen(ui: &super::hstudio_ui::Ui) -> bool {
+    ui.open
+        && ui.tab == Tab::Editor
+        && !ui.collapsed
+        && (ui.look.theme().layout != super::hstudio_theme::Layout::Studio || ui.dock_front[Pane::Code.index()])
+}
+
 /// Shows line `n` (from 1) a third of the way down the editor's view, with
 /// the cursor on it when `cursor`.
 fn show_line(st: &mut Studio, n: usize, cursor: bool) {
-    let page = if st.s.ui.page > 0 { st.s.ui.page } else { 30 };
+    let page = Some(code_page(&st.s.ui)).filter(|n| *n > 0).unwrap_or(30);
     let ed = &mut st.s.editor;
     let row = (n - 1).min(ed.lines.len() - 1);
     if cursor {
@@ -782,9 +820,10 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let line = line_param(params, "line")?;
     let already = st.s.editor.path.as_deref() == Some(t.path.as_path());
     if already {
-        // Its tab comes forward when another file could open.
+        // Its tab comes forward when another file could open, the code at
+        // the front of its group (the keys stay where they are).
         if switch_waits(st).is_none() {
-            st.s.ui.tab = Tab::Editor;
+            super::hstudio_ui::reveal_code(st);
         }
         // The view moves to the line, unless it is the player's; their
         // cursor stays theirs.
@@ -804,7 +843,7 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
         st.open_file(&t.path);
         // A new mod isn't one yet: its title is what it will be.
         st.s.editor.title = t.file.clone();
-        st.s.ui.tab = Tab::Editor;
+        super::hstudio_ui::reveal_code(st);
         if let Some(n) = line {
             show_line(st, n, true);
         }
@@ -1097,7 +1136,7 @@ fn in_run(st: &mut Studio, by: &By) -> bool {
     super::hstudio_ui::agent_busy(st) && super::hstudio_ui::agent_name(st).is_some_and(|n| n == by.name)
 }
 
-/// A line in the Agent panel for what an agent did in the editor, which
+/// A line in the Agent pane for what an agent did in the editor, which
 /// jumps to the code; named after the agent unless it is the game's own,
 /// in its run (`in_run`).
 fn say(st: &mut Studio, by: &By, in_run: bool, text: impl Into<String>, jump: Option<Jump>) {
@@ -1212,10 +1251,10 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     }
     let now = st.s.now;
     let ui = &st.s.ui;
-    let seen = ui.open && ui.tab == Tab::Editor && !ui.collapsed;
+    let seen = code_seen(ui);
     let hands_off = view_held(st);
     let animated = seen && !hands_off && ui.look.motion && flag(params, "typing") != Some(false);
-    let page = ui.page.max(1);
+    let page = code_page(ui).max(1);
     let player_edits = match &ui.coach.unsaved {
         Some(u) if st.s.editor.path.as_ref() == Some(&u.path) && u.rev == st.s.editor.revision => u.player_edits,
         _ => st.s.editor.dirty,
@@ -1528,7 +1567,7 @@ fn still_there(st: &Studio, t: &mut Typing) -> bool {
 
 /// An edit whose buffer changed under it (another file opened, the file
 /// read again, the text cleared): the rest isn't typed in, and its result
-/// and the Agent panel say so.
+/// and the Agent pane say so.
 fn cut_off(st: &mut Studio, t: Typing) {
     if t.reload {
         // Half read again and changed meanwhile: the editor asks the player
@@ -1679,7 +1718,7 @@ pub fn followed_caret(c: &Coach, ed: &Editor) -> Option<(usize, usize)> {
 
 /// Keeps the agent's caret in view, unless the player scrolled away.
 fn follow(st: &mut Studio, t: &mut Typing) {
-    let page = st.s.ui.page.max(1);
+    let page = code_page(&st.s.ui).max(1);
     let ed = &mut st.s.editor;
     if t.free || ed.scroll != t.scroll {
         t.free = true;
@@ -1753,7 +1792,7 @@ fn keep_result(st: &mut Studio, id: u64, result: &Json) {
 
 /// Saves the editor's file for an agent, unless the player is typing in it
 /// or the file on disk changed since the editor read it (the player
-/// chooses then); a line in the Agent panel says how its mod is. Returns
+/// chooses then); a line in the Agent pane says how its mod is. Returns
 /// the mod's state.
 fn save_now(st: &mut Studio, game: &mut dyn GameApi, by: &By, in_run: bool) -> Result<Json, String> {
     let ed = &st.s.editor;
@@ -1853,7 +1892,7 @@ fn end_turn(st: &mut Studio, game: &mut dyn GameApi, ok: bool) {
     st.s.ui.agent.say(AgentLineKind::Done, text, now);
 }
 
-/// The code Agent panel line number `seq` is about, shown: its file opens
+/// The code Agent pane line number `seq` is about, shown: its file opens
 /// (the one open saved first, as the script list does: it is the player's
 /// own click), its first line a third of the way down with the cursor on
 /// it, its lines lit a moment, and the keys go back to the code. A mark's
@@ -1894,11 +1933,10 @@ pub fn go(st: &mut Studio, game: &mut dyn GameApi, seq: u64) {
         c.open_mark = Some(m.id);
         c.more = false;
     }
+    super::hstudio_ui::show_code(st);
     show_line(st, jump.first + 1, true);
     let now = st.s.now;
     let ui = &mut st.s.ui;
-    ui.tab = Tab::Editor;
-    ui.panel_focus = false;
     ui.coach.notice = None;
     ui.coach.flash = Some(Flash {
         path: jump.path,
@@ -2201,7 +2239,7 @@ fn marks_json(st: &Studio, path: &Path) -> Json {
 /// Scrolls the editor so rows `first..=last` show, the first a third of
 /// the way down, unless they all show already. The cursor stays.
 fn reveal_rows(st: &mut Studio, first: usize, last: usize) {
-    let page = if st.s.ui.page > 0 { st.s.ui.page } else { 30 };
+    let page = Some(code_page(&st.s.ui)).filter(|n| *n > 0).unwrap_or(30);
     let ed = &mut st.s.editor;
     let shows = first >= ed.scroll && last < ed.scroll + page;
     if !shows {
@@ -2567,7 +2605,7 @@ pub fn file_gone(st: &mut Studio, path: &Path) {
 /// A file the studio moved, or a folder with its files (a mod renamed, a
 /// module's file renamed, a script made a module), now at `to`, whether
 /// the editor shows it or not: its marks go along, a lesson's steps too,
-/// and so do the record of an agent's unsaved edits and the Agent panel's
+/// and so do the record of an agent's unsaved edits and the Agent pane's
 /// lines about it, named as the editor names the file now. Marks already
 /// at `to` are another file's, gone from there (a lesson's steps stay).
 pub fn file_moved(st: &mut Studio, from: &Path, to: &Path) {
@@ -2663,7 +2701,7 @@ fn go_to_mark(st: &mut Studio, game: &mut dyn GameApi, id: u32) {
     let (first, last) = (m.first, m.last);
     c.open_mark = Some(id);
     c.more = false;
-    st.s.ui.tab = Tab::Editor;
+    super::hstudio_ui::reveal_code(st);
     reveal_rows(st, first, last);
 }
 
@@ -2797,7 +2835,7 @@ pub struct Lesson {
     pub steps: Vec<Step>,
     /// The step showing, from 0.
     pub at: usize,
-    /// The steps whose explanation the Agent panel has had.
+    /// The steps whose explanation the Agent pane has had.
     seen: Vec<bool>,
 }
 
@@ -2859,7 +2897,7 @@ fn unsaved_refusal(st: &Studio, tool: &str, also: &str) -> Option<String> {
 
 /// The link's `lesson`: a lesson of numbered steps in the editor, each
 /// lines of a script with a note, what it explains at more length (the
-/// Agent panel shows it, or where there is none the step's bubble) and what
+/// Agent pane shows it, or where there is none the step's bubble) and what
 /// the player is to try. Its first step shows, its file opened as
 /// open_script opens one: not while the player is using the studio, nor
 /// over unsaved edits. The player then goes through it with Next and Back.
@@ -3001,25 +3039,35 @@ pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -
         mark: Some(marks[0]),
     };
     say(st, by, in_run, did.clone(), Some(jump));
-    // The Agent panel shows its steps' explanations, unless the player has
-    // the keys in another of the panel's tabs or a prompt or a menu is up;
-    // the Editor tab comes forward when another file could open.
+    // The Agent pane shows its steps' explanations, at its place (its group
+    // shown), unless it would cover the code, where the steps are, or the
+    // pane the player has the keys in, or a prompt or a menu is up (the
+    // note has the explanation then); the Editor tab comes forward when
+    // another file could open. While the player holds something (a drag,
+    // sizing from the keys) or presses in this frame, the groups stay where
+    // they are: the pane comes to the front of its group only while that
+    // group is shown, as showing a hidden one would move the others under
+    // the pointer (and end what it holds).
     let now = st.s.now;
     let (prompt, held) = (prompted(st), view_held(st));
     let busy = prompt || using(st);
+    let still = holding(&st.s.ui) || st.s.ui.coach.press_coming;
     let ui = &mut st.s.ui;
+    let covered = ui.dock.covers(Pane::Agent);
     if ui.look.theme().layout == super::hstudio_theme::Layout::Studio
         && !prompt
-        && (!ui.panel_focus || ui.panel == super::hstudio_ui::Panel::Agent)
+        && covered != Some(Pane::Code)
+        && !(covered == Some(ui.focus) && ui.focus.takes_keys())
+        && (!still || ui.dock.shown(Pane::Agent))
     {
-        if ui.panel != super::hstudio_ui::Panel::Agent {
-            ui.panel_tab_at = now;
+        if !ui.dock.is_front(Pane::Agent) {
+            ui.shown_at[Pane::Agent.index()] = now;
         }
-        ui.panel = super::hstudio_ui::Panel::Agent;
-        ui.panel_hidden = false;
+        ui.dock.show(Pane::Agent);
+        super::hstudio_ui::dock_changed(st);
     }
     if !busy {
-        ui.tab = Tab::Editor;
+        super::hstudio_ui::reveal_code(st);
     }
     show_step(st, game, 0, !held);
     if !st.s.ui.open {
@@ -3050,7 +3098,7 @@ fn end_lesson(c: &mut Coach) {
 /// Shows step `i` of the lesson: its file opens (the one open saved first,
 /// as the script list does: it is the player's own step, or a file the
 /// lesson's start found clean), its note opens and, with `scroll`, its
-/// lines show. The first time a step shows, the Agent panel says which it
+/// lines show. The first time a step shows, the Agent pane says which it
 /// is and has its explanation.
 fn show_step(st: &mut Studio, game: &mut dyn GameApi, i: usize, scroll: bool) {
     let now = st.s.now;
@@ -3171,7 +3219,9 @@ fn lesson_go(st: &mut Studio, game: &mut dyn GameApi, i: usize) {
 
 /// The lesson's Check: an agent waiting for the player gets the step's
 /// lines as they are now and the live check's problems; else the game's own
-/// agent is asked to check the step, in a new turn of the conversation.
+/// agent is asked to check the step, in a new turn of the conversation, and
+/// the Agent pane, where it answers, comes to the front of its group, its
+/// group shown, as for the menus' Ask (it is the player's own click).
 fn lesson_check(st: &mut Studio) {
     let c = &st.s.ui.coach;
     let Some(l) = &c.lesson else {
@@ -3221,11 +3271,18 @@ fn lesson_check(st: &mut Studio) {
             i + 1,
             task.trim().trim_end_matches('.')
         );
+        let ui = &mut st.s.ui;
+        if !ui.dock.is_front(Pane::Agent) {
+            ui.shown_at[Pane::Agent.index()] = now;
+        }
+        ui.dock.show(Pane::Agent);
+        super::hstudio_ui::dock_changed(st);
         super::hstudio_ui::agent_ask(st, &ask);
     }
 }
 
-/// The lesson's × (its bubble's, or the header chip's): it ends.
+/// The lesson's × (its bubble's, or its chip's on the code's tab strip): it
+/// ends.
 fn lesson_end(st: &mut Studio) {
     let Some(l) = &st.s.ui.coach.lesson else {
         return;
@@ -3261,7 +3318,7 @@ fn can_check(st: &mut Studio) -> bool {
 }
 
 /// Whether the game's own agent can check the player's try: found, not
-/// working, and in the studio's own layout, whose Agent panel shows what
+/// working, and in the studio's own layout, whose Agent pane shows what
 /// it says (an executor style has none, as the menus' agent items know).
 fn own_agent_checks(st: &mut Studio) -> bool {
     st.s.ui.look.theme().layout == super::hstudio_theme::Layout::Studio
@@ -3358,7 +3415,7 @@ fn expire_events(st: &mut Studio) {
 /// without it, the newest any agent had), or `none`. Each answer gives this
 /// run of the game: an `after` from another run (the game started again
 /// since) gets this run's events from its first. Asking keeps the agent
-/// waiting for the player a moment: the Agent panel says so, and Enter
+/// waiting for the player a moment: the Agent pane says so, and Enter
 /// there sends it what they write.
 pub fn player_event(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let after = match params.get("after") {
@@ -3397,7 +3454,7 @@ pub fn waiting(st: &Studio) -> bool {
     st.s.now < st.s.ui.coach.waiting_until
 }
 
-/// What the Agent panel says while an agent waits for the player: "Waiting
+/// What the Agent pane says while an agent waits for the player: "Waiting
 /// for you" for the game's own, in its run, else with the agent's name.
 pub fn waiting_label(st: &Studio) -> Option<String> {
     let (by, in_run) = st.s.ui.coach.waiting_by.as_ref().filter(|_| waiting(st))?;
@@ -3408,7 +3465,7 @@ pub fn waiting_label(st: &Studio) -> Option<String> {
     })
 }
 
-/// What the player wrote in the Agent panel while an agent waits for them:
+/// What the player wrote in the Agent pane while an agent waits for them:
 /// it goes to that agent, and shows as theirs.
 pub fn reply(st: &mut Studio, text: &str) {
     if text.is_empty() {
@@ -3486,7 +3543,7 @@ pub fn sync_disk(st: &mut Studio) -> bool {
         return false;
     }
     let ui = &st.s.ui;
-    let shown = ui.open && ui.tab == Tab::Editor && !ui.collapsed;
+    let shown = code_seen(ui);
     let seen = shown && ui.look.motion;
     // A view the player holds takes the change through the editor's splices,
     // however big: reading the file in whole would let go of a drag's other
@@ -3519,7 +3576,7 @@ pub fn sync_disk(st: &mut Studio) -> bool {
     let (a, b) = (pre, old.len() - suf);
     let ins = now_text[pre..now_text.len() - suf].to_owned();
     let now = st.s.now;
-    let page = st.s.ui.page.max(1);
+    let page = code_page(&st.s.ui).max(1);
     let ed = &mut st.s.editor;
     let (from, old_to) = (ed.pos_at(a), ed.pos_at(b));
     let count = ed.lines.len();

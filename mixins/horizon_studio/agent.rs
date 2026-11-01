@@ -554,7 +554,7 @@ pub enum AgentEvent {
 }
 
 /// The horizon-studio tools that act in the player's editor: each says what
-/// it did there as a line of its own in the Agent panel (one that jumps to
+/// it did there as a line of its own in the Agent pane (one that jumps to
 /// the code), or for wait_for_player the panel's Waiting for you, so their
 /// calls and results show no line besides, unless one fails.
 pub const EDITOR_TOOLS: &[&str] = &[

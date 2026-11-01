@@ -265,6 +265,42 @@ fn every_mcp_tool_is_in_the_mcp_topic() {
     }
 }
 
+/// Every text in `v` (descriptions, enums...), one after another.
+fn words_of(v: &serde_json::Value, out: &mut String) {
+    match v {
+        serde_json::Value::String(s) => {
+            out.push_str(s);
+            out.push(' ');
+        }
+        serde_json::Value::Array(a) => a.iter().for_each(|v| words_of(v, out)),
+        serde_json::Value::Object(m) => m.values().for_each(|v| words_of(v, out)),
+        _ => {}
+    }
+}
+
+#[test]
+fn the_tools_name_the_agent_pane_as_the_reference_does() {
+    // The Editor tab's panes move and size: what was the Agent panel is the
+    // Agent pane. What agents read of the tools (tools/list) says so, as the
+    // reference does, however a description's lines are broken in the code.
+    let tools = horizon_studio::mcp::tools();
+    let stale: Vec<&str> = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| {
+            let mut text = String::new();
+            words_of(t, &mut text);
+            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            text.contains("Agent panel")
+        })
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(stale.is_empty(), "still 'Agent panel' in: {stale:?}");
+    let lesson = topic("mcp").unwrap();
+    assert!(!lesson.contains("Agent panel") && lesson.contains("Agent pane"));
+}
+
 /// docs/reference.json is what the MCP server fetches: it must say what
 /// this code says. `HORIZON_STUDIO_WRITE_DOCS=1 cargo test --test mcp_docs`
 /// (or `horizon-studio-mcp docs-json > docs/reference.json`) writes it.

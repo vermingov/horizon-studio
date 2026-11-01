@@ -484,11 +484,11 @@ pub fn tools() -> Json {
               one function or block per call), start_line and new_text (whole lines from 1; end_line too; end_line = \
               start_line - 1 puts lines in before start_line, start_line one past the last line adds them at the end, \
               new_text \"\" removes them), or text (the whole file). It is one undo step for the player, and lands at \
-              once while they are typing or dragging a selection, or nobody sees the editor. It stays unsaved unless \
-              save is true (save_script saves it), but with the studio closed it is saved, unless the player has \
-              unsaved edits in the file. A file the editor doesn't have open is written to disk at once instead, and \
-              its mod reloads: open_script it first to type into it as the player watches. Returns the lines it \
-              covers and the live check's problems. Live only.",
+              once while they are typing, dragging (a selection, a pane) or sizing a pane, or nobody sees the code. \
+              It stays unsaved unless save is true (save_script saves it), but with the studio closed it is saved, \
+              unless the player has unsaved edits in the file. A file the editor doesn't have open is written to \
+              disk at once instead, and its mod reloads: open_script it first to type into it as the player watches. \
+              Returns the lines it covers and the live check's problems. Live only.",
             script_props(json!({
                 "old_text": { "type": "string", "description": "The code to replace, as it is now (read_script)." },
                 "new_text": { "type": "string", "description": "What comes in its place (or in start_line's)." },
@@ -544,7 +544,7 @@ pub fn tools() -> Json {
             "start_lesson",
             "Teaches in the player's editor: a lesson of numbered steps, each lines of a script with a note (in \
               a bubble, as mark_lines shows one), what it explains at more length (explain, shown in the Agent \
-              panel) and something to try (task). The player goes through it with Next and Back (Alt+Right, \
+              pane) and something to try (task). The player goes through it with Next and Back (Alt+Right, \
               Alt+Left), and Check on a step with a task asks you to look at their code: call wait_for_player to \
               hear it. A step's file is the lesson's (id, file, scratch; else the file open) unless it names its \
               own. The first step's file opens only while the player isn't using the studio (it waits up to 10 s) \
@@ -561,7 +561,7 @@ pub fn tools() -> Json {
                             "start_line": { "type": "integer", "description": "The step's first line, from 1." },
                             "end_line": { "type": "integer", "description": "Its last (default start_line)." },
                             "note": { "type": "string", "description": "What these lines do, in a sentence or two." },
-                            "explain": { "type": "string", "description": "More about it, for the Agent panel." },
+                            "explain": { "type": "string", "description": "More about it, for the Agent pane." },
                             "task": { "type": "string", "description": "Something to try here, such as: change 20 to 40." },
                             "tone": { "type": "string", "enum": ["note", "error", "warning", "good"] },
                             "id": { "type": "string", "description": "Another mod's file for this step." },
@@ -580,9 +580,9 @@ pub fn tools() -> Json {
               (default 30, 5 to 50): next or back (the lesson's step they went to), check (they want their try \
               of a step checked: its lines as they are now, the task and the live check's problems), done or \
               closed (the lesson ended), dismissed (they closed your notes), saved (they saved, with the mod's \
-              state), message (what they wrote to you in the Agent panel), or timeout: nothing yet, call it again \
+              state), message (what they wrote to you in the Agent pane), or timeout: nothing yet, call it again \
               to go on waiting. What they did while you weren't waiting comes first. While you wait the Agent \
-              panel says so, and Enter there sends you their answer. Live only.",
+              pane says so, and Enter there sends you their answer. Live only.",
             json!({
                 "timeout_s": { "type": "integer", "description": "How long to wait, in seconds (default 30, 5 to 50)." },
             }),
@@ -899,7 +899,7 @@ impl Server {
 
     /// wait_for_player: the next thing the player does in the editor (a
     /// lesson's Next, Back or Check, a note closed, a save, what they write
-    /// in the Agent panel), asked for every few frames for at most
+    /// in the Agent pane), asked for every few frames for at most
     /// `timeout_s` seconds (5 to 50, default 30), so the server is never
     /// held long: the agent calls again to go on waiting.
     fn wait_for_player(&mut self, args: &Json) -> Result<Json, String> {
