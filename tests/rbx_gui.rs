@@ -2147,6 +2147,50 @@ fn a_grid_of_many_images_is_read_once_and_keeps_its_places_in_the_atlas() {
 }
 
 #[test]
+fn a_shop_of_large_images_is_decoded_once() {
+    // 20 ImageLabels, each its own 512 x 512 PNG (the largest an image is),
+    // drawn every frame: each is decoded once, not again each frame.
+    let mut game = FakeGame::new("rbx-large-grid");
+    let mut st = studio(&mut game);
+    let ws = st.s.rbx.workspace_dir.clone();
+    std::fs::create_dir_all(&ws).unwrap();
+    for i in 0..20u8 {
+        let px = vec![[i, 9, 9, 255]; 512 * 512];
+        std::fs::write(ws.join(format!("big{i}.png")), png(512, 512, &px)).unwrap();
+    }
+    let src = r#"
+        local gui = Instance.new("ScreenGui", game.Players.LocalPlayer.PlayerGui)
+        for i = 0, 19 do
+            local icon = Instance.new("ImageLabel", gui)
+            icon.Position = UDim2.fromOffset(20 * (i % 10), 20 * math.floor(i / 10))
+            icon.Size = UDim2.fromOffset(16, 16)
+            icon.Image = getcustomasset("big" .. i .. ".png")
+        end
+    "#;
+    load(&mut game, &mut st, "shop", src, 0.6);
+    for _ in 0..3 {
+        run_for(&mut st, &mut game, 0.05);
+        hud(&mut st, &mut game);
+    }
+    assert_eq!(st.s.rbx.screen_images.decoded, 20);
+    // More than are kept, frame after frame: those drawn first stay
+    // decoded, and only the rest are decoded again (here 300 tiny images,
+    // 256 kept).
+    let mut cache = horizon_studio::game::hstudio_sunc::ImageCache::default();
+    for i in 0..300u16 {
+        let px = [(i % 256) as u8, (i / 256) as u8, 2, 255];
+        std::fs::write(ws.join(format!("tiny{i}.png")), png(1, 1, &[px])).unwrap();
+    }
+    for frame in 1..=3 {
+        cache.begin(f64::from(frame));
+        for i in 0..300 {
+            assert!(cache.loads(&ws, &format!("tiny{i}.png")));
+        }
+    }
+    assert_eq!(cache.decoded, 300 + 2 * 44);
+}
+
+#[test]
 fn large_images_go_to_the_atlas_smaller_and_within_a_share() {
     // The game's atlas is shared with the interface's glyphs: an image
     // goes there at most 256 pixels a side, and a frame's images take at

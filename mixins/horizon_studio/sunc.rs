@@ -669,15 +669,19 @@ pub fn draw_drawings(rbx: &Rbx, game: &mut dyn GameApi, textures: &mut ImageCach
     }
 }
 
+/// What the image cache keeps: each entry with the frame (the studio's
+/// clock) it was last drawn in, the least recently drawn first (`keep`).
+type Kept<T> = Vec<(f64, T)>;
+
 /// Decoded images for Drawing's Image and the GUI's images (getcustomasset's
 /// files), shared by the HUD and the GUI's screen: drawn as textures where
 /// the game draws images, else as blocks of colour.
 #[derive(Default)]
 pub struct ImageCache {
     /// Images decoded, and workspace files read with the key in `items` of
-    /// the image they hold; the least recently drawn first (`keep`).
-    items: Vec<(u64, Rc<super::hstudio_meshes::Texture>)>,
-    files: Vec<(PathBuf, Rc<Vec<u8>>, u64)>,
+    /// the image they hold.
+    items: Kept<(u64, Rc<super::hstudio_meshes::Texture>)>,
+    files: Kept<(PathBuf, Rc<Vec<u8>>, u64)>,
     /// The key each image had in the game's atlas (its place there), by its
     /// key in `items`: decoded again, it takes the same one, so the atlas
     /// finds it where it is rather than placing it anew.
@@ -689,9 +693,10 @@ pub struct ImageCache {
     frame: f64,
     in_atlas: Vec<u32>,
     texels: usize,
-    /// How many times image bytes were hashed to find their image: once a
-    /// file, and once a frame for each Drawing's image.
+    /// How many times image bytes were hashed to find their image (once a
+    /// file, and once a frame for each Drawing's image), and decoded.
     pub hashed: u64,
+    pub decoded: u64,
 }
 
 /// Image cells a side at most: an image draws as up to 48 x 48 blocks.
@@ -708,27 +713,41 @@ const ATLAS_SIDE: u32 = 256;
 const ATLAS_TEXELS: usize = 1 << 18;
 /// The images kept decoded and the workspace files kept read: as many as a
 /// big GUI draws in a frame (a shop's or an inventory's icons), within this
-/// many pixels and bytes in all. The least recently drawn go first.
+/// many pixels and bytes in all (32 images of the largest, 512 a side, as
+/// many as fit 32 MiB). The least recently drawn go first, never one the
+/// frame has drawn (see `keep`).
 const KEPT: usize = 256;
-const KEPT_TEXELS: usize = 1 << 22;
+const KEPT_TEXELS: usize = 1 << 23;
 const KEPT_BYTES: usize = 32 << 20;
 /// The images whose place in the atlas is remembered.
 const PLACES: usize = 4096;
 
-/// Moves entry `i` of `kept` to its end (the most recently used) and
-/// returns it.
-fn touch<T>(kept: &mut Vec<T>, i: usize) -> &T {
-    let e = kept.remove(i);
+/// Moves entry `i` of `kept` to its end (the most recently drawn), drawn
+/// in `frame`, and returns it.
+fn touch<T>(kept: &mut Kept<T>, i: usize, frame: f64) -> &T {
+    let mut e = kept.remove(i);
+    e.0 = frame;
     kept.push(e);
-    &kept[kept.len() - 1]
+    &kept[kept.len() - 1].1
 }
 
-/// Drops the least recently used of `kept` (its front) while it has more
-/// than KEPT entries or more than `budget` of `size` in all; the newest stays.
-fn keep<T>(kept: &mut Vec<T>, budget: usize, size: impl Fn(&T) -> usize) {
-    let mut total: usize = kept.iter().map(&size).sum();
+/// Keeps `kept` within KEPT entries and `budget` of `size` in all, its
+/// newest entry just put in. The least recently drawn go first, but never
+/// one `frame` drew: the GUI asks for its images in the same order every
+/// frame, and the oldest would be the next it asks for. Over the limits
+/// with only this frame's entries left, the newest goes (it is made again
+/// each time it is drawn), so a frame that draws more than the limits hold
+/// keeps the first it drew, frame after frame, rather than none.
+fn keep<T>(kept: &mut Kept<T>, frame: f64, budget: usize, size: impl Fn(&T) -> usize) {
+    let mut total: usize = kept.iter().map(|(_, e)| size(e)).sum();
     while kept.len() > 1 && (kept.len() > KEPT || total > budget) {
-        total -= size(&kept.remove(0));
+        match kept.iter().position(|(drawn, _)| *drawn != frame) {
+            Some(i) => total -= size(&kept.remove(i).1),
+            None => {
+                kept.pop();
+                break;
+            }
+        }
     }
 }
 
@@ -744,14 +763,14 @@ impl ImageCache {
         if !p.starts_with(workspace) || rel.contains("..") {
             return None;
         }
-        if let Some(i) = self.files.iter().position(|(q, _, _)| *q == p) {
-            let (_, b, key) = touch(&mut self.files, i);
+        if let Some(i) = self.files.iter().position(|(_, (q, _, _))| *q == p) {
+            let (_, b, key) = touch(&mut self.files, i, self.frame);
             return Some((b.clone(), *key));
         }
         let bytes = Rc::new(std::fs::read(&p).ok().filter(|b| b.len() <= MAX_FILE)?);
         let key = self.key(&bytes);
-        self.files.push((p, bytes.clone(), key));
-        keep(&mut self.files, KEPT_BYTES, |(_, b, _)| b.len());
+        self.files.push((self.frame, (p, bytes.clone(), key)));
+        keep(&mut self.files, self.frame, KEPT_BYTES, |(_, b, _)| b.len());
         Some((bytes, key))
     }
 
@@ -782,17 +801,18 @@ impl ImageCache {
     /// The image of `bytes`, found by their `key`, decoded once, in the
     /// place in the game's atlas it had.
     fn decoded(&mut self, key: u64, bytes: &[u8]) -> Option<Rc<super::hstudio_meshes::Texture>> {
-        if let Some(i) = self.items.iter().position(|(k, _)| *k == key) {
-            return Some(touch(&mut self.items, i).1.clone());
+        if let Some(i) = self.items.iter().position(|(_, (k, _))| *k == key) {
+            return Some(touch(&mut self.items, i, self.frame).1.clone());
         }
+        self.decoded += 1;
         let mut t = super::hstudio_meshes::decode_png(bytes).ok()?;
         if self.places.len() >= PLACES && !self.places.contains_key(&key) {
             self.places.clear();
         }
         t.key = *self.places.entry(key).or_insert(t.key);
         let t = Rc::new(t);
-        self.items.push((key, t.clone()));
-        keep(&mut self.items, KEPT_TEXELS, |(_, t)| (t.w * t.h) as usize);
+        self.items.push((self.frame, (key, t.clone())));
+        keep(&mut self.items, self.frame, KEPT_TEXELS, |(_, t)| t.texels());
         Some(t)
     }
 
