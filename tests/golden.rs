@@ -339,11 +339,11 @@ impl Session {
             *total += 1;
         }
         st.frame(game, 0.05);
+        // Sent as the player, a command goes to the server, as in the game
+        // (one the studio takes ran in it instead).
         let new: Vec<String> = std::mem::take(&mut game.g.sent);
         for line in new {
-            if let Some(cmd) = line.strip_prefix('/')
-                && !st.command(cmd)
-            {
+            if let Some(cmd) = line.strip_prefix('/') {
                 game.put(format!("(the game would run /{cmd})"));
             }
         }

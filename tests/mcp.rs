@@ -314,8 +314,9 @@ fn an_agent_writes_tests_and_runs_a_mod_in_the_linked_game() {
     }
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let (mods_tx, mods_rx) = mpsc::channel();
-    // The game's thread: the studio's frame, commands the player sends reaching
-    // the scripts (the game's command hook), chat kept, then the link.
+    // The game's thread: the studio's frame, what it sends as the player and
+    // shows in chat kept, then the link. As in the game, a line sent goes to
+    // the server: only a command typed in the chat reaches the studio's hook.
     let game = std::thread::spawn(move || {
         let mut game = FakeGame::new("mcp-link");
         let mut st = Studio::new();
@@ -327,9 +328,6 @@ fn an_agent_writes_tests_and_runs_a_mod_in_the_linked_game() {
             st.frame(&mut game, 0.016);
             for line in &game.sent[sent..] {
                 link::record("sent", line);
-                if let Some(cmd) = line.strip_prefix('/') {
-                    st.command(cmd);
-                }
             }
             sent = game.sent.len();
             for line in &game.chats[chats..] {

@@ -1407,7 +1407,7 @@ Strings, or lists of strings, matched as substrings of what the step caused:
 - `expect_chat` / `expect_no_chat`: lines shown in the player's chat (`chat.show`, command results, the studio's messages).
 - `expect_output`: a `lua` step's printed lines and returned values, as the console shows them (strings in quotes: returning `"hi"` gives `"hi"` with the quotes), or a `suggest` step's completions.
 - `expect_log`: console lines (prints of mods as `[id] text`, errors, tracebacks, info).
-- `expect_sent`: what was sent as the player (`chat.say` text, `game.run` commands with their `/`).
+- `expect_sent`: what was sent as the player (`chat.say` text, `game.run` commands with their `/`). A command the studio takes (a mod's, `/studio`, `/lua`) isn't sent: it runs in the studio, as in the game.
 - `expect_drawn`: text drawn on the HUD or a screen during the step (`hud.text`, `gfx.text`, panels, widget labels, `draw.text` labels). Headless only.
 - `expect_sound`, `expect_particle`: ids played or spawned (`minecraft:` added). Headless only.
 - `expect_item`: item models drawn (`model.attach` items, `draw.item`). Headless only.
@@ -1427,7 +1427,7 @@ Strings, or lists of strings, matched as substrings of what the step caused:
 - `game.fps()` is 20, 20, 20; `game.screen()` is `"playing"`, or `"script"` while a script screen shows.
 - No agent: `agent.*`, `world.find` and `world.entities` raise errors (they ask the game's agent). No entities and no other players until an `entities` or `players` step puts them there, for the Roblox layer (the Workspace, Players). No ViaHorizon.
 - Sounds, particles and items are recorded, not played; ids are checked for form only.
-- A command a mod sends with `game.run` reaches mods' commands as in the game; other commands are noted in chat as `(the game would run /...)`.
+- A command a mod sends with `game.run` that the studio takes (a mod's, `/studio`, `/lua`) runs in it, as in the game; the others would go to the server, and are noted in chat as `(the game would run /...)`.
 - The mod's libraries come from the mods folder (when the tool has one), else the bundled examples (`uikit`, `viahorizon`...).
 
 ## Live tests
@@ -1479,7 +1479,7 @@ const MCP: &str = r##"
 - `check_mod` (`id`, `files` optional, `mods_dir`): loads the mod headless with the libraries it imports and runs 2 frames: `{"ok", "mod", "libraries", "log", "chat"}`; `mod` has `state`, `error`, `file` and `line` (where the error is: in a module, the file `require` loaded when that is where it failed), `traceback`, `commands`, `handlers`, `timers`, `library`, `imports`... The mod and its libraries are the ones `list_mods` lists under their ids (`desk_lamp` is the folder `Desk Lamp`), run as the game reads them: every file as it is on disk, whatever its encoding or size. Give `files` to check text not yet written (for a module that exists, they are checked over its other files).
 - `test_mod` (`id`, `steps`, `files` optional, `live` default false, `mods_dir`): runs test steps (see `tests`) and returns the report. `files` are tested as `check_mod` checks them (for a module that exists, over its other files); with `live` they are written first.
 - `run_lua` (`code`, `live`, `with_mod`, `mods_dir`): runs Lua in the console: in the game while it is linked (default), else headless (with the mod `with_mod` loaded first). Returns `{"ok", "where", "lines": [{"kind", "text"}]}` (headless also `chat`).
-- `send_chat` (`line`, `wait_frames` default 20, 1 to 1200): sends a chat line or command in the game as the player, waits, and returns `{"chat", "log"}` that followed. Live only.
+- `send_chat` (`line`, `wait_frames` default 20, 1 to 1200): sends a chat line or command in the game as the player, waits, and returns `{"chat", "log"}` that followed. A command the studio takes (a mod's, `/studio`, `/lua`) runs in it, as one the player types; the rest goes to the server. Live only.
 - `game_log` (`since_log`, `since_chat`): the console's log and the chat from the game; give the last numbers seen to get only newer lines. Live only.
 - `reload_mod` (`id` optional): reloads a mod in the game (and the mods using it), or all; returns the mods' states. Live only.
 - `update_server` (no arguments): updates this server to the newest release of `horizon-studio-mcp`, in place (`{"updated", "from", "to"}` or `{"updated": false, "version"}`); it switches to the new binary at the next call, keeping the connection: no restart, no reinstall. The game's Options > Mods > Horizon Studio has the same as a button, and `horizon-studio-mcp update` from a shell. Whenever the binary is replaced (those, or the install line run again), a running server hands over to the new one before its next answer and sends `notifications/tools/list_changed`, so call `tools/list` again then.
@@ -2526,7 +2526,7 @@ Runs a command as the player, as if typed in chat: the server's (`"time set day"
 - Where: anywhere; in the game, inside `on("world")` or a screen's draw it runs a frame later.
 - Errors: `sending too fast: chat.say and game.run are limited to a few a second` (shared with `chat.say`: a burst of 8, then 4 a second).
 
-In tests: `expect_sent` sees `/time set day`; headless, a command no mod owns is noted in chat as `(the game would run /time set day)`.
+In tests: `expect_sent` sees `/time set day` (a mod's own command runs in the studio and isn't sent); headless, a command no mod owns is noted in chat as `(the game would run /time set day)`.
 
 ```lua
 command("day", function() game.run("time set day") end)

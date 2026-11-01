@@ -1086,6 +1086,28 @@ impl State {
             .position(|m| m.running() && m.commands.iter().any(|c| c.name == name))
             .map(Owner::Mod)
     }
+    /// See `Studio::command`.
+    fn command(&mut self, line: &str) -> bool {
+        let name = line.split_whitespace().next().unwrap_or("");
+        let ours = self.takes(name);
+        if ours && self.queued_commands.len() < 64 {
+            self.queued_commands.push(line.to_owned());
+        }
+        ours
+    }
+    /// See `Studio::takes`.
+    fn takes(&self, name: &str) -> bool {
+        matches!(name, "studio" | "lua") || self.command_owner(name).is_some()
+    }
+    /// A line sent as the player (`game.run`, an agent's): a command the
+    /// studio takes runs in it, on the next frame, as one typed in the chat
+    /// does (the game sends a line straight to the server, which doesn't
+    /// know it); anything else goes to the server.
+    pub(crate) fn send_line(&mut self, game: &mut dyn GameApi, line: &str) {
+        if !line.strip_prefix('/').is_some_and(|cmd| self.command(cmd)) {
+            game.send(line);
+        }
+    }
 }
 
 pub struct Studio {
@@ -3007,18 +3029,13 @@ impl Studio {
     /// A command typed in chat (no slash): whether the studio takes it. It
     /// runs on the next frame.
     pub fn command(&mut self, line: &str) -> bool {
-        let name = line.split_whitespace().next().unwrap_or("");
-        let ours = self.takes(name);
-        if ours && self.s.queued_commands.len() < 64 {
-            self.s.queued_commands.push(line.to_owned());
-        }
-        ours
+        self.s.command(line)
     }
 
     /// Whether the studio takes `/name`: its own two, or a command the
     /// console or a running mod has.
     pub fn takes(&self, name: &str) -> bool {
-        matches!(name, "studio" | "lua") || self.s.command_owner(name).is_some()
+        self.s.takes(name)
     }
 
     /// The owners whose commands the studio takes, in the order a typed
@@ -4643,7 +4660,7 @@ impl Ctx<'_> {
             return Err(lua.rt_error("sending too fast: chat.say and game.run are limited to a few a second"));
         }
         self.s.send_tokens -= 1.0;
-        self.game.send(line);
+        self.s.send_line(self.game, line);
         Ok(())
     }
     fn agent(&mut self, lua: &Lua, line: &str) -> Result<Reply, Throw> {

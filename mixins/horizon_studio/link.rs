@@ -635,7 +635,8 @@ fn handle(
             if line.trim().is_empty() || line.len() > 256 {
                 return Err("a chat line is 1 to 256 characters".into());
             }
-            game.send(line);
+            // A mod's command runs in the studio, as one the player types.
+            st.s.send_line(game, line);
             now(json!({ "chat_seq": CHAT_SEQ.with(Cell::get) }))
         }
         "key" => {

@@ -321,6 +321,24 @@ fn chat_and_commands_are_rate_limited() {
 }
 
 #[test]
+fn a_command_the_studio_takes_runs_in_it_when_sent_as_the_player() {
+    // The game sends a line straight to the server, which doesn't know the
+    // mods' commands (only one typed in the chat reaches the studio's hook):
+    // game.run of one runs it in the studio, as typed; the server's goes.
+    let mut game = FakeGame::new("send-ours");
+    let mut st = studio(&mut game);
+    game.write_mod(
+        "greet.lua",
+        "command('greet', function(args) return 'Hello, ' .. args end)\n",
+    );
+    st.scan(&mut game);
+    console(&mut st, &mut game, "game.run('greet Sam') game.run('/time set day')");
+    run_for(&mut st, &mut game, 0.05);
+    assert_eq!(game.sent, ["/time set day"]);
+    assert_eq!(game.chats.last().map(String::as_str), Some("Hello, Sam"));
+}
+
+#[test]
 fn commands_are_checked() {
     let mut game = FakeGame::new("commands");
     let mut st = studio(&mut game);
