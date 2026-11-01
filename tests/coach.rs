@@ -2688,6 +2688,112 @@ fn a_press_on_old_text_in_the_frame_it_goes_is_for_the_line_there_once_in() {
 }
 
 #[test]
+fn a_press_on_old_text_while_it_shows_is_for_the_line_there_once_in() {
+    // As above, earlier in the time the old lines show, tinted, before they
+    // go (1 to 3 frames in): the press puts the rest of the change in at
+    // once, and is for the line under the pointer then, not for the change's
+    // first line (which, the view wheeled down meanwhile, is above the view).
+    // A drag on from the press in its frame selects up to the line under the
+    // pointer in the text as it is then, as the next frame draws it.
+    let src: String = (1..=60).map(|i| format!("local v{i} = {i}\n")).collect();
+    let new = |n: usize| (1..=n).map(|i| format!("nw{i} = {i}")).collect::<Vec<_>>().join("\n");
+    // The word a line is drawn by: "v16" for "local v16 = 16", "nw6" for "nw6 = 6".
+    let word = |line: &str| line.trim_start_matches("local ").split(' ').next().unwrap().to_owned();
+    // (lines replaced, new lines, frames in, wheel, pressed, dragged to, the line pressed, dragged to)
+    for (lines, n, frames, wheel, pressed, to, want) in [
+        ((11, 21), 11, 1, 0.0, "v16", None, Some(("nw6 = 6", None))),
+        ((11, 21), 11, 3, 0.0, "v16", None, Some(("nw6 = 6", None))),
+        ((11, 13), 30, 1, 0.0, "v12", None, Some(("nw2 = 2", None))),
+        (
+            (11, 12),
+            30,
+            2,
+            0.0,
+            "v12",
+            Some("v14"),
+            Some(("nw2 = 2", Some("nw4 = 4"))),
+        ),
+        ((8, 20), 4, 1, -1.0, "v15", None, None),
+    ] {
+        let case = format!("{lines:?} by {n}, {frames} frames in, wheel {wheel}, {pressed}");
+        let (mut game, mut st) = editing(&format!("coach-press-old-shows-{}-{n}-{frames}", lines.0), "ps", &src);
+        st.s.ui
+            .dock
+            .set_hidden(horizon_studio::game::hstudio_ui::Pane::Console, true);
+        st.s.editor.click(6, 0, false);
+        st.s.editor.scroll = 5;
+        for _ in 0..5 {
+            game_frame(&mut st, &mut game);
+        }
+        let edit = json!({ "start_line": lines.0, "end_line": lines.1, "new_text": new(n) });
+        let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+        assert!(r["typing"].is_u64(), "{case}: {r}");
+        if wheel != 0.0 {
+            handle(&mut st, &mut game, Input::Mouse(400.0, 200.0));
+            handle(&mut st, &mut game, Input::Wheel(wheel));
+            // The view glides to where the wheel sent it (most of the way;
+            // the old lines show for six frames in all).
+            for _ in 0..3 {
+                redraw(&mut st, &mut game);
+                run_for(&mut st, &mut game, 0.016);
+            }
+            assert!(st.s.editor.scroll > 7, "{case}: wheeled past the change's start");
+        }
+        for _ in 0..frames {
+            redraw(&mut st, &mut game);
+            run_for(&mut st, &mut game, 0.016);
+        }
+        // The press's frame, in the game's order; the old lines still show.
+        redraw(&mut st, &mut game);
+        let (x, y) = text_at(&game, pressed);
+        let mut inputs = vec![Input::Mouse(x + 1.0, y + 2.0), Input::Button { left: true, down: true }];
+        let to_y = to.map(|to| {
+            let (x, y) = text_at(&game, to);
+            inputs.push(Input::Mouse(x + 1.0, y + 2.0));
+            y
+        });
+        inputs.push(Input::Button {
+            left: true,
+            down: false,
+        });
+        run_for(&mut st, &mut game, 0.016);
+        assert_eq!(st.s.ui.coach.typing.as_ref().unwrap().phase, Phase::ShowOld, "{case}");
+        coach::input_coming(&mut st, &inputs);
+        for input in inputs {
+            handle(&mut st, &mut game, input);
+        }
+        assert!(st.s.ui.coach.typing.is_none(), "{case}: the press put the rest in");
+        let ed = &st.s.editor;
+        let (head, anchor) = (ed.lines[ed.row].clone(), ed.anchor.map(|a| ed.lines[a.0].clone()));
+        if let Some((line, dragged)) = want {
+            match dragged {
+                None => assert_eq!(head, line, "{case}: the line under the press"),
+                Some(dragged) => {
+                    assert_eq!(anchor.as_deref(), Some(line), "{case}: the drag's start");
+                    assert_eq!(head, dragged, "{case}: the drag's end");
+                }
+            }
+        }
+        game_frame(&mut st, &mut game);
+        assert!(st.s.ui.caret_at.is_some(), "{case}: the caret in view");
+        // (Where the view still glides, by a hair.)
+        let (start, end) = (anchor.unwrap_or_else(|| head.clone()), head);
+        let at = text_at(&game, &word(&start)).1;
+        assert!(
+            (at - y).abs() < 3.0,
+            "{case}: {start:?} drawn at {at}, the press at {y}"
+        );
+        if let Some(to_y) = to_y {
+            let at = text_at(&game, &word(&end)).1;
+            assert!(
+                (at - to_y).abs() < 3.0,
+                "{case}: {end:?} drawn at {at}, the drag's end at {to_y}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_menu_about_the_code_goes_when_the_code_changes_under_it() {
     // The player opens greet's menu in print(greet()) and pauses, and an
     // agent's edit puts a line in at the top: the menu's Go to

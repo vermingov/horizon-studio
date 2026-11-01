@@ -298,8 +298,8 @@ pub struct Before {
 /// once, so whatever the input does (type at the player's own caret, save,
 /// run, clear, open another file) finds the edit whole. A press is for the
 /// text drawn under the pointer, wherever the rest of the edit moves it;
-/// on old text the edit has taken away since (nothing of it is left), for
-/// the line under the pointer once the rest is in.
+/// on old text the edit takes away (still shown tinted, or gone since the
+/// draw), for the line under the pointer once the rest is in.
 pub fn before_input(st: &mut Studio, game: &mut dyn GameApi, input: &Input) -> Before {
     let why = match input {
         Input::Key { down: true, .. } | Input::Text(_) => Some("the player typed"),
@@ -312,15 +312,25 @@ pub fn before_input(st: &mut Studio, game: &mut dyn GameApi, input: &Input) -> B
         let drawn = st.s.ui.smooth[1];
         // The text under the pointer as it is now, half typed in, isn't
         // what the press is for when the text drawn there is gone.
-        let gone = press && super::hstudio_ui::drawn_gone(st, game, at.0, at.1, drawn);
-        let place = (press && !gone)
+        let mut gone = press && super::hstudio_ui::drawn_gone(st, game, at.0, at.1, drawn);
+        let mut place = (press && !gone)
             .then(|| super::hstudio_ui::editor_pos(st, game, at.0, at.1, drawn))
-            .flatten();
-        let ed = &mut st.s.editor;
-        ed.held = place.map(|(row, col)| {
-            let line = &ed.lines[row];
-            (row, line.char_indices().nth(col).map_or(line.len(), |(i, _)| i))
-        });
+            .flatten()
+            .map(|(row, col)| {
+                let line = &st.s.editor.lines[row];
+                (row, line.char_indices().nth(col).map_or(line.len(), |(i, _)| i))
+            });
+        // Nor the old text the edit shows, tinted, before it goes: the rest
+        // takes it away.
+        if let (Some(p), Some(t)) = (place, st.s.ui.coach.typing.as_ref())
+            && t.phase == Phase::ShowOld
+            && st.s.editor.path.as_deref() == Some(t.path.as_path())
+            && t.from <= p
+            && p < t.old_to
+        {
+            (gone, place) = (true, None);
+        }
+        st.s.editor.held = place;
         finish_typing(st, why);
         let ed = &mut st.s.editor;
         let mut pressed = ed.held.take().map(|(row, byte)| {
@@ -328,6 +338,10 @@ pub fn before_input(st: &mut Studio, game: &mut dyn GameApi, input: &Input) -> B
             (at, (row, col))
         });
         if gone {
+            // The rows as drawn showed text that is gone: this frame's
+            // pointer (the press, a drag on from it) is for the text as it
+            // is, as the next draw shows it.
+            st.s.editor.drawn = None;
             let drawn = st.s.ui.smooth[1];
             pressed = super::hstudio_ui::editor_pos(st, game, at.0, at.1, drawn).map(|place| (at, place));
         }
