@@ -3672,6 +3672,8 @@ fn check_asks_the_games_agent_when_none_is_waiting() {
     still(&mut st, &mut game);
     let check = text_at(&game, "Check");
     click(&mut st, &mut game, (check.0 + 2.0, check.1 + 4.0));
+    // The Agent pane, hidden with its group, comes back with the answer.
+    assert!(st.s.ui.dock.is_front(horizon_studio::game::hstudio_ui::Pane::Agent));
     let asked = "I did step 1 of the lesson \"Printing\" (greet.lua line 2): Print hello instead. Check my code and \
                  tell me how I did.";
     assert!(
@@ -3725,8 +3727,8 @@ fn check_asks_the_games_agent_when_none_is_waiting() {
         .filter(|l| l.kind == AgentLineKind::You)
         .count();
     assert_eq!(asked, 1, "only the waiting agent's line");
-    // With the panel hidden, the explanation is the bubble's: none here; and
-    // with no agent at all (none found, none waiting), no Check.
+    // Back in the studio's own layout, with no agent at all (none found, none
+    // waiting), no Check.
     st.s.ui.look.theme = 0;
     st.s.now += 5.0;
     st.s.ui.agent.agents = Some(Vec::new());

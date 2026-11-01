@@ -1952,6 +1952,66 @@ fn asking_the_agent_brings_its_pane_back() {
     assert!(st.s.ui.dock.is_front(Pane::Agent) && st.s.ui.focus == Pane::Agent);
 }
 
+#[cfg(unix)]
+#[test]
+fn check_brings_the_agent_pane_back_with_its_answer() {
+    use horizon_studio::game::hstudio_ui::agent_busy;
+    // The panel hidden. A lesson with a task comes while the player holds
+    // the script list's bar: the panel stays hidden, the explanation in the
+    // step's note. Once they let go, Check in the note asks the game's own
+    // agent, whose answer is in the Agent pane: it comes back, as for the
+    // menus' Explain, the keys staying on the code.
+    let (mut game, mut st) = with_sum("dock-check");
+    st.s.ui.agent.agents = Some(vec![echo()]);
+    st.s.ui.dock.set_hidden(Pane::Agent, true);
+    game_frame(&mut st, &mut game);
+    let row = bar(&st, 1);
+    let at = (row.rect[0] + 4.0, row.rect[1] + 100.0);
+    hold(&mut st, &mut game, at, &[(at.0 + 16.0, at.1)]);
+    st.s.now += 5.0;
+    game_frame(&mut st, &mut game);
+    let steps = json!([{ "start_line": 2, "note": "Two is b.", "explain": "Explained.", "task": "Make it 3." }]);
+    let r = coach::call(
+        &mut st,
+        &mut game,
+        &agent(),
+        "lesson",
+        &json!({ "title": "Sums", "steps": steps }),
+    )
+    .unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(
+        !st.s.ui.dock.shown(Pane::Agent),
+        "the panel stays hidden under the held bar"
+    );
+    release(&mut st, &mut game);
+    game_frame(&mut st, &mut game);
+    game_frame(&mut st, &mut game);
+    assert!(in_bubble(&st, &game, "Explained."));
+    let check = text_at(&game, "Check");
+    click(&mut st, &mut game, (check.0 + 2.0, check.1 + 4.0));
+    assert!(agent_busy(&st), "the game's agent is asked");
+    assert!(st.s.ui.dock.shown(Pane::Agent) && st.s.ui.dock.is_front(Pane::Agent));
+    assert_eq!(st.s.ui.focus, Pane::Code, "the keys stay on the code");
+    for _ in 0..200 {
+        game_frame(&mut st, &mut game);
+        if !agent_busy(&st) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    game_frame(&mut st, &mut game);
+    let answer =
+        st.s.ui.agent.lines.iter().any(|l| {
+            l.kind != horizon_studio::game::hstudio_ui::AgentLineKind::You && l.text.contains("Check my code")
+        });
+    assert!(answer, "the agent answered (its echo)");
+    assert!(
+        st.s.ui.dock_front[Pane::Agent.index()],
+        "the Agent pane, with the answer, is drawn"
+    );
+}
+
 #[test]
 fn panes_fit_any_window() {
     // Rows of code that the default layout showed before the panes moved

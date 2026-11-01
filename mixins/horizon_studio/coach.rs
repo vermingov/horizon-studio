@@ -3209,7 +3209,9 @@ fn lesson_go(st: &mut Studio, game: &mut dyn GameApi, i: usize) {
 
 /// The lesson's Check: an agent waiting for the player gets the step's
 /// lines as they are now and the live check's problems; else the game's own
-/// agent is asked to check the step, in a new turn of the conversation.
+/// agent is asked to check the step, in a new turn of the conversation, and
+/// the Agent pane, where it answers, comes to the front of its group, its
+/// group shown, as for the menus' Ask (it is the player's own click).
 fn lesson_check(st: &mut Studio) {
     let c = &st.s.ui.coach;
     let Some(l) = &c.lesson else {
@@ -3259,6 +3261,12 @@ fn lesson_check(st: &mut Studio) {
             i + 1,
             task.trim().trim_end_matches('.')
         );
+        let ui = &mut st.s.ui;
+        if !ui.dock.is_front(Pane::Agent) {
+            ui.shown_at[Pane::Agent.index()] = now;
+        }
+        ui.dock.show(Pane::Agent);
+        super::hstudio_ui::dock_changed(st);
         super::hstudio_ui::agent_ask(st, &ask);
     }
 }

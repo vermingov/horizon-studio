@@ -278,12 +278,13 @@ its line in the Agent pane opens it.
 code, each a few lines with a note, something to try (*Try: change 20 to 40*) and, in the Agent pane (in the note when
 that pane isn't shown), a longer explanation. **Next** and **Back** in the note (or Alt+Right and Alt+Left) go through
 the steps, opening another file when a step is in one; **Done** on the last ends the lesson, and so does its ×.
-**Check** asks the agent to look at what you did: it reads your code, marks any mistake and tells you how you did. The
-code's tab strip shows *Lesson 2/5*. A lesson shows the Agent pane, unless it would cover the pane you are typing in;
-while you drag something or size a pane, it leaves a hidden Agent pane hidden, so nothing moves under the pointer.
-While the agent waits for you the Agent pane says *Waiting for you*, and Enter sends it what you write. The executor
-styles get the same notes and buttons, with the explanation in the note; there Check is for an agent waiting for you,
-as they have no Agent pane for the game's own agent to answer in.
+**Check** asks the agent to look at what you did: it reads your code, marks any mistake and tells you how you did (the
+game's own agent in the Agent pane, which Check brings back). The code's tab strip shows *Lesson 2/5*. A lesson shows
+the Agent pane, unless it would cover the pane you are typing in; while you drag something or size a pane, it leaves a
+hidden Agent pane hidden, so nothing moves under the pointer. While the agent waits for you the Agent pane says
+*Waiting for you*, and Enter sends it what you write. The executor styles get the same notes and buttons, with the
+explanation in the note; there Check is for an agent waiting for you, as they have no Agent pane for the game's own
+agent to answer in.
 
 It works in your mods folder and runs with its own permissions: Claude Code may use Horizon Studio's MCP tools and
 read files, and asks for nothing else (in a run from the game, anything that needs your approval is refused); omp
