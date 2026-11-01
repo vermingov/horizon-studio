@@ -1617,10 +1617,19 @@ fn a_lesson_leaves_a_hidden_agent_pane_hidden_under_what_the_player_holds() {
     redraw(&mut st, &mut game);
     let code = middle(leaf(&st, Pane::Code).rect);
     let press = Input::Button { left: true, down: true };
-    coach::input_coming(&mut st, &[Input::Mouse(code.0, code.1), press]);
+    coach::input_coming(&mut st, &[Input::Mouse(code.0, code.1), press.clone()]);
     lesson(&mut st, &mut game, "Explained in the note again.");
     assert!(!st.s.ui.dock.shown(Pane::Agent), "the panel stays hidden");
     click(&mut st, &mut game, code);
+    // So is one off the code (the script list's tab), which doesn't hold
+    // the view but would land on another pane once the panel moved it.
+    st.s.now += 5.0;
+    redraw(&mut st, &mut game);
+    let tab = middle(tab_of(&st, Pane::Scripts));
+    coach::input_coming(&mut st, &[Input::Mouse(tab.0, tab.1), press]);
+    lesson(&mut st, &mut game, "Explained in the note once more.");
+    assert!(!st.s.ui.dock.shown(Pane::Agent), "the panel stays hidden");
+    click(&mut st, &mut game, tab);
     // With nothing held, a lesson shows the Agent pane with its explanation.
     st.s.now += 5.0;
     lesson(&mut st, &mut game, "Explained in the pane.");
@@ -1804,14 +1813,47 @@ fn an_agents_note_over_a_narrow_code_is_cut_to_fit() {
     let r = coach::call(&mut st, &mut game, &agent(), "edit", &edit).unwrap();
     assert_eq!(r["ok"], true, "{r}");
     game_frame(&mut st, &mut game);
-    let (label, at) = texts(&game)
-        .into_iter()
-        .find(|(t, _)| t.ends_with(" · Show"))
-        .expect("the note over the code");
-    assert!(label.starts_with("Claude Code changed "), "{label}");
+    let note = |game: &FakeGame| {
+        texts(game)
+            .into_iter()
+            .find(|(t, _)| t.ends_with(" · Show"))
+            .expect("the note over the code")
+    };
+    // The file whole, the agent's name cut short first.
+    let (label, at) = note(&game);
+    assert!(label.starts_with("Cl"), "{label}");
+    assert!(label.ends_with(" changed kit/lib/util.lua · Show"), "{label}");
     assert!(inside(code, at), "{label:?} at {at:?} in the code {code:?}");
+    // A mark there: the file whole, what comes before it cut short.
+    let mark = json!({ "id": "kit", "file": "lib/util.lua", "start_line": 2, "end_line": 3, "note": "Two." });
+    let r = coach::call(&mut st, &mut game, &agent(), "mark", &mark).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    game_frame(&mut st, &mut game);
+    let (label, at) = note(&game);
+    assert!(label.starts_with("Claude Code"), "{label}");
+    assert!(label.ends_with("… kit/lib/util.lua · Show"), "{label}");
+    assert!(inside(code, at), "{label:?} at {at:?} in the code {code:?}");
+    // A file deep in the module: its path cut from its start, its own name
+    // kept.
+    std::fs::create_dir_all(kit.join("lib/helpers_for_values/and_more_of_them")).unwrap();
+    std::fs::write(
+        kit.join("lib/helpers_for_values/and_more_of_them/util.lua"),
+        "return 2\n",
+    )
+    .unwrap();
+    st.scan(&mut game);
+    let file = "lib/helpers_for_values/and_more_of_them/util.lua";
+    let edit = json!({ "id": "kit", "file": file, "old_text": "2", "new_text": "3" });
+    let r = coach::call(&mut st, &mut game, &agent(), "edit", &edit).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    game_frame(&mut st, &mut game);
+    let (label, at) = note(&game);
+    assert!(label.starts_with('…'), "{label}");
+    assert!(label.ends_with("/and_more_of_them/util.lua · Show"), "{label}");
+    assert!(inside(code, at), "{label:?} at {at:?} in the code {code:?}");
+    // Show opens the file the note names.
     click(&mut st, &mut game, (at.0 + 4.0, at.1 + 4.0));
-    assert_eq!(st.s.editor.title, "kit/lib/util.lua");
+    assert_eq!(st.s.editor.title, format!("kit/{file}"));
 }
 
 #[test]

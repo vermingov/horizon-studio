@@ -652,6 +652,52 @@ fn a_drag_held_keeps_the_view_under_it() {
             "put in at line {at}, released later: {later}"
         );
     }
+    // Lines taken out from the view's first line, or from above it, to
+    // lines in it, while the player drags from v35 to v36: the view moves up
+    // with the text after them, so v35 stays where it is drawn and the drag
+    // goes on in the lines under the pointer.
+    for (start, end) in [(30, 32), (27, 32)] {
+        let (mut game, mut st) = editing(&format!("coach-drag-view-out-{start}"), "dr", &src);
+        st.s.editor.scroll = 29;
+        for _ in 0..20 {
+            game_frame(&mut st, &mut game);
+        }
+        let (x, y35) = text_at(&game, "v35");
+        let (_, y36) = text_at(&game, "v36");
+        handle(&mut st, &mut game, Input::Mouse(x + 1.0, y35 + 2.0));
+        handle(&mut st, &mut game, Input::Button { left: true, down: true });
+        handle(&mut st, &mut game, Input::Mouse(x + 1.0, y36 + 2.0));
+        for _ in 0..10 {
+            game_frame(&mut st, &mut game);
+        }
+        let edit = json!({ "start_line": start, "end_line": end, "new_text": "" });
+        let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+        assert_eq!(r["removed"], json!([start, end]), "{r}");
+        for _ in 0..5 {
+            game_frame(&mut st, &mut game);
+            assert_eq!(
+                text_at(&game, "v35").1,
+                y35,
+                "v35 stays where it is drawn: lines {start}-{end} out"
+            );
+            handle(&mut st, &mut game, Input::Mouse(x + 1.0, y36 + 2.0));
+        }
+        handle(
+            &mut st,
+            &mut game,
+            Input::Button {
+                left: true,
+                down: false,
+            },
+        );
+        let ed = &st.s.editor;
+        let ((r1, _), (r2, _)) = ed.selection().expect("a selection");
+        assert_eq!(
+            (ed.lines[r1].as_str(), ed.lines[r2].as_str()),
+            ("local v35 = 35", "local v36 = 36"),
+            "lines {start}-{end} out"
+        );
+    }
 }
 
 #[test]
@@ -856,6 +902,895 @@ fn a_press_in_a_requests_frame_keeps_the_view_under_it() {
             assert_eq!(selection, drag.then_some(("local v5 = 5", "local v6 = 6")), "{case}");
             assert_eq!(st.s.ui.menu.is_some(), !left, "{case}: the right press's menu");
         }
+    }
+}
+
+#[test]
+fn a_click_on_the_codes_suggestions_in_a_requests_frame_keeps_the_view() {
+    // The code's own suggestions are drawn over it, and a click on one types
+    // at the player's caret: it is a press on the code. In a request's frame
+    // (the player paused after typing, so only the press holds the view) an
+    // agent's edit far below lands at once rather than taking the view
+    // there, and the suggestion goes in where the player sees it.
+    let src: String = (1..=200).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-suggest-press", "sg", &src);
+    st.s.ui.look.motion = true;
+    st.s.editor.click(5, 0, false);
+    handle(&mut st, &mut game, key(Key::End, NONE));
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    for c in "x = pri".chars() {
+        handle(&mut st, &mut game, Input::Text(c.to_string()));
+    }
+    assert!(st.s.ui.suggest.is_some(), "the suggestions open");
+    for _ in 0..60 {
+        game_frame(&mut st, &mut game);
+    }
+    // The press's frame, in the game's order: the studio draws, its frame
+    // runs, the input is noted, the request comes, then the input.
+    redraw(&mut st, &mut game);
+    run_for(&mut st, &mut game, 0.05);
+    let label = st.s.ui.suggest.as_ref().expect("still open").items[0].label.clone();
+    let rest = format!("text {} @", &label["pri".len()..]);
+    let drawn = game
+        .drawn
+        .iter()
+        .rev()
+        .find(|d| d.starts_with(&rest))
+        .expect("its row drawn");
+    let at: Vec<f32> = drawn
+        .split(" @[")
+        .nth(1)
+        .unwrap()
+        .split(']')
+        .next()
+        .unwrap()
+        .split(", ")
+        .map(|v| v.parse().unwrap())
+        .collect();
+    let inputs = [
+        Input::Mouse(at[0] + 1.0, at[1] + 2.0),
+        Input::Button { left: true, down: true },
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    ];
+    coach::input_coming(&mut st, &inputs);
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "start_line": 151, "end_line": 150, "new_text": "a = 1\nb = 2\nc = 3" }),
+    )
+    .unwrap();
+    assert_eq!(r["animated"], false, "it lands at once: {r}");
+    for input in inputs {
+        handle(&mut st, &mut game, input);
+    }
+    assert_eq!(st.s.editor.lines[6], format!("x = {label}()"), "the suggestion taken");
+    for _ in 0..30 {
+        game_frame(&mut st, &mut game);
+        assert_eq!(st.s.editor.scroll, 0, "the view stays");
+    }
+    assert_eq!(st.s.editor.lines[150], "a = 1", "the edit at line 151");
+}
+
+#[test]
+fn a_press_off_the_code_in_a_requests_frame_leaves_the_view_to_the_agent() {
+    // A press in a request's frame holds the view only when it lands on the
+    // code (the line drawn under the pointer, or a right press's menu
+    // there). One on the panel's Agent tab, or one on the code that only
+    // closes a menu, is for something else: an agent's edit far below types
+    // in where the view goes, open_script of a line there shows it, and a
+    // lesson there shows its first step, as with no press at all.
+    use horizon_studio::game::hstudio_ui::Pane;
+    let src: String = (1..=200).map(|i| format!("local v{i} = {i}\n")).collect();
+    let requests = [
+        (
+            "edit",
+            json!({ "start_line": 151, "end_line": 150, "new_text": "a = 1\nb = 2\nc = 3" }),
+        ),
+        ("open", json!({ "id": "pr", "line": 150 })),
+        (
+            "lesson",
+            json!({ "title": "Down", "steps": [{ "start_line": 153, "note": "Down here." }] }),
+        ),
+    ];
+    for (method, params) in requests {
+        for on in ["the Agent tab", "the code, a menu up"] {
+            let case = format!("{method}, a press on {on}");
+            let (mut game, mut st) = editing(&format!("coach-press-off-{method}-{}", on.len()), "pr", &src);
+            for _ in 0..5 {
+                game_frame(&mut st, &mut game);
+            }
+            let at = if on == "the Agent tab" {
+                let tab = st.s.ui.dock_drawn.iter().flat_map(|l| l.tabs.iter());
+                let tab = tab.clone().find(|(p, _)| *p == Pane::Agent).expect("the Agent tab").1;
+                (tab[0] + tab[2] / 2.0, tab[1] + tab[3] / 2.0)
+            } else {
+                // The code's menu, opened on v5; the press is on v2, off it.
+                let (x, y5) = text_at(&game, "v5");
+                handle(&mut st, &mut game, Input::Mouse(x + 1.0, y5 + 2.0));
+                for down in [true, false] {
+                    handle(&mut st, &mut game, Input::Button { left: false, down });
+                }
+                assert!(st.s.ui.menu.is_some(), "{case}: the code's menu");
+                game_frame(&mut st, &mut game);
+                let (x, y2) = text_at(&game, "v2");
+                (x + 1.0, y2 + 2.0)
+            };
+            // The press's frame, in the game's order: the studio draws, its
+            // frame runs, the input is noted, the request comes, then the input.
+            redraw(&mut st, &mut game);
+            run_for(&mut st, &mut game, 0.05);
+            let inputs = [
+                Input::Mouse(at.0, at.1),
+                Input::Button { left: true, down: true },
+                Input::Button {
+                    left: true,
+                    down: false,
+                },
+            ];
+            coach::input_coming(&mut st, &inputs);
+            let r = ask(&mut st, &mut game, method, params.clone()).unwrap();
+            for input in inputs {
+                handle(&mut st, &mut game, input);
+            }
+            match method {
+                "edit" => assert_eq!(r["did"], "Typing into pr.lua", "{case}: {r}"),
+                "open" => assert_eq!(r["did"], "Showed line 150 of pr.lua", "{case}: {r}"),
+                _ => assert_eq!(r["ok"], true, "{case}: {r}"),
+            }
+            for _ in 0..30 {
+                game_frame(&mut st, &mut game);
+            }
+            let scroll = st.s.editor.scroll;
+            assert!((121..=152).contains(&scroll), "{case}: the view went there ({scroll})");
+            if on == "the Agent tab" {
+                assert!(st.s.ui.dock.is_front(Pane::Agent), "{case}: the press took the tab");
+            } else {
+                assert!(st.s.ui.menu.is_none(), "{case}: the press closed the menu");
+                assert_eq!(st.s.editor.row, 4, "{case}: the cursor stays where the menu put it");
+            }
+        }
+    }
+    // A press on the code holds the view: open_script says it didn't show
+    // the line, and the Agent pane's line about it still goes there.
+    let (mut game, mut st) = editing("coach-press-on-code-open", "pr", &src);
+    for _ in 0..5 {
+        game_frame(&mut st, &mut game);
+    }
+    let (x, y5) = text_at(&game, "v5");
+    redraw(&mut st, &mut game);
+    run_for(&mut st, &mut game, 0.05);
+    let inputs = [
+        Input::Mouse(x + 1.0, y5 + 2.0),
+        Input::Button { left: true, down: true },
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    ];
+    coach::input_coming(&mut st, &inputs);
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "pr", "line": 150 })).unwrap();
+    for input in inputs {
+        handle(&mut st, &mut game, input);
+    }
+    assert_eq!(
+        r["did"], "Didn't show line 150 of pr.lua: the view stays with the player",
+        "{r}"
+    );
+    for _ in 0..10 {
+        game_frame(&mut st, &mut game);
+    }
+    assert_eq!(st.s.editor.scroll, 0, "the view stays");
+    assert_eq!(st.s.editor.row, 4, "the press's line");
+    assert_eq!(
+        actions(&st).last().map(String::as_str),
+        Some("Claude Code: Didn't show line 150 of pr.lua: the view stays with the player")
+    );
+}
+
+#[test]
+fn lines_put_in_at_the_views_top_under_a_hold_off_the_code_show_there() {
+    // A 5-line script, the view at its top. While the player selects the
+    // console's text in the pane under the code, or in the moment the
+    // studio fades out after they typed and pressed Escape, an agent puts
+    // two lines in at line 1: the edit lands at once, and the view stays
+    // where it is, so the two lines show at its top when the player looks.
+    // Only a hold on the code itself (a selection dragged there, a press on
+    // it, typing in the open studio) puts lines put in there above the text
+    // the view shows. A press on the Console tab in the edit's frame isn't
+    // one either: the edit types in, and the view stays.
+    use horizon_studio::game::hstudio::LogKind;
+    use horizon_studio::game::hstudio_ui::UiResult;
+    let src: String = (1..=5).map(|i| format!("local v{i} = {i}\n")).collect();
+    let top = json!({ "start_line": 1, "end_line": 0, "new_text": "local greeting = 'hello'\nlocal times = 3" });
+    for hold in ["console text", "escape", "console tab"] {
+        let (mut game, mut st) = editing(&format!("coach-top-off-code-{}", hold.len()), "tc", &src);
+        st.s.log(LogKind::Info, "a line of the console's to select");
+        for _ in 0..10 {
+            game_frame(&mut st, &mut game);
+        }
+        let y = text_at(&game, "v1").1;
+        let mut inputs = Vec::new();
+        match hold {
+            "console text" => {
+                let (x, ly) = text_at(&game, "a line of the console's to select");
+                handle(&mut st, &mut game, Input::Mouse(x + 2.0, ly + 4.0));
+                handle(&mut st, &mut game, Input::Button { left: true, down: true });
+                for k in 1..=20 {
+                    game_frame(&mut st, &mut game);
+                    handle(&mut st, &mut game, Input::Mouse(x + 2.0 + 4.0 * k as f32, ly + 4.0));
+                }
+                assert!(st.s.ui.dragging_any(), "{hold}: selecting");
+            }
+            "escape" => {
+                st.s.editor.click(2, 0, false);
+                handle(&mut st, &mut game, Input::Text("-".into()));
+                game_frame(&mut st, &mut game);
+                // The game starts the studio's fade on a Close.
+                let out = handle(&mut st, &mut game, key(Key::Escape, NONE));
+                assert_eq!(out, UiResult::Close, "{hold}");
+                st.s.ui.closing_at = Some(st.s.now);
+            }
+            _ => {
+                let at = texts_at(&game, "Console")
+                    .into_iter()
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .expect("the Console tab");
+                inputs = vec![
+                    Input::Mouse(at.0 + 4.0, at.1 + 4.0),
+                    Input::Button { left: true, down: true },
+                    Input::Button {
+                        left: true,
+                        down: false,
+                    },
+                ];
+            }
+        }
+        // The edit's frame, in the game's order.
+        redraw(&mut st, &mut game);
+        run_for(&mut st, &mut game, 0.05);
+        coach::input_coming(&mut st, &inputs);
+        let r = ask(&mut st, &mut game, "edit", top.clone()).unwrap();
+        let typed = hold == "console tab";
+        assert_eq!(r.get("typing").is_some(), typed, "{hold}: {r}");
+        for input in inputs {
+            handle(&mut st, &mut game, input);
+        }
+        assert_eq!(st.s.editor.scroll, 0, "{hold}: the view stays");
+        // The player lets go, comes back to the Editor tab, or opens the
+        // studio again.
+        match hold {
+            "console text" => handle(
+                &mut st,
+                &mut game,
+                Input::Button {
+                    left: true,
+                    down: false,
+                },
+            ),
+            "escape" => {
+                st.s.ui.closing_at = None;
+                st.s.ui.open = false;
+                run_for(&mut st, &mut game, 1.0);
+                st.s.ui.open = true;
+                st.s.ui.opened_at = st.s.now;
+                UiResult::Used
+            }
+            _ => {
+                assert_eq!(st.s.ui.tab, Tab::Console, "{hold}");
+                run_for(&mut st, &mut game, 3.0);
+                st.s.ui.tab = Tab::Editor;
+                UiResult::Used
+            }
+        };
+        for _ in 0..20 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.lines[0], "local greeting = 'hello'", "{hold}");
+        assert_eq!(st.s.editor.scroll, 0, "{hold}: the view stays");
+        assert_eq!(text_at(&game, "greeting").1, y, "{hold}: on the view's first line");
+    }
+}
+
+#[test]
+fn a_window_rolled_up_then_made_full_screen_shows_its_code() {
+    // The studio in a window, rolled up from its title bar's menu, then
+    // made full screen from it: a full-screen studio isn't rolled up, and
+    // its code is seen. An agent's edit types in as the player watches; and
+    // lines put in at the view's first line under a drag of the code's text
+    // go in above the text it shows, so the drag goes on in its lines.
+    let src: String = (1..=80).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-rolled-full", "rf", &src);
+    st.s.ui.look.window = true;
+    for _ in 0..10 {
+        game_frame(&mut st, &mut game);
+    }
+    // An item of the window's menu (a right click on its title).
+    let window_menu = |st: &mut Studio, game: &mut FakeGame, item: &str| {
+        let (x, y) = text_at(game, "Horizon Studio");
+        handle(st, game, Input::Mouse(x + 4.0, y + 4.0));
+        for down in [true, false] {
+            handle(st, game, Input::Button { left: false, down });
+        }
+        game_frame(st, game);
+        let at = *texts_at(game, item)
+            .last()
+            .unwrap_or_else(|| panic!("{item:?} on the menu"));
+        click(st, game, (at.0 + 2.0, at.1 + 4.0));
+        for _ in 0..10 {
+            game_frame(st, game);
+        }
+    };
+    window_menu(&mut st, &mut game, "Roll up");
+    assert!(st.s.ui.collapsed, "rolled up");
+    window_menu(&mut st, &mut game, "Full screen");
+    assert!(!st.s.ui.look.windowed(), "full screen");
+    assert!(texts_at(&game, "v1").len() == 1, "the code drawn");
+    let edit = json!({ "start_line": 3, "end_line": 3, "new_text": "local v3 = 300" });
+    let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+    let id = r["typing"].as_u64().unwrap_or_else(|| panic!("typed in: {r}"));
+    typed_in(&mut st, &mut game, id);
+    assert_eq!(st.s.editor.lines[2], "local v3 = 300");
+    // A drag from v35 to v36, the view at line 30; five lines put in at
+    // line 30.
+    st.s.now += 5.0;
+    st.s.editor.scroll = 29;
+    for _ in 0..20 {
+        game_frame(&mut st, &mut game);
+    }
+    let (x, y35) = text_at(&game, "v35");
+    let (_, y36) = text_at(&game, "v36");
+    handle(&mut st, &mut game, Input::Mouse(x + 1.0, y35 + 2.0));
+    handle(&mut st, &mut game, Input::Button { left: true, down: true });
+    handle(&mut st, &mut game, Input::Mouse(x + 1.0, y36 + 2.0));
+    for _ in 0..10 {
+        game_frame(&mut st, &mut game);
+    }
+    let block: Vec<String> = (1..=5).map(|i| format!("-- note {i}")).collect();
+    let edit = json!({ "start_line": 30, "end_line": 29, "new_text": block.join("\n") });
+    let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+    assert_eq!(r["animated"], false, "{r}");
+    for _ in 0..5 {
+        game_frame(&mut st, &mut game);
+        assert_eq!(text_at(&game, "v35").1, y35, "v35 stays where it is drawn");
+        handle(&mut st, &mut game, Input::Mouse(x + 1.0, y36 + 2.0));
+    }
+    handle(
+        &mut st,
+        &mut game,
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    );
+    assert_eq!(st.s.editor.scroll, 34);
+    let ed = &st.s.editor;
+    let ((r1, _), (r2, _)) = ed.selection().expect("a selection");
+    assert_eq!(
+        (ed.lines[r1].as_str(), ed.lines[r2].as_str()),
+        ("local v35 = 35", "local v36 = 36")
+    );
+}
+
+#[test]
+fn an_edit_behind_a_scripts_screen_lands_at_once() {
+    // A script's screen (its ui.open; the Roblox GUI's is one too) over the
+    // studio: the game draws the screen, not the studio, so nobody sees the
+    // code, and an agent's edit lands at once rather than typing in behind
+    // the screen. The studio shows it when the screen closes.
+    use horizon_studio::game::hstudio_ui::draw_screen;
+    let (mut game, mut st) = editing("coach-behind-screen", "bs", GREET);
+    for _ in 0..5 {
+        game_frame(&mut st, &mut game);
+    }
+    st.run_console(&mut game, "ui.open({ draw = function() end })");
+    assert!(st.accept_screen(), "the script's screen");
+    for _ in 0..5 {
+        game.drawn.clear();
+        draw_screen(&mut st, &mut game);
+        run_for(&mut st, &mut game, 0.05);
+    }
+    let edit = json!({ "old_text": "print('hi')", "new_text": "print('hello there')" });
+    let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+    assert_eq!(r["animated"], false, "{r}");
+    assert!(st.s.ui.coach.typing.is_none(), "it landed at once");
+    assert_eq!(st.s.editor.lines[1], "print('hello there')");
+    // Back to the studio under it, which arrives again.
+    st.close_screen(&mut game);
+    st.s.ui.opened_at = st.s.now;
+    for _ in 0..5 {
+        game_frame(&mut st, &mut game);
+    }
+    assert!(!texts_at(&game, "'hello there'").is_empty(), "drawn");
+}
+
+#[test]
+fn an_agents_console_code_opens_no_file_while_the_player_uses_the_studio() {
+    // An agent's run_lua runs console code (run_chunk, out of the history),
+    // whose edit() and new() open a file in the editor. As open_script,
+    // they open none while the player is using the studio (the wheel a
+    // moment ago, a prompt up) nor over unsaved edits in the file open,
+    // which nothing saves for an agent: the console says why, the run
+    // fails, and nothing is made or saved. Once the player pauses with
+    // nothing unsaved, edit() opens the file. The player's own console
+    // opens files whenever they ask.
+    let (mut game, mut st) = with_module("coach-console-opens");
+    st.s.ui.open = true;
+    st.s.ui.tab = Tab::Editor;
+    st.s.now = 10.0;
+    redraw(&mut st, &mut game);
+    let title = st.s.editor.title.clone();
+    let refused = |st: &mut Studio, game: &mut FakeGame, code: &str, why: &str| {
+        let lines = st.run_chunk(game, code, false);
+        let errors: Vec<&String> = lines
+            .iter()
+            .filter(|(k, _)| *k == horizon_studio::game::hstudio::LogKind::Error)
+            .map(|(_, t)| t)
+            .collect();
+        assert!(errors.iter().any(|e| e.contains(why)), "{code}: {lines:?}");
+    };
+    // The wheel a moment ago.
+    handle(&mut st, &mut game, Input::Wheel(-1.0));
+    refused(&mut st, &mut game, "edit('kit')", "the player is using the studio");
+    refused(&mut st, &mut game, "new('fresh')", "the player is using the studio");
+    assert_eq!(st.s.editor.title, title);
+    assert!(!game.mods_dir().join("fresh.lua").exists(), "nothing made");
+    // A prompt up.
+    st.s.now += 5.0;
+    st.s.ui.naming = Some(Default::default());
+    refused(
+        &mut st,
+        &mut game,
+        "edit('kit', 'lib/util.lua')",
+        "a prompt or a menu open",
+    );
+    st.s.ui.naming = None;
+    assert_eq!(st.s.editor.title, title);
+    // The player's unsaved edits, paused.
+    st.s.editor.click(0, 0, false);
+    handle(&mut st, &mut game, Input::Text("-- mine\n".into()));
+    let path = st.s.editor.path.clone().unwrap();
+    let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+    st.s.now += 5.0;
+    refused(&mut st, &mut game, "edit('kit')", "unsaved edits");
+    refused(&mut st, &mut game, "new('fresh')", "unsaved edits");
+    assert_eq!(st.s.editor.title, title);
+    assert!(st.s.editor.dirty, "still the player's, unsaved");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap_or_default(),
+        on_disk,
+        "nothing saved"
+    );
+    assert!(!game.mods_dir().join("fresh.lua").exists(), "nothing made");
+    // Saved, paused: it opens.
+    handle(&mut st, &mut game, key(Key::Char('s'), CTRL));
+    st.s.now += 5.0;
+    let lines = st.run_chunk(&mut game, "edit('kit')", false);
+    assert!(
+        lines
+            .iter()
+            .all(|(k, _)| *k != horizon_studio::game::hstudio::LogKind::Error),
+        "{lines:?}"
+    );
+    assert_eq!(st.s.editor.title, "kit/main.lua");
+    // The player's own console, while they use the studio.
+    handle(&mut st, &mut game, Input::Wheel(-1.0));
+    st.run_console(&mut game, "edit('hello')");
+    assert_eq!(st.s.editor.title, "hello.lua");
+}
+
+#[test]
+fn an_agents_console_edit_of_the_file_open_is_never_refused() {
+    // edit() of the file open already opens nothing anew (its unsaved
+    // edits stay, with their undo), so an agent's run_lua edit() of it is
+    // refused over no unsaved edits, the agent's own or the player's, nor
+    // while the player uses the studio, as open_script isn't: the code
+    // comes forward, unless the player is using the studio, which leaves
+    // them on the tab they are on. Another file still waits and refuses.
+    use horizon_studio::game::hstudio::LogKind;
+    let (mut game, mut st) = editing("coach-agent-console-edit-open", "greet", GREET);
+    game.write_mod("hello.lua", "print('hello')\n");
+    st.scan(&mut game);
+    let errors = |lines: &[(LogKind, String)]| -> Vec<String> {
+        lines
+            .iter()
+            .filter(|(k, _)| *k == LogKind::Error)
+            .map(|(_, t)| t.clone())
+            .collect()
+    };
+    // The agent's own unsaved edit, the player paused on the Library tab.
+    let r = ask(
+        &mut st,
+        &mut game,
+        "edit",
+        json!({ "old_text": "print('hi')", "new_text": "print('agent')", "typing": false }),
+    )
+    .unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    st.s.now += 5.0;
+    st.s.ui.tab = Tab::Library;
+    let lines = st.run_chunk(&mut game, "edit('greet')", false);
+    assert_eq!(errors(&lines), Vec::<String>::new());
+    let ed = &st.s.editor;
+    assert_eq!((ed.title.as_str(), ed.dirty), ("greet.lua", true));
+    assert_eq!(ed.lines[1], "print('agent')", "the agent's edit stays");
+    assert_eq!(st.s.ui.tab, Tab::Editor, "the code comes forward");
+    // The player's unsaved edit too, and the wheel a moment ago, on the
+    // Library tab: nothing refused, and the tab stays theirs.
+    st.s.editor.click(0, 0, false);
+    handle(&mut st, &mut game, Input::Text("-- mine\n".into()));
+    st.s.ui.tab = Tab::Library;
+    handle(&mut st, &mut game, Input::Wheel(-1.0));
+    let lines = st.run_chunk(&mut game, "edit('greet')", false);
+    assert_eq!(errors(&lines), Vec::<String>::new());
+    assert_eq!(
+        st.s.ui.tab,
+        Tab::Library,
+        "the player's tab stays while they use the studio"
+    );
+    // A prompt up: the same.
+    st.s.now += 5.0;
+    st.s.ui.naming = Some(Default::default());
+    let lines = st.run_chunk(&mut game, "edit('greet')", false);
+    assert_eq!(errors(&lines), Vec::<String>::new());
+    assert_eq!(st.s.ui.tab, Tab::Library, "not under a prompt");
+    st.s.ui.naming = None;
+    // Paused: the code comes forward, every edit still there.
+    let lines = st.run_chunk(&mut game, "edit('greet')", false);
+    assert_eq!(errors(&lines), Vec::<String>::new());
+    assert_eq!(st.s.ui.tab, Tab::Editor);
+    let ed = &st.s.editor;
+    assert_eq!((ed.title.as_str(), ed.dirty), ("greet.lua", true));
+    assert_eq!(&ed.lines[..3], ["-- mine", "local n = 0", "print('agent')"]);
+    // Another file opens over none of it.
+    let lines = st.run_chunk(&mut game, "edit('hello')", false);
+    let said = errors(&lines);
+    assert!(
+        said.iter()
+            .any(|e| e.contains("the player has unsaved edits in greet.lua")),
+        "{said:?}"
+    );
+    assert_eq!(st.s.editor.title, "greet.lua");
+    // Ctrl+Z still takes the player's edit back: nothing was read again.
+    handle(&mut st, &mut game, key(Key::Char('z'), CTRL));
+    assert_eq!(st.s.editor.lines[0], "local n = 0");
+}
+
+#[test]
+fn a_change_over_all_the_view_shows_leaves_the_view_at_its_line() {
+    // While the view is the player's (they typed and saved a moment ago,
+    // drag a selection, or press in the change's frame), or nobody sees it
+    // (the Console tab), a change comes in at once that takes in every line
+    // the view shows: lines 2-79 of 80 written anew as 150 lines, or the
+    // file written anew as 9001. Nothing the view showed is left to keep
+    // where it was drawn, so the view stays at its line, by number, rather
+    // than going as far as the lines the change put in or took out; and the
+    // new text's line there is drawn where that line was. The studio draws
+    // throughout, as in the game.
+    let src: String = (1..=80).map(|i| format!("local v{i} = {i}\n")).collect();
+    let lines: Vec<String> = (1..=150).map(|i| format!("w{i} = make({i})")).collect();
+    let rewrite = format!("local v1 = 1\n{}\nlocal v80 = 80\n", lines.join("\n"));
+    let big: String = (1..=3000)
+        .map(|i| format!("if v{i} then\r\n\tprint(..)\r\nend\r\n"))
+        .collect();
+    let edit = json!({ "start_line": 2, "end_line": 79, "new_text": lines.join("\n") });
+    for (hold, how) in [
+        ("typed", "disk"),
+        ("typed", "disk anew"),
+        ("drag", "disk"),
+        ("drag", "edit"),
+        ("press", "edit"),
+        ("away", "edit"),
+    ] {
+        let case = format!("{hold}, {how}");
+        let (mut game, mut st) = editing(&format!("coach-held-over-{hold}-{}", how.len()), "ho", &src);
+        st.s.editor.click(30, 0, false);
+        st.s.editor.scroll = 20;
+        for _ in 0..10 {
+            game_frame(&mut st, &mut game);
+        }
+        let scroll = st.s.editor.scroll;
+        assert!((20..=30).contains(&scroll), "{case}: line 31 in view ({scroll})");
+        let (x, y_first) = text_at(&game, &format!("v{}", scroll + 1));
+        // A line in the view's middle, for a drag or a press.
+        let (_, y_mid) = text_at(&game, &format!("v{}", scroll + 3));
+        let path = game.mods_dir().join("ho.lua");
+        match hold {
+            // The player types at line 31 and saves.
+            "typed" => {
+                handle(&mut st, &mut game, Input::Text("x".into()));
+                game_frame(&mut st, &mut game);
+                handle(&mut st, &mut game, key(Key::Char('s'), CTRL));
+                assert!(!st.s.editor.dirty, "{case}");
+            }
+            // A drag from it, held.
+            "drag" => {
+                handle(&mut st, &mut game, Input::Mouse(x + 1.0, y_mid + 2.0));
+                handle(&mut st, &mut game, Input::Button { left: true, down: true });
+                game_frame(&mut st, &mut game);
+            }
+            "away" => {
+                st.s.ui.tab = Tab::Console;
+                game_frame(&mut st, &mut game);
+            }
+            _ => {}
+        }
+        match how {
+            "disk" => std::fs::write(&path, &rewrite).unwrap(),
+            "disk anew" => std::fs::write(&path, &big).unwrap(),
+            _ => {
+                // The edit's frame, in the game's order: the studio draws,
+                // its frame runs, the input is noted, the request comes,
+                // then the input (a press on it).
+                redraw(&mut st, &mut game);
+                run_for(&mut st, &mut game, 0.05);
+                let press = [
+                    Input::Mouse(x + 1.0, y_mid + 2.0),
+                    Input::Button { left: true, down: true },
+                ];
+                let inputs: &[Input] = if hold == "press" { &press } else { &[] };
+                coach::input_coming(&mut st, inputs);
+                let r = ask(&mut st, &mut game, "edit", edit.clone()).unwrap();
+                assert_eq!(r["animated"], false, "{case}: {r}");
+                for input in inputs {
+                    handle(&mut st, &mut game, input.clone());
+                }
+            }
+        }
+        for _ in 0..12 {
+            game_frame(&mut st, &mut game);
+            assert_eq!(st.s.editor.scroll, scroll, "{case}: the view stays at its line");
+            assert!(st.s.ui.coach.typing.is_none(), "{case}: it came in at once");
+        }
+        if hold == "away" {
+            st.s.ui.tab = Tab::Editor;
+            for _ in 0..20 {
+                game_frame(&mut st, &mut game);
+            }
+            assert_eq!(st.s.editor.scroll, scroll, "{case}: the view stays at its line");
+        }
+        let new = if how == "disk anew" { &big } else { &rewrite };
+        assert_eq!(st.s.editor.text(), Editor::normal(new), "{case}");
+        if how != "disk anew" {
+            let word = format!("w{scroll}");
+            assert_eq!(
+                text_at(&game, &word).1,
+                y_first,
+                "{case}: {word} on the view's first line"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_change_over_all_the_view_shows_that_ends_above_its_line_keeps_the_view_full() {
+    // As above, a change comes in at once that takes in every line the view
+    // shows, but the text it leaves is shorter than the view's line (51 of
+    // 80): lines 2-80 written anew as three lines, or as thirty, or the
+    // script as four. The view goes no further than the new text's last
+    // page, so the code shows it (all of it, from the top, when it is
+    // shorter than a page, with the cursor) rather than the file's last
+    // line alone; and a press in the change's frame lands on the line drawn
+    // under it now. So whether the player holds the view (they typed, saved
+    // or not, a moment ago, drag a selection, or press in the change's
+    // frame) or nobody sees it (the studio closed, the Console tab), and
+    // whether an agent's edit or a write on disk makes the change. The
+    // studio draws while it is open, as in the game.
+    use horizon_studio::game::hstudio_ui::Pane;
+    let src: String = (1..=80).map(|i| format!("local v{i} = {i}\n")).collect();
+    let three = "alpha\nbeta\ngamma";
+    let thirty = (1..=30).map(|i| format!("w{i}")).collect::<Vec<_>>().join("\n");
+    let script = "alpha\nbeta\ngamma\ndelta\n";
+    for (hold, how) in [
+        ("closed", "script"),
+        ("closed", "thirty"),
+        ("away", "edit"),
+        ("away", "disk"),
+        ("press", "edit"),
+        ("typed", "edit"),
+        ("saved", "disk"),
+        ("drag", "disk"),
+    ] {
+        let case = format!("{hold}, {how}");
+        let (mut game, mut st) = editing(&format!("coach-short-over-{hold}-{how}"), "so", &src);
+        st.s.editor.click(55, 0, false);
+        st.s.editor.scroll = 50;
+        for _ in 0..10 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, 50, "{case}: the view at line 51");
+        let page = st.s.ui.pages[Pane::Code.index()];
+        let (x, y) = text_at(&game, "v52");
+        match hold {
+            // The player types at line 56, and saves or not.
+            "typed" | "saved" => {
+                handle(&mut st, &mut game, Input::Text("x".into()));
+                game_frame(&mut st, &mut game);
+                if hold == "saved" {
+                    handle(&mut st, &mut game, key(Key::Char('s'), CTRL));
+                }
+            }
+            // A drag from line 52, held.
+            "drag" => {
+                handle(&mut st, &mut game, Input::Mouse(x + 1.0, y + 2.0));
+                handle(&mut st, &mut game, Input::Button { left: true, down: true });
+                game_frame(&mut st, &mut game);
+            }
+            "away" => {
+                st.s.ui.tab = Tab::Console;
+                game_frame(&mut st, &mut game);
+            }
+            "closed" => st.s.ui.open = false,
+            _ => {}
+        }
+        let new = match how {
+            "script" => script.to_owned(),
+            "thirty" => format!("local v1 = 1\n{thirty}\n"),
+            _ => format!("local v1 = 1\n{three}\n"),
+        };
+        if how == "disk" {
+            std::fs::write(game.mods_dir().join("so.lua"), &new).unwrap();
+        } else {
+            let edit = match how {
+                "script" => json!({ "text": script }),
+                "thirty" => json!({ "start_line": 2, "end_line": 80, "new_text": thirty }),
+                _ => json!({ "start_line": 2, "end_line": 80, "new_text": three }),
+            };
+            // The edit's frame, in the game's order: the studio draws while
+            // it is open, its frame runs, the input is noted, the request
+            // comes, then the input (a click on line 52).
+            if st.s.ui.open {
+                redraw(&mut st, &mut game);
+            }
+            run_for(&mut st, &mut game, 0.05);
+            let press = [
+                Input::Mouse(x + 1.0, y + 2.0),
+                Input::Button { left: true, down: true },
+                Input::Button {
+                    left: true,
+                    down: false,
+                },
+            ];
+            let inputs: &[Input] = if hold == "press" { &press } else { &[] };
+            coach::input_coming(&mut st, inputs);
+            let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+            assert_eq!(r["animated"], false, "{case}: {r}");
+            for input in inputs {
+                handle(&mut st, &mut game, input.clone());
+            }
+        }
+        // The player looks again.
+        if hold == "closed" {
+            st.s.ui.open = true;
+            st.s.ui.opened_at = st.s.now;
+        } else if hold == "away" {
+            st.s.ui.tab = Tab::Editor;
+        }
+        for _ in 0..20 {
+            game_frame(&mut st, &mut game);
+        }
+        let ed = &st.s.editor;
+        assert_eq!(ed.text(), Editor::normal(&new), "{case}");
+        assert_eq!(
+            ed.scroll,
+            ed.lines.len().saturating_sub(page),
+            "{case}: the view on the new text's last page"
+        );
+        let shown: &[&str] = if how == "thirty" { &["w30"] } else { &["alpha", "gamma"] };
+        for word in shown {
+            text_at(&game, word);
+        }
+        if how != "thirty" {
+            assert!(st.s.ui.caret_at.is_some(), "{case}: the caret in view");
+        }
+        if hold == "press" {
+            assert_eq!(ed.lines[ed.row], "alpha", "{case}: the line drawn under the press");
+        }
+        if hold == "drag" {
+            handle(
+                &mut st,
+                &mut game,
+                Input::Button {
+                    left: true,
+                    down: false,
+                },
+            );
+        }
+    }
+}
+
+#[test]
+fn a_script_written_anew_under_a_hold_at_its_top_leaves_the_view_there() {
+    // A view at the top of a script, the player's (a press in the change's
+    // frame, a drag held, or typing and saving a moment ago), and the script
+    // written anew from its first byte, longer: the view stays at the top,
+    // as it does for a script that is all in view, and a press lands on the
+    // line drawn under it now. (Its lines put in at the very start of the
+    // view's first line don't count as lines put in above the text it
+    // shows: they replace it.)
+    let anew: String = std::iter::once("-- header\n".to_owned())
+        .chain((1..=60).map(|i| format!("print({i})\n")))
+        .collect();
+    // A press on v5 of 20 lines, or on v2 of 5 (all in view), as edit_script
+    // writes the script anew.
+    for (n, at) in [(20, 5), (5, 2)] {
+        let src: String = (1..=n).map(|i| format!("local v{i} = {i}\n")).collect();
+        let (mut game, mut st) = editing(&format!("coach-anew-press-{n}"), "an", &src);
+        for _ in 0..5 {
+            game_frame(&mut st, &mut game);
+        }
+        let (x, y) = text_at(&game, &format!("v{at}"));
+        let y_first = text_at(&game, "v1").1;
+        redraw(&mut st, &mut game);
+        run_for(&mut st, &mut game, 0.05);
+        let inputs = [
+            Input::Mouse(x + 1.0, y + 2.0),
+            Input::Button { left: true, down: true },
+            Input::Button {
+                left: true,
+                down: false,
+            },
+        ];
+        coach::input_coming(&mut st, &inputs);
+        let r = ask(&mut st, &mut game, "edit", json!({ "text": anew })).unwrap();
+        assert_eq!(r["animated"], false, "{n} lines: {r}");
+        for input in inputs {
+            handle(&mut st, &mut game, input);
+        }
+        assert_eq!(st.s.editor.scroll, 0, "{n} lines: the view stays at the top");
+        let ed = &st.s.editor;
+        assert_eq!(
+            ed.lines[ed.row],
+            format!("print({})", at - 1),
+            "{n} lines: the line drawn under the press"
+        );
+        for _ in 0..10 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, 0, "{n} lines");
+        assert_eq!(
+            text_at(&game, "-- header").1,
+            y_first,
+            "{n} lines: the header on the first row"
+        );
+    }
+    // The same written to disk while a drag from v2 is held, with Motion on
+    // or off; or a new first line and 60 others right after the player typed
+    // at line 1 and saved.
+    let src: String = (1..=20).map(|i| format!("local v{i} = {i}\n")).collect();
+    for (hold, motion) in [("drag", true), ("drag", false), ("typed", true)] {
+        let (mut game, mut st) = editing(&format!("coach-anew-{hold}-{motion}"), "an", &src);
+        st.s.ui.look.motion = motion;
+        for _ in 0..5 {
+            game_frame(&mut st, &mut game);
+        }
+        let path = game.mods_dir().join("an.lua");
+        let new = if hold == "drag" {
+            let (x, y) = text_at(&game, "v2");
+            handle(&mut st, &mut game, Input::Mouse(x + 1.0, y + 2.0));
+            handle(&mut st, &mut game, Input::Button { left: true, down: true });
+            game_frame(&mut st, &mut game);
+            anew.clone()
+        } else {
+            st.s.editor.click(0, 0, false);
+            handle(&mut st, &mut game, Input::Text("-".into()));
+            handle(&mut st, &mut game, key(Key::Char('s'), CTRL));
+            let saved = std::fs::read_to_string(&path).unwrap();
+            let more: String = (1..=60).map(|i| format!("print({i})\n")).collect();
+            format!("local first = 0\n{saved}{more}")
+        };
+        std::fs::write(&path, &new).unwrap();
+        for _ in 0..12 {
+            game_frame(&mut st, &mut game);
+            assert_eq!(
+                st.s.editor.scroll, 0,
+                "{hold}, Motion {motion}: the view stays at the top"
+            );
+        }
+        assert_eq!(st.s.editor.text(), new, "{hold}, Motion {motion}");
     }
 }
 
@@ -1225,6 +2160,55 @@ fn the_view_follows_the_agent_as_the_game_draws() {
 }
 
 #[test]
+fn a_change_on_disk_to_a_file_opened_unseen_types_in_where_the_view_goes() {
+    // open_script with no line while the studio is closed opens a file that
+    // nothing draws, and the file then changes on disk. When the player
+    // opens the studio, the change types in where the view goes, and the
+    // view follows it, as in a file the editor has drawn: a file just
+    // opened shows its top, where its cursor is.
+    let src: String = (1..=200).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-opened-unseen", "other", "print(1)\n");
+    game.write_mod("long.lua", &src);
+    st.scan(&mut game);
+    for _ in 0..5 {
+        game_frame(&mut st, &mut game);
+    }
+    st.s.ui.open = false;
+    run_for(&mut st, &mut game, 3.0);
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "long" })).unwrap();
+    assert_eq!(r["did"], "Opened long.lua", "{r}");
+    run_for(&mut st, &mut game, 1.0);
+    let changed = "local v151 = 151 -- and more";
+    std::fs::write(
+        game.mods_dir().join("long.lua"),
+        src.replace("local v151 = 151", changed),
+    )
+    .unwrap();
+    run_for(&mut st, &mut game, 1.0);
+    st.s.ui.open = true;
+    st.s.ui.opened_at = st.s.now;
+    let mut n = 0;
+    while st.s.ui.coach.typing.is_none() {
+        n += 1;
+        assert!(n < 20, "never typed in");
+        game_frame(&mut st, &mut game);
+    }
+    while st.s.ui.coach.typing.is_some() {
+        n += 1;
+        assert!(n < 100, "it never was in");
+        assert!(
+            st.s.ui.coach.typing.as_ref().is_some_and(|t| !t.free),
+            "the view follows it"
+        );
+        game_frame(&mut st, &mut game);
+        let scroll = st.s.editor.scroll;
+        assert!((121..=150).contains(&scroll), "the view on the change: {scroll}");
+    }
+    assert_eq!(st.s.editor.lines[150], changed);
+    assert!(!st.s.editor.dirty);
+}
+
+#[test]
 fn a_change_on_disk_after_a_key_leaves_the_view_with_the_cursor() {
     // In the game the studio draws, and looks at the file on disk, after a
     // frame's input: a change on disk can begin to type in before the draw
@@ -1467,6 +2451,239 @@ fn a_press_after_the_frame_typed_more_is_for_the_line_drawn_under_it() {
         assert!(drawn + 20 < ed.lines.len(), "most of it came in after the draw");
         assert!(st.s.ui.coach.typing.is_some(), "the second types in");
         press(&mut st, &mut game, &word, left);
+    }
+}
+
+#[test]
+fn a_press_in_a_second_edits_frame_is_for_the_line_drawn_under_it() {
+    // A first change types in (an agent's edit of line 33, or line 33
+    // changed on disk) in the view at line 30, and in one of the game's
+    // frames the player presses v35 while a second edit puts five lines in
+    // at line 2: the press, noted before the link's requests, holds the
+    // view, so the second lands at once and the view moves down with what it
+    // shows, as drawn too. The press is for v35, drawn under it, though the
+    // rows were drawn before the frame typed more of the first change in
+    // and before the second came: a left press's cursor goes there, and a
+    // right press's menu is for it.
+    let src: String = (1..=80).map(|i| format!("local v{i} = {i}\n")).collect();
+    let long = "local v33 = 'a line long enough to take a few frames to type in'";
+    for (first, left) in [("edit", true), ("edit", false), ("disk", true), ("disk", false)] {
+        let case = format!("first by {first}, left {left}");
+        let (mut game, mut st) = editing(&format!("coach-press-second-frame-{first}-{left}"), "pf", &src);
+        st.s.ui
+            .dock
+            .set_hidden(horizon_studio::game::hstudio_ui::Pane::Console, true);
+        st.s.editor.click(30, 0, false);
+        st.s.editor.scroll = 29;
+        for _ in 0..10 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, 29, "{case}");
+        if first == "edit" {
+            let edit = json!({ "start_line": 33, "end_line": 33, "new_text": long });
+            let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+            assert!(r["typing"].is_u64(), "{case}: {r}");
+        } else {
+            std::fs::write(game.mods_dir().join("pf.lua"), src.replace("local v33 = 33", long)).unwrap();
+        }
+        let mut n = 0;
+        while st.s.ui.coach.typing.as_ref().is_none_or(|t| t.phase != Phase::Typing) {
+            n += 1;
+            assert!(n < 30, "{case}: never typed in");
+            game_frame(&mut st, &mut game);
+        }
+        for _ in 0..3 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, 29, "{case}: the first types in in view");
+        // The press's frame, in the game's order: the studio draws (the
+        // first still typing), its frame runs, the input is noted, the
+        // second edit comes, then the input.
+        redraw(&mut st, &mut game);
+        assert!(st.s.ui.coach.typing.is_some(), "{case}: still typing at the draw");
+        let (x, y) = text_at(&game, "v35");
+        run_for(&mut st, &mut game, 0.05);
+        let inputs = [
+            Input::Mouse(x + 1.0, y + 2.0),
+            Input::Button { left, down: true },
+            Input::Button { left, down: false },
+        ];
+        coach::input_coming(&mut st, &inputs);
+        let block: Vec<String> = (1..=5).map(|i| format!("-- note {i}")).collect();
+        let second = json!({ "start_line": 2, "end_line": 1, "new_text": block.join("\n") });
+        let r = ask(&mut st, &mut game, "edit", second).unwrap();
+        assert_eq!(r["animated"], false, "{case}: {r}");
+        for input in inputs {
+            handle(&mut st, &mut game, input);
+        }
+        assert_eq!(st.s.editor.scroll, 34, "{case}: the view moved down with what it shows");
+        let ed = &st.s.editor;
+        assert_eq!(
+            ed.lines[ed.row], "local v35 = 35",
+            "{case}: the line drawn under the press"
+        );
+        assert_eq!(st.s.ui.menu.is_some(), !left, "{case}: the right press's menu");
+        game_frame(&mut st, &mut game);
+        assert_eq!(text_at(&game, "v35").1, y, "{case}: v35 stays where it is drawn");
+    }
+}
+
+#[test]
+fn a_press_on_a_line_a_second_edit_replaces_is_for_the_line_under_it_now() {
+    // As above, a first change types in at line 33 in the view at line 30
+    // (or nothing does), and in the press's frame a second edit comes; but
+    // it replaces the line drawn under the press, with all the view showed
+    // (lines 2-79 written anew as 150). Nothing of the text drawn there is
+    // left, so the press is for the line under the pointer now, in the view
+    // the change left at its line, as when nothing typed in at the draw:
+    // not for where the second edit begins, far above the view.
+    let src: String = (1..=80).map(|i| format!("local v{i} = {i}\n")).collect();
+    let long = "local v33 = 'a line long enough to take a few frames to type in'";
+    let lines: Vec<String> = (1..=150).map(|i| format!("w{i} = make({i})")).collect();
+    for (first, left) in [
+        ("edit", true),
+        ("edit", false),
+        ("disk", true),
+        ("disk", false),
+        ("nothing", true),
+    ] {
+        let case = format!("first by {first}, left {left}");
+        let (mut game, mut st) = editing(&format!("coach-press-replaced-{first}-{left}"), "pr", &src);
+        st.s.ui
+            .dock
+            .set_hidden(horizon_studio::game::hstudio_ui::Pane::Console, true);
+        st.s.editor.click(30, 0, false);
+        st.s.editor.scroll = 29;
+        for _ in 0..10 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, 29, "{case}");
+        if first == "edit" {
+            let edit = json!({ "start_line": 33, "end_line": 33, "new_text": long });
+            let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+            assert!(r["typing"].is_u64(), "{case}: {r}");
+        } else if first == "disk" {
+            std::fs::write(game.mods_dir().join("pr.lua"), src.replace("local v33 = 33", long)).unwrap();
+        }
+        if first != "nothing" {
+            let mut n = 0;
+            while st.s.ui.coach.typing.as_ref().is_none_or(|t| t.phase != Phase::Typing) {
+                n += 1;
+                assert!(n < 30, "{case}: never typed in");
+                game_frame(&mut st, &mut game);
+            }
+            for _ in 0..3 {
+                game_frame(&mut st, &mut game);
+            }
+        }
+        // The press's frame, in the game's order: the studio draws (the
+        // first still typing), its frame runs, the input is noted, the
+        // second edit comes, then the input.
+        redraw(&mut st, &mut game);
+        assert_eq!(st.s.ui.coach.typing.is_some(), first != "nothing", "{case}");
+        let (x, y) = text_at(&game, "v35");
+        run_for(&mut st, &mut game, 0.05);
+        let inputs = [
+            Input::Mouse(x + 1.0, y + 2.0),
+            Input::Button { left, down: true },
+            Input::Button { left, down: false },
+        ];
+        coach::input_coming(&mut st, &inputs);
+        let second = json!({ "start_line": 2, "end_line": 79, "new_text": lines.join("\n") });
+        let r = ask(&mut st, &mut game, "edit", second).unwrap();
+        assert_eq!(r["animated"], false, "{case}: {r}");
+        for input in inputs {
+            handle(&mut st, &mut game, input);
+        }
+        assert_eq!(st.s.editor.scroll, 29, "{case}: the view at its line");
+        let ed = &st.s.editor;
+        assert_eq!(
+            ed.lines[ed.row], "w34 = make(34)",
+            "{case}: the line under the press now"
+        );
+        assert_eq!(st.s.ui.menu.is_some(), !left, "{case}: the right press's menu");
+        st.s.ui.menu = None;
+        game_frame(&mut st, &mut game);
+        assert_eq!(st.s.editor.scroll, 29, "{case}");
+        assert!(st.s.ui.caret_at.is_some(), "{case}: the caret in view");
+    }
+}
+
+#[test]
+fn a_press_on_old_text_in_the_frame_it_goes_is_for_the_line_there_once_in() {
+    // A change replaces lines 11-21 of 60 with 11 new lines (an agent's
+    // edit, or the file written on disk): it shows the old lines tinted,
+    // then a frame's step takes them away and the new ones type in. The
+    // player presses on v16 as drawn, in the frame whose step takes the
+    // old lines away (the draw before it still showed them). Nothing of
+    // the text drawn there is left, so the press is for the line under the
+    // pointer once the rest of the change is in (nw6), in the view as it
+    // is: not for what was under the pointer in the half typed text (a line
+    // from below the change, which the new lines then push down, out of
+    // the view), nor for the change's start.
+    let src: String = (1..=60).map(|i| format!("local v{i} = {i}\n")).collect();
+    let new_lines: Vec<String> = (1..=11).map(|i| format!("nw{i} = {i}")).collect();
+    for (first, left) in [("edit", true), ("edit", false), ("disk", true), ("disk", false)] {
+        let case = format!("first by {first}, left {left}");
+        let (mut game, mut st) = editing(&format!("coach-press-old-goes-{first}-{left}"), "po", &src);
+        st.s.ui
+            .dock
+            .set_hidden(horizon_studio::game::hstudio_ui::Pane::Console, true);
+        st.s.editor.click(6, 0, false);
+        st.s.editor.scroll = 5;
+        for _ in 0..5 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.scroll, 5, "{case}");
+        if first == "edit" {
+            let edit = json!({ "start_line": 11, "end_line": 21, "new_text": new_lines.join("\n") });
+            let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+            assert!(r["typing"].is_u64(), "{case}: {r}");
+        } else {
+            let mut lines: Vec<String> = (1..=60).map(|i| format!("local v{i} = {i}")).collect();
+            lines.splice(10..21, new_lines.iter().cloned());
+            std::fs::write(game.mods_dir().join("po.lua"), lines.join("\n") + "\n").unwrap();
+            st.s.now += 1.0;
+            redraw(&mut st, &mut game);
+            assert!(st.s.ui.coach.typing.is_some(), "{case}: the change on disk types in");
+        }
+        // Frames in the game's order, up to the one whose step takes the
+        // old lines away.
+        let mut n = 0;
+        loop {
+            n += 1;
+            assert!(n < 100, "{case}: the old lines never went");
+            redraw(&mut st, &mut game);
+            assert_eq!(st.s.ui.coach.typing.as_ref().unwrap().phase, Phase::ShowOld, "{case}");
+            run_for(&mut st, &mut game, 0.016);
+            if st.s.ui.coach.typing.as_ref().is_some_and(|t| t.phase == Phase::Typing) {
+                break;
+            }
+        }
+        let (x, y) = text_at(&game, "v16");
+        assert!(
+            !st.s.editor.lines.iter().any(|l| l == "local v16 = 16"),
+            "{case}: v16 as drawn is gone"
+        );
+        let inputs = [
+            Input::Mouse(x + 1.0, y + 2.0),
+            Input::Button { left, down: true },
+            Input::Button { left, down: false },
+        ];
+        coach::input_coming(&mut st, &inputs);
+        for input in inputs {
+            handle(&mut st, &mut game, input);
+        }
+        assert!(st.s.ui.coach.typing.is_none(), "{case}: the press put the rest in");
+        assert_eq!(st.s.editor.scroll, 5, "{case}: the view stays");
+        let ed = &st.s.editor;
+        assert_eq!(ed.lines[ed.row], "nw6 = 6", "{case}: the line under the press");
+        assert_eq!(st.s.ui.menu.is_some(), !left, "{case}: the right press's menu");
+        st.s.ui.menu = None;
+        game_frame(&mut st, &mut game);
+        assert_eq!(st.s.editor.scroll, 5, "{case}");
+        assert!(st.s.ui.caret_at.is_some(), "{case}: the caret in view");
+        assert_eq!(text_at(&game, "nw6").1, y, "{case}: nw6 drawn where the press was");
     }
 }
 
@@ -2255,9 +3472,11 @@ fn reload_on_the_conflict_banner_finds_the_edit_whole() {
 
 #[test]
 fn the_consoles_edit_finds_the_edit_whole() {
+    // The player's console. (An agent's run_lua opens no other file over
+    // unsaved edits, its own included, as open_script: below.)
     let (mut game, mut st, id) = mid_edit("coach-mid-console");
     let path = st.s.editor.path.clone().unwrap();
-    st.run_chunk(&mut game, "edit('hello')", false);
+    st.run_console(&mut game, "edit('hello')");
     assert_eq!(st.s.editor.title, "hello.lua");
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
@@ -2272,6 +3491,37 @@ fn the_consoles_edit_finds_the_edit_whole() {
             .contains("the console opened another file"),
         "{r}"
     );
+    // edit() of the file the edit types into opens nothing anew: the edit
+    // goes on typing in, whole.
+    let (mut game, mut st, id) = mid_edit("coach-mid-console-same");
+    st.run_console(&mut game, "edit('greet')");
+    assert_eq!(st.s.editor.title, "greet.lua");
+    assert!(st.s.ui.coach.typing.is_some(), "still typing in");
+    let r = typed_in(&mut st, &mut game, id);
+    assert_eq!((&r["ok"], &r["cut_short"]), (&json!(true), &Json::Null), "{r}");
+    assert_eq!(st.s.editor.lines[1], "print('typed in whole')");
+    // An agent's run_lua (run_chunk, out of the history), the player paused:
+    // edit() and new() open nothing over the edit's unsaved text, so the
+    // edit goes on typing in, whole, and isn't told it was cut short.
+    let (mut game, mut st, id) = mid_edit("coach-mid-agent-console");
+    let path = st.s.editor.path.clone().unwrap();
+    st.s.now += 5.0;
+    for code in ["edit('hello')", "new('fresh')"] {
+        let lines = st.run_chunk(&mut game, code, false);
+        let said: Vec<&String> = lines.iter().map(|(_, t)| t).collect();
+        assert!(
+            said.iter().any(|t| t.contains("your edits to greet.lua aren't saved")),
+            "{code}: {said:?}"
+        );
+        assert_eq!(st.s.editor.title, "greet.lua", "{code}");
+        assert!(st.s.ui.coach.typing.is_some(), "{code}: still typing in");
+    }
+    assert!(!game.mods_dir().join("fresh.lua").exists(), "nothing made");
+    let r = typed_in(&mut st, &mut game, id);
+    assert_eq!((&r["ok"], &r["cut_short"]), (&json!(true), &Json::Null), "{r}");
+    assert_eq!(st.s.editor.lines[1], "print('typed in whole')");
+    assert!(st.s.editor.dirty, "unsaved");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), GREET, "nothing saved");
 }
 
 #[test]
@@ -2357,6 +3607,8 @@ fn the_agent_types_with_its_own_caret_and_name() {
     let notice = "Claude Code changed hello.lua";
     st.s.ui.coach.notice = Some(coach::Notice {
         text: notice.into(),
+        who: "Claude Code".into(),
+        file: "hello.lua".into(),
         seq: 1,
         at: st.s.now - 1.0,
     });
@@ -3861,6 +5113,59 @@ fn check_asks_the_games_agent_when_none_is_waiting() {
     st.s.ui.agent.agents = Some(Vec::new());
     still(&mut st, &mut game);
     assert!(texts_at(&game, "Check").is_empty());
+}
+
+#[test]
+fn check_keeps_its_step_in_the_rows_the_code_has_once_the_agent_pane_shows() {
+    // A lesson's steps on lines 14 and 27 of a long script, the panel hidden
+    // (the code as high as the Editor tab), the player on step 2. Check asks
+    // the game's own agent and shows the Agent pane, which takes rows from
+    // the code: the step stays in the rows the code has then, its note too.
+    use horizon_studio::game::hstudio_agent::AgentSpec;
+    use horizon_studio::game::hstudio_ui::Pane;
+    let src: String = (1..=200).map(|i| format!("local v{i} = {i}\n")).collect();
+    let (mut game, mut st) = editing("coach-check-in-view", "long", &src);
+    st.s.ui.agent.agents = Some(vec![AgentSpec {
+        id: "custom".into(),
+        name: "Echo".into(),
+        program: "/bin/echo".into(),
+        args: vec!["{prompt}".into()],
+        json: false,
+    }]);
+    let lesson = json!({ "title": "Values", "steps": [
+        { "start_line": 14, "note": "Fourteen.", "task": "Make it 140." },
+        { "start_line": 27, "note": "Twenty-seven.", "task": "Make it 270." },
+    ] });
+    ask(&mut st, &mut game, "lesson", lesson).unwrap();
+    // The player hides the panel for room.
+    st.s.ui.dock.set_hidden(Pane::Agent, true);
+    still(&mut st, &mut game);
+    let next = text_at(&game, "Next");
+    click(&mut st, &mut game, (next.0 + 2.0, next.1 + 4.0));
+    still(&mut st, &mut game);
+    let in_view = |st: &Studio, row: usize| {
+        let (scroll, rows) = (st.s.editor.scroll, st.s.ui.pages[Pane::Code.index()]);
+        (scroll..scroll + rows).contains(&row)
+    };
+    let tall = st.s.ui.pages[Pane::Code.index()];
+    assert!(in_view(&st, 26), "step 2 in view: scroll {}", st.s.editor.scroll);
+    assert!(!texts_at(&game, "Twenty-seven.").is_empty(), "its note");
+    let check = text_at(&game, "Check");
+    click(&mut st, &mut game, (check.0 + 2.0, check.1 + 4.0));
+    assert!(st.s.ui.dock.is_front(Pane::Agent), "the Agent pane shows");
+    still(&mut st, &mut game);
+    still(&mut st, &mut game);
+    let rows = st.s.ui.pages[Pane::Code.index()];
+    assert!(rows < tall, "the panel took rows from the code: {rows} of {tall}");
+    assert!(in_view(&st, 26), "step 2 in {rows} rows: scroll {}", st.s.editor.scroll);
+    assert!(!texts_at(&game, "Twenty-seven.").is_empty(), "its note");
+    for _ in 0..200 {
+        run_for(&mut st, &mut game, 0.05);
+        if !horizon_studio::game::hstudio_ui::agent_busy(&st) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 #[test]

@@ -38,6 +38,32 @@ fn suggestions_fit_what_is_typed() {
     assert!(labels("x = 12", &[], false).is_empty());
 }
 
+#[test]
+fn a_letter_of_more_than_one_byte_is_never_cut_in_two() {
+    // Before the word typed, or before what a '.' follows: the word, and
+    // its owner, start after the whole letter.
+    for console in [false, true] {
+        for before in [
+            "local nú",
+            "local número",
+            "grö",
+            "größe",
+            "x = é.a",
+            "é.",
+            "ñ:up",
+            "a.ü.b",
+        ] {
+            let found = suggest(before, &[], console, None);
+            if let Some((start, _)) = found {
+                assert!(before.is_char_boundary(start), "{before:?}: {start}");
+            }
+        }
+    }
+    assert_eq!(labels("épla", &[], false)[0], "player");
+    let (start, s) = suggest("ö = player.po", &[], false, None).unwrap();
+    assert_eq!((start, s[0].label.as_str()), ("ö = player.".len(), "pos"));
+}
+
 /// A problem as (line, span, message, error).
 type Found = (usize, Option<(usize, usize)>, String, bool);
 

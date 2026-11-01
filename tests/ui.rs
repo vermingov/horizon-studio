@@ -331,6 +331,9 @@ fn completion() {
     assert_eq!(complete("x = ag", 6).as_deref(), Some("ent."));
     assert_eq!(complete("", 0), None);
     assert_eq!(complete("zzz", 3), None);
+    // A letter of more than one byte before the word.
+    assert_eq!(complete("épla", "épla".len()).as_deref(), Some("yer."));
+    assert_eq!(complete("print(\"héllo", "print(\"héllo".len()), None);
 }
 
 #[test]
@@ -894,6 +897,84 @@ fn suggestions_open_as_you_type_and_tab_takes_one() {
     type_text(&mut st, &mut game, "player:po");
     handle(&mut st, &mut game, key(Key::Tab, NONE));
     assert_eq!(st.s.editor.text(), "player.pos()");
+}
+
+#[test]
+fn the_consoles_suggestions_go_with_the_line_they_were_for() {
+    // Ctrl+Enter runs the console's line, Ctrl+X cuts it and Ctrl+Up puts
+    // a line from the history in its place, past the suggestions' keys
+    // (Ctrl is held): the list goes with the line, and Tab, or a click
+    // where it showed, has no word to take the place of.
+    let mut game = FakeGame::new("ui-console-suggest");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('1'), CTRL));
+    type_text(&mut st, &mut game, "x = 1");
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    // Ctrl+X, then Tab.
+    type_text(&mut st, &mut game, "player.");
+    assert!(st.s.ui.suggest.is_some());
+    handle(&mut st, &mut game, key(Key::Char('x'), CTRL));
+    assert_eq!((st.s.ui.input.text.as_str(), game.clipboard.as_str()), ("", "player."));
+    assert!(st.s.ui.suggest.is_none(), "the list went with the line");
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert_eq!(st.s.ui.input.text, "");
+    // Ctrl+Up, then Tab.
+    type_text(&mut st, &mut game, "player.");
+    handle(&mut st, &mut game, key(Key::Up, CTRL));
+    assert_eq!(st.s.ui.input.text, "x = 1");
+    assert!(st.s.ui.suggest.is_none(), "the list went with the line");
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert_eq!(st.s.ui.input.text, "x = 1");
+    // Ctrl+Enter, then a click where the list showed its first item.
+    st.s.ui.input.set("");
+    type_text(&mut st, &mut game, "player.");
+    let first = st.s.ui.suggest.as_ref().unwrap().items[0].label.clone();
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, &first);
+    handle(&mut st, &mut game, key(Key::Enter, CTRL));
+    assert_eq!(st.s.ui.input.text, "");
+    assert!(st.s.ui.suggest.is_none(), "the list went with the line");
+    redraw(&mut st, &mut game);
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.ui.input.text, "");
+    // A list for a line no longer there (changed under it): Tab closes it.
+    type_text(&mut st, &mut game, "player.");
+    st.s.ui.input.set("pl");
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert!(st.s.ui.input.text.starts_with("pl"), "{:?}", st.s.ui.input.text);
+}
+
+#[test]
+fn accented_letters_type_in_the_code_and_the_console() {
+    // As each letter comes the suggestions look for the word typed, and
+    // the console's Tab completes it: a letter of more than one byte
+    // before it (é, ö, ú) is never cut in two.
+    let mut game = FakeGame::new("ui-accents");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
+    st.s.editor.set_text("");
+    type_text(&mut st, &mut game, "local número = 5");
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    type_text(&mut st, &mut game, "local grö = é.a");
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.editor.text(), "local número = 5\nlocal grö = é.a");
+    // The console: as typed, then Tab after an accent in a string.
+    handle(&mut st, &mut game, key(Key::Char('1'), CTRL));
+    type_text(&mut st, &mut game, "größe = é.a");
+    redraw(&mut st, &mut game);
+    assert_eq!(st.s.ui.input.text, "größe = é.a");
+    st.s.ui.input.set("");
+    type_text(&mut st, &mut game, "print(\"héllo");
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert_eq!(st.s.ui.input.text, "print(\"héllo");
+    st.s.ui.input.set("");
+    type_text(&mut st, &mut game, "épla");
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert!(st.s.ui.input.text.starts_with("éplayer"), "{:?}", st.s.ui.input.text);
 }
 
 #[test]
@@ -1995,6 +2076,58 @@ fn a_click_reaches_what_was_drawn_though_a_scan_moved_it() {
 /// The labels of the open menu.
 fn menu_items(st: &horizon_studio::game::hstudio::Studio) -> Vec<String> {
     menu_labels(st).into_iter().map(|(l, _)| l).collect()
+}
+
+#[test]
+fn clear_in_an_executor_style_leaves_no_selection_behind() {
+    // Clear empties the code: a selection made before it, backwards (its
+    // other end after the cursor) or lower in the file, goes with the text,
+    // so the next draw, key or letter has nothing past the end to reach.
+    // Ctrl+Z brings the text back.
+    use horizon_studio::game::hstudio_theme::THEMES;
+    let shift = Mods {
+        ctrl: false,
+        shift: true,
+        alt: false,
+    };
+    let text: String = (1..=30).map(|i| format!("print('line {i}')\n")).collect();
+    for theme in ["synapse", "protosmasher", "protoclassic", "rc7"] {
+        let mut game = FakeGame::new(&format!("ui-style-clear-{theme}"));
+        let mut st = studio(&mut game);
+        st.s.ui.open = true;
+        st.s.ui.look.motion = false;
+        st.s.ui.look.theme = THEMES.iter().position(|t| t.id == theme).unwrap();
+        st.s.ui.tab = Tab::Editor;
+        let backwards = [key(Key::End, NONE), key(Key::Home, shift)];
+        let lower = [key(Key::Right, shift), key(Key::Right, shift), key(Key::Right, shift)];
+        for (row, keys) in [(0, &backwards[..]), (19, &lower[..])] {
+            let case = format!("{theme}, row {row}");
+            st.s.editor.replace_text(&text);
+            st.s.editor.click(row, 0, false);
+            for k in keys {
+                handle(&mut st, &mut game, k.clone());
+            }
+            assert!(st.s.editor.selection().is_some(), "{case}");
+            redraw(&mut st, &mut game);
+            let clear = ["Clear", "CLEAR"]
+                .iter()
+                .find(|t| game.drawn.iter().any(|d| d.starts_with(&format!("text {t} @"))))
+                .unwrap_or_else(|| panic!("{case}: no Clear drawn"));
+            let at = text_at(&game, clear);
+            click(&mut st, &mut game, (at.0 + 2.0, at.1 + 2.0));
+            assert_eq!(st.s.editor.text(), "", "{case}");
+            assert_eq!(st.s.editor.selection(), None, "{case}");
+            redraw(&mut st, &mut game);
+            handle(&mut st, &mut game, key(Key::Right, NONE));
+            type_text(&mut st, &mut game, "a");
+            redraw(&mut st, &mut game);
+            assert_eq!(st.s.editor.text(), "a", "{case}");
+            assert_eq!((st.s.editor.row, st.s.editor.col), (0, 1), "{case}");
+            st.s.editor.undo();
+            st.s.editor.undo();
+            assert_eq!(st.s.editor.text(), text, "{case}: Clear undoes");
+        }
+    }
 }
 
 #[test]

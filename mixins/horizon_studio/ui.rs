@@ -950,6 +950,10 @@ impl Ui {
     pub fn dragging_any(&self) -> bool {
         self.dragging || self.text_drag || self.scroll_drag.is_some() || self.dock_drag.is_some() || self.drag.is_some()
     }
+    /// Whether the left button is held selecting the code's text.
+    pub fn selecting_code(&self) -> bool {
+        self.dragging
+    }
     /// The pane whose tab is lifted, dragged to another place.
     pub fn lifted(&self) -> Option<Pane> {
         match self.dock_drag {
@@ -1291,6 +1295,9 @@ pub(crate) struct Drawn {
     count: usize,
     /// Each splice since.
     splices: Vec<Splice>,
+    /// How far the view as drawn (`Ui::smooth`) was moved since, with the
+    /// text it shows: lines an agent's change put in at once above it.
+    moved: f32,
 }
 
 /// A splice: where it began and ended, and where the text it put in ends
@@ -1312,6 +1319,7 @@ impl Drawn {
             hscroll: ed.hscroll,
             count: ed.lines.len(),
             splices: Vec::new(),
+            moved: 0.0,
         }
     }
 }
@@ -1491,6 +1499,10 @@ impl Editor {
             ..Editor::default()
         };
         self.set_text(&text);
+        // It shows its top, where the cursor is: the view has followed the
+        // cursor, drawn yet or not (a change on disk before the first draw
+        // types in where the view goes).
+        self.followed = Some((self.row, self.col, self.revision));
     }
     /// The file it shows moved (renamed, or a script made a module's
     /// main.lua): the same text, cursor, undo and unsaved edits, at its new
@@ -1550,6 +1562,9 @@ impl Editor {
         while !self.lines[self.row].is_char_boundary(self.col) {
             self.col -= 1;
         }
+        // The selection's other end, and a press's place, stay in the text.
+        self.anchor = self.anchor.map(|a| self.clamp_pos(a));
+        self.held = self.held.map(|h| self.clamp_pos(h));
         // Whatever set it, the live check looks again.
         self.revision += 1;
     }
@@ -1624,6 +1639,14 @@ impl Editor {
         }
         if let Some(d) = self.drawn.as_mut().filter(|d| d.rev == rev) {
             d.rev = self.revision;
+        }
+    }
+    /// The view as drawn moved `by` rows since the draw, with the text it
+    /// shows (lines an agent's change put in at once above it): the rows as
+    /// drawn are that much further on under the pointer.
+    pub(crate) fn view_moved(&mut self, by: f32) {
+        if let Some(d) = self.drawn.as_mut() {
+            d.moved += by;
         }
     }
     /// Puts `text` (already `normal`) in place of `from..to` and returns
@@ -2424,9 +2447,7 @@ pub fn highlight(line: &str, start: Long) -> (Vec<(usize, usize, Tint)>, Long) {
 /// own functions and the standard library's tables.
 pub fn complete(text: &str, cursor: usize) -> Option<String> {
     let before = &text[..cursor];
-    let start = before
-        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
-        .map_or(0, |i| i + 1);
+    let start = super::hstudio_assist::start_after(before, |c| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'));
     let word = &before[start..];
     if word.is_empty() {
         return None;
@@ -3257,8 +3278,13 @@ pub fn accept_suggestion(st: &mut Studio, i: usize) {
     let Some(item) = sg.items.get(i).cloned() else { return };
     if sg.console {
         let input = &mut st.s.ui.input;
-        let end = input.cursor.max(sg.start);
-        input.text.replace_range(sg.start.min(end)..end, &item.insert);
+        // Its word isn't where it was (the line changed under the list):
+        // the list just closes.
+        if sg.start > input.cursor || !input.text.is_char_boundary(sg.start) {
+            return;
+        }
+        let end = input.cursor;
+        input.text.replace_range(sg.start..end, &item.insert);
         input.cursor = sg.start + item.insert.len();
         let next = input.text[input.cursor..].chars().next();
         match item.kind {
@@ -3736,8 +3762,10 @@ fn as_drawn(st: &Studio, action: Action) -> Option<Action> {
 /// column. Rows glide as the view scrolls, so the view as drawn (its first
 /// row, not where it is going) says which, given as `drawn`; and an agent's
 /// edit may have typed more in since the text was drawn, so the place is
-/// found in the text as drawn, then where that is now (`Drawn`). Left of
-/// the text (over the line numbers) it is the line's start.
+/// found in the text as drawn, then where that is now (`Drawn`): the view
+/// as drawn moved since with the text it shows (`Drawn::moved`) is where
+/// it was for the rows as drawn. Left of the text (over the line numbers)
+/// it is the line's start.
 pub(crate) fn editor_pos(st: &Studio, game: &mut dyn GameApi, x: f32, y: f32, drawn: f32) -> Option<(usize, usize)> {
     // A press that put an agent's edit in whole is for the text drawn under
     // it, wherever the edit moved that.
@@ -3746,36 +3774,87 @@ pub(crate) fn editor_pos(st: &Studio, game: &mut dyn GameApi, x: f32, y: f32, dr
     {
         return Some(place);
     }
+    // While an agent's edit typed in, the rows were drawn before the frame
+    // typed more: the place drawn under the pointer, where its text is now.
+    // (A splice since that replaced the text drawn there leaves nothing of
+    // it: the place is then the one under the pointer now, as below.)
+    if let Some(Some(place)) = drawn_place(st, game, x, y, drawn) {
+        return Some(place);
+    }
     let v = st.s.ui.view?;
     let ed = &st.s.editor;
     let at = drawn.max(0.0) + ((y - v.y) / code_line()).clamp(0.0, v.rows as f32);
-    let scale = st.s.ui.look.scale;
-    // While an agent's edit typed in, the rows were drawn before the frame
-    // typed more: the place drawn under the pointer, where its text is now.
-    if let Some(d) = ed.drawn.as_ref().filter(|d| d.rev == ed.revision) {
-        let row = (at.floor() as usize).min(d.count.saturating_sub(1));
-        if let Some(line) = row.checked_sub(d.first).and_then(|i| d.lines.get(i)) {
-            let col = if x < v.x {
-                0
-            } else {
-                d.hscroll + column_at(game, line, d.hscroll, x - v.x, scale)
-            };
-            let byte = line.char_indices().nth(col).map_or(line.len(), |(i, _)| i);
-            let place = d
-                .splices
-                .iter()
-                .fold((row, byte), |p, &(a, b, e)| after_splice(p, a, b, e));
-            let (row, byte) = ed.clamp_pos(place);
-            return Some((row, ed.lines[row][..byte].chars().count()));
-        }
-    }
     let row = (at.floor() as usize).min(ed.lines.len() - 1);
     let col = if x < v.x {
         0
     } else {
-        ed.hscroll + column_at(game, &ed.lines[row], ed.hscroll, x - v.x, scale)
+        ed.hscroll + column_at(game, &ed.lines[row], ed.hscroll, x - v.x, st.s.ui.look.scale)
     };
     Some((row, col))
+}
+
+/// The place drawn under `(x, y)` in rows drawn before an agent's edit
+/// typed more in (`Drawn`), where its text is now: None when no such rows
+/// are under the pointer (nothing typed in since the draw, or the text
+/// changed some other way), and Some(None) when a splice since replaced
+/// the text drawn there (nothing of it is left).
+fn drawn_place(st: &Studio, game: &mut dyn GameApi, x: f32, y: f32, drawn: f32) -> Option<Option<(usize, usize)>> {
+    let v = st.s.ui.view?;
+    let ed = &st.s.editor;
+    let d = ed.drawn.as_ref().filter(|d| d.rev == ed.revision)?;
+    let at = drawn.max(0.0) + ((y - v.y) / code_line()).clamp(0.0, v.rows as f32);
+    let row = ((at - d.moved).max(0.0).floor() as usize).min(d.count.saturating_sub(1));
+    let line = row.checked_sub(d.first).and_then(|i| d.lines.get(i))?;
+    let col = if x < v.x {
+        0
+    } else {
+        d.hscroll + column_at(game, line, d.hscroll, x - v.x, st.s.ui.look.scale)
+    };
+    let byte = line.char_indices().nth(col).map_or(line.len(), |(i, _)| i);
+    let place = d.splices.iter().try_fold((row, byte), |p, &(a, b, e)| {
+        (p < a || p >= b).then(|| after_splice(p, a, b, e))
+    });
+    Some(place.map(|place| {
+        let (row, byte) = ed.clamp_pos(place);
+        (row, ed.lines[row][..byte].chars().count())
+    }))
+}
+
+/// Whether the text drawn under `(x, y)` is gone: a splice since the draw
+/// (an agent's edit taking away the old text it showed) replaced it.
+pub(crate) fn drawn_gone(st: &Studio, game: &mut dyn GameApi, x: f32, y: f32, drawn: f32) -> bool {
+    drawn_place(st, game, x, y, drawn) == Some(None)
+}
+
+/// Whether a press at `(x, y)` is on the code's text as the view was drawn
+/// (its line numbers too).
+fn on_text(v: &EditorView, (x, y): (f32, f32)) -> bool {
+    x >= v.x - 30.0 && y >= v.y && y <= v.y + code_line() * v.rows as f32 && x <= v.x + v.w + 4.0
+}
+
+/// Whether a press at `at` (the left button, or the right) lands on the
+/// code, by what the last frame drew, as `handle_input` and `right_press`
+/// take it: a left one puts the cursor in its text (no prompt or menu up,
+/// nothing else drawn there) or takes one of the code's suggestions (which
+/// types at the cursor), a right one opens the code's menu there (no prompt
+/// up, nothing dragged, not on the menu up). It is for the line drawn under
+/// the pointer.
+pub(crate) fn press_on_code(ui: &Ui, at: (f32, f32), left: bool) -> bool {
+    if ui.naming.is_some() || ui.tab != Tab::Editor {
+        return false;
+    }
+    if !left {
+        let on_menu = ui.menu.as_ref().and_then(|m| m.rect).is_some_and(|r| inside(r, at));
+        return !ui.dragging_any() && !on_menu && matches!(spot_at(ui, at), Some((Spot::Code, _)));
+    }
+    if ui.menu.is_some() {
+        return false;
+    }
+    match hit_at(ui, at) {
+        Some(Action::Suggest(_)) => ui.suggest.as_ref().is_some_and(|sg| !sg.console),
+        None | Some(Action::Focus(Pane::Code)) => ui.view.is_some_and(|v| on_text(&v, at)),
+        _ => false,
+    }
 }
 
 /// A click or drag in the editor's text: moves the cursor there (a drag
@@ -3784,7 +3863,7 @@ fn editor_point(st: &mut Studio, game: &mut dyn GameApi, x: f32, y: f32, drag: b
     let Some(v) = st.s.ui.view else {
         return false;
     };
-    if !drag && (x < v.x - 30.0 || y < v.y || y > v.y + code_line() * v.rows as f32 || x > v.x + v.w + 4.0) {
+    if !drag && !on_text(&v, (x, y)) {
         return false;
     }
     let Some((row, col)) = editor_pos(st, game, x, y, drawn) else {
@@ -4340,6 +4419,10 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
         }
         Action::Windowed(on) => {
             st.s.ui.look.window = on;
+            // Full screen, it isn't rolled up (nor is the window it goes back to).
+            if !on {
+                st.s.ui.collapsed = false;
+            }
             st.s.ui.look.save(&st.s.dir);
         }
         Action::Accent(i) => {
@@ -4376,10 +4459,8 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
                 Tab::Settings
             };
         }
-        Action::ClearEditor => {
-            st.s.editor.set_text("");
-            st.s.editor.dirty = true;
-        }
+        // One edit, which Ctrl+Z takes back; the selection goes with the text.
+        Action::ClearEditor => st.s.editor.replace_text(""),
         Action::Suggest(i) => {
             if let Some(sg) = &mut st.s.ui.suggest {
                 sg.sel = usize::from(i);
@@ -4614,6 +4695,8 @@ fn settings_key(st: &mut Studio, key: Key) {
 pub(crate) fn run_console_line(st: &mut Studio, game: &mut dyn GameApi) {
     let ui = &mut st.s.ui;
     let line = std::mem::take(&mut ui.input);
+    // The suggestions go with the line they were for.
+    ui.suggest = None;
     ui.hist = None;
     ui.log_scroll = 0;
     st.run_console(game, &line.text);
@@ -4640,6 +4723,7 @@ fn console_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
                 Some(i) => ui.input.set(&st.s.history[i]),
                 None => ui.input.set(""),
             }
+            ui.suggest = None;
         }
         Key::Tab => {
             refresh_suggest(st);
@@ -4663,6 +4747,7 @@ fn console_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
             game.set_clipboard(&ui.input.text);
             if key == Key::Char('x') {
                 ui.input.set("");
+                ui.suggest = None;
             }
         }
         Key::Char('a') if mods.ctrl => ui.input.cursor = 0,

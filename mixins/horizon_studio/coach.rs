@@ -64,8 +64,11 @@ pub struct Coach {
     pub(crate) pressed: Option<((f32, f32), (usize, usize))>,
     /// A press comes in this frame's input, which the game hands the studio
     /// after the link's requests: it is for what is drawn under the pointer,
-    /// so the view is the player's for those requests.
+    /// so the panes stay where they are for those requests.
     pub(crate) press_coming: bool,
+    /// And it lands on the code (the line drawn under the pointer, or a
+    /// right press's menu there), so the view is the player's too.
+    pub(crate) code_press: bool,
     /// The answers to the last requests that changed something, by the
     /// key their client gave: one sent again (after a timeout, on a new
     /// connection) gets the same answer and isn't done twice.
@@ -132,10 +135,13 @@ fn run_id() -> u64 {
     h.finish() >> 11
 }
 
-/// A note over the code: what an agent changed elsewhere, its Agent pane
+/// A note over the code: what an agent changed elsewhere (`text`: the
+/// agent's name, `who`, what it did, then the file, `file`), its Agent pane
 /// line (whose jump shows it), and when.
 pub struct Notice {
     pub text: String,
+    pub who: String,
+    pub file: String,
     pub seq: u64,
     pub at: f64,
 }
@@ -150,6 +156,7 @@ impl Default for Coach {
             input_at: f64::NEG_INFINITY,
             pressed: None,
             press_coming: false,
+            code_press: false,
             replies: VecDeque::new(),
             typing: None,
             flash: None,
@@ -290,7 +297,9 @@ pub struct Before {
 /// typed character or a press puts the rest of an edit being typed in at
 /// once, so whatever the input does (type at the player's own caret, save,
 /// run, clear, open another file) finds the edit whole. A press is for the
-/// text drawn under the pointer, wherever the rest of the edit moves it.
+/// text drawn under the pointer, wherever the rest of the edit moves it;
+/// on old text the edit has taken away since (nothing of it is left), for
+/// the line under the pointer once the rest is in.
 pub fn before_input(st: &mut Studio, game: &mut dyn GameApi, input: &Input) -> Before {
     let why = match input {
         Input::Key { down: true, .. } | Input::Text(_) => Some("the player typed"),
@@ -301,7 +310,10 @@ pub fn before_input(st: &mut Studio, game: &mut dyn GameApi, input: &Input) -> B
         let press = matches!(input, Input::Button { down: true, .. }) && st.s.ui.coach.typing.is_some();
         let at = st.s.ui.mouse;
         let drawn = st.s.ui.smooth[1];
-        let place = press
+        // The text under the pointer as it is now, half typed in, isn't
+        // what the press is for when the text drawn there is gone.
+        let gone = press && super::hstudio_ui::drawn_gone(st, game, at.0, at.1, drawn);
+        let place = (press && !gone)
             .then(|| super::hstudio_ui::editor_pos(st, game, at.0, at.1, drawn))
             .flatten();
         let ed = &mut st.s.editor;
@@ -311,10 +323,15 @@ pub fn before_input(st: &mut Studio, game: &mut dyn GameApi, input: &Input) -> B
         });
         finish_typing(st, why);
         let ed = &mut st.s.editor;
-        st.s.ui.coach.pressed = ed.held.take().map(|(row, byte)| {
+        let mut pressed = ed.held.take().map(|(row, byte)| {
             let col = ed.lines[row].char_indices().take_while(|(i, _)| *i < byte).count();
             (at, (row, col))
         });
+        if gone {
+            let drawn = st.s.ui.smooth[1];
+            pressed = super::hstudio_ui::editor_pos(st, game, at.0, at.1, drawn).map(|place| (at, place));
+        }
+        st.s.ui.coach.pressed = pressed;
     }
     if used(input) {
         st.s.ui.coach.input_at = st.s.now;
@@ -338,14 +355,32 @@ fn used(input: &Input) -> bool {
 /// handled (the game handles them first, then the input): what of it
 /// reaches the studio counts as the player using it now, so a request that
 /// would open another file waits rather than have their keys, aimed at the
-/// file they see, land in another; and a press in it, aimed at what is
-/// drawn under the pointer, keeps the view where it is.
+/// file they see, land in another; a press in it, aimed at what is drawn
+/// under the pointer, keeps the panes where they are; and one that lands on
+/// the code (where the pointer is when it comes: the input's last move
+/// before it, else where the pointer was) keeps the view where it is.
 pub fn input_coming(st: &mut Studio, inputs: &[Input]) {
-    let reaches = st.s.ui.open && st.s.screen.is_none() && st.s.ui.closing_at.is_none();
-    if reaches && inputs.iter().any(used) {
-        st.s.ui.coach.input_at = st.s.now;
+    let ui = &st.s.ui;
+    let reaches = ui.open && st.s.screen.is_none() && ui.closing_at.is_none();
+    // Pointer moves come in GUI pixels, as handle_input takes them.
+    let k = ui.dp_factor() / ui.look.scale;
+    let (mut at, mut pressed, mut on_code) = (ui.mouse, false, false);
+    for input in inputs {
+        match input {
+            Input::Mouse(x, y) => at = (x * k, y * k),
+            Input::Button { left, down: true } => {
+                pressed = true;
+                on_code |= super::hstudio_ui::press_on_code(ui, at, *left);
+            }
+            _ => {}
+        }
     }
-    st.s.ui.coach.press_coming = reaches && inputs.iter().any(|i| matches!(i, Input::Button { down: true, .. }));
+    let c = &mut st.s.ui.coach;
+    if reaches && inputs.iter().any(used) {
+        c.input_at = st.s.now;
+    }
+    c.press_coming = reaches && pressed;
+    c.code_press = reaches && on_code;
 }
 
 /// After it: when it changed the code of the file that was open (not by
@@ -353,6 +388,7 @@ pub fn input_coming(st: &mut Studio, inputs: &[Input]) {
 pub fn after_input(st: &mut Studio, before: Before) {
     st.s.ui.coach.pressed = None;
     st.s.ui.coach.press_coming = false;
+    st.s.ui.coach.code_press = false;
     let ed = &st.s.editor;
     if ed.revision != before.revision && ed.path == before.path {
         st.s.ui.coach.player_at = st.s.now;
@@ -738,16 +774,32 @@ fn using(st: &Studio) -> bool {
 }
 
 /// Whether the view is the player's: they changed the code a moment ago,
-/// press a button in this frame's input (still to come, after the link's
-/// requests), or hold something (a drag of a selection, the scroll bar, a
-/// bar between panes, a pane's tab or the window, sizing from the keys),
-/// however long ago it began. An agent's edit (or a change on disk to the
-/// file open) then lands at once, and nothing an agent asks moves the
-/// view: a drag would go on selecting in the lines it moved to, and a click
-/// would leave the cursor out of it.
+/// press on the code in this frame's input (still to come, after the
+/// link's requests: a press elsewhere is for something else), or hold
+/// something (a drag of a selection, the scroll bar, a bar between panes,
+/// a pane's tab or the window, sizing from the keys), however long ago it
+/// began. An agent's edit (or a change on disk to the file open) then
+/// lands at once, and nothing an agent asks moves the view: a drag would
+/// go on selecting in the lines it moved to, and a click would leave the
+/// cursor out of it.
 fn view_held(st: &Studio) -> bool {
     let ui = &st.s.ui;
-    ui.coach.player_editing(st.s.now) || ui.coach.press_coming || holding(ui)
+    ui.coach.player_editing(st.s.now) || ui.coach.code_press || holding(ui)
+}
+
+/// Whether the player holds the code itself, in the open studio (not
+/// fading out, no script's screen over it): a selection dragged in its
+/// text, a press on it in this frame's input, or their change to the code
+/// a moment ago. Text under the pointer, or at the caret, is what they
+/// hold then; a drag of a tab, a bar, the window or the console's text has
+/// nothing of the code under the pointer to keep in place.
+fn code_held(st: &Studio) -> bool {
+    let ui = &st.s.ui;
+    let c = &ui.coach;
+    ui.open
+        && ui.closing_at.is_none()
+        && st.s.screen.is_none()
+        && (ui.selecting_code() || c.code_press || c.player_editing(st.s.now))
 }
 
 /// Whether the player has a prompt or a menu open in the studio.
@@ -763,6 +815,26 @@ fn switch_waits(st: &Studio) -> Option<Json> {
         return Some(busy("the player has a prompt or a menu open in the studio"));
     }
     using(st).then(|| busy("the player is using the studio"))
+}
+
+/// Why console code an agent runs (run_lua) can't open another file in the
+/// editor now (its `edit()` or `new()`, `what`), if it can't: as for
+/// open_script, not while the player is using the studio or has a prompt
+/// or a menu open in it, nor over unsaved edits in the file open (nothing
+/// of theirs is saved for an agent).
+pub fn console_open_refused(st: &Studio, what: &str) -> Option<String> {
+    if let Some(wait) = switch_waits(st) {
+        let why = wait["error"].as_str().unwrap_or("the player is using the studio");
+        return Some(format!("{what} opened no file: {why} (open_script waits for them)"));
+    }
+    unsaved_refusal(st, what, "")
+}
+
+/// Whether what an agent asks would bring the code forward only when the
+/// player isn't using the studio, and they are now (or have a prompt or a
+/// menu up): as open_script leaves the file open already where it is then.
+pub fn switch_waiting(st: &Studio) -> bool {
+    switch_waits(st).is_some()
 }
 
 /// The rows the code shows: in the studio's own layout, as the dock has its
@@ -785,11 +857,15 @@ fn code_page(ui: &super::hstudio_ui::Ui) -> usize {
 }
 
 /// Whether the player sees the code: the studio open on its Editor tab, not
-/// rolled up, and in the studio's own layout the code's body drawn last
-/// frame (not behind another tab, nor given way to another pane). An
-/// agent's change to code not seen lands at once instead of being typed in.
-fn code_seen(ui: &super::hstudio_ui::Ui) -> bool {
+/// rolled up nor under a script's screen (the Roblox GUI's too: the game
+/// draws that instead of the studio), and in the studio's own layout the
+/// code's body drawn last frame (not behind another tab, nor given way to
+/// another pane). An agent's change to code not seen lands at once instead
+/// of being typed in.
+fn code_seen(st: &Studio) -> bool {
+    let ui = &st.s.ui;
     ui.open
+        && st.s.screen.is_none()
         && ui.tab == Tab::Editor
         && !ui.collapsed
         && (ui.look.theme().layout != super::hstudio_theme::Layout::Studio || ui.dock_front[Pane::Code.index()])
@@ -812,13 +888,16 @@ fn show_line(st: &mut Studio, n: usize, cursor: bool) {
 /// opens one, the Editor tab brought forward. Another file opens only when
 /// the player isn't using the studio and the file open has no unsaved
 /// edits (nothing of theirs is saved or put aside for an agent). `line`
-/// shows a line; `create` opens a file that isn't there yet, empty, to be
-/// typed into (it is written when saved).
+/// shows a line, unless the view is the player's (the answer says it
+/// wasn't shown then); `create` opens a file that isn't there yet, empty,
+/// to be typed into (it is written when saved).
 pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let create = flag(params, "create") == Some(true);
     let t = target(st, params, create)?;
     let line = line_param(params, "line")?;
     let already = st.s.editor.path.as_deref() == Some(t.path.as_path());
+    // The view stays the player's (the line isn't shown then).
+    let mut kept = false;
     if already {
         // Its tab comes forward when another file could open, the code at
         // the front of its group (the keys stay where they are).
@@ -827,10 +906,11 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
         }
         // The view moves to the line, unless it is the player's; their
         // cursor stays theirs.
-        if let Some(n) = line
-            && !view_held(st)
-        {
-            show_line(st, n, false);
+        if let Some(n) = line {
+            kept = view_held(st);
+            if !kept {
+                show_line(st, n, false);
+            }
         }
     } else {
         if let Some(wait) = switch_waits(st) {
@@ -852,6 +932,7 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let did = match (already, t.exists, line) {
         (_, false, _) => format!("Opened {}, a new file: it is written when saved", t.file),
         (true, _, None) => format!("{} is open", t.file),
+        (true, _, Some(n)) if kept => format!("Didn't show line {n} of {}: the view stays with the player", t.file),
         (true, _, Some(n)) => format!("Showed line {n} of {}", t.file),
         (false, _, None) => format!("Opened {}", t.file),
         (false, _, Some(n)) => format!("Opened {} at line {n}", t.file),
@@ -1146,12 +1227,15 @@ fn say(st: &mut Studio, by: &By, in_run: bool, text: impl Into<String>, jump: Op
     st.s.ui.agent.say_jump(AgentLineKind::Action, text, jump, now);
 }
 
-/// Whether the unsaved edits in the editor's file are an agent's alone.
+/// Whether the unsaved edits in the editor's file are an agent's alone
+/// (one still being typed in counts, over none of the player's).
 fn agents_only(st: &Studio) -> bool {
     let ed = &st.s.editor;
-    st.s.ui
-        .coach
-        .unsaved
+    let c = &st.s.ui.coach;
+    if let Some(t) = c.typing.as_ref().filter(|t| !t.reload && t.rev == ed.revision) {
+        return !t.player_edits;
+    }
+    c.unsaved
         .as_ref()
         .is_some_and(|u| ed.path.as_ref() == Some(&u.path) && u.rev == ed.revision && !u.player_edits)
 }
@@ -1251,7 +1335,7 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     }
     let now = st.s.now;
     let ui = &st.s.ui;
-    let seen = code_seen(ui);
+    let seen = code_seen(st);
     let hands_off = view_held(st);
     let animated = seen && !hands_off && ui.look.motion && flag(params, "typing") != Some(false);
     let page = code_page(ui).max(1);
@@ -1335,7 +1419,7 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     complete(st, &mut typing);
     if !seen || hands_off {
         // What the player sees stays put: lines put in above the view move it with them.
-        keep_view(st, from, rows, seen && hands_off);
+        keep_view(st, &typing, rows, seen && code_held(st));
     }
     let mut result = land(st, &typing, None);
     if save {
@@ -1350,33 +1434,70 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     Ok(result)
 }
 
-/// What the player sees stays put through a change put in at once that
-/// began at place `from` (row, byte) of a text of `rows` lines: lines put
-/// in or taken out above the view move it with them, and the view and the
-/// caret as drawn move as far, so nothing glides and a drag held goes on in
-/// the lines under the pointer. In a view the player holds on screen
-/// (`held`: they hold a drag, press in this frame, or changed the code a
-/// moment ago), a change that begins at the very start of the view's first
-/// line puts its lines in above the text under the pointer, and moves it
-/// too. In one nobody sees, a change that begins on the view's first line
-/// leaves the view there, so what it put in is in view when the player
-/// looks again: lines put in at the top of a script, or the script written
+/// What the player sees stays put through a change put in at once (`t`: it
+/// replaced the text from `from` to `old_to`, rows and bytes of a text of
+/// `rows` lines, and the text it put in ends at `at` now). A change that
+/// begins above the view and ends above its first line, or in it, moves
+/// the view as far as the lines it put in or took out, and the view and the
+/// caret as drawn move as far, so the text after it stays where it is
+/// drawn: nothing glides, and a drag held goes on in the lines under the
+/// pointer. One that takes in all the view showed (nothing but blank lines
+/// of it is left after the change) leaves the view at its line, by number:
+/// nothing of what it showed is left to keep in place, and the lines the
+/// change put in or took out may be thousands. It goes no further than the
+/// new text's last page, though, so a text left shorter than the view's
+/// line still fills the view (all of it, from the top, if it is shorter
+/// than a page), the view and the caret as drawn going as far. In a view
+/// the player holds on screen by the code itself (`held`, `code_held`: a
+/// selection dragged in it, a press on it in this frame, their change to it
+/// a moment ago), a change that begins at the very start of the view's
+/// first line counts as one above it: lines put in there go in above the
+/// text under the pointer. In one nobody sees, or held by something else (a
+/// tab, a bar, the console's text), a change that begins on the view's
+/// first line leaves the view there, so what it put in is in view when the
+/// player looks: lines put in at the top of a script, or the script written
 /// anew.
-fn keep_view(st: &mut Studio, from: (usize, usize), rows: usize, held: bool) {
+fn keep_view(st: &mut Studio, t: &Typing, rows: usize, held: bool) {
+    let page = code_page(&st.s.ui).max(1);
     let ed = &mut st.s.editor;
-    let above = from.0 < ed.scroll || (held && from == (ed.scroll, 0));
+    let (from, old_to, at) = (t.from, t.old_to, t.at);
+    // The view's first line before the change (its splices keep the view
+    // inside the text, so a text left shorter took it up already).
+    let view = t.scroll;
+    let above = from.0 < view || (held && from == (view, 0));
     if !above {
         return;
     }
-    let moved = ed.lines.len() as isize - rows as isize;
-    let scroll = (ed.scroll as isize + moved).clamp(0, ed.lines.len() as isize - 1) as usize;
-    let by = scroll as f32 - ed.scroll as f32;
+    // Something of what the view showed is left: all of it, when the change
+    // ends above the view's first line; else what it showed after the
+    // change's end (now after `at`), down to its last row, if not blank.
+    let kept = old_to <= (view, 0) || {
+        let shown = (view + page).saturating_sub(old_to.0);
+        (at.0..(at.0 + shown).min(ed.lines.len())).any(|r| {
+            let line = &ed.lines[r];
+            let start = if r == at.0 { at.1.min(line.len()) } else { 0 };
+            !line[start..].trim().is_empty()
+        })
+    };
+    let scroll = if kept {
+        let moved = ed.lines.len() as isize - rows as isize;
+        (view as isize + moved).clamp(0, ed.lines.len() as isize - 1) as usize
+    } else {
+        // Nothing of it left: its line, by number, as far as the new text's
+        // last page goes (a text shorter than its line shows that page).
+        view.min(ed.lines.len().saturating_sub(page))
+    };
+    let by = scroll as f32 - view as f32;
     ed.scroll = scroll;
     let ui = &mut st.s.ui;
+    let was = ui.smooth[1];
     ui.smooth[1] = (ui.smooth[1] + by).max(0.0);
     if let Some(c) = ui.caret.as_mut() {
         c[0] = (c[0] + by).max(0.0);
     }
+    // A press this frame is for the row drawn under it: the rows as drawn
+    // (while an edit typed in) are that much further on.
+    ed.view_moved(ui.smooth[1] - was);
 }
 
 /// Byte `at` of a file's text as the editor has it (`Editor::normal`:
@@ -1459,6 +1580,8 @@ fn edit_on_disk(
     if st.s.ui.open {
         st.s.ui.coach.notice = Some(Notice {
             text: format!("{} changed {}", by.name, t.file),
+            who: by.name.clone(),
+            file: t.file.clone(),
             seq: st.s.ui.agent.seq,
             at: st.s.now,
         });
@@ -2326,6 +2449,8 @@ pub fn mark(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     } else if !open {
         st.s.ui.coach.notice = Some(Notice {
             text: format!("{} marked {rows} in {}", by.name, t.file),
+            who: by.name.clone(),
+            file: t.file.clone(),
             seq: st.s.ui.agent.seq,
             at: st.s.now,
         });
@@ -3044,10 +3169,11 @@ pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -
     // pane the player has the keys in, or a prompt or a menu is up (the
     // note has the explanation then); the Editor tab comes forward when
     // another file could open. While the player holds something (a drag,
-    // sizing from the keys) or presses in this frame, the groups stay where
-    // they are: the pane comes to the front of its group only while that
-    // group is shown, as showing a hidden one would move the others under
-    // the pointer (and end what it holds).
+    // sizing from the keys) or presses anywhere in this frame, the groups
+    // stay where they are: the pane comes to the front of its group only
+    // while that group is shown, as showing a hidden one would move the
+    // others under the pointer (and end what it holds). Its first step's
+    // lines show unless the view is the player's (a press on the code).
     let now = st.s.now;
     let (prompt, held) = (prompted(st), view_held(st));
     let busy = prompt || using(st);
@@ -3221,7 +3347,8 @@ fn lesson_go(st: &mut Studio, game: &mut dyn GameApi, i: usize) {
 /// lines as they are now and the live check's problems; else the game's own
 /// agent is asked to check the step, in a new turn of the conversation, and
 /// the Agent pane, where it answers, comes to the front of its group, its
-/// group shown, as for the menus' Ask (it is the player's own click).
+/// group shown, as for the menus' Ask (it is the player's own click); the
+/// step stays in the rows the code has then.
 fn lesson_check(st: &mut Studio) {
     let c = &st.s.ui.coach;
     let Some(l) = &c.lesson else {
@@ -3277,6 +3404,10 @@ fn lesson_check(st: &mut Studio) {
         }
         ui.dock.show(Pane::Agent);
         super::hstudio_ui::dock_changed(st);
+        // The pane may take rows from the code: the step stays in those it has.
+        if st.s.editor.path.as_ref() == Some(&path) {
+            reveal_rows(st, first, last);
+        }
         super::hstudio_ui::agent_ask(st, &ask);
     }
 }
@@ -3543,7 +3674,7 @@ pub fn sync_disk(st: &mut Studio) -> bool {
         return false;
     }
     let ui = &st.s.ui;
-    let shown = code_seen(ui);
+    let shown = code_seen(st);
     let seen = shown && ui.look.motion;
     // A view the player holds takes the change through the editor's splices,
     // however big: reading the file in whole would let go of a drag's other
@@ -3551,7 +3682,7 @@ pub fn sync_disk(st: &mut Studio) -> bool {
     let held = shown && view_held(st);
     let ed = &st.s.editor;
     if !(seen || held) || ed.dirty || ed.conflict || ed.removed {
-        return st.s.editor.sync_disk();
+        return read_again(st);
     }
     let Some(path) = ed.path.clone() else {
         return false;
@@ -3561,13 +3692,13 @@ pub fn sync_disk(st: &mut Studio) -> bool {
         return false;
     }
     let Ok(read) = std::fs::read_to_string(&path) else {
-        return st.s.editor.sync_disk();
+        return read_again(st);
     };
     let new: Vec<String> = Editor::normal(&read).split('\n').map(str::to_owned).collect();
     let change = changed_rows(&hashes(&ed.lines), &hashes(&new));
     let rows = (change.old_end - change.start).max(change.new_end - change.start);
     if rows == 0 || (rows > TYPED_RELOAD && !held) {
-        return st.s.editor.sync_disk();
+        return read_again(st);
     }
     // What differs: all between what the two texts share at their start
     // and at their end.
@@ -3627,7 +3758,7 @@ pub fn sync_disk(st: &mut Studio) -> bool {
         // drag's ends in their places in the text.)
         complete(st, &mut typing);
         reloaded(st, &typing);
-        keep_view(st, from, count, held);
+        keep_view(st, &typing, count, code_held(st));
         return true;
     }
     // Where it changed, in view, unless the player moved the cursor since
@@ -3642,6 +3773,20 @@ pub fn sync_disk(st: &mut Studio) -> bool {
     typing.scroll = ed.scroll;
     c.typing = Some(typing);
     false
+}
+
+/// The editor's file read again at once when it changed on disk
+/// (`Editor::sync_disk`, which keeps the view at its line): a text left
+/// shorter than that shows its last page, not its last line alone.
+fn read_again(st: &mut Studio) -> bool {
+    let page = code_page(&st.s.ui).max(1);
+    let rows = st.s.editor.lines.len();
+    let read = st.s.editor.sync_disk();
+    let ed = &mut st.s.editor;
+    if read && ed.lines.len() < rows {
+        ed.scroll = ed.scroll.min(ed.lines.len().saturating_sub(page));
+    }
+    read
 }
 
 /// A file read again, all typed in: the buffer is the file again, with no

@@ -647,6 +647,15 @@ fn is_word(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
+/// Where what ends `s` starts: just after its last char that `stop` takes
+/// (after the whole of it, however many bytes it has), else at 0.
+pub(crate) fn start_after(s: &str, stop: impl Fn(char) -> bool) -> usize {
+    s.char_indices()
+        .rev()
+        .find(|&(_, c)| stop(c))
+        .map_or(0, |(i, c)| i + c.len_utf8())
+}
+
 /// A doc line from the API table as (signature, description).
 fn split_doc(doc: &str) -> (String, String) {
     match doc.find("): ") {
@@ -884,7 +893,7 @@ pub fn suggest(
         return None;
     }
     // The name being typed: a word, after a '.' or ':' chain.
-    let word_start = before.rfind(|c: char| !is_word(c)).map_or(0, |i| i + 1);
+    let word_start = start_after(before, |c| !is_word(c));
     let typed = &before[word_start..];
     if typed.starts_with(|c: char| c.is_ascii_digit()) {
         return None;
@@ -914,9 +923,7 @@ pub fn suggest(
             // What is before the '.' or ':': a library, a table of the
             // file's (`a` or `a.b`), a string, or a call's result.
             let owner_end = word_start - 1;
-            let owner_start = before[..owner_end]
-                .rfind(|c: char| !is_word(c) && c != '.')
-                .map_or(0, |i| i + 1);
+            let owner_start = start_after(&before[..owner_end], |c| !is_word(c) && c != '.');
             let owner = before[owner_start..owner_end].trim_matches('.');
             let library: Vec<(String, String, String)> = names(console)
                 .into_iter()

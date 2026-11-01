@@ -3333,7 +3333,8 @@ impl Studio {
     }
 
     /// `run_console`, kept out of the console's history with `history` false
-    /// (code an AI runs through the link).
+    /// (code an AI runs through the link: its edit() and new() open another
+    /// file only when open_script would).
     pub fn run_chunk(&mut self, game: &mut dyn GameApi, src: &str, history: bool) -> Vec<(LogKind, String)> {
         self.start(game);
         let mark = self.s.log_seq;
@@ -3368,7 +3369,7 @@ impl Studio {
                 self.pump(game);
             }
         }
-        self.do_requests(game);
+        self.do_requests(game, !history);
         self.log_since(mark)
             .filter(|(_, l)| l.kind != LogKind::Input)
             .map(|(_, l)| (l.kind, l.text.clone()))
@@ -3388,17 +3389,43 @@ impl Studio {
             .map(move |(i, l)| (first + i as u64, l))
     }
 
-    fn do_requests(&mut self, game: &mut dyn GameApi) {
-        // Another file opening: an agent's edit being typed in is all in first.
-        if self
-            .s
-            .requests
-            .iter()
-            .any(|r| matches!(r, Request::Edit(..) | Request::New(..)))
-        {
+    /// What console code asked of the studio, once it ran (`agent`: code an
+    /// agent ran through the link, whose edit() and new() open another file
+    /// only when open_script would).
+    fn do_requests(&mut self, game: &mut dyn GameApi, agent: bool) {
+        let mut requests = std::mem::take(&mut self.s.requests);
+        if agent {
+            requests.retain(|r| {
+                let what = match r {
+                    // The file open already: nothing opens or is read again,
+                    // so, as for open_script, nothing refuses it (its code
+                    // comes forward only while the player isn't using the
+                    // studio, below).
+                    Request::Edit(id, file) if self.edit_is_open(id, file.as_deref()) => return true,
+                    Request::Edit(..) => "edit()",
+                    Request::New(..) => "new()",
+                    Request::Reload(_) => return true,
+                };
+                let why = super::hstudio_coach::console_open_refused(self, what);
+                if let Some(why) = &why {
+                    self.s.log(LogKind::Error, why.clone());
+                }
+                why.is_none()
+            });
+        }
+        // Another file opening: an agent's edit being typed in is all in
+        // first (not for a request refused above: nothing opens then).
+        let opens = |st: &Studio, r: &Request| match r {
+            Request::Edit(id, file) => st
+                .edit_path(id, file.as_deref())
+                .is_some_and(|p| st.s.editor.path.as_deref() != Some(p.as_path())),
+            Request::New(..) => true,
+            Request::Reload(_) => false,
+        };
+        if requests.iter().any(|r| opens(self, r)) {
             super::hstudio_coach::finish_typing(self, "the console opened another file");
         }
-        for r in std::mem::take(&mut self.s.requests) {
+        for r in requests {
             match r {
                 Request::Reload(None) => self.reload_all(game),
                 Request::Reload(Some(id)) => {
@@ -3413,15 +3440,19 @@ impl Studio {
                     }
                 }
                 Request::Edit(id, file) => {
-                    if let Some(i) = self.s.mods.iter().position(|m| m.id == id) {
-                        let m = &self.s.mods[i];
-                        let path = match (&file, &m.folder) {
-                            (Some(rel), Some(folder)) => path_in(folder, rel),
-                            _ => m.main.clone(),
-                        };
+                    if let Some(path) = self.edit_path(&id, file.as_deref()) {
                         self.save_before_switch(game, Some(&path));
-                        self.open_file(&path);
-                        super::hstudio_ui::reveal_code(self);
+                        // The file open already isn't read again: the
+                        // player's unsaved edits in it stay, with their undo.
+                        let open = self.s.editor.path.as_deref() == Some(path.as_path());
+                        if !open {
+                            self.open_file(&path);
+                        }
+                        // An agent's brings it forward as open_script does:
+                        // not while the player is using the studio.
+                        if !(agent && open && super::hstudio_coach::switch_waiting(self)) {
+                            super::hstudio_ui::reveal_code(self);
+                        }
                     }
                 }
                 Request::New(name, module) => {
@@ -3441,6 +3472,23 @@ impl Studio {
                 }
             }
         }
+    }
+
+    /// The file console code's edit() opens: mod `id`'s main file, or `file`
+    /// of a module (its path in it). None when no mod has that id.
+    fn edit_path(&self, id: &str, file: Option<&str>) -> Option<PathBuf> {
+        let m = self.s.mods.iter().find(|m| m.id == id)?;
+        Some(match (file, &m.folder) {
+            (Some(rel), Some(folder)) => path_in(folder, rel),
+            _ => m.main.clone(),
+        })
+    }
+
+    /// Whether console code's edit() of mod `id` (`file` of a module) is of
+    /// the file the editor has open.
+    fn edit_is_open(&self, id: &str, file: Option<&str>) -> bool {
+        self.edit_path(id, file)
+            .is_some_and(|p| self.s.editor.path.as_deref() == Some(p.as_path()))
     }
 
     /// Saves the editor's file if it has unsaved edits (the scan then reloads
@@ -3522,7 +3570,7 @@ impl Studio {
                 }
             }
         }
-        self.do_requests(game);
+        self.do_requests(game, false);
     }
 
     /// Saves the editor's file; the scan then reloads its mod. A syntax

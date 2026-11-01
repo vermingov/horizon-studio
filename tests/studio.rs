@@ -1228,6 +1228,39 @@ fn console_new_and_edit_know_modules() {
 }
 
 #[test]
+fn console_edit_of_the_file_open_keeps_its_unsaved_edits() {
+    // edit() of the file the editor has open already opens nothing anew:
+    // the player's unsaved edits in it stay, unsaved, with their undo (it
+    // isn't read again from disk), as a click on it in the script list.
+    let mut game = FakeGame::new("console-edit-open");
+    let mut st = studio(&mut game);
+    let src = "local n = 0\nprint('hi')\nreturn n\n";
+    game.write_mod("greet.lua", src);
+    st.create_module(&mut game, "Kit").unwrap();
+    st.scan(&mut game);
+    for (open, again, file) in [
+        ("edit('greet')", "edit('greet')", "greet.lua"),
+        ("edit('kit', 'lib.lua')", "edit('kit', 'lib')", "kit/lib.lua"),
+    ] {
+        console(&mut st, &mut game, open);
+        assert_eq!(st.s.editor.title, file);
+        let path = st.s.editor.path.clone().unwrap();
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        st.s.editor.click(0, 0, false);
+        st.s.editor.insert("-- mine\n");
+        console(&mut st, &mut game, again);
+        let ed = &st.s.editor;
+        assert_eq!(ed.title, file);
+        assert_eq!(ed.lines[0], "-- mine", "{again}: the edits stay");
+        assert!(ed.dirty, "{again}: unsaved");
+        assert_eq!((ed.row, ed.col), (1, 0), "{again}: the cursor stays");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), on_disk, "{again}");
+        st.s.editor.undo();
+        assert_eq!(st.s.editor.text(), on_disk, "{again}: Ctrl+Z takes them back");
+    }
+}
+
+#[test]
 fn running_a_modules_file_reloads_the_module() {
     let mut game = FakeGame::new("run-module-file");
     let mut st = studio(&mut game);
