@@ -4046,6 +4046,7 @@ pub fn agent_ask(st: &mut Studio, text: &str) {
         .unwrap_or_default();
     let ctx = super::hstudio_agent::AgentContext {
         file,
+        scratch: ed.path.as_deref() == Some(st.scratch_path().as_path()),
         mods_dir: mods_dir.clone(),
         files,
         selection: ed.selected_text().filter(|t| !t.trim().is_empty()),

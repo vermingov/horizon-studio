@@ -388,6 +388,8 @@ pub struct AgentContext {
     /// The mod file open in the editor, relative to the mods folder:
     /// "hello.lua" or "statue/main.lua".
     pub file: Option<String>,
+    /// The editor has its scratch file open (no mod's), when `file` is None.
+    pub scratch: bool,
     pub mods_dir: PathBuf,
     /// The files of the module the open file is in, by their paths in it
     /// (main.lua first); empty for a script.
@@ -470,6 +472,11 @@ pub fn prompt(request: &str, ctx: &AgentContext) -> String {
             if !ctx.files.is_empty() {
                 p += &format!("{file} is a file of the module {id}: {}.\n", ctx.files.join(", "));
             }
+        }
+        None if ctx.scratch => {
+            p += "The editor has its scratch file open (scratch.lua, a place to try code, no mod's): \
+                  read_script, edit_script and mark_lines work on it as they are, with no id, or with \
+                  scratch: true.\n";
         }
         None => p += "No mod file is open in the editor.\n",
     }

@@ -1033,6 +1033,46 @@ fn the_agent_answers_in_its_panel() {
 }
 
 #[test]
+fn the_agent_hears_the_scratch_file_is_open() {
+    // The editor's own scratch file (its first buffer) is no mod's: the
+    // prompt says it is open, and how the editor tools reach it, rather
+    // than that no file is.
+    use horizon_studio::game::hstudio_agent::AgentSpec;
+    use horizon_studio::game::hstudio_ui::{AgentLineKind, agent_ask, agent_busy};
+    let mut game = FakeGame::new("ui-agent-scratch");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.agent.agents = Some(vec![AgentSpec {
+        id: "custom".into(),
+        name: "Echo".into(),
+        program: "/bin/echo".into(),
+        args: vec!["{prompt}".into()],
+        json: false,
+    }]);
+    assert_eq!(st.s.editor.title, "scratch.lua");
+    st.s.editor.set_text("print(plyer.pos())\n");
+    agent_ask(&mut st, "fix this");
+    for _ in 0..200 {
+        run_for(&mut st, &mut game, 0.05);
+        if !agent_busy(&st) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let said: String =
+        st.s.ui
+            .agent
+            .lines
+            .iter()
+            .filter(|l| l.kind == AgentLineKind::Said)
+            .map(|l| l.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+    assert!(said.contains("The editor has its scratch file open"), "{said}");
+    assert!(!said.contains("No mod file is open"), "{said}");
+}
+
+#[test]
 fn the_window_stays_on_a_smaller_screen() {
     use horizon_studio::game::hstudio_theme::Look;
     let look = Look {
