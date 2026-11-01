@@ -648,7 +648,7 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             let (w, h) = if rich {
                 let read = super::hstudio_rbx_layout::parse_rich(&text);
                 let mut measure = |t: &str, s: f64, f: &super::hstudio_rbx_types::Font| -> f64 {
-                    f64::from(game.dp_measure(t, s as f32, super::hstudio_rbx_draw::studio_font(f)))
+                    super::hstudio_rbx_draw::measure_rbx(game, t, s, f)
                 };
                 let b =
                     super::hstudio_rbx_layout::text_bounds(&read.text, &read.spans, size, &font, width, &mut measure);

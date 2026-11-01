@@ -324,6 +324,35 @@ pub fn studio_font(f: &Font) -> StudioFont {
     }
 }
 
+/// How large Geist's letters are drawn for a Roblox font face at one
+/// TextSize: Roblox's fonts are narrower or wider than Geist (SourceSans,
+/// most GUIs' font, is 14% narrower), so its text is drawn at the size
+/// that makes it as wide as Roblox's, and fits the boxes made for it.
+/// The line box stays the TextSize.
+pub fn glyph_scale(f: &Font) -> f64 {
+    let fam = f.family.to_ascii_lowercase();
+    let has = |k: &str| fam.contains(k);
+    if has("mono") || has("inconsolata") || has("code") || has("pressstart") {
+        0.85
+    } else if has("sourcesans") {
+        0.86
+    } else if has("condensed") || has("oswald") || has("bangers") {
+        0.8
+    } else if has("arial") || has("arimo") || has("legacy") || has("roboto") || has("nunito") {
+        0.97
+    } else if has("montserrat") || has("fredoka") || has("luckiest") || has("merriweather") {
+        1.05
+    } else {
+        // Gotham, Builder Sans and the rest: as wide as Geist.
+        1.0
+    }
+}
+
+/// `text`'s width in dp at Roblox size `size` in `font`, as it is drawn.
+pub fn measure_rbx(game: &mut dyn GameApi, text: &str, size: f64, font: &Font) -> f64 {
+    f64::from(game.dp_measure(text, (size * glyph_scale(font)) as f32, studio_font(font)))
+}
+
 pub fn font_of_enum(e: Option<EnumItem>) -> Font {
     e.and_then(|i| super::hstudio_rbx_types::FontEnum::from_name(i.name))
         .and_then(|f| Font::from_enum(f).ok())
@@ -332,7 +361,6 @@ pub fn font_of_enum(e: Option<EnumItem>) -> Font {
 
 /// A text's size as TextService:GetTextSize gives it: wrapped to `width`.
 pub fn text_size(game: &mut dyn GameApi, text: &str, size: f64, font: Font, width: f64) -> (f64, f64) {
-    let f = studio_font(&font);
     let mut lines = 0usize;
     let mut widest: f64 = 0.0;
     for para in text.split('\n') {
@@ -343,16 +371,16 @@ pub fn text_size(game: &mut dyn GameApi, text: &str, size: f64, font: Font, widt
             } else {
                 format!("{line} {word}")
             };
-            let w = f64::from(game.dp_measure(&trial, size as f32, f));
+            let w = measure_rbx(game, &trial, size, &font);
             if w > width && !line.is_empty() {
-                widest = widest.max(f64::from(game.dp_measure(&line, size as f32, f)));
+                widest = widest.max(measure_rbx(game, &line, size, &font));
                 lines += 1;
                 line = word.to_owned();
             } else {
                 line = trial;
             }
         }
-        widest = widest.max(f64::from(game.dp_measure(&line, size as f32, f)));
+        widest = widest.max(measure_rbx(game, &line, size, &font));
         lines += 1;
     }
     (widest.ceil(), (lines as f64 * size).ceil())
@@ -601,9 +629,7 @@ pub fn lay_out(rbx: &mut Rbx, game: &mut dyn GameApi) {
         }
     }
     link_pages(rbx, &mut tree, &node_inst, &|i| inst_node.get(&i).copied());
-    let mut measure = |text: &str, size: f64, font: &Font| -> f64 {
-        f64::from(game.dp_measure(text, size as f32, studio_font(font)))
-    };
+    let mut measure = |text: &str, size: f64, font: &Font| -> f64 { measure_rbx(game, text, size, font) };
     let lay = tree.layout(&Viewport::new(f64::from(w), f64::from(h), 0.0), &mut measure);
     let mut writes: Vec<(Id, &'static str, Value, bool)> = Vec::new();
     for (n, &id) in node_inst.iter().enumerate() {
@@ -791,9 +817,7 @@ pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
     }
     let nodes: HashMap<Id, NodeId> = node_inst.iter().enumerate().map(|(n, &i)| (i, n)).collect();
     link_pages(rbx, &mut tree, &node_inst, &|i| nodes.get(&i).copied());
-    let mut measure = |text: &str, size: f64, font: &Font| -> f64 {
-        f64::from(game.dp_measure(text, size as f32, studio_font(font)))
-    };
+    let mut measure = |text: &str, size: f64, font: &Font| -> f64 { measure_rbx(game, text, size, font) };
     let lay = tree.layout(&Viewport::new(f64::from(w), f64::from(h), 0.0), &mut measure);
     // Only the way down is laid out as the whole GUI would be, with the
     // layouts on it whose items are all there.
@@ -1382,9 +1406,11 @@ pub fn draw(
             let italic = face.style == super::hstudio_rbx_types::FontStyle::Italic;
             let font = studio_font(&face);
             let size = t.size as f32;
+            // Geist's letters at the size that makes them Roblox's width.
+            let glyph = size * glyph_scale(&face) as f32;
             let lh = inst.get("LineHeight").to_num().unwrap_or(1.0) as f32;
             // Geist's line box is 1.45 times its size; Roblox's is the size.
-            let lift = (size * 1.45 - size * lh) / 2.0;
+            let lift = (glyph * 1.45 - size * lh) / 2.0;
             let outline = if text_object {
                 match stroke {
                     Some((c, thick, false)) if thick > 0.0 => Some((c, thick as f32)),
@@ -1414,8 +1440,8 @@ pub fn draw(
                     if from >= to {
                         continue;
                     }
-                    let x0 = width_to(game, t, line, from - line.start, p.scale, font);
-                    let x1 = width_to(game, t, line, to - line.start, p.scale, font);
+                    let x0 = width_to(game, t, line, from - line.start, p.scale, (font, glyph_scale(&face)));
+                    let x1 = width_to(game, t, line, to - line.start, p.scale, (font, glyph_scale(&face)));
                     let at = [(line.position.x + x0) as f32, line.position.y as f32];
                     game.dp_rect([at[0], at[1], (x1 - x0) as f32, size], 0.0, band);
                 }
@@ -1448,10 +1474,10 @@ pub fn draw(
                     o = thick;
                     let om = (outline_shade.is_some() || italic).then(|| game.dp_mark()).flatten();
                     for (dx, dy) in [(-thick, 0.0), (thick, 0.0), (0.0, -thick), (0.0, thick)] {
-                        game.dp_text(&line.text, [at[0] + dx, at[1] + dy], size, font, c);
+                        game.dp_text(&line.text, [at[0] + dx, at[1] + dy], glyph, font, c);
                     }
                     if let Some(m) = om {
-                        lean(game, m, italic, at[1], size);
+                        lean(game, m, italic, at[1], glyph);
                     }
                     if let (Some(m), Some(s)) = (om, outline_shade) {
                         game.dp_shade(m, s);
@@ -1459,9 +1485,9 @@ pub fn draw(
                 }
                 if ta > 0.0 && line.runs.is_empty() {
                     let tm = (own.is_some() || italic).then(|| game.dp_mark()).flatten();
-                    game.dp_text(&line.text, at, size, font, argb(tc, ta));
+                    game.dp_text(&line.text, at, glyph, font, argb(tc, ta));
                     if let Some(m) = tm {
-                        lean(game, m, italic, at[1], size);
+                        lean(game, m, italic, at[1], glyph);
                     }
                     if let (Some(m), Some(s)) = (tm, &own) {
                         game.dp_shade(m, s);
@@ -1479,7 +1505,9 @@ pub fn draw(
             }
             // The caret, blinking, where CursorPosition has it.
             if rbx.pointer.focus == Some(id) && (now * 2.0).fract() < 0.6 {
-                let caret = edit.as_ref().and_then(|e| caret_at(game, t, e.cursor, p.scale, font));
+                let caret = edit
+                    .as_ref()
+                    .and_then(|e| caret_at(game, t, e.cursor, p.scale, (font, glyph_scale(&face))));
                 let (cx, cy) = match caret {
                     Some((i, x)) => (x, t.lines[i].position.y),
                     None => (
@@ -1543,13 +1571,14 @@ fn draw_runs(game: &mut dyn GameApi, line: &layout::TextLine, paint: &RunPaint) 
     let mut reach: f32 = 0.0;
     for run in &line.runs {
         let size = run.size as f32;
+        let glyph = size * glyph_scale(&run.font) as f32;
         let font = studio_font(&run.font);
         let st = &run.style;
         let (x, w) = (run.x as f32, run.width as f32);
         // Its own line box, on the line's bottom; Geist's is 1.45 times the size.
         let tall = size * paint.line_height;
         let top = (line.position.y + line.height) as f32 - tall;
-        let at = [x, top - (size * 1.45 - tall) / 2.0];
+        let at = [x, top - (glyph * 1.45 - tall) / 2.0];
         let color = st.color.map_or(paint.color, |c| times(c, gc));
         let alpha = paint.alpha * (1.0 - st.transparency.unwrap_or(0.0));
         if let Some((mc, mt)) = st.mark {
@@ -1566,16 +1595,16 @@ fn draw_runs(game: &mut dyn GameApi, line: &layout::TextLine, paint: &RunPaint) 
         {
             reach = reach.max(thick);
             for (dx, dy) in [(-thick, 0.0), (thick, 0.0), (0.0, -thick), (0.0, thick)] {
-                game.dp_text(&run.text, [at[0] + dx, at[1] + dy], size, font, c);
+                game.dp_text(&run.text, [at[0] + dx, at[1] + dy], glyph, font, c);
             }
         }
         let c = argb(color, alpha);
         if alpha > 0.0 {
-            game.dp_text(&run.text, at, size, font, c);
+            game.dp_text(&run.text, at, glyph, font, c);
         }
         // The letters lean; their lines don't.
         if let Some(m) = letters {
-            lean(game, m, true, at[1], size);
+            lean(game, m, true, at[1], glyph);
         }
         if alpha > 0.0 {
             // The baseline: about a third of the size below the box's middle.
@@ -3314,12 +3343,16 @@ fn fresh_frame(rbx: &mut Rbx, game: &mut dyn GameApi) {
 }
 
 /// A text object's text as last laid out, with its UIScale and font.
-fn laid_text(rbx: &Rbx, id: Id) -> Option<(layout::TextLayout, f64, StudioFont)> {
+fn laid_text(rbx: &Rbx, id: Id) -> Option<(layout::TextLayout, f64, Face)> {
     let f = rbx.layout.as_ref()?;
     let p = f.layout.get(*f.inst_node.get(&id)?)?;
-    let font = studio_font(&as_font(&rbx.raw_get(id, "FontFace")).unwrap_or_default());
+    let face = as_font(&rbx.raw_get(id, "FontFace")).unwrap_or_default();
+    let font = (studio_font(&face), glyph_scale(&face));
     Some((p.text.clone()?, p.scale, font))
 }
+
+/// The font a laid-out text is drawn in, and its glyph_scale.
+type Face = (StudioFont, f64);
 
 /// How wide the start of a laid-out line is, to byte `end` of it.
 fn width_to(
@@ -3328,10 +3361,10 @@ fn width_to(
     line: &layout::TextLine,
     end: usize,
     scale: f64,
-    font: StudioFont,
+    font: Face,
 ) -> f64 {
-    let size = (t.size / scale.max(1e-9)) as f32;
-    f64::from(game.dp_measure(&line.text[..end], size, font)) * scale
+    let size = (t.size / scale.max(1e-9) * font.1) as f32;
+    f64::from(game.dp_measure(&line.text[..end], size, font.0)) * scale
 }
 
 /// The line the caret at byte `cursor` is on, and its x.
@@ -3340,7 +3373,7 @@ fn caret_at(
     t: &layout::TextLayout,
     cursor: usize,
     scale: f64,
-    font: StudioFont,
+    font: Face,
 ) -> Option<(usize, f64)> {
     let i = t.lines.iter().rposition(|l| l.start <= cursor)?;
     let line = &t.lines[i];
@@ -3352,7 +3385,7 @@ fn caret_at(
 }
 
 /// The byte of the text nearest `x` on laid-out line `i`.
-fn nearest(game: &mut dyn GameApi, t: &layout::TextLayout, i: usize, x: f64, scale: f64, font: StudioFont) -> usize {
+fn nearest(game: &mut dyn GameApi, t: &layout::TextLayout, i: usize, x: f64, scale: f64, font: Face) -> usize {
     let line = &t.lines[i];
     let ends: Vec<usize> = line
         .text

@@ -18,14 +18,14 @@ frame 1
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   log Info Horizon Studio 0.7.3. Type Lua and press Enter; help() lists the API.
   log Output [hello] hello loaded
 frame 2
@@ -49,14 +49,14 @@ frame 2
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -87,14 +87,14 @@ frame 3
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -126,14 +126,14 @@ frame 4
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -166,14 +166,14 @@ frame 5
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -207,14 +207,14 @@ frame 6
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -249,14 +249,14 @@ frame 7
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -292,14 +292,14 @@ frame 8
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -336,14 +336,14 @@ frame 9
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -381,14 +381,14 @@ frame 10
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -427,14 +427,14 @@ frame 11
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -474,14 +474,14 @@ frame 12
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -522,14 +522,14 @@ frame 13
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -571,14 +571,14 @@ frame 14
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -621,14 +621,14 @@ frame 15
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -672,14 +672,14 @@ frame 16
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:00 " [350.0, 4.0] ffffff true
@@ -724,14 +724,14 @@ frame 17
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -777,14 +777,14 @@ frame 18
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -831,14 +831,14 @@ frame 19
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -886,14 +886,14 @@ frame 20
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -942,14 +942,14 @@ frame 21
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -999,14 +999,14 @@ frame 22
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -1057,14 +1057,14 @@ frame 23
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -1116,14 +1116,14 @@ frame 24
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -1176,14 +1176,14 @@ frame 25
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -1237,14 +1237,14 @@ frame 26
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -1299,14 +1299,14 @@ frame 27
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -1362,14 +1362,14 @@ frame 28
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -1426,14 +1426,14 @@ frame 29
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -1491,14 +1491,14 @@ frame 30
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -1582,14 +1582,14 @@ frame 31
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -1649,14 +1649,14 @@ frame 32
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -1776,14 +1776,14 @@ frame 33
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:01 " [350.0, 4.0] ffffff true
@@ -1868,14 +1868,14 @@ frame 34
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -1960,14 +1960,14 @@ frame 35
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -2053,14 +2053,14 @@ frame 36
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -2147,14 +2147,14 @@ frame 37
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -2242,14 +2242,14 @@ frame 38
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -2338,14 +2338,14 @@ frame 39
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -2435,14 +2435,14 @@ frame 40
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -2533,14 +2533,14 @@ frame 41
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -2632,14 +2632,14 @@ frame 42
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -2735,14 +2735,14 @@ frame 43
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -2836,14 +2836,14 @@ frame 44
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -2938,14 +2938,14 @@ frame 45
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -3041,14 +3041,14 @@ frame 46
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -3145,14 +3145,14 @@ frame 47
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -3250,14 +3250,14 @@ frame 48
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -3356,14 +3356,14 @@ frame 49
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:02 " [350.0, 4.0] ffffff true
@@ -3463,14 +3463,14 @@ frame 50
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:03 " [350.0, 4.0] ffffff true
@@ -3571,14 +3571,14 @@ frame 51
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:03 " [350.0, 4.0] ffffff true
@@ -3687,14 +3687,14 @@ frame 52
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:03 " [350.0, 4.0] ffffff true
@@ -3802,14 +3802,14 @@ frame 53
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:03 " [350.0, 4.0] ffffff true
@@ -3918,14 +3918,14 @@ frame 54
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:03 " [350.0, 4.0] ffffff true
@@ -4035,14 +4035,14 @@ frame 55
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:03 " [350.0, 4.0] ffffff true
@@ -4153,14 +4153,14 @@ frame 56
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:03 " [350.0, 4.0] ffffff true
@@ -4272,14 +4272,14 @@ frame 57
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:03 " [350.0, 4.0] ffffff true
@@ -4392,14 +4392,14 @@ frame 58
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:03 " [350.0, 4.0] ffffff true
@@ -4513,14 +4513,14 @@ frame 59
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 07:03 " [350.0, 4.0] ffffff true
@@ -4637,14 +4637,14 @@ frame 60
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -4762,14 +4762,14 @@ frame 61
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -4886,14 +4886,14 @@ frame 62
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -5011,14 +5011,14 @@ frame 63
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -5137,14 +5137,14 @@ frame 64
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -5264,14 +5264,14 @@ frame 65
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -5392,14 +5392,14 @@ frame 66
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -5521,14 +5521,14 @@ frame 67
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -5651,14 +5651,14 @@ frame 68
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -5782,14 +5782,14 @@ frame 69
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -5914,14 +5914,14 @@ frame 70
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -6047,14 +6047,14 @@ frame 71
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -6181,14 +6181,14 @@ frame 72
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -6316,14 +6316,14 @@ frame 73
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -6452,14 +6452,14 @@ frame 74
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -6589,14 +6589,14 @@ frame 75
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:00 (night)" [350.0, 4.0] ffffff true
@@ -6727,14 +6727,14 @@ frame 76
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -6866,14 +6866,14 @@ frame 77
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -7006,14 +7006,14 @@ frame 78
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -7147,14 +7147,14 @@ frame 79
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -7289,14 +7289,14 @@ frame 80
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -7432,14 +7432,14 @@ frame 81
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -7576,14 +7576,14 @@ frame 82
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -7721,14 +7721,14 @@ frame 83
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -7867,14 +7867,14 @@ frame 84
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -7920,14 +7920,14 @@ frame 85
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -7971,14 +7971,14 @@ frame 86
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -8023,14 +8023,14 @@ frame 87
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -8076,14 +8076,14 @@ frame 88
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -8130,14 +8130,14 @@ frame 89
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -8185,14 +8185,14 @@ frame 90
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -8241,14 +8241,14 @@ frame 91
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -8298,14 +8298,14 @@ frame 92
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:01 (night)" [350.0, 4.0] ffffff true
@@ -8356,14 +8356,14 @@ frame 93
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:02 (night)" [350.0, 4.0] ffffff true
@@ -8415,14 +8415,14 @@ frame 94
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:02 (night)" [350.0, 4.0] ffffff true
@@ -8489,14 +8489,14 @@ frame 98
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:02 (night)" [350.0, 4.0] ffffff true
@@ -8544,14 +8544,14 @@ frame 99
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:02 (night)" [350.0, 4.0] ffffff true
@@ -8600,14 +8600,14 @@ frame 100
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:02 (night)" [350.0, 4.0] ffffff true
@@ -8657,14 +8657,14 @@ frame 101
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:02 (night)" [350.0, 4.0] ffffff true
@@ -8715,14 +8715,14 @@ frame 102
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:02 (night)" [350.0, 4.0] ffffff true
@@ -8774,14 +8774,14 @@ frame 103
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:02 (night)" [350.0, 4.0] ffffff true
@@ -8834,14 +8834,14 @@ frame 104
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:02 (night)" [350.0, 4.0] ffffff true
@@ -8895,14 +8895,14 @@ frame 105
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:02 (night)" [350.0, 4.0] ffffff true
@@ -8957,14 +8957,14 @@ frame 106
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:02 (night)" [350.0, 4.0] ffffff true
@@ -9020,14 +9020,14 @@ frame 107
   text "20 fps" [4.0, 176.0] ffffff true
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
-  dp_text "Shop  ·  50 coins" [362.0, 712.95] 18 Medium ffffffff
+  dp_text "Shop  ·  50 coins" [362.0, 712.2975] 18.9 Medium ffffffff
   dp_rect [362.0, 746.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Diamond sword  —  30" [403.0, 753.85] 14 Regular ff50c8ff
+  dp_text "Diamond sword  —  30" [405.31, 754.1545] 13.58 Regular ff50c8ff
   dp_rect [362.0, 790.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Golden apple  —  12" [406.85, 797.85] 14 Regular ffffc83c
+  dp_text "Golden apple  —  12" [409.0445, 798.1545] 13.58 Regular ffffc83c
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
-  dp_text "Ender pearl  —  8" [414.55, 841.85] 14 Regular ff3ca078
-  dp_text "Close (G)" [460.2, 886.2] 8 Regular ffa0a5b4
+  dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
+  dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
   place TopRight 130 22 -> (348.0, 2.0)
   fill [348.0, 2.0, 130.0, 22.0] 78000000
   text "Day 1, 20:02 (night)" [350.0, 4.0] ffffff true

@@ -2395,8 +2395,11 @@ fn rich_text_draws_its_runs() {
     let drawn = hud(&mut st, &mut game);
     // Two lines of 8 in the middle of 40: from 12 and 20, each run in its colour.
     assert_eq!(texts(&drawn), ["Red", " ", "under", "marked"], "{drawn:#?}");
-    assert!(drawn.contains(&"text Red @[0.0, 10.2] ff0000".to_owned()), "{drawn:#?}");
-    assert!(drawn.contains(&"text under @[24.0, 10.2] ffffff".to_owned()));
+    assert!(
+        drawn.contains(&"text Red @[0.0, 10.374] ff0000".to_owned()),
+        "{drawn:#?}"
+    );
+    assert!(drawn.contains(&"text under @[24.0, 10.374] ffffff".to_owned()));
     // The underline, under "under".
     let under = index_of(&drawn, "text under @");
     assert!(
