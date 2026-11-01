@@ -63,6 +63,18 @@ name = "hstudio_rbx_methods"
 source = "rbx_methods.rs"
 
 [[module]]
+id = "rbx_api"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_api"
+source = "rbx_api.rs"
+
+[[module]]
+id = "rbx_api_data"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_api_data"
+source = "rbx_api_data.rs"
+
+[[module]]
 id = "rbx_draw"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_rbx_draw"

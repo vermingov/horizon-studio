@@ -218,3 +218,111 @@ fn roblox_s_own_scripts_are_there_for_the_script_functions() {
         ["true\ttrue", "true", "LocalScript\ttrue\tstring", "nil", "true\ttrue"]
     );
 }
+
+#[test]
+fn roblox_s_whole_api_backs_what_the_layer_does_not_implement() {
+    let p = run(
+        "compat-api",
+        r#"
+        -- A member of Roblox's API the layer has no code for: its type and default, kept when set.
+        local h = game.Players.LocalPlayer.Character.Humanoid
+        print(h.SeatPart, h.Sit, h.BreakJointsOnDeath, typeof(h.Seated))
+        h.BreakJointsOnDeath = false
+        print(h.BreakJointsOnDeath, pcall(function() h.BreakJointsOnDeath = nil end))
+        print(pcall(function() h.SeatPart = workspace end))
+        -- A class only the API has, an API service, and every enum.
+        local p = Instance.new("ProximityPrompt")
+        print(p.ActionText, p.HoldDuration, p:IsA("Instance"), typeof(p.Triggered))
+        print(game:GetService("GroupService").ClassName, Enum.CreatorType.Group.Value)
+        -- Humanoid states, settings, product info, physics.
+        print(h:GetStateEnabled(Enum.HumanoidStateType.Dead), h:SetStateEnabled(15, false), h:GetStateEnabled(15))
+        print(settings().Rendering.ClassName, UserSettings():GetService("UserGameSettings").ClassName)
+        print(game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name)
+        print(PhysicalProperties.new(Enum.Material.Wood).Density, typeof(PhysicalProperties.new(1, 0.3, 0.5)))
+        -- Animations, and the R6 rig's details.
+        local anim = Instance.new("Animation")
+        local track = h:LoadAnimation(anim)
+        track:Play()
+        print(track.IsPlaying, #h:GetPlayingAnimationTracks(), #h.Animator:GetPlayingAnimationTracks())
+        track:Stop()
+        local char = h.Parent
+        print(char.Head.Mesh.ClassName, char.Torso.Neck.ClassName, char.Animate.sit.SitAnim.ClassName)
+        -- Chat goes to the game's chat.
+        game:GetService("TextChatService").TextChannels.RBXGeneral:SendAsync("hello from roblox")
+        -- next goes on past a key the loop removed.
+        local t = {1, 2, 3, x = 1}
+        local n = 0
+        for k in pairs(t) do n = n + 1 if k == 3 then table.remove(t, 3) end end
+        print(n)
+        "#,
+        0.8,
+    );
+    assert_eq!(
+        p,
+        [
+            "nil\tfalse\ttrue\tRBXScriptSignal",
+            "false\tfalse\tt.lua:6: Unable to assign property BreakJointsOnDeath. bool expected, got nil",
+            "false\tt.lua:7: Unable to assign property SeatPart. Property is read only",
+            "Interact\t0\ttrue\tRBXScriptSignal",
+            "GroupService\t1",
+            "true\tnil\tfalse",
+            "RenderSettings\tUserGameSettings",
+            "Minecraft",
+            "0.35\tPhysicalProperties",
+            "true\t1\t1",
+            "SpecialMesh\tMotor6D\tAnimation",
+            "4",
+        ]
+    );
+}
+
+#[test]
+fn a_script_takes_the_character_apart_as_in_roblox() {
+    let mut game = FakeGame::new("compat-swap");
+    let mut st = studio(&mut game);
+    game.write_mod(
+        "t.lua",
+        r#"
+        local lp = game.Players.LocalPlayer
+        local char = lp.Character
+        char.Archivable = true
+        local copy = char:Clone()
+        copy.Name = "Copy"
+        copy.Parent = workspace
+        lp.Character = copy
+        task.wait(0.1)
+        print(copy.Humanoid.RootPart == copy.HumanoidRootPart, workspace.CurrentCamera ~= nil)
+        workspace.CurrentCamera:Destroy()
+        task.wait(0.1)
+        print(workspace.CurrentCamera ~= nil)
+        -- Its Humanoid gone, the character is dead: a new one comes RespawnTime later.
+        game.Players.RespawnTime = 0.2
+        copy.Humanoid:Destroy()
+        local new = lp.CharacterAdded:Wait()
+        print(new ~= copy, new:FindFirstChildOfClass("Humanoid") ~= nil)
+        "#,
+    );
+    run_for(&mut st, &mut game, 1.5);
+    let p: Vec<String> = log(&st)
+        .iter()
+        .filter_map(|l| l.strip_prefix("[t] ").map(|s| s.replace("    ", "\t")))
+        .collect();
+    assert_eq!(p, ["true\ttrue", "true", "true\ttrue"], "{:?}", log(&st));
+    assert!(game.sent.is_empty());
+}
+
+#[test]
+fn a_roblox_script_s_chat_message_goes_to_the_game_s_chat() {
+    let mut game = FakeGame::new("compat-chat");
+    let mut st = studio(&mut game);
+    game.write_mod(
+        "t.lua",
+        r#"
+        game:GetService("TextChatService").TextChannels.RBXGeneral:SendAsync("hello from roblox")
+        game.ReplicatedStorage.DefaultChatSystemChatEvents.SayMessageRequest:FireServer("and the old chat", "All")
+        game:GetService("TextChatService").TextChannels.RBXGeneral:SendAsync("/e dance")
+        "#,
+    );
+    run_for(&mut st, &mut game, 0.8);
+    assert_eq!(game.sent, ["hello from roblox", "and the old chat"]);
+}

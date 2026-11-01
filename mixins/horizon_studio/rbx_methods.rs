@@ -175,7 +175,9 @@ fn instance_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, args: &
         }
         "GetFullName" => one(Value::str(&rbx.full_name(id))),
         "Destroy" | "Remove" => {
-            if rbx.inst(id).locked && rbx.inst(id).parent.is_some() && !rbx.inst(id).destroyed {
+            // Locked (a service, the mouse, settings()): never, parent or not.
+            let parentless_ok = rbx.inst(id).parent.is_none() && !rbx.unparented_locked(id);
+            if rbx.inst(id).locked && !parentless_ok && !rbx.inst(id).destroyed {
                 return Err(lua.rt_error(format!("The Parent property of {} is locked", rbx.inst(id).name)));
             }
             if name == "Remove" {
@@ -348,7 +350,7 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
                 return one(Value::Nil);
             }
             let rbx = env.rbx();
-            match rbx.service(&n) {
+            match rbx.service(&n).or_else(|| rbx.api_service(&n)) {
                 Some(s) => one(rbx.value(s)),
                 None if name == "FindService" => one(Value::Nil),
                 None => Err(lua.rt_error(format!("'{n}' is not a valid Service name"))),
@@ -840,12 +842,173 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             none()
         }
         ("Humanoid", "ChangeState") => none(),
+        // Which states the Humanoid may enter: all, until a script says.
+        ("Humanoid", "SetStateEnabled" | "GetStateEnabled") => {
+            let state = match args.get(1) {
+                Some(v) => match super::hstudio_rbx_values::get(v) {
+                    Some(Data::Item(it)) => it.name.to_owned(),
+                    _ => match v.to_num() {
+                        Some(n) => super::hstudio_rbx_values::enum_def("HumanoidStateType")
+                            .and_then(|d| d.items.iter().find(|i| f64::from(i.1) == n))
+                            .map_or_else(|| n.to_string(), |i| i.0.to_owned()),
+                        None => return Err(bad_arg(lua, 1, name, "HumanoidStateType expected")),
+                    },
+                },
+                None => return Err(bad_arg(lua, 1, name, "HumanoidStateType expected")),
+            };
+            let key = format!("StateEnabled:{state}");
+            let rbx = env.rbx();
+            if name == "GetStateEnabled" {
+                return one(Value::Bool(rbx.inst(id).extra.get(&key).is_none_or(Value::truthy)));
+            }
+            let on = args.get(2).is_some_and(Value::truthy);
+            rbx.inst_mut(id).extra.insert(key, Value::Bool(on));
+            none()
+        }
+        // A message to the chat: the game's chat (its commands aside).
+        ("TextChannel", "SendAsync") => {
+            let text = args.get(1).and_then(Value::as_text).unwrap_or_default();
+            send_chat(env, &text);
+            none()
+        }
+        ("RemoteEvent", "FireServer") => {
+            let rbx = env.rbx();
+            let say = rbx.inst(id).name == "SayMessageRequest"
+                && rbx
+                    .inst(id)
+                    .parent
+                    .is_some_and(|p| rbx.inst(p).name == "DefaultChatSystemChatEvents");
+            if say {
+                let text = args.get(1).and_then(Value::as_text).unwrap_or_default();
+                send_chat(env, &text);
+            }
+            none()
+        }
+        ("MarketplaceService", "GetProductInfo") => {
+            let asset = args.get(1).and_then(Value::to_num).unwrap_or(0.0);
+            let mut t = Table::new();
+            let rbx = env.rbx();
+            let place = rbx.raw_get(rbx.game, "PlaceId").to_num().unwrap_or(0.0);
+            let title = if asset == place { "Minecraft" } else { "" };
+            t.set_str("Name", Value::str(title));
+            t.set_str("Description", Value::str(""));
+            t.set_str("AssetId", Value::Num(asset));
+            t.set_str("ProductId", Value::Num(asset));
+            t.set_str("AssetTypeId", Value::Num(9.0));
+            t.set_str("PriceInRobux", Value::Num(0.0));
+            t.set_str("IsForSale", Value::Bool(false));
+            t.set_str("IsPublicDomain", Value::Bool(false));
+            t.set_str("IsLimited", Value::Bool(false));
+            t.set_str("Created", Value::str("2006-01-01T00:00:00Z"));
+            t.set_str("Updated", Value::str("2006-01-01T00:00:00Z"));
+            let mut creator = Table::new();
+            creator.set_str("Name", Value::str("Roblox"));
+            creator.set_str("Id", Value::Num(1.0));
+            creator.set_str("CreatorType", Value::str("User"));
+            creator.set_str("CreatorTargetId", Value::Num(1.0));
+            t.set_str("Creator", Value::table(creator));
+            one(Value::table(t))
+        }
+        // settings():GetService and UserSettings():GetService: a settings
+        // object of theirs by its class.
+        ("GlobalSettings" | "UserSettings", "GetService") => {
+            let n = text_arg(lua, args, 1, name)?;
+            let rbx = env.rbx();
+            let found = rbx
+                .inst(id)
+                .children
+                .iter()
+                .copied()
+                .find(|&c| rbx.inst(c).class.name == n);
+            match found {
+                Some(c) => one(rbx.value(c)),
+                None => Err(lua.rt_error(format!("'{n}' is not a valid Service name"))),
+            }
+        }
+        ("GlobalSettings", "GetFFlag") => one(Value::Bool(false)),
+        ("GlobalSettings", "GetFVariable") => one(Value::str("")),
         ("Humanoid", "GetState") => {
             let state = super::hstudio_rbx_world::state_of(env.rbx(), id);
             one(enum_value(enum_item("HumanoidStateType", state)))
         }
         ("Humanoid", "UnequipTools") => none(),
-        ("Humanoid", "GetPlayingAnimationTracks") => one(Value::table(Table::new())),
+        ("Humanoid" | "Animator", "GetPlayingAnimationTracks") => {
+            let rbx = env.rbx();
+            // A Humanoid's tracks and its Animator's are the same tracks.
+            let mine =
+                |owner: Id| owner == id || rbx.inst(owner).parent == Some(id) || rbx.inst(id).parent == Some(owner);
+            let tracks: Vec<Id> = rbx
+                .anim_tracks
+                .iter()
+                .filter(|(o, t)| {
+                    rbx.try_inst(*t).is_some_and(|i| !i.destroyed)
+                        && rbx.try_inst(*o).is_some()
+                        && mine(*o)
+                        && rbx.inst(*t).extra.get("IsPlaying").is_some_and(Value::truthy)
+                })
+                .map(|(_, t)| *t)
+                .collect();
+            one(rbx.list(&tracks))
+        }
+        ("Humanoid" | "Animator" | "AnimationController", "LoadAnimation") => {
+            let owner = env.owner();
+            let rbx = env.rbx();
+            let anim = args
+                .get(1)
+                .and_then(|v| rbx.id_of(v))
+                .filter(|&a| rbx.inst(a).class.name == "Animation")
+                .ok_or_else(|| bad_arg(lua, 1, name, "Animation expected"))?;
+            let track = rbx.make("AnimationTrack", Some(owner));
+            let anim_name = rbx.inst(anim).name.clone();
+            rbx.inst_mut(track).name = anim_name;
+            let av = rbx.value(anim);
+            let extra = &mut rbx.inst_mut(track).extra;
+            extra.insert("Animation".into(), av);
+            extra.insert("IsPlaying".into(), Value::Bool(false));
+            extra.insert("Speed".into(), Value::Num(1.0));
+            extra.insert("Length".into(), Value::Num(1.0));
+            rbx.anim_tracks.push((id, track));
+            one(rbx.value(track))
+        }
+        ("AnimationTrack", "Play") => {
+            let rbx = env.rbx();
+            if let Some(speed) = args.get(3).and_then(Value::to_num) {
+                rbx.inst_mut(id).extra.insert("Speed".into(), Value::Num(speed));
+            }
+            let was = rbx.inst(id).extra.get("IsPlaying").is_some_and(Value::truthy);
+            rbx.inst_mut(id).extra.insert("IsPlaying".into(), Value::Bool(true));
+            if !was {
+                rbx.fire(id, "Changed", vec![Value::str("IsPlaying")]);
+            }
+            none()
+        }
+        ("AnimationTrack", "Stop") => {
+            let rbx = env.rbx();
+            let was = rbx.inst(id).extra.get("IsPlaying").is_some_and(Value::truthy);
+            rbx.inst_mut(id).extra.insert("IsPlaying".into(), Value::Bool(false));
+            if was {
+                rbx.fire(id, "Changed", vec![Value::str("IsPlaying")]);
+                rbx.fire(id, "Stopped", Vec::new());
+                rbx.fire(id, "Ended", Vec::new());
+            }
+            none()
+        }
+        ("AnimationTrack", "AdjustSpeed" | "AdjustWeight") => {
+            let n = args
+                .get(1)
+                .map(|v| v.to_num().or_else(|| v.as_text().and_then(|t| t.trim().parse().ok())))
+                .unwrap_or(Some(1.0))
+                .ok_or_else(|| bad_arg(lua, 1, name, "number expected"))?;
+            let key = if name == "AdjustSpeed" { "Speed" } else { "WeightTarget" };
+            env.rbx().inst_mut(id).extra.insert(key.into(), Value::Num(n));
+            none()
+        }
+        ("AnimationTrack", "GetMarkerReachedSignal") => {
+            let marker = text_arg(lua, args, 1, name)?;
+            one(env.rbx().signal(id, &format!("Marker:{marker}")))
+        }
+        // Emotes are the game's own: none plays here.
+        ("Humanoid", "PlayEmote") => one(Value::Bool(false)),
         ("BindableEvent", "Fire") => {
             env.rbx().fire(id, "Event", args[1..].to_vec());
             none()
@@ -1118,4 +1281,15 @@ pub fn white() -> Color3 {
 /// Whether `class` can be made with Instance.new.
 pub fn creatable(class: &str) -> bool {
     class_def(class).is_some_and(|c| c.creatable)
+}
+
+/// A Roblox script's chat message, said in the game's chat. Roblox's chat
+/// commands (/e, /w) aren't the game's, so a line starting with / isn't sent.
+fn send_chat(env: &mut dyn Env, text: &str) {
+    let text = text.trim();
+    if text.is_empty() || text.starts_with('/') {
+        return;
+    }
+    let line: String = text.chars().filter(|c| !c.is_control()).take(256).collect();
+    env.game().send(&line);
 }

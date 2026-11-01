@@ -252,9 +252,15 @@ pub fn build_character(rbx: &mut Rbx, name: &str) -> Rig {
     let _ = rbx.set_parent(humanoid, Some(model));
     rbx.raw_set(model, "PrimaryPart", root_v);
     let limbs = LIMBS.map(|(limb, width, _, _)| rig_part(rbx, model, limb, Vector3::new(width, 12.0, 4.0) * PX));
-    for id in [model, root, head, humanoid].into_iter().chain(limbs) {
-        rbx.inst_mut(id).locked = true;
-    }
+    // Scripts may take the character apart, as in Roblox: what follows the
+    // player is whatever the LocalPlayer's Character has (resolve_character).
+    let animator = rbx.make("Animator", None);
+    rbx.inst_mut(animator).name = "Animator".into();
+    let _ = rbx.set_parent(animator, Some(humanoid));
+    r6_details(rbx, model, root, head, &limbs);
+    let description = rbx.make("HumanoidDescription", None);
+    rbx.inst_mut(description).name = "HumanoidDescription".into();
+    let _ = rbx.set_parent(description, Some(humanoid));
     rbx.add_animate(model);
     Rig {
         model,
@@ -273,6 +279,58 @@ fn place_limbs(rbx: &mut Rbx, limbs: &[Id; 5], root: CFrame, root_y: f64) {
     for (&id, &(_, _, right, leg)) in limbs.iter().zip(LIMBS.iter()) {
         let up = if leg { LEG_Y - root_y } else { 0.0 };
         rbx.quiet_set(id, "CFrame", cf(root * CFrame::new(right * PX, up, 0.0)));
+    }
+}
+
+/// What an R6 character has besides its parts: the head's mesh and face,
+/// the torso's decal, and the Motor6D joints that hold the parts together
+/// (RootJoint in the root part, Neck, the shoulders and hips in the torso).
+fn r6_details(rbx: &mut Rbx, model: Id, root: Id, head: Id, limbs: &[Id; 5]) {
+    let _ = model;
+    let make = |rbx: &mut Rbx, class: &str, name: &str, parent: Id, extra: &[(&str, Value)]| {
+        let i = rbx.make(class, None);
+        rbx.inst_mut(i).name = name.into();
+        for (k, v) in extra {
+            rbx.inst_mut(i).extra.insert((*k).into(), v.clone());
+        }
+        let _ = rbx.set_parent(i, Some(parent));
+        i
+    };
+    let head_type = enum_value(enum_item("MeshType", "Head"));
+    let scale = v3(Vector3::new(1.25, 1.25, 1.25));
+    make(
+        rbx,
+        "SpecialMesh",
+        "Mesh",
+        head,
+        &[("MeshType", head_type), ("Scale", scale)],
+    );
+    make(
+        rbx,
+        "Decal",
+        "face",
+        head,
+        &[("Texture", Value::str("rbxasset://textures/face.png"))],
+    );
+    let torso = limbs[0];
+    make(rbx, "Decal", "roblox", torso, &[("Texture", Value::str(""))]);
+    let (rv, tv, hv) = (rbx.value(root), rbx.value(torso), rbx.value(head));
+    make(
+        rbx,
+        "Motor6D",
+        "RootJoint",
+        root,
+        &[("Part0", rv), ("Part1", tv.clone())],
+    );
+    make(rbx, "Motor6D", "Neck", torso, &[("Part0", tv.clone()), ("Part1", hv)]);
+    for (name, limb) in [
+        ("Left Shoulder", limbs[1]),
+        ("Right Shoulder", limbs[2]),
+        ("Left Hip", limbs[3]),
+        ("Right Hip", limbs[4]),
+    ] {
+        let lv = rbx.value(limb);
+        make(rbx, "Motor6D", name, torso, &[("Part0", tv.clone()), ("Part1", lv)]);
     }
 }
 
@@ -318,8 +376,19 @@ pub fn sync(rbx: &mut Rbx, game: &mut dyn GameApi) {
 /// low as the pose has them), its Humanoid's health, speeds, motion and
 /// state. Coming back to life, they get a new character.
 fn sync_local(rbx: &mut Rbx, p: &PlayerInfo, pose: Option<&PlayerPose>) {
-    if rbx.last_health.is_some_and(|h| h <= 0.0) && p.health > 0.0 {
+    // Back to life in the game, or a character a script killed respawning.
+    let revived = rbx.last_health.is_some_and(|h| h <= 0.0) && p.health > 0.0;
+    if revived || rbx.respawn_at.is_some_and(|t| rbx.now >= t) {
         respawn(rbx);
+    }
+    resolve_character(rbx);
+    ensure_camera(rbx);
+    // A character whose Humanoid a script took out (or which it destroyed)
+    // is dead, as Roblox's server has it: a new one comes RespawnTime later.
+    let gone = rbx.character != rbx.spare_model && rbx.humanoid == rbx.spare_humanoid;
+    if gone && rbx.respawn_at.is_none() {
+        let wait = rbx.raw_get(rbx.players, "RespawnTime").to_num().unwrap_or(5.0);
+        rbx.respawn_at = Some(rbx.now + wait);
     }
     identity(rbx, p);
     let yaw = f64::from(p.yaw).to_radians();
@@ -341,7 +410,8 @@ fn sync_local(rbx: &mut Rbx, p: &PlayerInfo, pose: Option<&PlayerPose>) {
     rbx.quiet_set(hd, "CFrame", cf(CFrame::look_at(head, head + look, Vector3::Y_AXIS)));
     rbx.raw_set(hum, "MaxHealth", Value::Num(f64::from(p.max_health) * HEALTH_SCALE));
     let health = f64::from(p.health) * HEALTH_SCALE;
-    if rbx.last_health.is_none_or(|h| h != p.health) {
+    // A character a script killed stays dead until it respawns.
+    if rbx.respawn_at.is_none() && rbx.last_health.is_none_or(|h| h != p.health) {
         rbx.raw_set(hum, "Health", Value::Num(health));
         rbx.fire(hum, "HealthChanged", vec![Value::Num(health)]);
         if p.health <= 0.0 && rbx.last_health.is_some_and(|h| h > 0.0) {
@@ -352,7 +422,11 @@ fn sync_local(rbx: &mut Rbx, p: &PlayerInfo, pose: Option<&PlayerPose>) {
     speeds(rbx, p);
     let speed = motion(rbx, p);
     rbx.world.on_ground = pose.is_none_or(|q| q.on_ground);
-    let state = next_state(rbx.world.state, p, pose);
+    let state = if rbx.respawn_at.is_some() {
+        "Dead"
+    } else {
+        next_state(rbx.world.state, p, pose)
+    };
     set_state(rbx, state, speed);
 }
 
@@ -499,12 +573,16 @@ fn set_state(rbx: &mut Rbx, state: &'static str, speed: f64) {
 /// CharacterAdded and CharacterAppearanceLoaded with the new one, which the
 /// Camera follows and which takes the game's values afresh.
 fn respawn(rbx: &mut Rbx) {
+    rbx.respawn_at = None;
     // A new character walks and jumps as the game does.
     rbx.world.speed_request = Some((1.0, 1.0));
     let player = rbx.local_player;
-    let old = rbx.character;
-    let old_v = rbx.value(old);
-    rbx.fire(player, "CharacterRemoving", vec![old_v]);
+    // The character the LocalPlayer has goes (none when a script took it).
+    let old = Some(rbx.character).filter(|&c| c != rbx.spare_model);
+    if let Some(old) = old {
+        let old_v = rbx.value(old);
+        rbx.fire(player, "CharacterRemoving", vec![old_v]);
+    }
     let name = rbx.inst(player).name.clone();
     let rig = build_character(rbx, &name);
     rbx.character = rig.model;
@@ -512,7 +590,9 @@ fn respawn(rbx: &mut Rbx) {
     rbx.head = rig.head;
     rbx.humanoid = rig.humanoid;
     rbx.world.limbs = rig.limbs;
-    rbx.destroy(old);
+    if let Some(old) = old {
+        rbx.destroy(old);
+    }
     let cv = rbx.value(rig.model);
     rbx.raw_set(player, "Character", cv.clone());
     let subject = rbx.value(rig.humanoid);
@@ -526,6 +606,96 @@ fn respawn(rbx: &mut Rbx) {
     rbx.world.running = 0.0;
     rbx.fire(player, "CharacterAdded", vec![cv.clone()]);
     rbx.fire(player, "CharacterAppearanceLoaded", vec![cv]);
+}
+
+/// The local character is whatever the LocalPlayer's Character is, as in
+/// Roblox, where scripts swap it for a copy (an invisibility script), take
+/// its Humanoid out (a god script) or delete its parts: its PrimaryPart or
+/// HumanoidRootPart follows the player, its Humanoid has their health and
+/// speeds, its limbs their pose. A piece it hasn't (or no character) is a
+/// spare kept out of the place, which nothing sees.
+pub fn resolve_character(rbx: &mut Rbx) {
+    fn live(rbx: &Rbx, id: Id) -> bool {
+        rbx.try_inst(id).is_some_and(|i| !i.destroyed)
+    }
+    let (spare, part, hum) = (rbx.spare_model, rbx.spare_part, rbx.spare_humanoid);
+    let player = rbx.local_player;
+    let named = rbx.id_of(&rbx.raw_get(player, "Character"));
+    let model = named.filter(|&m| live(rbx, m));
+    // A destroyed character is still the LocalPlayer's (it has no Humanoid).
+    if let Some(dead) = named.filter(|&m| !live(rbx, m)) {
+        rbx.character = dead;
+        rbx.root_part = part;
+        rbx.head = part;
+        rbx.humanoid = hum;
+        rbx.world.limbs = [part; 5];
+        return;
+    }
+    let Some(model) = model else {
+        rbx.character = spare;
+        rbx.root_part = part;
+        rbx.head = part;
+        rbx.humanoid = hum;
+        rbx.world.limbs = [part; 5];
+        return;
+    };
+    let child = |rbx: &Rbx, name: &str| rbx.child_named(model, name).filter(|&c| live(rbx, c));
+    let primary = rbx
+        .id_of(&rbx.raw_get(model, "PrimaryPart"))
+        .filter(|&p| live(rbx, p) && rbx.is_descendant_of(p, model));
+    rbx.character = model;
+    rbx.root_part = child(rbx, "HumanoidRootPart").or(primary).unwrap_or(part);
+    rbx.head = child(rbx, "Head").unwrap_or(part);
+    rbx.humanoid = rbx
+        .inst(model)
+        .children
+        .iter()
+        .copied()
+        .find(|&c| live(rbx, c) && rbx.inst(c).class.name == "Humanoid")
+        .unwrap_or(hum);
+    rbx.world.limbs = LIMBS.map(|(limb, _, _, _)| child(rbx, limb).unwrap_or(part));
+}
+
+/// The Workspace always has a CurrentCamera: a script that removes it (or
+/// sets it to nil) gets a new one, as in Roblox.
+fn ensure_camera(rbx: &mut Rbx) {
+    let (cam, ws) = (rbx.camera, rbx.workspace);
+    let current = rbx.id_of(&rbx.raw_get(ws, "CurrentCamera"));
+    let fine = |id: Id| rbx.try_inst(id).is_some_and(|i| !i.destroyed && i.parent.is_some());
+    match current {
+        Some(c) if fine(c) => {
+            rbx.camera = c;
+            return;
+        }
+        _ if fine(cam) && rbx.inst(cam).parent == Some(ws) => {
+            let v = rbx.value(cam);
+            rbx.raw_set(ws, "CurrentCamera", v);
+            return;
+        }
+        _ => {}
+    }
+    let c = rbx.make("Camera", None);
+    let _ = rbx.set_parent(c, Some(ws));
+    rbx.camera = c;
+    let v = rbx.value(c);
+    rbx.raw_set(ws, "CurrentCamera", v);
+    let subject = rbx.value(rbx.humanoid);
+    rbx.raw_set(c, "CameraSubject", subject);
+}
+
+/// A script set the local Humanoid's health: at none, it dies as in
+/// Roblox (Died, the Dead state) and the LocalPlayer gets a new character
+/// Players.RespawnTime later.
+pub fn health_set(rbx: &mut Rbx) {
+    let hum = rbx.humanoid;
+    let health = rbx.raw_get(hum, "Health").to_num().unwrap_or(0.0);
+    if health > 0.0 || rbx.respawn_at.is_some() || rbx.world.state == "Dead" {
+        return;
+    }
+    let wait = rbx.raw_get(rbx.players, "RespawnTime").to_num().unwrap_or(5.0);
+    rbx.respawn_at = Some(rbx.now + wait);
+    set_state(rbx, "Dead", 0.0);
+    rbx.fire(hum, "Died", Vec::new());
 }
 
 // ---------------------------------------------------------------- the world's entities
@@ -1196,7 +1366,10 @@ pub fn player_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, args:
             Ok(Vec::new())
         }
         "Kick" => Err(lua.rt_error("Cannot kick a non-local Player from a LocalScript")),
-        "LoadCharacter" if local => Ok(Vec::new()),
+        "LoadCharacter" if local => {
+            respawn(rbx);
+            Ok(Vec::new())
+        }
         "LoadCharacter" => Err(lua.rt_error("LoadCharacter can only be called by the backend server")),
         "DistanceFromCharacter" => {
             let at = args

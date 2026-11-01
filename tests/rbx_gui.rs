@@ -256,7 +256,7 @@ fn kept_classes_take_any_property() {
             "true    rbxassetid://1    true    Player1",
             "false    true    Grow    nil",
             "1    2    3    4",
-            "true    Offset    nil    true"
+            "true    Enum.UIDragDetectorResponseStyle.Offset    Enum.UIDragDetectorDragStyle.TranslatePlane    true"
         ]
     );
 }
@@ -1029,14 +1029,11 @@ fn a_destroyed_text_box_takes_no_focus() {
         assert_eq!(st.s.rbx.pointer.focus, None, "button {button}");
         assert!(st.s.screen.is_none(), "button {button}: the game has its keys back");
         assert!(
-            // Only CoreGui's own RobloxGui and its modules are left.
-            st.s.rbx.layout.as_ref().is_some_and(|l| l.node_inst.iter().all(|&i| [
-                "RobloxGui",
-                "Modules",
-                "Common",
-                "Constants"
-            ]
-            .contains(&st.s.rbx.inst(i).name.as_str()))),
+            // Only CoreGui's own GUIs (RobloxGui and the like) are left.
+            st.s.rbx.layout.as_ref().is_some_and(|l| l
+                .node_inst
+                .iter()
+                .all(|&i| st.s.rbx.is_descendant_of(i, st.s.rbx.core_gui))),
             "the GUI went"
         );
     }

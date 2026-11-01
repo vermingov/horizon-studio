@@ -1834,6 +1834,21 @@
       "doc": "`NumberRange.new(min[, max])`\n\nA range: `Min`, `Max`.\n\n```lua\nlocal r = NumberRange.new(1, 5)\n```"
     },
     {
+      "name": "PhysicalProperties.new",
+      "topic": "roblox",
+      "doc": "`PhysicalProperties.new(density, friction, elasticity[, frictionWeight, elasticityWeight] | material)`\n\nA part's physics (`CustomPhysicalProperties`): `Density`, `Friction`,\n`Elasticity`, `FrictionWeight`, `ElasticityWeight`. Given an\n`Enum.Material`, that material's own.\n\n```lua\npart.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.3, 0.5)\nlocal wood = PhysicalProperties.new(Enum.Material.Wood)\n```"
+    },
+    {
+      "name": "settings",
+      "topic": "roblox",
+      "doc": "`settings()`\n\nRoblox's GlobalSettings: `Rendering`, `Physics`, `Network`, `Diagnostics`,\n`Game`, `Lua` and `TaskScheduler`, each a settings object scripts read and\nset (`settings():GetService(\"RenderSettings\")` too).\n\n```lua\nsettings().Rendering.QualityLevel = Enum.QualityLevel.Level01\n```"
+    },
+    {
+      "name": "UserSettings",
+      "topic": "roblox",
+      "doc": "`UserSettings()`\n\nRoblox's UserSettings: its `UserGameSettings` (`MasterVolume`,\n`MouseSensitivity`, `SavedQualityLevel` and the rest).\n\n```lua\nlocal game_settings = UserSettings():GetService(\"UserGameSettings\")\nprint(game_settings.MasterVolume)\n```"
+    },
+    {
       "name": "NumberSequence.new",
       "topic": "roblox",
       "doc": "`NumberSequence.new(n | n0, n1 | keypoints)`\n\nNumbers over time 0 to 1: `Keypoints`.\n\n```lua\nlocal fade = NumberSequence.new(0, 1)\n```"

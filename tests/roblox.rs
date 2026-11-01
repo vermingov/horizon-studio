@@ -558,8 +558,9 @@ fn a_modules_files_are_module_scripts_under_script() {
         .into_iter()
         .map(|(_, t)| t)
         .collect();
-    // The kit's three and CoreGui's Constants, which Roblox's client loaded.
-    assert_eq!(out, ["4"]);
+    // The kit's three, and the six Roblox's client loaded: CoreGui's
+    // Constants and the PlayerModule's five.
+    assert_eq!(out, ["9"]);
 }
 
 #[test]

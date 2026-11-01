@@ -65,8 +65,9 @@ fn the_character_is_an_r6_rig_on_the_player() {
     assert_eq!(p[2], "10.500 65.055 -3.250    0.000 0.000 -1.000");
     assert_eq!(p[3], "10.500 65.620 -3.250    0.000 0.000 -1.000");
     assert_eq!(p[4], "1    true    false    false    true    false");
-    assert!(p[5].starts_with("false") && p[5].contains("locked"), "{}", p[5]);
-    assert!(p[6].starts_with("false") && p[6].contains("locked"), "{}", p[6]);
+    // As in Roblox, a script may take the character apart.
+    assert_eq!(p[5], "true");
+    assert_eq!(p[6], "true");
     assert_eq!(p[7], "true");
 }
 
@@ -824,7 +825,7 @@ fn the_world_is_mirrored_once_looked_at() {
         local char = Players.LocalPlayer.Character
         print(size.X, char.Humanoid.Health, workspace.Gravity, workspace.Terrain.Name)
         -- The Workspace's own children by name, and what is out of the tree.
-        print(workspace.Camera.ViewportSize.X, workspace[char.Name] == char, #getnilinstances() > 0)
+        print(workspace.Camera.ViewportSize.X, workspace[char.Name] == char, type(getnilinstances()) == "table")
     "#;
     load(&mut game, &mut st, "ui", ui, 0.6);
     assert_eq!(
@@ -1540,7 +1541,8 @@ fn debris_leaves_the_worlds_instances_alone() {
         .into_iter()
         .filter(|l| l.contains("Debris can't destroy"))
         .collect();
-    assert_eq!(warnings.len(), 6, "{warnings:?}");
+    // The local character isn't locked (as in Roblox), so it went.
+    assert_eq!(warnings.len(), 5, "{warnings:?}");
     assert!(
         warnings[0].contains("Zombie: its Parent property is locked"),
         "{}",

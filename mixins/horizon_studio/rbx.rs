@@ -45,6 +45,9 @@ const CONN_INDEX: u32 = 1004;
 const SIGNAL_TOSTRING: u32 = 1005;
 const INSTANCE_NEW: u32 = 1006;
 const INSTANCE_FROM_EXISTING: u32 = 1007;
+/// settings() and UserSettings().
+const SETTINGS: u32 = 1008;
+const USER_SETTINGS: u32 = 1009;
 /// The GUI's screen: draw, move, click, release, key, text, wheel, close,
 /// escape.
 const SCREEN_DRAW: u32 = 1010;
@@ -427,7 +430,11 @@ pub static CLASSES: &[C] = &[
     service("Chat", &[], &[]),
     C {
         lenient: true,
-        ..service("TextChatService", &[], &["MessageReceived", "SendingMessage"])
+        ..service(
+            "TextChatService",
+            &[p("ChatVersion", K::Enum("ChatVersion"), D::E("TextChatService"))],
+            &["MessageReceived", "SendingMessage"],
+        )
     },
     service("MarketplaceService", &[], &[]),
     service("LogService", &[], &["MessageOut"]),
@@ -486,7 +493,7 @@ pub static CLASSES: &[C] = &[
         "Player",
         "Instance",
         &[
-            ro("UserId", Num, N(1.0)),
+            p("UserId", Num, N(1.0)),
             p("DisplayName", Str, S("Player1")),
             p("Character", Obj, D::Nil),
             p("Team", Obj, D::Nil),
@@ -1257,7 +1264,37 @@ pub fn class_def(name: &str) -> Option<&'static C> {
     thread_local! {
         static BY_NAME: HashMap<&'static str, &'static C> = CLASSES.iter().map(|c| (c.name, c)).collect();
     }
-    BY_NAME.with(|m| m.get(name).copied())
+    BY_NAME.with(|m| m.get(name).copied()).or_else(|| api_class_def(name))
+}
+
+/// A class of Roblox's API (rbx_api.rs) the layer has no class of its own
+/// for: its members all come from the API.
+fn api_class_def(name: &str) -> Option<&'static C> {
+    thread_local! {
+        static MADE: RefCell<HashMap<&'static str, &'static C>> = RefCell::new(HashMap::new());
+    }
+    if let Some(c) = MADE.with(|m| m.borrow().get(name).copied()) {
+        return Some(c);
+    }
+    let a = super::hstudio_rbx_api::class(name)?;
+    let c: &'static C = Box::leak(Box::new(C {
+        name: a.name,
+        base: a.base,
+        creatable: a.creatable && !a.service,
+        service: a.service,
+        lenient: false,
+        props: &[],
+        more: &[],
+        events: &[],
+    }));
+    MADE.with(|m| m.borrow_mut().insert(a.name, c));
+    Some(c)
+}
+
+/// Member `name` of Roblox's API for class `c`, when the layer's own
+/// class doesn't have it.
+fn api_member(c: &'static C, name: &str) -> Option<&'static super::hstudio_rbx_api::Member> {
+    super::hstudio_rbx_api::member(c.name, name).map(|(_, m)| m)
 }
 
 /// Whether class `c` is `name` or inherits it.
@@ -1268,6 +1305,15 @@ pub fn is_a(c: &'static C, name: &str) -> bool {
             return true;
         }
         at = k.base.and_then(class_def);
+    }
+    // A class the layer keeps under Instance: Roblox's own line (a Decal is
+    // a FaceInstance).
+    let mut api = super::hstudio_rbx_api::class(c.name).and_then(|a| a.base);
+    while let Some(b) = api {
+        if b == name {
+            return true;
+        }
+        api = super::hstudio_rbx_api::class(b).and_then(|a| a.base);
     }
     false
 }
@@ -1500,10 +1546,22 @@ pub struct Rbx {
     pub local_player: Id,
     pub player_gui: Id,
     pub core_gui: Id,
+    /// What settings() and UserSettings() give.
+    pub global_settings: Id,
+    pub user_settings: Id,
     pub camera: Id,
     pub character: Id,
     pub root_part: Id,
     pub head: Id,
+    /// Never in the place: what stands for a piece of the local character a
+    /// script took away (its root part, Humanoid, limbs), or for the
+    /// character while the LocalPlayer has none.
+    pub spare_model: Id,
+    pub spare_part: Id,
+    pub spare_humanoid: Id,
+    /// When the local character, its Humanoid dead by a script's hand, is
+    /// given a new one (Players.RespawnTime after).
+    pub respawn_at: Option<f64>,
     pub humanoid: Id,
     pub mouse: Id,
     services: HashMap<&'static str, Id>,
@@ -1562,6 +1620,9 @@ pub struct Rbx {
     /// Animate and CoreGui's RobloxGui modules. They count as running, and
     /// `getsenv` gives each its environment (`script_envs`).
     pub core_scripts: Vec<Id>,
+    /// The AnimationTracks LoadAnimation made: (the Humanoid or Animator,
+    /// the track).
+    pub anim_tracks: Vec<(Id, Id)>,
     pub script_envs: Vec<(Id, Value)>,
     /// The studio's workspace folder (getcustomasset's files), and the images
     /// the GUI and the Drawings draw, on the HUD or on the GUI's own screen.
@@ -1649,11 +1710,17 @@ impl Rbx {
             local_player: 0,
             player_gui: 0,
             core_gui: 0,
+            global_settings: 0,
+            user_settings: 0,
             camera: 0,
             character: 0,
             root_part: 0,
             head: 0,
             humanoid: 0,
+            spare_model: 0,
+            spare_part: 0,
+            spare_humanoid: 0,
+            respawn_at: None,
             mouse: 0,
             services: HashMap::new(),
             inst_meta,
@@ -1687,6 +1754,7 @@ impl Rbx {
             lua_methods: Vec::new(),
             loaded_modules: Vec::new(),
             core_scripts: Vec::new(),
+            anim_tracks: Vec::new(),
             script_envs: Vec::new(),
             workspace_dir: std::path::PathBuf::new(),
             screen_images: super::hstudio_sunc::ImageCache::default(),
@@ -1761,9 +1829,13 @@ impl Rbx {
         let mouse = self.make("PlayerMouse", None);
         self.inst_mut(mouse).name = "Instance".into();
         self.mouse = mouse;
-        for id in [camera, mouse] {
-            self.lock(id);
-        }
+        self.lock(mouse);
+        // Kept out of the place, for the pieces of a character a script takes
+        // away (hstudio_rbx_world::resolve_character).
+        self.spare_model = self.make("Model", None);
+        self.spare_part = self.make("Part", None);
+        self.spare_humanoid = self.make("Humanoid", None);
+        self.player_scripts();
         let hui = self.make("Folder", None);
         self.inst_mut(hui).name = "HiddenUI".into();
         self.hui = hui;
@@ -1828,8 +1900,34 @@ impl Rbx {
     pub fn value(&self, id: Id) -> Value {
         self.insts.get(&id).map_or(Value::Nil, |i| i.value.clone())
     }
+    /// The instances kept out of the place that scripts still reach and
+    /// mustn't destroy: the mouse, settings() and UserSettings().
+    pub fn unparented_locked(&self, id: Id) -> bool {
+        id == self.mouse
+            || [self.global_settings, self.user_settings]
+                .iter()
+                .any(|&s| s != 0 && (id == s || self.is_descendant_of(id, s)))
+    }
+    /// The layer's own instances kept out of the place that scripts never
+    /// see among the nil-parented instances: the spare character pieces, the
+    /// mouse, settings() and UserSettings().
+    pub fn internal(&self, id: Id) -> bool {
+        id != 0 && [self.spare_model, self.spare_part, self.spare_humanoid].contains(&id) || self.unparented_locked(id)
+    }
     pub fn service(&self, name: &str) -> Option<Id> {
         self.services.get(name).copied()
+    }
+    /// A service of Roblox's API the layer has no class of its own for,
+    /// made the first time a script asks for it.
+    pub fn api_service(&mut self, name: &str) -> Option<Id> {
+        let c = class_def(name).filter(|c| c.service)?;
+        let s = self.make(c.name, None);
+        self.inst_mut(s).name = c.name.into();
+        self.services.insert(c.name, s);
+        let game = self.game;
+        let _ = self.set_parent(s, Some(game));
+        self.lock(s);
+        Some(s)
     }
 
     /// The instance a value is, if it is one.
@@ -2463,6 +2561,25 @@ const METHODS: &[(&str, &str)] = &[
     ("MoveTo", "Humanoid"),
     ("TakeDamage", "Humanoid"),
     ("ChangeState", "Humanoid"),
+    ("SetStateEnabled", "Humanoid"),
+    ("LoadAnimation", "Humanoid"),
+    ("LoadAnimation", "Animator"),
+    ("LoadAnimation", "AnimationController"),
+    ("GetPlayingAnimationTracks", "Animator"),
+    ("Play", "AnimationTrack"),
+    ("Stop", "AnimationTrack"),
+    ("AdjustSpeed", "AnimationTrack"),
+    ("AdjustWeight", "AnimationTrack"),
+    ("GetMarkerReachedSignal", "AnimationTrack"),
+    ("PlayEmote", "Humanoid"),
+    ("GetStateEnabled", "Humanoid"),
+    ("SendAsync", "TextChannel"),
+    ("FireServer", "RemoteEvent"),
+    ("GetProductInfo", "MarketplaceService"),
+    ("GetService", "GlobalSettings"),
+    ("GetService", "UserSettings"),
+    ("GetFFlag", "GlobalSettings"),
+    ("GetFVariable", "GlobalSettings"),
     ("GetState", "Humanoid"),
     ("UnequipTools", "Humanoid"),
     ("GetPlayingAnimationTracks", "Humanoid"),
@@ -2686,6 +2803,15 @@ pub fn call(env: &mut dyn Env, lua: &mut Lua, id: u32, args: Vec<Value>) -> Res 
             Some(v) if conn_ref(&args).is_some() || lua.type_of(v) == "RBXScriptConnection" => "Connection",
             _ => "Signal",
         })]),
+        SETTINGS | USER_SETTINGS => {
+            let rbx = env.rbx();
+            let i = if id == SETTINGS {
+                rbx.global_settings
+            } else {
+                rbx.user_settings
+            };
+            Ok(vec![rbx.value(i)])
+        }
         INSTANCE_NEW => {
             let class = check_text(lua, &args, 0, "new")?;
             let c = class_def(&class)
@@ -2834,6 +2960,15 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
         "Parent" => return one(inst.parent.map_or(Value::Nil, |p| rbx.value(p))),
         _ => {}
     }
+    // A Humanoid's RootPart is its model's HumanoidRootPart, as in Roblox
+    // (a copied character's Humanoid has its copy's).
+    if k == "RootPart" && c.name == "Humanoid" {
+        let own = inst.parent.and_then(|m| rbx.child_named(m, "HumanoidRootPart"));
+        let kept = rbx
+            .id_of(&inst.get("RootPart"))
+            .filter(|&r| inst.parent.is_some_and(|m| rbx.is_descendant_of(r, m)));
+        return one(own.or(kept).map_or(Value::Nil, |r| rbx.value(r)));
+    }
     if let Some(p) = find_prop(c, &k) {
         return one(inst.get(p.name));
     }
@@ -2908,6 +3043,32 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
     {
         return one(rbx.value(s));
     }
+    {
+        use super::hstudio_rbx_api::Member;
+        match api_member(c, &k) {
+            Some(Member::Prop {
+                cat,
+                ty,
+                default,
+                hidden: false,
+                ..
+            }) => {
+                return one(inst
+                    .extra
+                    .get(&k)
+                    .cloned()
+                    .unwrap_or_else(|| super::hstudio_rbx_api::default_value(cat, ty, default)));
+            }
+            Some(Member::Callback) => return one(inst.extra.get(&k).cloned().unwrap_or_default()),
+            Some(Member::Event) => return one(rbx.signal(id, &k)),
+            Some(Member::Func(i)) => {
+                let i = *i;
+                let name = super::hstudio_rbx_api::api().funcs[i as usize].name;
+                return one(rbx.native(super::hstudio_rbx_api::FIRST_ID + i, name));
+            }
+            _ => {}
+        }
+    }
     if c.lenient {
         return one(Value::Nil);
     }
@@ -2916,6 +3077,19 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
         c.name,
         rbx.full_name(id)
     )))
+}
+
+/// A method of Roblox's API the layer doesn't implement: it returns its
+/// type's empty value.
+pub fn api_call(env: &mut dyn Env, lua: &mut Lua, id: u32, args: Vec<Value>) -> Res {
+    let Some(f) = super::hstudio_rbx_api::func(id) else {
+        return Err(lua.rt_error(format!("unknown Roblox function {id}")));
+    };
+    let rbx = env.rbx();
+    match args.first().and_then(|v| rbx.id_of(v)) {
+        Some(i) if is_a(rbx.inst(i).class, f.class) => Ok(super::hstudio_rbx_api::returns(f)),
+        _ => Err(lua.rt_error(format!("Expected ':' not '.' calling member function {}", f.name))),
+    }
 }
 
 /// What a read of the live player or camera needs from the game, taken
@@ -2953,15 +3127,156 @@ impl Rbx {
         }
         self.core_scripts.push(constants);
     }
+    /// The LocalPlayer's PlayerScripts as Roblox's client has them: the
+    /// PlayerModule (its CameraModule and ControlModule), which scripts
+    /// require for the player's controls.
+    fn player_scripts(&mut self) {
+        let Some(ps) = self.child_named(self.local_player, "PlayerScripts") else {
+            return;
+        };
+        let module = |rbx: &mut Rbx, name: &str, parent: Id, source: &str| {
+            let m = rbx.make("ModuleScript", None);
+            rbx.inst_mut(m).name = name.into();
+            rbx.raw_set(m, "Source", Value::str(source));
+            let _ = rbx.set_parent(m, Some(parent));
+            rbx.core_scripts.push(m);
+            m
+        };
+        let pm = module(self, "PlayerModule", ps, PLAYER_MODULE_SOURCE);
+        let camera = module(self, "CameraModule", pm, "return {}");
+        let zoom = module(self, "ZoomController", camera, "return {}");
+        module(self, "Popper", zoom, "return {}");
+        module(self, "ControlModule", pm, "return {}");
+        let gui = self.child_named(self.core_gui, "RobloxGui");
+        if let Some(gui) = gui {
+            let pause = self.make("Frame", None);
+            self.inst_mut(pause).name = "CoreScripts/NetworkPause".into();
+            self.raw_set(pause, "Visible", Value::Bool(false));
+            let _ = self.set_parent(pause, Some(gui));
+        }
+        let prompt = self.make("ScreenGui", None);
+        self.inst_mut(prompt).name = "PurchasePromptApp".into();
+        let core = self.core_gui;
+        let _ = self.set_parent(prompt, Some(core));
+        self.chat_objects();
+        self.settings_objects();
+    }
+
+    /// The chat's objects scripts send messages through, which go to the
+    /// game's chat: TextChatService's channels (RBXGeneral's SendAsync) and
+    /// the older chat's SayMessageRequest (FireServer).
+    fn chat_objects(&mut self) {
+        let make = |rbx: &mut Rbx, class: &str, name: &str, parent: Id| {
+            let i = rbx.make(class, None);
+            rbx.inst_mut(i).name = name.into();
+            let _ = rbx.set_parent(i, Some(parent));
+            i
+        };
+        let tcs = self.services["TextChatService"];
+        let channels = make(self, "Folder", "TextChannels", tcs);
+        make(self, "TextChannel", "RBXGeneral", channels);
+        make(self, "TextChannel", "RBXSystem", channels);
+        for class in [
+            "BubbleChatConfiguration",
+            "ChatWindowConfiguration",
+            "ChatInputBarConfiguration",
+            "ChannelTabsConfiguration",
+        ] {
+            if class_def(class).is_some() {
+                make(self, class, class, tcs);
+            }
+        }
+        let rs = self.services["ReplicatedStorage"];
+        let events = make(self, "Folder", "DefaultChatSystemChatEvents", rs);
+        make(self, "RemoteEvent", "SayMessageRequest", events);
+        make(self, "RemoteEvent", "OnMessageDoneFiltering", events);
+        make(self, "RemoteEvent", "OnNewMessage", events);
+    }
+
+    /// settings() (GlobalSettings: Rendering, Physics, Network and the
+    /// rest) and UserSettings() (its UserGameSettings).
+    fn settings_objects(&mut self) {
+        let global = self.make("GlobalSettings", None);
+        self.inst_mut(global).name = "Settings".into();
+        for (class, name) in [
+            ("RenderSettings", "Rendering"),
+            ("PhysicsSettings", "Physics"),
+            ("NetworkSettings", "Network"),
+            ("DebugSettings", "Diagnostics"),
+            ("GameSettings", "Game"),
+            ("LuaSettings", "Lua"),
+            ("TaskScheduler", "TaskScheduler"),
+        ] {
+            if class_def(class).is_none() {
+                continue;
+            }
+            let i = self.make(class, None);
+            self.inst_mut(i).name = name.into();
+            let _ = self.set_parent(i, Some(global));
+        }
+        self.global_settings = global;
+        let user = self.make("UserSettings", None);
+        self.inst_mut(user).name = "UserSettings".into();
+        let games = self.make("UserGameSettings", None);
+        self.inst_mut(games).name = "UserGameSettings".into();
+        let _ = self.set_parent(games, Some(user));
+        self.user_settings = user;
+        // As in Roblox, they can't be destroyed.
+        let mut all = vec![global, user, games];
+        all.extend(self.inst(global).children.clone());
+        for id in all {
+            self.lock(id);
+        }
+    }
     /// Adds Roblox's Animate script to a character.
     pub fn add_animate(&mut self, model: Id) {
         let animate = self.make("LocalScript", None);
         self.inst_mut(animate).name = "Animate".into();
         self.raw_set(animate, "Source", Value::str(ANIMATE_SOURCE));
+        // Its animations, as StringValues holding Animations (R6's).
+        for (value, anims) in [
+            ("idle", &[("Animation1", 180435571u64), ("Animation2", 180435792)][..]),
+            ("walk", &[("WalkAnim", 180426354)][..]),
+            ("run", &[("RunAnim", 180426354)][..]),
+            ("jump", &[("JumpAnim", 125750702)][..]),
+            ("climb", &[("ClimbAnim", 180436334)][..]),
+            ("toolnone", &[("ToolNoneAnim", 182393478)][..]),
+            ("fall", &[("FallAnim", 180436148)][..]),
+            ("sit", &[("SitAnim", 178130996)][..]),
+        ] {
+            let sv = self.make("StringValue", None);
+            self.inst_mut(sv).name = value.into();
+            let _ = self.set_parent(sv, Some(animate));
+            for (name, asset) in anims {
+                let a = self.make("Animation", None);
+                self.inst_mut(a).name = (*name).into();
+                self.inst_mut(a).extra.insert(
+                    "AnimationId".into(),
+                    Value::str(&format!("http://www.roblox.com/asset/?id={asset}")),
+                );
+                let _ = self.set_parent(a, Some(sv));
+            }
+        }
         let _ = self.set_parent(animate, Some(model));
         self.core_scripts.push(animate);
     }
 }
+
+/// The source of the PlayerModule: GetControls gives the controls a script
+/// can turn off (Disable, Enable), GetCameras the camera's.
+const PLAYER_MODULE_SOURCE: &str = r#"local PlayerModule = {}
+PlayerModule.__index = PlayerModule
+local controls = { enabled = true }
+function controls:Enable(on) self.enabled = on ~= false end
+function controls:Disable() self.enabled = false end
+function controls:GetMoveVector() return Vector3.zero end
+function controls:GetActiveController() return nil end
+local cameras = {}
+function PlayerModule:GetControls() return controls end
+function PlayerModule:GetCameras() return cameras end
+function PlayerModule:GetClickToMoveController() return nil end
+return setmetatable({}, PlayerModule)
+"#;
 
 /// The source of CoreGui's Modules.Common.Constants.
 const CONSTANTS_SOURCE: &str = r#"local Constants = {
@@ -3162,6 +3477,78 @@ fn newindex(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Result<(), Thro
         {
             Err(lua.rt_error(format!("Unable to assign property {key}. Property is read only")))
         }
+        _ if api_member(c, &key).is_some_and(|m| {
+            matches!(
+                m,
+                super::hstudio_rbx_api::Member::Prop { hidden: false, .. } | super::hstudio_rbx_api::Member::Callback
+            )
+        }) =>
+        {
+            use super::hstudio_rbx_api::Member;
+            if let Some(Member::Prop { cat, ty, read_only, .. }) = api_member(c, &key) {
+                if *read_only {
+                    return Err(lua.rt_error(format!("Unable to assign property {key}. Property is read only")));
+                }
+                let fits = match (*cat, *ty) {
+                    ("Primitive", "bool") => matches!(v, Value::Bool(_)),
+                    ("Primitive", "int" | "int64" | "float" | "double") => {
+                        matches!(v, Value::Num(_)) || v.as_text().is_some_and(|t| t.trim().parse::<f64>().is_ok())
+                    }
+                    ("Primitive", "string") => matches!(v, Value::Num(_)) || v.as_text().is_some(),
+                    ("Class", _) => v.is_nil() || rbx.id_of(&v).is_some(),
+                    _ => !v.is_nil(),
+                };
+                if !fits {
+                    let what = match *cat {
+                        "Primitive" if *ty == "bool" => "bool",
+                        "Primitive" if *ty == "string" => "string",
+                        "Primitive" => "number",
+                        "Class" => "Object",
+                        "Enum" => "EnumItem",
+                        _ => ty,
+                    };
+                    return Err(bad(what, &v));
+                }
+                let v = match (*cat, *ty, &v) {
+                    ("Enum", e, Value::Num(_) | Value::Str(_)) => {
+                        let def = super::hstudio_rbx_values::enum_def(e);
+                        let found = def.and_then(|d| {
+                            d.items
+                                .iter()
+                                .find(|it| match &v {
+                                    Value::Num(n) => f64::from(it.1) == *n,
+                                    _ => v.as_text().is_some_and(|t| t == it.0),
+                                })
+                                .map(|it| (d.name, *it))
+                        });
+                        match found {
+                            Some((enum_name, (name, value))) => {
+                                enum_value(super::hstudio_rbx_values::EnumItem { enum_name, name, value })
+                            }
+                            None => {
+                                return Err(lua.rt_error(format!("Invalid value \"{}\" for enum {e}", v.plain_text())));
+                            }
+                        }
+                    }
+                    ("Primitive", "int" | "int64" | "float" | "double", Value::Num(_)) => v,
+                    ("Primitive", "int" | "int64" | "float" | "double", _) => {
+                        Value::Num(v.as_text().and_then(|t| t.trim().parse().ok()).unwrap_or(0.0))
+                    }
+                    ("Primitive", "string", Value::Num(n)) => Value::str(&n.to_string()),
+                    _ => v,
+                };
+                let old = rbx.inst(id).extra.get(&key).cloned();
+                let changed = !old.is_some_and(|o| same_value(&o, &v));
+                rbx.inst_mut(id).extra.insert(key.clone(), v);
+                if changed {
+                    rbx.fire(id, "Changed", vec![Value::str(&key)]);
+                    rbx.fire(id, &format!("prop:{key}"), Vec::new());
+                }
+            } else {
+                rbx.inst_mut(id).extra.insert(key, v);
+            }
+            Ok(())
+        }
         _ if c.lenient || rbx.inst(id).revealed.contains(&key) => {
             rbx.inst_mut(id).extra.insert(key, v);
             Ok(())
@@ -3199,6 +3586,9 @@ impl Rbx {
             ("Humanoid", "WalkSpeed" | "JumpPower" | "JumpHeight") if id == self.humanoid => {
                 super::hstudio_rbx_world::speeds_set(self)
             }
+            ("Humanoid", "Health") if id == self.humanoid => super::hstudio_rbx_world::health_set(self),
+            ("Player", "Character") if id == self.local_player => super::hstudio_rbx_world::resolve_character(self),
+            ("Model", "PrimaryPart") if id == self.character => super::hstudio_rbx_world::resolve_character(self),
             ("TextBox", "Text") => {}
             _ => {}
         }
@@ -3422,6 +3812,14 @@ pub fn instance_table(rbx: &mut Rbx) -> Value {
     t.set_str("fromExisting", rbx.native(INSTANCE_FROM_EXISTING, "fromExisting"));
     t.set_readonly(true);
     Value::table(t)
+}
+
+/// The settings() and UserSettings() globals.
+pub fn settings_functions(rbx: &mut Rbx) -> [(&'static str, Value); 2] {
+    [
+        ("settings", rbx.native(SETTINGS, "settings")),
+        ("UserSettings", rbx.native(USER_SETTINGS, "UserSettings")),
+    ]
 }
 
 /// The host functions of the screen the GUI takes the pointer with.

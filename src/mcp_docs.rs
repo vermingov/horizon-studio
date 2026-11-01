@@ -7723,6 +7723,52 @@ local r = NumberRange.new(1, 5)
 "##
     ),
     e!(
+        "PhysicalProperties.new",
+        "roblox",
+        r##"
+`PhysicalProperties.new(density, friction, elasticity[, frictionWeight, elasticityWeight] | material)`
+
+A part's physics (`CustomPhysicalProperties`): `Density`, `Friction`,
+`Elasticity`, `FrictionWeight`, `ElasticityWeight`. Given an
+`Enum.Material`, that material's own.
+
+```lua
+part.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.3, 0.5)
+local wood = PhysicalProperties.new(Enum.Material.Wood)
+```
+"##
+    ),
+    e!(
+        "settings",
+        "roblox",
+        r##"
+`settings()`
+
+Roblox's GlobalSettings: `Rendering`, `Physics`, `Network`, `Diagnostics`,
+`Game`, `Lua` and `TaskScheduler`, each a settings object scripts read and
+set (`settings():GetService("RenderSettings")` too).
+
+```lua
+settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+```
+"##
+    ),
+    e!(
+        "UserSettings",
+        "roblox",
+        r##"
+`UserSettings()`
+
+Roblox's UserSettings: its `UserGameSettings` (`MasterVolume`,
+`MouseSensitivity`, `SavedQualityLevel` and the rest).
+
+```lua
+local game_settings = UserSettings():GetService("UserGameSettings")
+print(game_settings.MasterVolume)
+```
+"##
+    ),
+    e!(
         "NumberSequence.new",
         "roblox",
         r##"

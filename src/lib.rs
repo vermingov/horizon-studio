@@ -48,6 +48,10 @@ pub mod game {
     pub mod hstudio_quads;
     #[path = "../../mixins/horizon_studio/rbx.rs"]
     pub mod hstudio_rbx;
+    #[path = "../../mixins/horizon_studio/rbx_api.rs"]
+    pub mod hstudio_rbx_api;
+    #[path = "../../mixins/horizon_studio/rbx_api_data.rs"]
+    pub mod hstudio_rbx_api_data;
     #[path = "../../mixins/horizon_studio/rbx_draw.rs"]
     pub mod hstudio_rbx_draw;
     #[path = "../../mixins/horizon_studio/rbx_file.rs"]

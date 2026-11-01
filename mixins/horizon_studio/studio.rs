@@ -2534,6 +2534,9 @@ impl Studio {
         }
         let rbx = &mut self.s.rbx;
         g.set_str("Instance", super::hstudio_rbx::instance_table(rbx));
+        for (name, f) in super::hstudio_rbx::settings_functions(rbx) {
+            g.set_str(name, f);
+        }
         let game = match g.get_str("game") {
             Value::Table(t) => t,
             _ => Rc::new(std::cell::RefCell::new(Table::new())),
@@ -6865,6 +6868,9 @@ impl Host for Ctx<'_> {
             300..=312 => self.task(lua, id, args),
             super::hstudio_rbx::FIRST_ID..=super::hstudio_rbx::LAST_ID => super::hstudio_rbx::call(self, lua, id, args),
             super::hstudio_sunc::FIRST_ID..=super::hstudio_sunc::LAST_ID => self.sunc(lua, id, args),
+            super::hstudio_rbx_api::FIRST_ID..=super::hstudio_rbx_api::LAST_ID => {
+                super::hstudio_rbx::api_call(self, lua, id, args)
+            }
             _ => Err(lua.rt_error(format!("unknown studio function {id}"))),
         }
     }

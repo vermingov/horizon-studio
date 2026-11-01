@@ -695,7 +695,15 @@ impl Table {
                 Key::Int(i) if i >= 1 && (i as usize) <= self.arr.len() => from_arr = i as usize,
                 _ => {
                     from_arr = self.arr.len();
-                    from_hash = self.find(&key).ok_or(())? + 1;
+                    from_hash = match self.find(&key) {
+                        Some(at) => at + 1,
+                        // An index the array part had until the loop's body
+                        // removed it (table.remove of the last one): the
+                        // array is done, the hash part comes next, as Luau
+                        // goes on.
+                        None if matches!(key, Key::Int(i) if i >= 1) => 0,
+                        None => return Err(()),
+                    };
                 }
             }
         }

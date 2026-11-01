@@ -39,6 +39,9 @@ pub enum Data {
     UD2(UDim2),
     Rect(Rect),
     Range(NumberRange),
+    /// PhysicalProperties: Density, Friction, Elasticity, FrictionWeight,
+    /// ElasticityWeight.
+    Phys([f64; 5]),
     NumSeq(NumberSequence),
     NumKey(NumberSequenceKeypoint),
     ColorSeq(ColorSequence),
@@ -68,6 +71,7 @@ impl Data {
             Data::UD2(_) => "UDim2",
             Data::Rect(_) => "Rect",
             Data::Range(_) => "NumberRange",
+            Data::Phys(_) => "PhysicalProperties",
             Data::NumSeq(_) => "NumberSequence",
             Data::NumKey(_) => "NumberSequenceKeypoint",
             Data::ColorSeq(_) => "ColorSequence",
@@ -384,6 +388,7 @@ pub fn globals() -> Vec<(&'static str, Value)> {
         ),
         ("Rect", lib(&[("new", rect_new)], vec![])),
         ("NumberRange", lib(&[("new", range_new)], vec![])),
+        ("PhysicalProperties", lib(&[("new", phys_new)], vec![])),
         ("NumberSequence", lib(&[("new", numseq_new)], vec![])),
         ("NumberSequenceKeypoint", lib(&[("new", numkey_new)], vec![])),
         ("ColorSequence", lib(&[("new", colorseq_new)], vec![])),
@@ -603,6 +608,52 @@ fn rect_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Re
     }
     let n = |i| num_or(lua, &args, i, "new");
     one(wrap(Data::Rect(Rect::from_coords(n(0)?, n(1)?, n(2)?, n(3)?))))
+}
+
+/// A material's density, friction and elasticity (and their weights), as
+/// Roblox has them for the materials scripts use most.
+fn material_physics(name: &str) -> [f64; 5] {
+    match name {
+        "Wood" | "WoodPlanks" => [0.35, 0.48, 0.2, 1.0, 1.0],
+        "Metal" | "DiamondPlate" | "CorrodedMetal" => [7.85, 0.4, 0.25, 1.0, 1.0],
+        "Concrete" | "Slate" | "Granite" | "Marble" | "Brick" | "Cobblestone" | "Rock" | "Basalt" => {
+            [2.4, 0.7, 0.2, 1.0, 1.0]
+        }
+        "Ice" | "Glacier" => [0.919, 0.02, 0.15, 1.0, 1.0],
+        "Glass" => [2.4, 0.25, 0.2, 1.0, 1.0],
+        "Neon" | "ForceField" => [0.7, 0.3, 0.2, 1.0, 1.0],
+        "Sand" => [1.6, 0.5, 0.05, 1.0, 1.0],
+        "Grass" | "LeafyGrass" | "Ground" | "Mud" => [0.9, 0.4, 0.1, 1.0, 1.0],
+        "Fabric" => [0.7, 0.35, 0.05, 1.0, 1.0],
+        _ => [0.7, 0.3, 0.5, 1.0, 1.0],
+    }
+}
+
+fn phys_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    // PhysicalProperties.new(Enum.Material.X): the material's own.
+    if let Some(Data::Item(it)) = args.first().and_then(get)
+        && it.enum_name == "Material"
+    {
+        return one(wrap(Data::Phys(material_physics(it.name))));
+    }
+    let density = check_num(lua, &args, 0, "new")?;
+    let friction = check_num(lua, &args, 1, "new")?;
+    let elasticity = check_num(lua, &args, 2, "new")?;
+    let fw = match args.get(3) {
+        None | Some(Value::Nil) => 1.0,
+        Some(_) => check_num(lua, &args, 3, "new")?,
+    };
+    let ew = match args.get(4) {
+        None | Some(Value::Nil) => 1.0,
+        Some(_) => check_num(lua, &args, 4, "new")?,
+    };
+    one(wrap(Data::Phys([
+        density.max(0.0001),
+        friction.clamp(0.0, 2.0),
+        elasticity.clamp(0.0, 1.0),
+        fw.clamp(0.0, 100.0),
+        ew.clamp(0.0, 100.0),
+    ])))
 }
 
 fn range_new(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
@@ -955,6 +1006,11 @@ fn index(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
         (Data::Rect(r), "Height") => return num(r.height()),
         (Data::Range(r), "Min") => return num(r.min),
         (Data::Range(r), "Max") => return num(r.max),
+        (Data::Phys(p), "Density") => return num(p[0]),
+        (Data::Phys(p), "Friction") => return num(p[1]),
+        (Data::Phys(p), "Elasticity") => return num(p[2]),
+        (Data::Phys(p), "FrictionWeight") => return num(p[3]),
+        (Data::Phys(p), "ElasticityWeight") => return num(p[4]),
         (Data::NumSeq(s), "Keypoints") => Some(Value::table(Table::from_list(
             s.keypoints().iter().map(|k| wrap(Data::NumKey(*k))).collect(),
         ))),
@@ -1031,6 +1087,7 @@ pub fn text(d: &Data) -> String {
         Data::UD2(u) => u.to_string(),
         Data::Rect(r) => r.to_string(),
         Data::Range(r) => r.to_string(),
+        Data::Phys(p) => format!("{}, {}, {}, {}, {}", p[0], p[1], p[2], p[3], p[4]),
         Data::NumSeq(s) => s.to_string(),
         Data::NumKey(k) => format!("{} {} {}", k.time, k.value, k.envelope),
         Data::ColorSeq(s) => s.to_string(),
@@ -1063,6 +1120,7 @@ pub fn same(a: &Data, b: &Data) -> bool {
         (Data::UD2(x), Data::UD2(y)) => x == y,
         (Data::Rect(x), Data::Rect(y)) => x == y,
         (Data::Range(x), Data::Range(y)) => x == y,
+        (Data::Phys(x), Data::Phys(y)) => x == y,
         (Data::NumSeq(x), Data::NumSeq(y)) => x == y,
         (Data::ColorSeq(x), Data::ColorSeq(y)) => x == y,
         (Data::Tween(x), Data::Tween(y)) => x == y,
@@ -1944,6 +2002,22 @@ fn build_enums() -> Vec<EnumDef> {
             name,
             items: items.to_vec(),
         });
+    }
+    // Every other enum and item Roblox has, from its API.
+    for (name, items) in &super::hstudio_rbx_api::api().enums {
+        match defs.iter_mut().find(|d| d.name == *name) {
+            Some(d) => {
+                for it in items {
+                    if !d.items.iter().any(|i| i.0 == it.0) {
+                        d.items.push(*it);
+                    }
+                }
+            }
+            None => defs.push(EnumDef {
+                name,
+                items: items.clone(),
+            }),
+        }
     }
     defs.sort_by_key(|d| d.name);
     defs

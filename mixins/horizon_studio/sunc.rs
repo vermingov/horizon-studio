@@ -1624,7 +1624,7 @@ impl Ctx<'_> {
                 let mut ids: Vec<Id> = rbx
                     .insts
                     .values()
-                    .filter(|i| !i.destroyed && i.id != rbx.hui)
+                    .filter(|i| !i.destroyed && i.id != rbx.hui && !rbx.internal(i.id))
                     .filter(|i| id == 2043 || (i.parent.is_none() && i.id != rbx.game))
                     .map(|i| i.id)
                     .collect();
