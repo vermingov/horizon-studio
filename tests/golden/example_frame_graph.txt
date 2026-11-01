@@ -2,7 +2,7 @@ frame 1
   fill [2.0, 186.0, 104.0, 36.0] 78000000
   fill [4.0, 190.0, 1.0, 30.0] fff07a68
   text "20 fps" [4.0, 176.0] ffffff true
-  log Info Horizon Studio 0.7.0. Type Lua and press Enter; help() lists the API.
+  log Info Horizon Studio 0.7.1. Type Lua and press Enter; help() lists the API.
 frame 2
   fill [2.0, 186.0, 104.0, 36.0] 78000000
   fill [4.0, 190.0, 1.0, 30.0] fff07a68
