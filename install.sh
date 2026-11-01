@@ -43,14 +43,15 @@ le64() {
     done
 }
 
-# The launcher's version_for (launcher/src/native_mods.rs) for one flat bundle folder:
+# The launcher's version_for (launcher/src/native_mods.rs) for one bundle folder:
 # native-<7 digits of the revision>-<12 hex digits of SHA-256 over the inputs, each followed
-# by a NUL, then the mod's id and a NUL, then each file (by name) as name, length, bytes>.
+# by a NUL, then the mod's id and a NUL, then each file in it and its folders (by its path in
+# the bundle, with /, in byte order) as path, length, bytes>.
 key_of() { # bundle mixins profile features rust revision
     digest=$(
         {
             printf '%s\000' "$2" "$3" "$4" "$5" "$6" "$ID"
-            for f in $(cd "$1" && LC_ALL=C ls); do
+            for f in $(cd "$1" && find . -type f | sed 's|^\./||' | LC_ALL=C sort); do
                 printf '%s' "$f"
                 le64 "$(wc -c < "$1/$f" | tr -d ' ')"
                 cat "$1/$f"

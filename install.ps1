@@ -44,9 +44,10 @@ function Get-Key([string]$Bundle, [string]$Mixins, [string]$BuildProfile, [strin
         $buf.Write($bytes, 0, $bytes.Length)
         $buf.WriteByte(0)
     }
-    $names = [string[]]@(Get-ChildItem -LiteralPath $Bundle -File -Force |
-        Where-Object { -not $_.Name.StartsWith('.', [StringComparison]::Ordinal) } |
-        ForEach-Object { $_.Name })
+    # Each file in the bundle and its folders, by its path in it with / (as the launcher).
+    $root = (Get-Item -LiteralPath $Bundle).FullName.TrimEnd('\', '/')
+    $names = [string[]]@(Get-ChildItem -LiteralPath $Bundle -File -Force -Recurse |
+        ForEach-Object { $_.FullName.Substring($root.Length + 1).Replace('\', '/') })
     [Array]::Sort($names, [StringComparer]::Ordinal)
     foreach ($name in $names) {
         $bytes = $utf8.GetBytes($name)

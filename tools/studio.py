@@ -340,7 +340,8 @@ def pack_prebuilt(exe, target, src, consts):
         ("key-inputs", ("\n".join(inputs) + "\n").encode()),
         ("native-mods.json", (json.dumps(about) + "\n").encode()),
         ("LICENSE-Horizon", (src / "LICENSE").read_bytes()),
-    ] + [(f"bundle/{MANIFEST['mod']['id']}/{f.name}", f.read_bytes()) for f in sorted(BUNDLE.iterdir())]
+    ] + [(f"bundle/{MANIFEST['mod']['id']}/{f.relative_to(BUNDLE).as_posix()}", f.read_bytes())
+          for f in sorted(BUNDLE.rglob("*")) if f.is_file()]
     if path.suffix == ".zip":
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(exe, arcname=exe_name)
