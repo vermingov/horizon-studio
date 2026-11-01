@@ -4011,9 +4011,11 @@ pub fn agent_ask(st: &mut Studio, text: &str) {
         );
         return;
     };
-    // It reads the file from disk: unsaved edits are saved first, so it
-    // works on what the player sees (and its writes don't conflict); an
-    // agent's edit being typed in is all in first.
+    // Unsaved edits are saved first (the docs say so), so its turn starts
+    // from what the player sees with nothing of theirs unsaved: a write_mod
+    // to the file then doesn't conflict with them, and the turn's end can
+    // save the agent's own edits, which it does only in a buffer that had
+    // none of the player's. An agent's edit being typed in is all in first.
     super::hstudio_coach::finish_typing(st, "the player asked the agent");
     if st.s.editor.dirty && st.s.editor.path.is_some() {
         match st.s.editor.save() {
