@@ -380,7 +380,8 @@ fn gone(st: &mut Studio, path: &Path) -> bool {
 /// and the definition is found in its text as it opens, so an agent's edit
 /// on disk since the menu opened (which leaves the file open, and so the
 /// menu, as they were) can't send the cursor to lines that moved. Gone from
-/// the file, the file opens all the same; the file gone, it doesn't.
+/// the file, the file opens all the same, and a notice says so; the file
+/// gone, it doesn't.
 fn define(st: &mut Studio, game: &mut dyn GameApi, path: &Path, name: &str) {
     if gone(st, path) {
         return;
@@ -390,6 +391,10 @@ fn define(st: &mut Studio, game: &mut dyn GameApi, path: &Path, name: &str) {
     let place = (ed.path.as_deref() == Some(path))
         .then(|| definition(&ed.lines, name, 0, true))
         .flatten();
+    if place.is_none() {
+        let file = st.file_title(path);
+        notice(st, format!("{name} isn't defined in {file} any more"));
+    }
     go_to(st, place);
 }
 
