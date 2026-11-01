@@ -801,7 +801,7 @@ fn type_text(st: &mut horizon_studio::game::hstudio::Studio, game: &mut FakeGame
 
 #[test]
 fn the_editor_finds_problems_as_you_type_and_goes_to_them() {
-    use horizon_studio::game::hstudio_ui::Panel;
+    use horizon_studio::game::hstudio_ui::Pane;
     let mut game = FakeGame::new("ui-problems");
     let mut st = studio(&mut game);
     st.s.ui.open = true;
@@ -840,13 +840,15 @@ fn the_editor_finds_problems_as_you_type_and_goes_to_them() {
     assert_eq!(st.s.editor.problems.len(), 1);
     let at = last_text_at(&game, "Problems");
     click(&mut st, &mut game, at);
-    assert_eq!(st.s.ui.panel, Panel::Problems);
+    assert_eq!(st.s.ui.focus, Pane::Problems);
+    // The Problems pane, with the keys, is drawn after the code (where the
+    // same message ends its line).
     redraw(&mut st, &mut game);
-    let at = text_at(&game, "player has no 'poss'");
+    let at = last_text_at(&game, "player has no 'poss'");
     click(&mut st, &mut game, at);
     assert_eq!(st.s.editor.row, 2, "the cursor on its line");
     assert_eq!(st.s.editor.col, "print(player.".len(), "at the name");
-    assert!(!st.s.ui.panel_focus, "and the keys back on the code");
+    assert_eq!(st.s.ui.focus, Pane::Code, "and the keys back on the code");
 }
 
 #[test]
@@ -896,7 +898,7 @@ fn suggestions_open_as_you_type_and_tab_takes_one() {
 
 #[test]
 fn the_panel_console_runs_what_is_typed_in_it() {
-    use horizon_studio::game::hstudio_ui::Panel;
+    use horizon_studio::game::hstudio_ui::Pane;
     let mut game = FakeGame::new("ui-panel");
     let mut st = studio(&mut game);
     st.s.ui.open = true;
@@ -906,8 +908,8 @@ fn the_panel_console_runs_what_is_typed_in_it() {
     redraw(&mut st, &mut game);
     // Ctrl+` puts the keys on the panel (it is shown), then hides it.
     handle(&mut st, &mut game, key(Key::Char('`'), CTRL));
-    assert!(st.s.ui.panel_focus && !st.s.ui.panel_hidden);
-    assert_eq!(st.s.ui.panel, Panel::Console);
+    assert!(st.s.ui.focus == Pane::Console && st.s.ui.dock.shown(Pane::Console));
+    assert!(st.s.ui.dock.is_front(Pane::Console));
     type_text(&mut st, &mut game, "21 * 2");
     assert_eq!(st.s.ui.input.text, "21 * 2");
     assert_eq!(st.s.editor.text(), "", "not in the code");
@@ -915,20 +917,20 @@ fn the_panel_console_runs_what_is_typed_in_it() {
     assert_eq!(log(&st).last().map(String::as_str), Some("42"));
     // Esc takes the keys back to the code.
     handle(&mut st, &mut game, key(Key::Escape, NONE));
-    assert!(!st.s.ui.panel_focus);
+    assert_eq!(st.s.ui.focus, Pane::Code);
     assert!(st.s.ui.open);
     type_text(&mut st, &mut game, "x");
     assert_eq!(st.s.editor.text(), "x");
     handle(&mut st, &mut game, key(Key::Char('`'), CTRL));
     handle(&mut st, &mut game, key(Key::Char('`'), CTRL));
-    assert!(st.s.ui.panel_hidden && !st.s.ui.panel_focus);
+    assert!(!st.s.ui.dock.shown(Pane::Console) && st.s.ui.focus == Pane::Code);
     // A click on its tab shows it again, with the keys.
     handle(&mut st, &mut game, key(Key::Char('j'), CTRL));
     redraw(&mut st, &mut game);
     let at = last_text_at(&game, "Agent");
     click(&mut st, &mut game, at);
-    assert_eq!(st.s.ui.panel, Panel::Agent);
-    assert!(st.s.ui.panel_focus);
+    assert!(st.s.ui.dock.is_front(Pane::Agent));
+    assert_eq!(st.s.ui.focus, Pane::Agent);
     type_text(&mut st, &mut game, "hi");
     assert_eq!(st.s.ui.agent_input.text, "hi");
 }
@@ -1027,7 +1029,7 @@ fn the_agent_answers_in_its_panel() {
     assert_eq!(lines.last().unwrap().kind, AgentLineKind::Done);
     // Its name is on the panel.
     st.s.ui.tab = Tab::Editor;
-    st.s.ui.panel = horizon_studio::game::hstudio_ui::Panel::Agent;
+    st.s.ui.dock.activate(horizon_studio::game::hstudio_ui::Pane::Agent);
     redraw(&mut st, &mut game);
     assert!(game.drawn.iter().any(|d| d.starts_with("text Echo @")));
 }
@@ -1238,7 +1240,7 @@ fn the_editor_scroll_bar_drags_and_jumps() {
 #[test]
 fn the_agents_model_is_chosen_from_its_chip() {
     use horizon_studio::game::hstudio_agent::AgentSpec;
-    use horizon_studio::game::hstudio_ui::Panel;
+    use horizon_studio::game::hstudio_ui::Pane;
     let mut game = FakeGame::new("ui-model");
     let mut st = studio(&mut game);
     st.s.ui.open = true;
@@ -1246,7 +1248,7 @@ fn the_agents_model_is_chosen_from_its_chip() {
     st.s.now = 10.0;
     st.s.ui.agent.agents = Some(vec![AgentSpec::claude(std::path::PathBuf::from("claude"))]);
     handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
-    st.s.ui.panel = Panel::Agent;
+    st.s.ui.dock.activate(Pane::Agent);
     redraw(&mut st, &mut game);
     // The chip opens the menu of models, the current one (the default) marked.
     let chip = text_at(&game, "Model: Default");
@@ -1470,7 +1472,7 @@ fn menu_labels(st: &horizon_studio::game::hstudio::Studio) -> Vec<(String, bool)
 #[test]
 fn the_script_list_folds_modules_and_opens_their_files() {
     use horizon_studio::game::hstudio_agent::AgentSpec;
-    use horizon_studio::game::hstudio_ui::Panel;
+    use horizon_studio::game::hstudio_ui::Pane;
     let mut game = FakeGame::new("ui-tree");
     let mut st = studio(&mut game);
     st.s.ui.open = true;
@@ -1521,7 +1523,7 @@ fn the_script_list_folds_modules_and_opens_their_files() {
     // the last row is a module, scrolled to.
     st.create_module(&mut game, "Zz").unwrap();
     st.s.ui.agent.agents = Some(vec![AgentSpec::claude(std::path::PathBuf::from("claude"))]);
-    st.s.ui.panel = Panel::Agent;
+    st.s.ui.dock.activate(Pane::Agent);
     redraw(&mut st, &mut game);
     handle(&mut st, &mut game, Input::Wheel(-40.0));
     redraw(&mut st, &mut game);
@@ -2492,7 +2494,7 @@ fn the_wheel_closes_the_menu_and_right_clicks_leave_drags_alone() {
 #[test]
 fn typing_while_a_menu_is_open_goes_to_the_menu() {
     use horizon_studio::game::hstudio_agent::AgentSpec;
-    use horizon_studio::game::hstudio_ui::Panel;
+    use horizon_studio::game::hstudio_ui::Pane;
     let mut game = FakeGame::new("ui-menu-text");
     let mut st = studio(&mut game);
     st.s.ui.open = true;
@@ -2500,7 +2502,7 @@ fn typing_while_a_menu_is_open_goes_to_the_menu() {
     st.s.ui.agent.agents = Some(vec![AgentSpec::claude(std::path::PathBuf::from("claude"))]);
     handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
     st.s.editor.set_text("");
-    st.s.ui.panel = Panel::Agent;
+    st.s.ui.dock.activate(Pane::Agent);
     redraw(&mut st, &mut game);
     let chip = text_at(&game, "Model: Default");
     click(&mut st, &mut game, (chip.0 + 2.0, chip.1 + 2.0));
@@ -2901,10 +2903,10 @@ fn hint_of(st: &horizon_studio::game::hstudio::Studio, label: &str) -> String {
 
 #[test]
 fn the_agents_conversation_and_input_have_menus() {
-    use horizon_studio::game::hstudio_ui::{Panel, agent_new_conversation};
+    use horizon_studio::game::hstudio_ui::{Pane, agent_new_conversation};
     let (mut game, mut st) = editing("ui-agent-menus", "");
     st.s.ui.agent.agents = Some(Vec::new());
-    st.s.ui.panel = Panel::Agent;
+    st.s.ui.dock.activate(Pane::Agent);
     agent_new_conversation(&mut st);
     redraw(&mut st, &mut game);
     let said = text_at(&game, "New conversation.");
@@ -2917,7 +2919,7 @@ fn the_agents_conversation_and_input_have_menus() {
     redraw(&mut st, &mut game);
     let field = text_at(&game, "No agent found.");
     right_click(&mut st, &mut game, (field.0 + 2.0, field.1 + 4.0));
-    assert!(st.s.ui.panel_focus);
+    assert_eq!(st.s.ui.focus, Pane::Agent);
     assert_eq!(usable(&st), ["Paste"], "nothing to send without an agent's line");
     choose(&mut st, &mut game, "Paste");
     assert_eq!(st.s.ui.agent_input.text, "make it glow");
@@ -3037,7 +3039,7 @@ fn duplicate_makes_a_copy_that_starts_off() {
     st.s.ui.look.motion = false;
     handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
     redraw(&mut st, &mut game);
-    let row = last_text_at(&game, "hello.lua");
+    let row = text_at(&game, "hello.lua");
     right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
     choose(&mut st, &mut game, "Duplicate...");
     assert_eq!(st.s.ui.naming.as_ref().map(|n| n.text.as_str()), Some("hello_copy"));
@@ -3064,7 +3066,7 @@ fn duplicate_makes_a_copy_that_starts_off() {
     // turns nothing on; Turn on turns it on (where it fails: its /hello is
     // hello's).
     redraw(&mut st, &mut game);
-    let row = last_text_at(&game, "hello_copy.lua");
+    let row = text_at(&game, "hello_copy.lua");
     right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
     assert!(menu_labels(&st).contains(&("Reload".to_owned(), false)));
     choose(&mut st, &mut game, "Reload");
@@ -3074,7 +3076,7 @@ fn duplicate_makes_a_copy_that_starts_off() {
     assert!(st.s.mods[mod_index(&st, "hello")].running(), "the original runs on");
     // On, it reloads from its menu.
     redraw(&mut st, &mut game);
-    let row = last_text_at(&game, "hello_copy.lua");
+    let row = text_at(&game, "hello_copy.lua");
     right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
     assert!(menu_labels(&st).contains(&("Reload".to_owned(), true)));
 }
@@ -3089,7 +3091,7 @@ fn delete_asks_first_and_moves_the_mod_to_the_trash() {
     st.edit_mod(i);
     handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
     redraw(&mut st, &mut game);
-    let row = last_text_at(&game, "hello.lua");
+    let row = text_at(&game, "hello.lua");
     right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
     let menu = st.s.ui.menu.clone().unwrap();
     assert!(menu.items.iter().any(|it| it.label == "Delete..." && it.danger));
@@ -3118,7 +3120,7 @@ fn delete_asks_first_and_moves_the_mod_to_the_trash() {
     let i = mod_index(&st, "hello");
     st.edit_mod(i);
     redraw(&mut st, &mut game);
-    let row = last_text_at(&game, "hello.lua");
+    let row = text_at(&game, "hello.lua");
     right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
     choose(&mut st, &mut game, "Delete...");
     redraw(&mut st, &mut game);
@@ -3232,12 +3234,21 @@ fn the_files_menu_saves_reverts_and_renames() {
     st.s.ui.look.motion = false;
     handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
     redraw(&mut st, &mut game);
-    // The scratch file: Save as a script, and its folder.
-    let title = text_at(&game, "scratch.lua");
+    // The scratch file: Save as a script, and its folder, then where the
+    // code's pane is. (Its tab is drawn after the script list's row.)
+    let title = last_text_at(&game, "scratch.lua");
     right_click(&mut st, &mut game, (title.0 + 2.0, title.1 + 2.0));
     assert_eq!(
         usable(&st),
-        ["Save", "Save as a script...", "Show in folder", "Copy path"]
+        [
+            "Save",
+            "Save as a script...",
+            "Show in folder",
+            "Copy path",
+            "Move",
+            "Size...",
+            "Panes"
+        ]
     );
     choose(&mut st, &mut game, "Copy path");
     assert_eq!(game.clipboard, st.s.dir.join("scratch.lua").display().to_string());
@@ -3248,11 +3259,20 @@ fn the_files_menu_saves_reverts_and_renames() {
     st.s.editor.click(0, 0, false);
     type_text(&mut st, &mut game, "-- mine\n");
     redraw(&mut st, &mut game);
-    let title = text_at(&game, "hello.lua");
+    let title = last_text_at(&game, "hello.lua");
     right_click(&mut st, &mut game, (title.0 + 2.0, title.1 + 2.0));
     assert_eq!(
         usable(&st),
-        ["Save", "Revert to saved", "Rename...", "Show in folder", "Copy path"]
+        [
+            "Save",
+            "Revert to saved",
+            "Rename...",
+            "Show in folder",
+            "Copy path",
+            "Move",
+            "Size...",
+            "Panes"
+        ]
     );
     choose(&mut st, &mut game, "Revert to saved");
     assert_eq!(st.s.editor.text(), saved);
@@ -3289,7 +3309,13 @@ fn the_script_lists_own_menu_and_synapses() {
             "New file in kit...",
             "",
             "Reload all",
-            "Open the mods folder"
+            "Open the mods folder",
+            "",
+            "Hide the script list",
+            "Move",
+            "Size...",
+            "Panes",
+            "Reset layout"
         ]
     );
     choose(&mut st, &mut game, "Open the mods folder");
@@ -3312,12 +3338,14 @@ fn the_script_lists_own_menu_and_synapses() {
 
 #[test]
 fn problems_and_panel_tabs_have_menus() {
-    use horizon_studio::game::hstudio_ui::Panel;
+    use horizon_studio::game::hstudio_ui::Pane;
     let (mut game, mut st) = editing("ui-problem-menus", "local here = 1\n\nprint(player.poss())\n");
     st.s.now = 10.0;
-    st.s.ui.panel = Panel::Problems;
+    st.s.ui.dock.activate(Pane::Problems);
     redraw(&mut st, &mut game);
     assert_eq!(st.s.editor.problems.len(), 1);
+    // The Problems pane's row (drawn before the code, which has the keys and
+    // ends the line with the same words).
     let row = text_at(&game, "player has no 'poss'");
     right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
     assert_eq!(usable(&st), ["Go to it", "Copy", "Copy all problems"]);
@@ -3332,17 +3360,33 @@ fn problems_and_panel_tabs_have_menus() {
     right_click(&mut st, &mut game, (row.0 + 2.0, row.1 + 2.0));
     choose(&mut st, &mut game, "Copy");
     assert_eq!(game.clipboard, "scratch.lua:3: player has no 'poss'");
-    // The tabs' menus: the Problems tab, then the Console's Hide the panel.
+    // The tabs' menus: the Problems tab, then the Console's Hide the panel,
+    // each then with where the pane is.
     redraw(&mut st, &mut game);
     let tab = last_text_at(&game, "Problems");
     right_click(&mut st, &mut game, tab);
-    assert_eq!(usable(&st), ["Copy all problems", "Hide the panel"]);
+    assert_eq!(
+        usable(&st),
+        ["Copy all problems", "Hide the panel", "Move", "Size...", "Panes"]
+    );
     handle(&mut st, &mut game, key(Key::Escape, NONE));
     let tab = last_text_at(&game, "Console");
     right_click(&mut st, &mut game, tab);
-    assert_eq!(menu_items(&st), ["Copy all", "Clear", "", "Hide the panel"]);
+    assert_eq!(
+        menu_items(&st),
+        [
+            "Copy all",
+            "Clear",
+            "",
+            "Hide the panel",
+            "Move",
+            "Size...",
+            "Panes",
+            "Reset layout"
+        ]
+    );
     choose(&mut st, &mut game, "Hide the panel");
-    assert!(st.s.ui.panel_hidden && !st.s.ui.panel_focus);
+    assert!(!st.s.ui.dock.shown(Pane::Console) && st.s.ui.focus == Pane::Code);
 }
 
 #[test]
@@ -3420,7 +3464,10 @@ fn the_headers_menu_and_the_docs() {
     redraw(&mut st, &mut game);
     let name = text_at(&game, "Horizon Studio");
     right_click(&mut st, &mut game, (name.0 + 4.0, name.1 + 4.0));
-    assert_eq!(menu_items(&st), ["In a window", "Theme", "", "Settings", "Close"]);
+    assert_eq!(
+        menu_items(&st),
+        ["In a window", "Theme", "Panes", "Reset layout", "", "Settings", "Close"]
+    );
     choose(&mut st, &mut game, "In a window");
     assert!(st.s.ui.look.window);
     // Close closes the studio.
@@ -3483,7 +3530,7 @@ fn the_executor_styles_have_the_menus_too() {
 #[test]
 fn the_agent_tab_menu_chooses_an_agent_and_starts_over() {
     use horizon_studio::game::hstudio_agent::AgentSpec;
-    use horizon_studio::game::hstudio_ui::{Panel, agent_new_conversation};
+    use horizon_studio::game::hstudio_ui::{Pane, agent_new_conversation};
     let (mut game, mut st) = editing("ui-agent-tab-menu", "");
     let echo = AgentSpec {
         id: "custom".into(),
@@ -3494,7 +3541,7 @@ fn the_agent_tab_menu_chooses_an_agent_and_starts_over() {
     };
     st.s.ui.agent.agents = Some(vec![echo, AgentSpec::claude(std::path::PathBuf::from("claude"))]);
     st.s.ui.agent.session = Some("before".into());
-    st.s.ui.panel = Panel::Agent;
+    st.s.ui.dock.activate(Pane::Agent);
     agent_new_conversation(&mut st);
     st.s.ui.agent.session = Some("before".into());
     redraw(&mut st, &mut game);
@@ -3663,7 +3710,7 @@ fn the_code_menu_fits_a_small_screen_with_an_agent() {
 #[test]
 fn explain_this_line_asks_the_agent_with_the_line() {
     use horizon_studio::game::hstudio_agent::AgentSpec;
-    use horizon_studio::game::hstudio_ui::{AgentLineKind, Panel, agent_busy};
+    use horizon_studio::game::hstudio_ui::{AgentLineKind, Pane, agent_busy};
     let (mut game, mut st) = editing("ui-explain", "local a = 1\nprint(a)");
     st.s.ui.agent.agents = Some(vec![AgentSpec {
         id: "custom".into(),
@@ -3672,7 +3719,7 @@ fn explain_this_line_asks_the_agent_with_the_line() {
         args: vec!["{prompt}".into()],
         json: false,
     }]);
-    st.s.ui.panel_hidden = true;
+    st.s.ui.dock.set_hidden(Pane::Agent, true);
     redraw(&mut st, &mut game);
     let at = last_text_at(&game, "print");
     right_click(&mut st, &mut game, at);
@@ -3684,10 +3731,10 @@ fn explain_this_line_asks_the_agent_with_the_line() {
     );
     assert!(agent_busy(&st));
     assert!(
-        !st.s.ui.panel_hidden && st.s.ui.panel == Panel::Agent,
-        "its panel shows"
+        st.s.ui.dock.is_front(Pane::Agent) && st.s.ui.dock.shown(Pane::Agent),
+        "its pane shows"
     );
-    assert!(!st.s.ui.panel_focus, "the keys stay on the code");
+    assert_eq!(st.s.ui.focus, Pane::Code, "the keys stay on the code");
     for _ in 0..200 {
         run_for(&mut st, &mut game, 0.05);
         if !agent_busy(&st) {
@@ -3715,7 +3762,7 @@ fn explain_this_line_asks_the_agent_with_the_line() {
 
 #[test]
 fn the_menu_key_opens_the_menu_of_what_has_the_keys() {
-    use horizon_studio::game::hstudio_ui::Panel;
+    use horizon_studio::game::hstudio_ui::Pane;
     let (mut game, mut st) = editing("ui-menu-key", "local a = 1\nprint(a)");
     // In the code: at the cursor, which stays where it is, its first item lit.
     st.s.editor.click(1, 3, false);
@@ -3726,6 +3773,8 @@ fn the_menu_key_opens_the_menu_of_what_has_the_keys() {
     assert_eq!(menu.at, caret.expect("the cursor was drawn"));
     assert_eq!(lit(&st), "Cut");
     assert_eq!((st.s.editor.row, st.s.editor.col), (1, 3));
+    // It ends with where the code's pane is.
+    assert_eq!(menu_items(&st)[menu_items(&st).len() - 2..], ["", "Layout"]);
     // The Menu key closes it again.
     handle(&mut st, &mut game, key(Key::Menu, NONE));
     assert!(st.s.ui.menu.is_none());
@@ -3746,18 +3795,22 @@ fn the_menu_key_opens_the_menu_of_what_has_the_keys() {
     assert_eq!(st.s.ui.tab, Tab::Editor);
     assert_eq!(st.s.editor.title, "hello.lua");
     // The agent's input: its line's menu, Paste first.
-    st.s.ui.panel = Panel::Agent;
-    st.s.ui.panel_focus = true;
+    st.s.ui.dock.activate(Pane::Agent);
+    st.s.ui.focus = Pane::Agent;
     redraw(&mut st, &mut game);
     handle(&mut st, &mut game, key(Key::Menu, NONE));
-    assert_eq!(menu_items(&st), ["Paste", "Clear the line", "", "Send", "Stop"]);
+    assert_eq!(
+        menu_items(&st),
+        ["Paste", "Clear the line", "", "Send", "Stop", "", "Layout"]
+    );
     assert_eq!(lit(&st), "Paste");
     handle(&mut st, &mut game, key(Key::Escape, NONE));
     // The Problems panel: the chosen problem's menu, at its row (drawn the
     // frame after the code's check found it).
     st.s.editor.set_text("print(player.poss())");
     st.s.now = 10.0;
-    st.s.ui.panel = Panel::Problems;
+    st.s.ui.dock.activate(Pane::Problems);
+    st.s.ui.focus = Pane::Problems;
     redraw(&mut st, &mut game);
     redraw(&mut st, &mut game);
     assert_eq!(st.s.editor.problems.len(), 1);
@@ -3770,7 +3823,7 @@ fn the_menu_key_opens_the_menu_of_what_has_the_keys() {
 
 #[test]
 fn the_menu_key_opens_a_menu_with_no_cursor_or_row_to_open_at() {
-    use horizon_studio::game::hstudio_ui::{Panel, code_line};
+    use horizon_studio::game::hstudio_ui::{Pane, code_line};
     // The cursor scrolled out of the code's view: at the code's top left.
     let text: Vec<String> = (1..=300).map(|i| format!("local v{i} = {i}")).collect();
     let (mut game, mut st) = editing("ui-menu-key-off", &text.join("\n"));
@@ -3789,15 +3842,16 @@ fn the_menu_key_opens_a_menu_with_no_cursor_or_row_to_open_at() {
     assert_eq!(lit(&st), "Cut");
     assert_eq!((st.s.editor.row, st.s.editor.col), (0, 0), "the cursor stays");
     handle(&mut st, &mut game, key(Key::Escape, NONE));
-    // The Problems panel listing none: its own menu, under its tab.
+    // The Problems pane listing none: its own menu, under its tab, with
+    // where it is.
     st.s.editor.set_text("print(1)");
     st.s.now = 10.0;
-    st.s.ui.panel = Panel::Problems;
-    st.s.ui.panel_focus = true;
+    st.s.ui.dock.activate(Pane::Problems);
+    st.s.ui.focus = Pane::Problems;
     redraw(&mut st, &mut game);
     assert!(st.s.editor.problems.is_empty());
     handle(&mut st, &mut game, key(Key::Menu, NONE));
-    assert_eq!(usable(&st), ["Hide the panel"]);
+    assert_eq!(usable(&st), ["Hide the panel", "Move", "Size...", "Panes"]);
     assert_eq!(lit(&st), "Hide the panel");
     let tab = last_text_at(&game, "Problems");
     assert!(st.s.ui.menu.as_ref().unwrap().at[1] > tab.1, "under its tab");
@@ -3946,7 +4000,7 @@ fn go_to_definition_finds_a_name_indented_with_tabs_in_another_file() {
 #[test]
 fn a_failed_mods_menu_copies_its_error_and_asks_the_agent_to_fix_it() {
     use horizon_studio::game::hstudio_agent::AgentSpec;
-    use horizon_studio::game::hstudio_ui::{AgentLineKind, Panel, agent_busy};
+    use horizon_studio::game::hstudio_ui::{AgentLineKind, Pane, agent_busy};
     let mut game = FakeGame::new("ui-mod-fix");
     let mut st = studio(&mut game);
     st.s.ui.open = true;
@@ -3972,7 +4026,7 @@ fn a_failed_mods_menu_copies_its_error_and_asks_the_agent_to_fix_it() {
     assert!(msg.starts_with("kit/lib.lua:2: boom in lib"), "{msg}");
     assert!(!trace.is_empty());
     handle(&mut st, &mut game, key(Key::Char('2'), CTRL));
-    st.s.ui.panel_hidden = true;
+    st.s.ui.dock.set_hidden(Pane::Agent, true);
     redraw(&mut st, &mut game);
     // Copy the error: its message, then its traceback.
     let row = text_at(&game, "kit/");
@@ -3987,9 +4041,10 @@ fn a_failed_mods_menu_copies_its_error_and_asks_the_agent_to_fix_it() {
     assert_eq!(st.s.editor.title, "kit/lib.lua");
     assert!(agent_busy(&st));
     assert!(
-        !st.s.ui.panel_hidden && st.s.ui.panel == Panel::Agent,
-        "its panel shows"
+        st.s.ui.dock.is_front(Pane::Agent) && st.s.ui.dock.shown(Pane::Agent),
+        "its pane shows"
     );
+    assert_eq!(st.s.ui.focus, Pane::Code, "the keys stay on the code");
     let asked: Vec<&str> =
         st.s.ui
             .agent
@@ -4013,7 +4068,7 @@ fn a_failed_mods_menu_copies_its_error_and_asks_the_agent_to_fix_it() {
 #[test]
 fn the_agents_line_sends_and_stops_from_its_menu() {
     use horizon_studio::game::hstudio_agent::AgentSpec;
-    use horizon_studio::game::hstudio_ui::{Panel, agent_busy};
+    use horizon_studio::game::hstudio_ui::{Pane, agent_busy};
     let (mut game, mut st) = editing("ui-agent-field", "print(1)");
     // An agent that works until it is stopped.
     st.s.ui.agent.agents = Some(vec![AgentSpec {
@@ -4023,7 +4078,7 @@ fn the_agents_line_sends_and_stops_from_its_menu() {
         args: vec!["5".into()],
         json: false,
     }]);
-    st.s.ui.panel = Panel::Agent;
+    st.s.ui.dock.activate(Pane::Agent);
     redraw(&mut st, &mut game);
     let field = text_at(&game, "Ask Sleeper about this script, Enter sends.");
     let at = (field.0 + 2.0, field.1 + 4.0);
@@ -4050,11 +4105,11 @@ fn the_agents_line_sends_and_stops_from_its_menu() {
 
 #[test]
 fn look_for_agents_again_finds_the_one_agent_txt_names() {
-    use horizon_studio::game::hstudio_ui::Panel;
+    use horizon_studio::game::hstudio_ui::Pane;
     // No agent found at first; then agent.txt names one.
     let (mut game, mut st) = editing("ui-agent-rescan", "");
     std::fs::write(st.s.dir.join("agent.txt"), "name: Echo\necho {prompt}\n").unwrap();
-    st.s.ui.panel = Panel::Agent;
+    st.s.ui.dock.activate(Pane::Agent);
     redraw(&mut st, &mut game);
     let tab = last_text_at(&game, "Agent");
     right_click(&mut st, &mut game, tab);

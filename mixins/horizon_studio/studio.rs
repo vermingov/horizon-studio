@@ -1161,6 +1161,14 @@ impl Studio {
         self.s.dir = game.data_dir();
         self.s.rbx.workspace_dir = self.s.dir.join("workspace");
         self.s.ui.look = super::hstudio_theme::Look::load(&self.s.dir);
+        // The Editor tab's panes as they were left, the code at the front of
+        // its group with the keys (which isn't written: the file is only
+        // written when the player changes the panes).
+        let (dock, tips) = super::hstudio_dock::load(&self.s.dir);
+        self.s.ui.dock = dock;
+        self.s.ui.dock_tips = tips;
+        self.s.ui.dock.activate(super::hstudio_dock::Pane::Code);
+        self.s.ui.dock_text = super::hstudio_dock::file_text(&self.s.ui.dock, tips);
         let mods = self.s.mods_dir();
         if !mods.exists() {
             let made = std::fs::create_dir_all(&mods).is_ok();
@@ -3376,7 +3384,7 @@ impl Studio {
                         };
                         self.save_before_switch(game, Some(&path));
                         self.open_file(&path);
-                        self.s.ui.tab = super::hstudio_ui::Tab::Editor;
+                        super::hstudio_ui::reveal_code(self);
                     }
                 }
                 Request::New(name, module) => {
@@ -3389,7 +3397,7 @@ impl Studio {
                     match made {
                         Ok(path) => {
                             self.open_file(&path);
-                            self.s.ui.tab = super::hstudio_ui::Tab::Editor;
+                            super::hstudio_ui::reveal_code(self);
                         }
                         Err(e) => self.s.log(LogKind::Error, e),
                     }

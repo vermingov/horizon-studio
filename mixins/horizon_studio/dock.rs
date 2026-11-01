@@ -298,6 +298,21 @@ impl Dock {
     pub fn leaf_tabs(&self, p: Pane) -> &[Pane] {
         self.leaf(p).map_or(&[], |l| &l.tabs)
     }
+    /// Every group, hidden ones too, in the tree's order.
+    pub fn leaves(&self) -> Vec<&Leaf> {
+        fn walk<'a>(node: &'a Node, out: &mut Vec<&'a Leaf>) {
+            match node {
+                Node::Leaf(l) => out.push(l),
+                Node::Split { a, b, .. } => {
+                    walk(a, out);
+                    walk(b, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.root, &mut out);
+        out
+    }
     /// The ratio of the split at `path`.
     pub fn ratio(&self, path: u16) -> Option<f32> {
         if path == 0 {
@@ -456,6 +471,24 @@ impl Dock {
         }
         *ratio = r;
         true
+    }
+
+    /// Whether the groups, their places and sizes are the default's,
+    /// whichever tab is at the front of each: a reset would bring nothing
+    /// back.
+    pub fn is_default(&self) -> bool {
+        fn fronts(node: &mut Node) {
+            match node {
+                Node::Leaf(l) => l.active = l.tabs.first().copied().unwrap_or(l.active),
+                Node::Split { a, b, .. } => {
+                    fronts(a);
+                    fronts(b);
+                }
+            }
+        }
+        let mut d = self.clone();
+        fronts(&mut d.root);
+        d == Dock::default()
     }
 
     /// The tab as it always was.

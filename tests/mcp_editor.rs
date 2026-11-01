@@ -219,8 +219,11 @@ fn an_agent_opens_and_reads_the_players_scripts() {
     // comes once it is all in (asking whether it is doesn't hurry it).
     let (r, error) = call_json(&mut s, "open_script", json!({ "id": "greeter" }));
     assert!(!error, "{r:#}");
-    let mods_dir = game.with(|st, _| {
+    let mods_dir = game.with(|st, game| {
         st.s.ui.tab = horizon_studio::game::hstudio_ui::Tab::Editor;
+        // The studio's Editor tab drawn, as the game draws it each frame:
+        // the player sees the code.
+        horizon_studio::game::hstudio_ui::draw(st, game);
         st.s.mods_dir()
     });
     let on_disk = std::fs::read_to_string(mods_dir.join("greeter.lua")).unwrap();

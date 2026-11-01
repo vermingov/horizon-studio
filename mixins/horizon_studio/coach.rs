@@ -709,6 +709,17 @@ fn code_page(ui: &super::hstudio_ui::Ui) -> usize {
     ui.pages[Pane::Code.index()]
 }
 
+/// Whether the player sees the code: the studio open on its Editor tab, not
+/// rolled up, and in the studio's own layout the code's body drawn last
+/// frame (not behind another tab, nor given way to another pane). An
+/// agent's change to code not seen lands at once instead of being typed in.
+fn code_seen(ui: &super::hstudio_ui::Ui) -> bool {
+    ui.open
+        && ui.tab == Tab::Editor
+        && !ui.collapsed
+        && (ui.look.theme().layout != super::hstudio_theme::Layout::Studio || ui.dock_front[Pane::Code.index()])
+}
+
 /// Shows line `n` (from 1) a third of the way down the editor's view, with
 /// the cursor on it when `cursor`.
 fn show_line(st: &mut Studio, n: usize, cursor: bool) {
@@ -736,7 +747,7 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let already = st.s.editor.path.as_deref() == Some(t.path.as_path());
     if already {
         if !st.s.ui.coach.player_busy(now) {
-            st.s.ui.tab = Tab::Editor;
+            super::hstudio_ui::reveal_code(st);
         }
         // The view moves to the line; the player's cursor stays theirs.
         if let Some(n) = line
@@ -755,7 +766,7 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
         st.open_file(&t.path);
         // A new mod isn't one yet: its title is what it will be.
         st.s.editor.title = t.file.clone();
-        st.s.ui.tab = Tab::Editor;
+        super::hstudio_ui::reveal_code(st);
         if let Some(n) = line {
             show_line(st, n, true);
         }
@@ -1163,7 +1174,7 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     }
     let now = st.s.now;
     let ui = &st.s.ui;
-    let seen = ui.open && ui.tab == Tab::Editor && !ui.collapsed;
+    let seen = code_seen(ui);
     let hands_off = ui.coach.player_editing(now);
     let animated = seen && !hands_off && ui.look.motion && flag(params, "typing") != Some(false);
     let page = code_page(ui).max(1);
@@ -1821,10 +1832,9 @@ pub fn go(st: &mut Studio, game: &mut dyn GameApi, seq: u64) {
         c.more = false;
     }
     show_line(st, jump.first + 1, true);
+    super::hstudio_ui::show_code(st);
     let now = st.s.now;
     let ui = &mut st.s.ui;
-    ui.tab = Tab::Editor;
-    ui.panel_focus = false;
     ui.coach.notice = None;
     ui.coach.flash = Some(Flash {
         path: jump.path,
@@ -2521,7 +2531,7 @@ fn go_to_mark(st: &mut Studio, game: &mut dyn GameApi, id: u32) {
     let (first, last) = (m.first, m.last);
     c.open_mark = Some(id);
     c.more = false;
-    st.s.ui.tab = Tab::Editor;
+    super::hstudio_ui::reveal_code(st);
     reveal_rows(st, first, last);
 }
 
@@ -2859,22 +2869,22 @@ pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -
         mark: Some(marks[0]),
     };
     say(st, by, in_run, did.clone(), Some(jump));
-    // The Agent panel shows its steps' explanations, unless the player has
-    // the keys in another of the panel's tabs.
+    // The Agent pane shows its steps' explanations, at its place (its group
+    // shown), unless it would cover the pane the player has the keys in.
     let now = st.s.now;
     let (busy, editing) = (st.s.ui.coach.player_busy(now), st.s.ui.coach.player_editing(now));
     let ui = &mut st.s.ui;
     if ui.look.theme().layout == super::hstudio_theme::Layout::Studio
-        && (!ui.panel_focus || ui.panel == super::hstudio_ui::Panel::Agent)
+        && !(ui.dock.covers(Pane::Agent) == Some(ui.focus) && ui.focus.takes_keys())
     {
-        if ui.panel != super::hstudio_ui::Panel::Agent {
-            ui.panel_tab_at = now;
+        if !ui.dock.is_front(Pane::Agent) {
+            ui.shown_at[Pane::Agent.index()] = now;
         }
-        ui.panel = super::hstudio_ui::Panel::Agent;
-        ui.panel_hidden = false;
+        ui.dock.show(Pane::Agent);
+        super::hstudio_ui::dock_changed(st);
     }
     if !busy {
-        ui.tab = Tab::Editor;
+        super::hstudio_ui::reveal_code(st);
     }
     show_step(st, game, 0, !editing);
     if !st.s.ui.open {
@@ -3329,7 +3339,7 @@ pub fn sync_disk(st: &mut Studio) -> bool {
         return false;
     }
     let ui = &st.s.ui;
-    let seen = ui.open && ui.tab == Tab::Editor && !ui.collapsed && ui.look.motion;
+    let seen = code_seen(ui) && ui.look.motion;
     let ed = &st.s.editor;
     if !seen || ed.dirty || ed.conflict || ed.removed {
         return st.s.editor.sync_disk();

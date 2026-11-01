@@ -728,7 +728,7 @@ fn render_the_statue_meshes() {
 #[ignore]
 fn render_the_editor_at_every_size() {
     use horizon_studio::game::hstudio_theme::Look;
-    use horizon_studio::game::hstudio_ui::{AgentLine, AgentLineKind, Panel, refresh_suggest};
+    use horizon_studio::game::hstudio_ui::{AgentLine, AgentLineKind, Pane, refresh_suggest};
     let mut game = FakeGame::new("preview-sizes");
     let mut st = studio(&mut game);
     for (i, ex) in horizon_studio::game::hstudio_examples::EXAMPLES.iter().enumerate() {
@@ -797,22 +797,20 @@ fn render_the_editor_at_every_size() {
                 window: windowed,
                 ..Look::default()
             };
-            for panel in [Panel::Problems, Panel::Console, Panel::Agent] {
-                st.s.ui.panel = panel;
-                st.s.ui.panel_hidden = false;
-                st.s.ui.panel_focus = panel == Panel::Agent;
+            for pane in [Pane::Problems, Pane::Console, Pane::Agent] {
+                st.s.ui.dock.activate(pane);
                 // The suggestions for what is typed on the line with the typo.
-                st.s.ui.panel_focus = false;
+                st.s.ui.focus = Pane::Code;
                 let row = st.s.editor.lines.iter().position(|l| l.contains("plyer")).unwrap();
                 st.s.editor.click(row, "local plyer = player.po".len(), false);
                 refresh_suggest(&mut st);
-                st.s.ui.panel_focus = panel == Panel::Agent;
+                st.s.ui.focus = if pane == Pane::Agent { Pane::Agent } else { Pane::Code };
                 let name = format!(
                     "sizes-{}x{}{}-{:?}",
                     w as u32,
                     h as u32,
                     if windowed { "-window" } else { "" },
-                    panel
+                    pane
                 )
                 .to_lowercase();
                 shot(&mut st, &name, settle);
@@ -825,8 +823,8 @@ fn render_the_editor_at_every_size() {
     st.s.ui.suggest = None;
     let broken = text.replacen("local colors = {", "local colors = {{", 1);
     st.s.editor.set_text(&broken);
-    st.s.ui.panel = Panel::Problems;
-    st.s.ui.panel_focus = false;
+    st.s.ui.dock.activate(Pane::Problems);
+    st.s.ui.focus = Pane::Code;
     shot(&mut st, "sizes-syntax-error", settle);
     st.s.editor.set_text(&text);
     // The other tabs, and the executor styles, at the smallest and largest.
@@ -861,7 +859,7 @@ fn render_the_editor_at_every_size() {
 fn render_the_agent_in_the_editor() {
     use horizon_studio::game::hstudio_coach::{self as coach, By};
     use horizon_studio::game::hstudio_theme::{Look, THEMES};
-    use horizon_studio::game::hstudio_ui::Panel;
+    use horizon_studio::game::hstudio_ui::Pane;
     use serde_json::json;
     let mut game = FakeGame::new("preview-agent");
     let mut st = studio(&mut game);
@@ -875,8 +873,7 @@ fn render_the_agent_in_the_editor() {
     let i = st.s.mods.iter().position(|m| m.id == "waypoints").unwrap();
     st.edit_mod(i);
     st.s.ui.tab = Tab::Editor;
-    st.s.ui.panel = Panel::Agent;
-    st.s.ui.panel_hidden = false;
+    st.s.ui.dock.activate(Pane::Agent);
     let by = By {
         name: "Claude Code".into(),
         conn: 1,
