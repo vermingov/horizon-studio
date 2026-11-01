@@ -369,7 +369,27 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
         | ("Player", "GetMouse" | "Kick" | "LoadCharacter" | "DistanceFromCharacter" | "GetNetworkPing") => {
             super::hstudio_rbx_world::player_method(env, lua, id, name, args)
         }
-        ("Players", "GetUserThumbnailAsync") => Ok(vec![Value::str(""), Value::Bool(true)]),
+        // The user's picture, as Roblox's rbxthumb:// content, which the
+        // GUI's images fetch from the thumbnails API.
+        ("Players", "GetUserThumbnailAsync") => {
+            let user = check_num(lua, args, 1, name)? as u64;
+            let kind = match args.get(2).map(super::hstudio_rbx_draw::enum_name) {
+                Some("AvatarBust") => "AvatarBust",
+                Some("AvatarThumbnail") => "Avatar",
+                _ => "AvatarHeadShot",
+            };
+            let size = args
+                .get(3)
+                .map(super::hstudio_rbx_draw::enum_name)
+                .and_then(|n| {
+                    n.strip_prefix("Size")
+                        .and_then(|s| s.split('x').next())
+                        .and_then(|w| w.parse::<u32>().ok())
+                })
+                .unwrap_or(150);
+            let content = format!("rbxthumb://type={kind}&id={user}&w={size}&h={size}");
+            Ok(vec![Value::str(&content), Value::Bool(true)])
+        }
         ("Player", "IsFriendsWith" | "IsInGroup") => one(Value::Bool(false)),
         ("Player", "GetRankInGroup") => one(Value::Num(0.0)),
         ("RunService", "IsClient" | "IsRunning" | "IsRunMode") => one(Value::Bool(true)),

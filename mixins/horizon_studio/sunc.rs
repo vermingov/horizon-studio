@@ -794,6 +794,106 @@ pub struct ImageCache {
     /// file, and once a frame for each Drawing's image), and decoded.
     pub hashed: u64,
     pub decoded: u64,
+    /// Roblox images being fetched (by their file in the workspace's
+    /// `.roblox-assets`), and those that couldn't be.
+    fetching: std::collections::HashMap<String, std::sync::mpsc::Receiver<bool>>,
+    failed: std::collections::HashSet<String>,
+}
+
+/// Where a Roblox image's thumbnail is asked for, for an image id
+/// (`rbxassetid://123`, `http://www.roblox.com/asset/?id=123`, `123`) or a
+/// `rbxthumb://type=...&id=...&w=...&h=...`: the thumbnails API's address,
+/// and the file it is kept in under the workspace. Roblox's own asset
+/// downloads need a signed-in account; its thumbnails don't, and an image
+/// asset's thumbnail is the image (at most 700 pixels a side).
+pub fn roblox_image(content: &str) -> Option<(String, String)> {
+    let s = content.trim();
+    let digits = |t: &str| -> Option<u64> {
+        let d: String = t.chars().take_while(char::is_ascii_digit).collect();
+        d.parse().ok().filter(|_| !d.is_empty())
+    };
+    let asset = |id: u64| {
+        Some((
+            format!("https://thumbnails.roblox.com/v1/assets?assetIds={id}&size=700x700&format=Png"),
+            format!(".roblox-assets/{id}.png"),
+        ))
+    };
+    if let Some(rest) = s.strip_prefix("rbxthumb://") {
+        let field = |k: &str| {
+            rest.split('&').find_map(|kv| {
+                kv.split_once('=')
+                    .filter(|(a, _)| a.eq_ignore_ascii_case(k))
+                    .map(|(_, v)| v)
+            })
+        };
+        let id = digits(field("id")?)?;
+        let w = field("w").and_then(digits).unwrap_or(150);
+        let kind = field("type").unwrap_or("Asset");
+        let (path, size) = match kind {
+            "AvatarHeadShot" => ("users/avatar-headshot", [48, 60, 150, 352, 420, 720]),
+            "AvatarBust" => ("users/avatar-bust", [48, 60, 75, 100, 150, 352]),
+            "Avatar" => ("users/avatar", [48, 60, 100, 150, 352, 720]),
+            _ => return asset(id),
+        };
+        let size = size.iter().copied().find(|&n| n >= w).unwrap_or(size[5]);
+        let ids = "userIds";
+        return Some((
+            format!("https://thumbnails.roblox.com/v1/{path}?{ids}={id}&size={size}x{size}&format=Png"),
+            format!(".roblox-assets/{kind}-{id}-{size}.png"),
+        ));
+    }
+    let lower = s.to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("rbxassetid://") {
+        return asset(digits(rest)?);
+    }
+    if lower.contains("roblox.com/asset") {
+        let at = lower.find("id=")?;
+        return asset(digits(&lower[at + 3..])?);
+    }
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
+        return asset(digits(s)?);
+    }
+    None
+}
+
+/// Fetches a Roblox image's thumbnail (the thumbnails API's answer names
+/// where its PNG is) into `path`: whether it is there.
+fn fetch_roblox_image(api: &str, path: &Path) -> bool {
+    let get = |url: &str| {
+        super::hstudio_net::fetch(
+            &super::hstudio_net::Request {
+                url: url.to_owned(),
+                method: "GET".into(),
+                headers: Vec::new(),
+                body: Vec::new(),
+            },
+            false,
+        )
+        .ok()
+        .filter(super::hstudio_net::Response::success)
+    };
+    // A thumbnail not made yet is Pending a moment.
+    for attempt in 0..4 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        let Some(answer) = get(api) else { continue };
+        let Ok(j) = serde_json::from_slice::<serde_json::Value>(&answer.body) else {
+            return false;
+        };
+        let item = &j["data"][0];
+        match (item["state"].as_str(), item["imageUrl"].as_str()) {
+            (Some("Completed"), Some(url)) => {
+                let Some(png) = get(url) else { return false };
+                let tmp = path.with_extension("part");
+                let _ = std::fs::create_dir_all(path.parent().unwrap_or(path));
+                return std::fs::write(&tmp, &png.body).is_ok() && std::fs::rename(&tmp, path).is_ok();
+            }
+            (Some("Pending"), _) => continue,
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Image cells a side at most: an image draws as up to 48 x 48 blocks.
@@ -879,6 +979,40 @@ impl ImageCache {
     pub fn file_image(&mut self, workspace: &Path, rel: &str) -> Option<Option<Rc<super::hstudio_meshes::Texture>>> {
         let (bytes, key) = self.read(workspace, rel)?;
         Some(self.decoded(key, &bytes))
+    }
+
+    /// A Roblox image (an asset id or a rbxthumb:// as `roblox_image` reads
+    /// them): its thumbnail, fetched once in the background into the
+    /// workspace's `.roblox-assets` and kept there. None while it comes (or
+    /// when it can't), else the image.
+    pub fn roblox(&mut self, workspace: &Path, content: &str) -> Option<Rc<super::hstudio_meshes::Texture>> {
+        let (api, rel) = roblox_image(content)?;
+        if let Some(rx) = self.fetching.get(&rel) {
+            match rx.try_recv() {
+                Ok(true) => {
+                    self.fetching.remove(&rel);
+                }
+                Ok(false) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.fetching.remove(&rel);
+                    self.failed.insert(rel);
+                    return None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            }
+        }
+        if let Some(t) = self.file_image(workspace, &rel) {
+            return t;
+        }
+        if self.failed.contains(&rel) || self.fetching.len() >= 16 {
+            return None;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = workspace.join(&rel);
+        let _ = std::thread::Builder::new().name("roblox-image".into()).spawn(move || {
+            let _ = tx.send(fetch_roblox_image(&api, &path));
+        });
+        self.fetching.insert(rel, rx);
+        None
     }
 
     /// Whether a workspace file is an image that draws (a PNG it can decode).

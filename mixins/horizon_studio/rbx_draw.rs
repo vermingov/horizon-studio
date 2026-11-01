@@ -42,7 +42,7 @@ pub struct Frame {
 
 // ---------------------------------------------------------------- the layout
 
-fn enum_name(v: &Value) -> &'static str {
+pub(crate) fn enum_name(v: &Value) -> &'static str {
     as_item(v).map_or("", |i| i.name)
 }
 
@@ -1300,10 +1300,12 @@ pub fn draw(
         if find(inst.class, "Image") {
             let img = shown_image(inst, hover && p.interactable, pressed && p.interactable);
             let ia = (1.0 - inst.get("ImageTransparency").to_num().unwrap_or(0.0)) * ga;
-            // getcustomasset's images draw; Roblox's asset ids don't load here.
-            let file = img
-                .strip_prefix("rbxasset://horizon-studio/")
-                .and_then(|p| images.file_image(workspace, p));
+            // getcustomasset's images draw, and Roblox's image ids (their
+            // thumbnails, fetched once and kept in the workspace).
+            let file = match img.strip_prefix("rbxasset://horizon-studio/") {
+                Some(p) => images.file_image(workspace, p),
+                None => super::hstudio_sunc::roblox_image(&img).map(|_| images.roblox(workspace, &img)),
+            };
             match file {
                 Some(Some(t)) if ia > 0.0 => {
                     draw_image(inst, p, game, images, &t, gc, ia, mark.is_none().then_some(vis))

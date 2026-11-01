@@ -109,3 +109,28 @@ fn keypress_reaches_input_began_and_the_mouses_key_down() {
     // Handlers run deferred, after the code that fired them.
     assert_eq!(p, ["144", "function\ttrue\ttrue", "began\tE", "keydown\te"]);
 }
+
+#[test]
+fn roblox_image_ids_ask_the_thumbnails_api() {
+    use horizon_studio::game::hstudio_sunc::roblox_image;
+    let asset = |id: &str| {
+        Some((
+            format!("https://thumbnails.roblox.com/v1/assets?assetIds={id}&size=700x700&format=Png"),
+            format!(".roblox-assets/{id}.png"),
+        ))
+    };
+    assert_eq!(roblox_image("rbxassetid://5147695474"), asset("5147695474"));
+    assert_eq!(roblox_image("http://www.roblox.com/asset/?id=123"), asset("123"));
+    assert_eq!(roblox_image("https://www.roblox.com/asset?id=77&x=1"), asset("77"));
+    assert_eq!(roblox_image("42"), asset("42"));
+    assert_eq!(
+        roblox_image("rbxthumb://type=AvatarHeadShot&id=1&w=150&h=150"),
+        Some((
+            "https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=1&size=150x150&format=Png".into(),
+            ".roblox-assets/AvatarHeadShot-1-150.png".into()
+        ))
+    );
+    assert_eq!(roblox_image("rbxthumb://type=Asset&id=9&w=420&h=420"), asset("9"));
+    assert_eq!(roblox_image("rbxasset://textures/ui/x.png"), None);
+    assert_eq!(roblox_image(""), None);
+}
