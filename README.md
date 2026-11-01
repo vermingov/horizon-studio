@@ -274,6 +274,11 @@ bubble, and the code's tab strip says how many notes there are (*3 notes*: a cli
 them all). Notes stay on their lines as you edit, and one for a file you don't have open waits there; **Show** on
 its line in the Agent pane opens it.
 
+The Agent pane's line takes commands too: **/clear** (or /new) starts a new conversation, stopping the agent first if
+it is still working (the strip's **New** does the same), **/stop** stops it, **/model** shows or sets its model
+(`/model sonnet`, `/model default`) and **/help** lists them. Any other /command (your own Claude Code commands and
+skills) goes to the agent as you typed it. While it works, the pane shows for how long.
+
 **It teaches in the editor.** Ask *teach me events* and the agent can give you a lesson: numbered steps over your
 code, each a few lines with a note, something to try (*Try: change 20 to 40*) and, in the Agent pane (in the note when
 that pane isn't shown), a longer explanation. **Next** and **Back** in the note (or Alt+Right and Alt+Left) go through

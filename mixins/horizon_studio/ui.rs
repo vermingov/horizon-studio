@@ -188,6 +188,8 @@ pub enum Action {
     /// The agent: the next one found, or stop it.
     AgentNext,
     AgentStop,
+    /// A new conversation (stopping the agent first if it works).
+    AgentNew,
     ClearLog,
     /// Over something that takes no click (it doesn't reach what is under it).
     Block,
@@ -4520,6 +4522,7 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
         Action::CloseRemoved => st.close_removed(),
         Action::AgentNext => agent_next(st),
         Action::AgentStop => agent_stop(st),
+        Action::AgentNew => agent_new_conversation(st),
         Action::Block | Action::ScrollBar | Action::Spot(_) => {}
         Action::MenuPick(i) => return menu_pick(st, game, i as usize),
         Action::ModelMenu => open_model_menu(st),
@@ -4812,6 +4815,8 @@ pub struct AgentPane {
     /// Calls of the editor's tools whose lines aren't shown (what they did
     /// has a line of its own), by call id, with the line each would have had.
     pub(crate) hidden: std::collections::HashMap<String, String>,
+    /// When the run going now started (the studio's clock).
+    pub(crate) started_at: f64,
 }
 
 /// Lines kept of the conversation.
@@ -4929,7 +4934,10 @@ pub fn agent_ask(st: &mut Studio, text: &str) {
     let _ = std::fs::create_dir_all(&mods_dir);
     let pane = &mut st.s.ui.agent;
     match super::hstudio_agent::AgentRun::start(&spec, &prompt, &mods_dir, pane.session.as_deref()) {
-        Ok(run) => pane.run = Some(run),
+        Ok(run) => {
+            pane.run = Some(run);
+            pane.started_at = now;
+        }
         Err(e) => pane.say(AgentLineKind::Error, e, now),
     }
 }
@@ -5170,9 +5178,62 @@ fn problems_key(st: &mut Studio, key: Key) {
     }
 }
 
+/// The Agent pane's own commands, typed in its line: /clear (/new,
+/// /reset) starts a new conversation, stopping the agent if it works;
+/// /stop stops it; /model shows or sets its model; /help lists them. Other
+/// /commands (Claude Code's own commands and skills) go to the agent as
+/// asked. Whether `line` was one of these (it is then done).
+pub(crate) fn agent_command(st: &mut Studio, line: &str) -> bool {
+    let Some(cmd) = line.trim().strip_prefix('/') else {
+        return false;
+    };
+    let (name, arg) = cmd.split_once(char::is_whitespace).unwrap_or((cmd, ""));
+    let arg = arg.trim();
+    let now = st.s.now;
+    match name.to_ascii_lowercase().as_str() {
+        "clear" | "new" | "reset" => agent_new_conversation(st),
+        "stop" | "cancel" => {
+            if agent_busy(st) {
+                agent_stop(st);
+            } else {
+                st.s.ui.agent.say(AgentLineKind::Done, "Nothing to stop.", now);
+            }
+        }
+        "model" => {
+            if !arg.is_empty() {
+                let model = (!matches!(arg, "default" | "none")).then(|| arg.to_owned());
+                set_agent_model(st, model);
+            } else {
+                let text = match agent_model(st) {
+                    Some(m) => format!("Model: {m}. /model <name> changes it, /model default goes back."),
+                    None => {
+                        "Model: the agent's default. /model <name> chooses one (opus, sonnet, haiku...).".to_owned()
+                    }
+                };
+                st.s.ui.agent.say(AgentLineKind::Done, text, now);
+            }
+        }
+        "help" | "?" => st.s.ui.agent.say(
+            AgentLineKind::Done,
+            "/clear (or /new) starts a new conversation, stopping the agent if it works · /stop stops it · \
+             /model [name|default] shows or sets its model · /help this. Other /commands (your Claude Code \
+             commands and skills) go to the agent.",
+            now,
+        ),
+        _ => return false,
+    }
+    true
+}
+
 /// The agent asked what is typed in its line, which empties (while it
-/// works, what is typed waits there).
+/// works, what is typed waits there). The pane's own /commands run at once,
+/// working or not.
 pub(crate) fn agent_send(st: &mut Studio) {
+    let line = st.s.ui.agent_input.text.clone();
+    if agent_command(st, &line) {
+        st.s.ui.agent_input = Default::default();
+        return;
+    }
     if agent_busy(st) {
         return;
     }
@@ -5180,11 +5241,14 @@ pub(crate) fn agent_send(st: &mut Studio) {
     agent_ask(st, ask.trim());
 }
 
-/// A new conversation: its lines go, and the next question starts afresh
-/// (not while the agent works).
+/// A new conversation: its lines go, and the next question starts afresh.
+/// An agent still working (or waiting for the player) is stopped first.
 pub fn agent_new_conversation(st: &mut Studio) {
-    if agent_busy(st) {
-        return;
+    if let Some(run) = st.s.ui.agent.run.take() {
+        // Dropped, it is stopped (its process and what it started).
+        drop(run);
+        st.s.ui.agent.hidden.clear();
+        st.s.ui.coach.turn_ended(false);
     }
     let now = st.s.now;
     if st.s.ui.text_sel.is_some_and(|s| s.area == AREA_AGENT) {
@@ -5197,10 +5261,25 @@ pub fn agent_new_conversation(st: &mut Studio) {
     pane.say(AgentLineKind::Done, "New conversation.", now);
 }
 
+/// Whether the Agent pane's line holds one of its own /commands.
+fn agent_command_typed(st: &Studio) -> bool {
+    let line = st.s.ui.agent_input.text.trim();
+    let name = line
+        .strip_prefix('/')
+        .and_then(|c| c.split_whitespace().next())
+        .unwrap_or("");
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "clear" | "new" | "reset" | "stop" | "cancel" | "model" | "help" | "?"
+    )
+}
+
 /// The Agent pane's input: Enter asks, the rest edits the line.
 fn agent_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
     let _ = game;
     match key {
+        // The pane's own /commands, working or not.
+        Key::Enter if agent_command_typed(st) => agent_send(st),
         // An agent waiting for the player gets what they write.
         Key::Enter if super::hstudio_coach::waiting(st) => {
             let reply = std::mem::take(&mut st.s.ui.agent_input).text;

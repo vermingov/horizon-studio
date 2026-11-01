@@ -1861,6 +1861,19 @@ fn pane_buttons(st: &mut Studio, p: &mut P, active: Pane, [from, y, rx]: [f32; 3
             );
         }
         Pane::Agent => {
+            // New starts over: while it works, or once something was said.
+            if super::hstudio_ui::agent_busy(st) || !st.s.ui.agent.lines.is_empty() {
+                strip_button(
+                    &mut st.s.ui,
+                    p,
+                    "agent-new",
+                    "New",
+                    Action::AgentNew,
+                    [from, y],
+                    &mut rx,
+                    dt,
+                );
+            }
             if super::hstudio_ui::agent_busy(st) {
                 strip_button(
                     &mut st.s.ui,
@@ -2480,8 +2493,14 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
     if busy || waiting.is_some() {
         let ly = y + log_h - ROW * (1.0 - scroll);
         if ly + ROW <= y + log_h + 0.5 {
+            let secs = (now - st.s.ui.agent.started_at).max(0.0) as u64;
+            let working = match secs {
+                s if s < 10 => "Working".to_owned(),
+                s if s < 60 => format!("Working · {s}s"),
+                s => format!("Working · {}m {:02}s · /stop or /clear", s / 60, s % 60),
+            };
             let lw = p.text(
-                waiting.as_deref().unwrap_or("Working"),
+                waiting.as_deref().unwrap_or(&working),
                 x,
                 top(ly + ROW / 2.0, 12.5),
                 12.5,
@@ -2527,8 +2546,8 @@ fn panel_agent(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], name: Option<
     if input.text.is_empty() {
         let hint = match (name, busy) {
             _ if waiting.is_some() => "It's waiting for you: Enter sends it what you write here.".to_owned(),
-            (_, true) => "It's working. Stop ends it; send your next request when it's done.".to_owned(),
-            (Some(n), _) => format!("Ask {n} about this script, Enter sends."),
+            (_, true) => "It's working: /stop ends it, /clear starts over.".to_owned(),
+            (Some(n), _) => format!("Ask {n} about this script, Enter sends · /help for commands."),
             (None, _) => "No agent found.".to_owned(),
         };
         let hint = p.fit(&hint, f[2] - 40.0, 12.5, Font::Regular);

@@ -509,8 +509,10 @@ pub fn prompt(request: &str, ctx: &AgentContext) -> String {
           - When the player asks what is wrong, mark the lines with mark_lines and a note of one or two \
           sentences, and explain in your answer.\n\
           - When they want to learn, start_lesson, then wait_for_player (it answers within 30 s; call it again \
-          to go on waiting); when they press Check, read_script, point at mistakes with mark_lines and tell \
-          them how they did.\n\
+          to go on waiting, at most about two minutes in all); when they press Check, read_script, point at \
+          mistakes with mark_lines and tell them how they did. If nothing comes in that time, end your turn \
+          and say they can press Check or ask you when ready: the studio shows you working until you end it, \
+          and their Check or question starts a new turn.\n\
           - Answer briefly, in plain text without Markdown: your answer is shown in a small panel in the game.\n\n\
           The player's request:\n";
     p += request.trim();

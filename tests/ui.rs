@@ -4327,7 +4327,10 @@ fn the_agents_line_sends_and_stops_from_its_menu() {
     }]);
     st.s.ui.dock.activate(Pane::Agent);
     redraw(&mut st, &mut game);
-    let field = text_at(&game, "Ask Sleeper about this script, Enter sends.");
+    let field = text_at(
+        &game,
+        "Ask Sleeper about this script, Enter sends · /help for commands.",
+    );
     let at = (field.0 + 2.0, field.1 + 4.0);
     right_click(&mut st, &mut game, at);
     assert_eq!(usable(&st), ["Paste"], "nothing typed to send");
@@ -4348,6 +4351,75 @@ fn the_agents_line_sends_and_stops_from_its_menu() {
     assert!(!agent_busy(&st));
     let last = st.s.ui.agent.lines.last().map(|l| l.text.clone());
     assert_eq!(last.as_deref(), Some("Stopped."));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_agents_slash_commands_start_over_stop_and_help() {
+    use horizon_studio::game::hstudio_agent::AgentSpec;
+    use horizon_studio::game::hstudio_ui::{AgentLineKind, Pane, agent_busy};
+    let (mut game, mut st) = editing("ui-agent-slash", "print(1)");
+    // An agent that works until it is stopped.
+    st.s.ui.agent.agents = Some(vec![AgentSpec {
+        id: "custom".into(),
+        name: "Sleeper".into(),
+        program: "/bin/sleep".into(),
+        args: vec!["30".into()],
+        json: false,
+    }]);
+    st.s.ui.dock.activate(Pane::Agent);
+    st.s.ui.focus = Pane::Agent;
+    redraw(&mut st, &mut game);
+    let send = |st: &mut horizon_studio::game::hstudio::Studio, game: &mut FakeGame, line: &str| {
+        st.s.ui.agent_input.set(line);
+        handle(st, game, key(Key::Enter, NONE));
+    };
+    let last = |st: &horizon_studio::game::hstudio::Studio| {
+        st.s.ui.agent.lines.last().map(|l| l.text.clone()).unwrap_or_default()
+    };
+    send(&mut st, &mut game, "/help");
+    assert!(last(&st).starts_with("/clear"), "{}", last(&st));
+    assert!(!agent_busy(&st));
+    send(&mut st, &mut game, "/stop");
+    assert_eq!(last(&st), "Nothing to stop.");
+    // A request, then /clear while it works: it is stopped, and the
+    // conversation starts afresh.
+    send(&mut st, &mut game, "make it glow");
+    assert!(agent_busy(&st), "it works on it");
+    st.s.ui.agent.session = Some("abc".into());
+    send(&mut st, &mut game, "/clear");
+    assert!(!agent_busy(&st), "stopped");
+    assert_eq!(st.s.ui.agent.session, None);
+    assert_eq!(st.s.ui.agent_input.text, "");
+    let said: Vec<String> = st.s.ui.agent.lines.iter().map(|l| l.text.clone()).collect();
+    assert_eq!(said, ["New conversation."]);
+    run_for(&mut st, &mut game, 0.2);
+    assert!(!agent_busy(&st));
+    // /stop while it works.
+    send(&mut st, &mut game, "again");
+    assert!(agent_busy(&st));
+    send(&mut st, &mut game, "/stop");
+    run_for(&mut st, &mut game, 0.1);
+    assert!(!agent_busy(&st));
+    assert_eq!(last(&st), "Stopped.");
+    // Another /command is the agent's (Claude Code's commands and skills).
+    send(&mut st, &mut game, "/review the script");
+    assert!(agent_busy(&st));
+    let you: Vec<&str> =
+        st.s.ui
+            .agent
+            .lines
+            .iter()
+            .filter(|l| l.kind == AgentLineKind::You)
+            .map(|l| l.text.as_str())
+            .collect();
+    assert_eq!(you.last(), Some(&"/review the script"));
+    // The strip's New starts over too, working or not.
+    redraw(&mut st, &mut game);
+    let new = last_text_at(&game, "New");
+    click(&mut st, &mut game, (new.0 + 2.0, new.1 + 2.0));
+    assert!(!agent_busy(&st));
+    assert_eq!(last(&st), "New conversation.");
 }
 
 #[test]

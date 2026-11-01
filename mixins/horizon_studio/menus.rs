@@ -316,7 +316,7 @@ fn pane_items(st: &mut Studio, p: Pane) -> Vec<MenuItem> {
             let said = !st.s.ui.agent.lines.is_empty();
             let mut items = vec![
                 MenuItem::new("Stop", MenuCmd::Act(Action::AgentStop)).enabled(busy),
-                MenuItem::new("New conversation", MenuCmd::NewConversation).enabled(!busy && said),
+                MenuItem::new("New conversation", MenuCmd::NewConversation).enabled(busy || said),
                 MenuItem::new("Copy the conversation", MenuCmd::CopyAll(AREA_AGENT)).enabled(said),
                 MenuItem::separator(),
             ];
@@ -782,7 +782,7 @@ fn text_items(st: &Studio, area: u8) -> Vec<MenuItem> {
             MenuItem::new("Copy the conversation", MenuCmd::CopyAll(AREA_AGENT)).enabled(said),
             MenuItem::separator(),
             MenuItem::new("Stop", MenuCmd::Act(Action::AgentStop)).enabled(busy),
-            MenuItem::new("New conversation", MenuCmd::NewConversation).enabled(!busy && said),
+            MenuItem::new("New conversation", MenuCmd::NewConversation).enabled(busy || said),
         ];
     }
     vec![
