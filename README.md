@@ -1002,6 +1002,8 @@ particle, Video Settings, merge, pickup and swim hooks can answer in their funct
 | via-menu-draw | `game::chat::Game::draw_link_prompt` | after the title screen draws: ViaHorizon's button on the multiplayer list, and its picker |
 | via-startup | `game::startup_menu::Loading::draw_menu` (a RETURN hook) | the same on the startup menu's title screen, before the game has loaded |
 | via-session, via-transfer | `net::Session::connect`, `connect_transferred` | the account the join is made as, for that sign-in |
+| fx-fov | `game::fov::Game::fov_degrees` (RETURN) | a Roblox script's Camera.FieldOfView, keeping the game's own changes to the view (sprinting, the spyglass) in proportion |
+| fx-fog | `game::render_tick::Game::frame_fog` (RETURN) | Lighting.FogEnd: fog from the camera to that many blocks, when nearer than the game's (Lighting's brightness and ClockTime are set by the frame hook: the renderer's fullbright and brightness, the client's time of day) |
 | natrium-view | `horizon_client_render::gfx::Renderer::camera_frustum` (RETURN) | the frame's view, for particle culling |
 | natrium-particles-render | `horizon_client_render::particles::ParticleEngine::render` | Natrium's particle loop in its place, while particle culling is on |
 | natrium-frame | `horizon_client_render::gfx::Renderer::render` | this frame's fog, and whether it hides what is past it |

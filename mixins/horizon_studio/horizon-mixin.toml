@@ -362,6 +362,28 @@ bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
 ]
 
+# The Roblox Camera's FieldOfView and Lighting's FogEnd reach the view: its
+# field of view and its fog. (Lighting's brightness and ClockTime are the
+# bridge's, each frame.)
+[[injection]]
+id = "fx-fov"
+kind = "RETURN"
+target = "horizon_client::game::fov::Game<'_>::fov_degrees"
+helper = "fx_fov.rs"
+bindings = [
+  { name = "value", ty = "f32", value = "$value" },
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+]
+
+[[injection]]
+id = "fx-fog"
+kind = "RETURN"
+target = "horizon_client::game::render_tick::Game<'_>::frame_fog"
+helper = "fx_fog.rs"
+bindings = [
+  { name = "value", ty = "FogData", value = "$value" },
+]
+
 [[injection]]
 id = "zoom"
 kind = "HEAD"

@@ -52,6 +52,61 @@ thread_local! {
     /// What scripts asked of the game while it was only read (a screen's or
     /// the world's drawing), done at the next frame.
     static LATER: RefCell<Vec<Later>> = const { RefCell::new(Vec::new()) };
+    /// What Roblox scripts' Lighting, Workspace and Camera ask of the view:
+    /// read by the FOV and fog hooks and each frame.
+    static FX: Cell<Fx> = const { Cell::new(Fx { light: 0.0, time: None, fog: None, fov: None }) };
+}
+
+/// The view as scripts ask for it (hstudio_rbx_world's Effects).
+#[derive(Clone, Copy)]
+struct Fx {
+    /// Fullbright, 0 to 1: the brightness option at least this, fully lit at 1.
+    light: f32,
+    /// The client's time of day, in ticks of a day.
+    time: Option<i64>,
+    /// Where the fog ends, in blocks.
+    fog: Option<f32>,
+    /// The field of view, in degrees.
+    fov: Option<f32>,
+}
+
+fn fx_set(f: impl FnOnce(&mut Fx)) {
+    FX.with(|c| {
+        let mut v = c.get();
+        f(&mut v);
+        c.set(v);
+    });
+}
+
+/// The field of view: the game's, or the one scripts ask for, keeping the
+/// game's own changes to it (sprinting, the spyglass) in proportion.
+pub(super) fn field_of_view(value: f32, setting: f32) -> f32 {
+    match FX.with(|c| c.get().fov) {
+        Some(f) => value * f.clamp(1.0, 120.0) / setting.max(1.0),
+        None => value,
+    }
+}
+
+/// Where the fog ends when scripts bring it closer (Roblox's FogEnd, from 0).
+pub(super) fn fog_end() -> Option<f32> {
+    FX.with(|c| c.get().fog)
+}
+
+/// The time of day scripts ask for, kept against the server's updates; and
+/// the light: fully lit while they ask for full brightness, else the
+/// brightness option at least their strength (each back to the options' as
+/// they stop).
+fn keep_view(game: &mut Game<'_>) {
+    let fx = FX.with(Cell::get);
+    if let Some(t) = fx.time {
+        let day = game.world.day_time.div_euclid(24000);
+        game.world.day_time = day * 24000 + t.rem_euclid(24000);
+    }
+    let (gamma, full) = (game.settings.gamma, game.settings.extras.fullbright);
+    if let Some(r) = game.renderer.as_mut() {
+        r.fullbright = full || fx.light >= 0.99;
+        r.gamma = gamma.max(fx.light);
+    }
 }
 
 /// A call that changes the game, kept for the next frame.
@@ -1155,6 +1210,43 @@ impl GameApi for Host<'_, '_> {
         let b = scale_attribute(&mut p.attributes, "minecraft:jump_strength", "horizon_studio:jump", jump);
         a && b
     }
+    fn set_fullbright(&mut self, strength: f32) {
+        fx_set(|f| f.light = strength.clamp(0.0, 1.0));
+    }
+    fn set_time_of_day(&mut self, ticks: Option<i64>) {
+        fx_set(|f| f.time = ticks);
+        if let Some(g) = self.g_mut() {
+            keep_view(g);
+        }
+    }
+    fn set_fog_end(&mut self, blocks: Option<f32>) {
+        fx_set(|f| f.fog = blocks.map(|b| b.max(0.0)));
+    }
+    fn set_fov(&mut self, degrees: Option<f32>) {
+        fx_set(|f| f.fov = degrees);
+    }
+    fn set_gravity_scale(&mut self, scale: f64) {
+        let Some(p) = self.g_mut().and_then(|g| g.player.as_mut()) else {
+            return;
+        };
+        scale_attribute(&mut p.attributes, "minecraft:gravity", "horizon_studio:gravity", scale);
+    }
+    fn set_look(&mut self, yaw: f32, pitch: f32) {
+        let Some(g) = self.g_mut() else { return };
+        if g.player.is_none() {
+            return;
+        }
+        g.yaw = yaw;
+        g.pitch = pitch.clamp(-90.0, 90.0);
+    }
+    fn turn_player(&mut self, dyaw: f32, dpitch: f32) {
+        let Some(g) = self.g_mut() else { return };
+        if g.player.is_none() {
+            return;
+        }
+        g.yaw += dyaw;
+        g.pitch = (g.pitch + dpitch).clamp(-90.0, 90.0);
+    }
     fn place(&mut self, corner: Corner, w: f32, h: f32) -> (f32, f32) {
         match self.corners.as_deref_mut() {
             Some(c) => c.place(game_corner(corner), w, h),
@@ -1206,6 +1298,7 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &dyn EventLoopCtl) {
         return;
     }
     catch_up(game);
+    keep_view(game);
     // Once frames stop (a hidden window), the network thread answers the
     // server's pings itself: it learns here when the last frame began, and
     // which connection to answer on.
