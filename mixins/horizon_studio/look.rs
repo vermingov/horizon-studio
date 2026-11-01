@@ -3231,20 +3231,22 @@ fn agent_caret(
 
 /// At the bottom right of the code, a moment: an agent changed a file the
 /// editor doesn't show ("Claude Code changed lib/util.lua"); a click shows it.
-/// Cut to the code's width where that is narrow (a pane beside it), and
-/// not drawn where not even a few letters of it would fit.
+/// Cut to the code's width where that is narrow (a pane beside it), the
+/// file's own name the last of it to go (`notice_label`), and not drawn
+/// where not even a few letters of it would fit.
 fn agent_notice(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     use super::hstudio_coach::NOTICE_SECS;
     let now = st.s.now;
-    let Some((text, seq, at)) = st.s.ui.coach.notice.as_ref().map(|n| (n.text.clone(), n.seq, n.at)) else {
+    let Some(n) = st.s.ui.coach.notice.as_ref() else {
         return;
     };
+    let (seq, at) = (n.seq, n.at);
     let show = " · Show";
     let room = panel[2] - 54.0 - p.measure(show, 12.0, Font::Medium);
     if panel[3] < 72.0 || room <= 60.0 {
         return;
     }
-    let label = format!("{}{show}", p.fit(&text, room, 12.0, Font::Medium));
+    let label = format!("{}{show}", notice_label(p, n, room));
     let lw = p.measure(&label, 12.0, Font::Medium) + 30.0;
     let r = [panel[0] + panel[2] - lw - 14.0, panel[1] + panel[3] - 36.0, lw, 24.0];
     let age = now - at;
@@ -3265,6 +3267,53 @@ fn agent_notice(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
     );
     ui.hits.push((r, Action::AgentJump(seq)));
     p.alpha = base;
+}
+
+/// A note's words in `room` (its own size and font): all of them; else the
+/// agent's name cut short, then all before the file; else the file alone,
+/// cut from its start, so that its own name is the last of it to go.
+fn notice_label(p: &mut P, n: &super::hstudio_coach::Notice, room: f32) -> String {
+    let (size, font) = (12.0, Font::Medium);
+    if p.measure(&n.text, size, font) <= room {
+        return n.text.clone();
+    }
+    // What the agent did, between its name and the file.
+    let did = n
+        .text
+        .strip_prefix(n.who.as_str())
+        .and_then(|t| t.strip_suffix(n.file.as_str()));
+    let (Some(did), false, false) = (did, n.who.is_empty(), n.file.is_empty()) else {
+        return p.fit(&n.text, room, size, font);
+    };
+    let ellipsis = p.measure("…", size, font);
+    // Cut short at its end, no space left before the ellipsis.
+    let cut = |p: &mut P, s: &str, max: f32| p.fit(s, max, size, font).replace(" …", "…");
+    let left = room - p.measure(&format!("{did}{}", n.file), size, font);
+    if left >= ellipsis {
+        return format!("{}{did}{}", cut(p, &n.who, left), n.file);
+    }
+    let lead = format!("{}{}", n.who, did.trim_end());
+    let left = room - p.measure(&format!(" {}", n.file), size, font);
+    if left >= ellipsis {
+        return format!("{} {}", cut(p, &lead, left), n.file);
+    }
+    fit_start(p, &n.file, room, size, font)
+}
+
+/// `s` in `max`: whole, or cut from its start, an ellipsis in its place.
+fn fit_start(p: &mut P, s: &str, max: f32, size: f32, font: Font) -> String {
+    if p.measure(s, size, font) <= max {
+        return s.to_owned();
+    }
+    let mut from = 0;
+    while from < s.len() {
+        from += s[from..].chars().next().map_or(1, char::len_utf8);
+        let cut = format!("…{}", &s[from..]);
+        if p.measure(&cut, size, font) <= max {
+            return cut;
+        }
+    }
+    "…".to_owned()
 }
 
 /// A mark's colour: the accent for a note, danger for an error, the

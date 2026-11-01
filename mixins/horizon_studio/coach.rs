@@ -135,10 +135,13 @@ fn run_id() -> u64 {
     h.finish() >> 11
 }
 
-/// A note over the code: what an agent changed elsewhere, its Agent pane
+/// A note over the code: what an agent changed elsewhere (`text`: the
+/// agent's name, `who`, what it did, then the file, `file`), its Agent pane
 /// line (whose jump shows it), and when.
 pub struct Notice {
     pub text: String,
+    pub who: String,
+    pub file: String,
     pub seq: u64,
     pub at: f64,
 }
@@ -1530,6 +1533,8 @@ fn edit_on_disk(
     if st.s.ui.open {
         st.s.ui.coach.notice = Some(Notice {
             text: format!("{} changed {}", by.name, t.file),
+            who: by.name.clone(),
+            file: t.file.clone(),
             seq: st.s.ui.agent.seq,
             at: st.s.now,
         });
@@ -2397,6 +2402,8 @@ pub fn mark(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     } else if !open {
         st.s.ui.coach.notice = Some(Notice {
             text: format!("{} marked {rows} in {}", by.name, t.file),
+            who: by.name.clone(),
+            file: t.file.clone(),
             seq: st.s.ui.agent.seq,
             at: st.s.now,
         });

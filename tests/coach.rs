@@ -3024,6 +3024,8 @@ fn the_agent_types_with_its_own_caret_and_name() {
     let notice = "Claude Code changed hello.lua";
     st.s.ui.coach.notice = Some(coach::Notice {
         text: notice.into(),
+        who: "Claude Code".into(),
+        file: "hello.lua".into(),
         seq: 1,
         at: st.s.now - 1.0,
     });
