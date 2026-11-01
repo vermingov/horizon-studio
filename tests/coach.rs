@@ -596,14 +596,15 @@ fn a_drag_held_keeps_the_view_under_it() {
     );
     let ((r1, _), (r2, _)) = st.s.editor.selection().expect("a selection");
     assert_eq!((r1, r2), (1, 4), "lines 2 to 5");
-    // Five lines put in at line 2, above the view at line 30, while the
-    // player drags from v35 to v36: the view moves down with what it shows,
-    // as drawn too, so v35 and the caret stay where they are drawn and the
-    // drag goes on in the lines under the pointer, released in the edit's
-    // frame (the game handles the input after the link's requests) or later.
+    // Five lines put in at line 2, above the view at line 30, or at line 30
+    // itself, above the text the view shows, while the player drags from
+    // v35 to v36: the view moves down with what it shows, as drawn too, so
+    // v35 and the caret stay where they are drawn and the drag goes on in
+    // the lines under the pointer, released in the edit's frame (the game
+    // handles the input after the link's requests) or later.
     let block: Vec<String> = (1..=5).map(|i| format!("-- note {i}")).collect();
-    for later in [false, true] {
-        let (mut game, mut st) = editing(&format!("coach-drag-view-above-{later}"), "dr", &src);
+    for (at, later) in [(2, false), (2, true), (30, false), (30, true)] {
+        let (mut game, mut st) = editing(&format!("coach-drag-view-above-{at}-{later}"), "dr", &src);
         st.s.editor.scroll = 29;
         for _ in 0..20 {
             game_frame(&mut st, &mut game);
@@ -618,13 +619,18 @@ fn a_drag_held_keeps_the_view_under_it() {
         }
         let caret = st.s.ui.caret_at;
         assert!(caret.is_some(), "the caret drawn");
-        let edit = json!({ "start_line": 2, "end_line": 1, "new_text": block.join("\n") });
+        let edit = json!({ "start_line": at, "end_line": at - 1, "new_text": block.join("\n") });
         let r = ask(&mut st, &mut game, "edit", edit).unwrap();
         assert_eq!(r["animated"], false, "{r}");
+        assert_eq!(st.s.editor.lines[at - 1], "-- note 1");
         if later {
             for _ in 0..5 {
                 game_frame(&mut st, &mut game);
-                assert_eq!(text_at(&game, "v35").1, y35, "v35 stays where it is drawn");
+                assert_eq!(
+                    text_at(&game, "v35").1,
+                    y35,
+                    "v35 stays where it is drawn: at line {at}"
+                );
                 assert_eq!(st.s.ui.caret_at, caret, "the caret stays with it");
                 handle(&mut st, &mut game, Input::Mouse(x + 1.0, y36 + 2.0));
             }
@@ -643,7 +649,7 @@ fn a_drag_held_keeps_the_view_under_it() {
         assert_eq!(
             (ed.lines[r1].as_str(), ed.lines[r2].as_str()),
             ("local v35 = 35", "local v36 = 36"),
-            "released later: {later}"
+            "put in at line {at}, released later: {later}"
         );
     }
 }
@@ -709,11 +715,13 @@ fn a_drag_held_or_typing_keeps_the_view_through_a_change_on_disk() {
         assert_eq!((r1, r2), (1, 4), "lines 2 to 5: Motion {motion}, {lines} lines changed");
     }
     // Lines put in at line 2, above the view at line 30, while the player
-    // drags from v35 to v36: five with Motion on or off, or 65. The view
-    // moves down with what it shows, as drawn too, so v35 and the caret stay
-    // where they are drawn.
-    for (motion, n) in [(true, 5), (false, 5), (true, 65)] {
-        let (mut game, mut st) = editing(&format!("coach-drag-disk-above-{motion}-{n}"), "dr", &src);
+    // drags from v35 to v36: five with Motion on or off, or 65; or five at
+    // line 30 itself, above the text the view shows. The view moves down
+    // with what it shows, as drawn too, so v35 and the caret stay where they
+    // are drawn.
+    for (motion, at, n) in [(true, 2, 5), (false, 2, 5), (true, 2, 65), (true, 30, 5)] {
+        let name = format!("coach-drag-disk-above-{motion}-{at}-{n}");
+        let (mut game, mut st) = editing(&name, "dr", &src);
         st.s.ui.look.motion = motion;
         st.s.editor.scroll = 29;
         for _ in 0..20 {
@@ -730,24 +738,21 @@ fn a_drag_held_or_typing_keeps_the_view_through_a_change_on_disk() {
         let caret = st.s.ui.caret_at;
         assert!(caret.is_some(), "the caret drawn");
         let block: String = (1..=n).map(|i| format!("-- note {i}\n")).collect();
+        let line = format!("local v{at} = {at}\n");
         let path = game.mods_dir().join("dr.lua");
-        std::fs::write(
-            &path,
-            src.replacen("local v2 = 2\n", &format!("{block}local v2 = 2\n"), 1),
-        )
-        .unwrap();
+        std::fs::write(&path, src.replacen(&line, &format!("{block}{line}"), 1)).unwrap();
         for _ in 0..12 {
             game_frame(&mut st, &mut game);
             assert_eq!(
                 text_at(&game, "v35").1,
                 y35,
-                "v35 stays where it is drawn: Motion {motion}, {n} lines"
+                "v35 stays where it is drawn: Motion {motion}, {n} lines at line {at}"
             );
             assert_eq!(st.s.ui.caret_at, caret, "the caret stays with it");
             assert!(st.s.ui.coach.typing.is_none(), "it comes in at once");
             handle(&mut st, &mut game, Input::Mouse(x + 1.0, y36 + 2.0));
         }
-        assert_eq!(st.s.editor.lines[1], "-- note 1");
+        assert_eq!(st.s.editor.lines[at - 1], "-- note 1");
         handle(
             &mut st,
             &mut game,
@@ -761,7 +766,7 @@ fn a_drag_held_or_typing_keeps_the_view_through_a_change_on_disk() {
         assert_eq!(
             (ed.lines[r1].as_str(), ed.lines[r2].as_str()),
             ("local v35 = 35", "local v36 = 36"),
-            "Motion {motion}, {n} lines"
+            "Motion {motion}, {n} lines at line {at}"
         );
     }
     // Line 70 changes right after the player typed at line 1 and saved.

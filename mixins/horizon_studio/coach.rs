@@ -1296,7 +1296,7 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     complete(st, &mut typing);
     if !seen || hands_off {
         // What the player sees stays put: lines put in above the view move it with them.
-        keep_view(st, from.0, rows);
+        keep_view(st, from, rows);
     }
     let mut result = land(st, &typing, None);
     if save {
@@ -1312,13 +1312,14 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
 }
 
 /// What the player sees stays put through a change put in at once that
-/// began at row `from` of a text of `rows` lines: lines put in or taken out
-/// above the view move it with them, and the view and the caret as drawn
-/// move as far, so nothing glides and a drag held goes on in the lines
-/// under the pointer.
-fn keep_view(st: &mut Studio, from: usize, rows: usize) {
+/// began at place `from` (row, byte) of a text of `rows` lines: lines put
+/// in or taken out above the view move it with them, and the view and the
+/// caret as drawn move as far, so nothing glides and a drag held goes on in
+/// the lines under the pointer. A change that begins at the very start of
+/// the view's first line puts its lines in above the text the view shows.
+fn keep_view(st: &mut Studio, from: (usize, usize), rows: usize) {
     let ed = &mut st.s.editor;
-    if from >= ed.scroll {
+    if from > (ed.scroll, 0) {
         return;
     }
     let moved = ed.lines.len() as isize - rows as isize;
@@ -3559,7 +3560,7 @@ pub fn sync_disk(st: &mut Studio) -> bool {
         // drag's ends in their places in the text.)
         complete(st, &mut typing);
         reloaded(st, &typing);
-        keep_view(st, from.0, count);
+        keep_view(st, from, count);
         return true;
     }
     // Where it changed, in view.
