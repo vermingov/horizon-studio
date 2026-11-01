@@ -1013,7 +1013,7 @@ particle, Video Settings, merge, pickup and swim hooks can answer in their funct
 
 The first six, ViaHorizon's and Natrium's go beyond the stable hook points, so the bundle pins one Horizon commit (a Nightly's,
 `compatibility.json`): the launcher builds it on that commit. Their bodies are free of macros, which the launcher's
-horizon-mixins (`0d6b103`) requires of a hooked function. The studio opens over the game's chat screen, which frees
+horizon-mixins (`a2af5c0`) requires of a hooked function. The studio opens over the game's chat screen, which frees
 the pointer and keeps the world running while it takes the keyboard.
 
 Moving to a new Nightly: change `horizon_revision` in `horizon-mixin.toml` and `compatibility.json`, then

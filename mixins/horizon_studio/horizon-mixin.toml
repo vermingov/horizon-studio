@@ -9,9 +9,9 @@ priority = 100
 # server's chat lines, the chat's completion requests
 # (send_suggestion_request), the world's entity geometry (end_geometry) and
 # the last HUD layer (remote_hud). Every target's body
-# is free of macros, as horizon-mixins 0d6b103 (the launcher's) requires.
+# is free of macros, as horizon-mixins a2af5c0 (the launcher's) requires.
 [compatibility]
-horizon_revision = "baa379d71777f06a95b4e7650b2209a3d4209033"
+horizon_revision = "4aa6854a886183440256f4f4a4a9d1ed853227a1"
 
 # The modules, in the game's crate as crate::game::<name>.
 [[module]]
