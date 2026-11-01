@@ -3278,8 +3278,13 @@ pub fn accept_suggestion(st: &mut Studio, i: usize) {
     let Some(item) = sg.items.get(i).cloned() else { return };
     if sg.console {
         let input = &mut st.s.ui.input;
-        let end = input.cursor.max(sg.start);
-        input.text.replace_range(sg.start.min(end)..end, &item.insert);
+        // Its word isn't where it was (the line changed under the list):
+        // the list just closes.
+        if sg.start > input.cursor || !input.text.is_char_boundary(sg.start) {
+            return;
+        }
+        let end = input.cursor;
+        input.text.replace_range(sg.start..end, &item.insert);
         input.cursor = sg.start + item.insert.len();
         let next = input.text[input.cursor..].chars().next();
         match item.kind {
@@ -4664,6 +4669,8 @@ fn settings_key(st: &mut Studio, key: Key) {
 pub(crate) fn run_console_line(st: &mut Studio, game: &mut dyn GameApi) {
     let ui = &mut st.s.ui;
     let line = std::mem::take(&mut ui.input);
+    // The suggestions go with the line they were for.
+    ui.suggest = None;
     ui.hist = None;
     ui.log_scroll = 0;
     st.run_console(game, &line.text);
@@ -4690,6 +4697,7 @@ fn console_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
                 Some(i) => ui.input.set(&st.s.history[i]),
                 None => ui.input.set(""),
             }
+            ui.suggest = None;
         }
         Key::Tab => {
             refresh_suggest(st);
@@ -4713,6 +4721,7 @@ fn console_key(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) {
             game.set_clipboard(&ui.input.text);
             if key == Key::Char('x') {
                 ui.input.set("");
+                ui.suggest = None;
             }
         }
         Key::Char('a') if mods.ctrl => ui.input.cursor = 0,

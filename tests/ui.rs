@@ -900,6 +900,53 @@ fn suggestions_open_as_you_type_and_tab_takes_one() {
 }
 
 #[test]
+fn the_consoles_suggestions_go_with_the_line_they_were_for() {
+    // Ctrl+Enter runs the console's line, Ctrl+X cuts it and Ctrl+Up puts
+    // a line from the history in its place, past the suggestions' keys
+    // (Ctrl is held): the list goes with the line, and Tab, or a click
+    // where it showed, has no word to take the place of.
+    let mut game = FakeGame::new("ui-console-suggest");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    handle(&mut st, &mut game, key(Key::Char('1'), CTRL));
+    type_text(&mut st, &mut game, "x = 1");
+    handle(&mut st, &mut game, key(Key::Enter, NONE));
+    // Ctrl+X, then Tab.
+    type_text(&mut st, &mut game, "player.");
+    assert!(st.s.ui.suggest.is_some());
+    handle(&mut st, &mut game, key(Key::Char('x'), CTRL));
+    assert_eq!((st.s.ui.input.text.as_str(), game.clipboard.as_str()), ("", "player."));
+    assert!(st.s.ui.suggest.is_none(), "the list went with the line");
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert_eq!(st.s.ui.input.text, "");
+    // Ctrl+Up, then Tab.
+    type_text(&mut st, &mut game, "player.");
+    handle(&mut st, &mut game, key(Key::Up, CTRL));
+    assert_eq!(st.s.ui.input.text, "x = 1");
+    assert!(st.s.ui.suggest.is_none(), "the list went with the line");
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert_eq!(st.s.ui.input.text, "x = 1");
+    // Ctrl+Enter, then a click where the list showed its first item.
+    st.s.ui.input.set("");
+    type_text(&mut st, &mut game, "player.");
+    let first = st.s.ui.suggest.as_ref().unwrap().items[0].label.clone();
+    redraw(&mut st, &mut game);
+    let at = last_text_at(&game, &first);
+    handle(&mut st, &mut game, key(Key::Enter, CTRL));
+    assert_eq!(st.s.ui.input.text, "");
+    assert!(st.s.ui.suggest.is_none(), "the list went with the line");
+    redraw(&mut st, &mut game);
+    click(&mut st, &mut game, at);
+    assert_eq!(st.s.ui.input.text, "");
+    // A list for a line no longer there (changed under it): Tab closes it.
+    type_text(&mut st, &mut game, "player.");
+    st.s.ui.input.set("pl");
+    handle(&mut st, &mut game, key(Key::Tab, NONE));
+    assert!(st.s.ui.input.text.starts_with("pl"), "{:?}", st.s.ui.input.text);
+}
+
+#[test]
 fn accented_letters_type_in_the_code_and_the_console() {
     // As each letter comes the suggestions look for the word typed, and
     // the console's Tab completes it: a letter of more than one byte
