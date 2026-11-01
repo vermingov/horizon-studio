@@ -510,6 +510,7 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         ui.text_areas.clear();
         ui.view = None;
         ui.caret_at = None;
+        st.s.editor.drawn = None;
         ui.scripts_at = None;
         ui.library_dots = None;
         ui.drawn_files.clear();
@@ -2750,6 +2751,12 @@ pub(super) fn draw_code(st: &mut Studio, p: &mut P, panel: [f32; 4], dt: f32) {
         w: text_w,
         rows,
     });
+    // While an agent's edit types in, the rows as drawn: the game's next
+    // frame types more in before the press it hands the studio, which is
+    // for what was drawn under the pointer.
+    let typing = st.s.ui.coach.typing.is_some();
+    let ed = &mut st.s.editor;
+    ed.drawn = typing.then(|| super::hstudio_ui::Drawn::of(ed, first, first + rows));
     note_bubble(st, p, panel, [text_x, top_y, bottom, s], dt);
     file_changed(st, p, panel, dt);
     agent_notice(st, p, panel, dt);

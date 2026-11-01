@@ -877,6 +877,77 @@ fn a_press_while_an_edit_comes_in_is_for_the_line_drawn_under_it() {
 }
 
 #[test]
+fn a_press_after_the_frame_typed_more_is_for_the_line_drawn_under_it() {
+    // In the game a frame types more of an agent's edit in (the studio's
+    // frame) before the studio gets the frame's input, and the studio was
+    // drawn before that: a press is for the line drawn under the pointer,
+    // though the step since typed a line in above it, or took away the
+    // lines the edit replaces.
+    let src: String = (1..=14).map(|i| format!("local v{i} = {i}\n")).collect();
+    // The file open, with room for all of it (no panel under the code).
+    let open = |name: &str| {
+        let (game, mut st) = editing(name, "ps", &src);
+        st.s.ui.panel_hidden = true;
+        (game, st)
+    };
+    // The lowest of the file's own lines drawn.
+    let lowest = |game: &FakeGame| {
+        (1..=14)
+            .map(|i| format!("v{i}"))
+            .filter(|w| !texts_at(game, w).is_empty())
+            .max_by(|a, b| text_at(game, a).1.total_cmp(&text_at(game, b).1))
+            .expect("a line of the file drawn")
+    };
+    let press = |st: &mut Studio, game: &mut FakeGame, word: &str, left: bool| {
+        let (x, y) = text_at(game, word);
+        handle(st, game, Input::Mouse(x + 1.0, y + 2.0));
+        for down in [true, false] {
+            handle(st, game, Input::Button { left, down });
+        }
+        assert!(st.s.ui.coach.typing.is_none(), "put in whole");
+        let ed = &st.s.editor;
+        assert!(
+            ed.lines[ed.row].contains(&format!("{word} = ")),
+            "left {left}: {word} pressed, {:?} got",
+            ed.lines[ed.row]
+        );
+        assert_eq!(st.s.ui.menu.is_some(), !left);
+    };
+    // 40 short lines put in at line 2: the frame after the draw types one.
+    let lines: Vec<String> = (1..=40).map(|i| format!("-- {i}")).collect();
+    for (left, dt) in [(false, 0.016), (true, 0.016), (false, 0.05), (true, 0.05)] {
+        let (mut game, mut st) = open(&format!("coach-press-step-{left}-{dt}"));
+        let edit = json!({ "start_line": 2, "end_line": 1, "new_text": lines.join("\n") });
+        ask(&mut st, &mut game, "edit", edit).unwrap();
+        run_for(&mut st, &mut game, 0.3);
+        let word = loop {
+            redraw(&mut st, &mut game);
+            let word = lowest(&game);
+            let rows = st.s.editor.lines.len();
+            st.frame(&mut game, dt);
+            assert!(st.s.ui.coach.typing.is_some(), "still typing");
+            if st.s.editor.lines.len() > rows {
+                break word;
+            }
+        };
+        press(&mut st, &mut game, &word, left);
+    }
+    // Lines 2 to 5 replaced: the frame after the draw takes them away.
+    let (mut game, mut st) = open("coach-press-step-old");
+    let edit = json!({ "start_line": 2, "end_line": 5, "new_text": "-- gone" });
+    ask(&mut st, &mut game, "edit", edit).unwrap();
+    let word = loop {
+        redraw(&mut st, &mut game);
+        let word = lowest(&game);
+        st.frame(&mut game, 0.05);
+        if st.s.ui.coach.typing.as_ref().is_some_and(|t| t.phase == Phase::Typing) {
+            break word;
+        }
+    };
+    press(&mut st, &mut game, &word, false);
+}
+
+#[test]
 fn a_menu_about_the_code_goes_when_the_code_changes_under_it() {
     // The player opens greet's menu in print(greet()) and pauses, and an
     // agent's edit puts a line in at the top: the menu's Go to

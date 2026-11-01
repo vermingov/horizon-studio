@@ -1175,6 +1175,9 @@ pub struct Editor {
     /// splice as the cursor does: a press's, while an agent's edit is put
     /// in whole under it.
     pub held: Option<(usize, usize)>,
+    /// The rows as last drawn while an agent's edit typed in, and the
+    /// splices since (see `Drawn`).
+    pub(crate) drawn: Option<Drawn>,
     pub scroll: usize,
     /// Chars of each line scrolled off to the left.
     pub hscroll: usize,
@@ -1211,6 +1214,63 @@ pub struct Editor {
     pub reloaded_at: Option<f64>,
 }
 
+/// The rows the editor last drew while an agent's edit typed in, and how
+/// the text changed since. A press is for the text drawn under the pointer,
+/// and in the game each frame types more of the edit in (the studio's
+/// frame) before the studio gets that frame's input: the place drawn under
+/// the pointer is found in these rows, then carried through the splices.
+pub(crate) struct Drawn {
+    /// The revision the splices below bring the rows to: the editor's own
+    /// while nothing else changed its text since (which leaves it behind).
+    rev: u64,
+    /// The first row drawn, the rows drawn from it, the chars of each
+    /// scrolled off to the left, and how many lines the text had.
+    first: usize,
+    lines: Vec<String>,
+    hscroll: usize,
+    count: usize,
+    /// Each splice since.
+    splices: Vec<Splice>,
+}
+
+/// A splice: where it began and ended, and where the text it put in ends
+/// (rows, and bytes of them).
+type Splice = ((usize, usize), (usize, usize), (usize, usize));
+
+/// The splices a press can be carried through, at most: more, and it is
+/// for the text as it is.
+const DRAWN_SPLICES: usize = 64;
+
+impl Drawn {
+    /// Rows `first` to `last` of `ed` as it is drawn now.
+    pub(crate) fn of(ed: &Editor, first: usize, last: usize) -> Drawn {
+        let end = (last + 1).min(ed.lines.len());
+        Drawn {
+            rev: ed.revision,
+            first,
+            lines: ed.lines.get(first..end).map(<[String]>::to_vec).unwrap_or_default(),
+            hscroll: ed.hscroll,
+            count: ed.lines.len(),
+            splices: Vec::new(),
+        }
+    }
+}
+
+/// Where place `p` (row, byte) is once `text` ending at `end` replaced
+/// `from..to`: before `from` it stays, inside the range it goes to its
+/// start, and after it it moves with the text after it.
+fn after_splice(p: (usize, usize), from: (usize, usize), to: (usize, usize), end: (usize, usize)) -> (usize, usize) {
+    if p < from {
+        p
+    } else if p < to {
+        from
+    } else if p.0 == to.0 {
+        (end.0, end.1 + p.1 - to.1)
+    } else {
+        (p.0 - to.0 + end.0, p.1)
+    }
+}
+
 impl Default for Editor {
     fn default() -> Self {
         Editor {
@@ -1221,6 +1281,7 @@ impl Default for Editor {
             col: 0,
             anchor: None,
             held: None,
+            drawn: None,
             scroll: 0,
             hscroll: 0,
             followed: None,
@@ -1512,17 +1573,16 @@ impl Editor {
             None => (from.0, from.1 + text.len()),
         };
         self.lines.splice(from.0..=to.0, joined.split('\n').map(str::to_owned));
-        let moved = |p: (usize, usize)| {
-            if p < from {
-                p
-            } else if p < to {
-                from
-            } else if p.0 == to.0 {
-                (end.0, end.1 + p.1 - to.1)
-            } else {
-                (p.0 - to.0 + end.0, p.1)
+        let moved = |p: (usize, usize)| after_splice(p, from, to, end);
+        // The rows as drawn follow the text through it, as far as they can.
+        let revision = self.revision;
+        if let Some(d) = self.drawn.as_mut().filter(|d| d.rev == revision) {
+            d.splices.push((from, to, end));
+            d.rev = revision + 1;
+            if d.splices.len() > DRAWN_SPLICES {
+                self.drawn = None;
             }
-        };
+        }
         (self.row, self.col) = self.clamp_pos(moved((self.row, self.col)));
         self.anchor = self.anchor.map(|a| self.clamp_pos(moved(a)));
         self.held = self.held.map(|h| self.clamp_pos(moved(h)));
@@ -3019,8 +3079,10 @@ fn as_drawn(st: &Studio, action: Action) -> Option<Action> {
 
 /// The place in the editor's text drawn under `(x, y)`: its row and char
 /// column. Rows glide as the view scrolls, so the view as drawn (its first
-/// row, not where it is going) says which, given as `drawn`. Left of the
-/// text (over the line numbers) it is the line's start.
+/// row, not where it is going) says which, given as `drawn`; and an agent's
+/// edit may have typed more in since the text was drawn, so the place is
+/// found in the text as drawn, then where that is now (`Drawn`). Left of
+/// the text (over the line numbers) it is the line's start.
 pub(crate) fn editor_pos(st: &Studio, game: &mut dyn GameApi, x: f32, y: f32, drawn: f32) -> Option<(usize, usize)> {
     // A press that put an agent's edit in whole is for the text drawn under
     // it, wherever the edit moved that.
@@ -3032,11 +3094,31 @@ pub(crate) fn editor_pos(st: &Studio, game: &mut dyn GameApi, x: f32, y: f32, dr
     let v = st.s.ui.view?;
     let ed = &st.s.editor;
     let at = drawn.max(0.0) + ((y - v.y) / code_line()).clamp(0.0, v.rows as f32);
+    let scale = st.s.ui.look.scale;
+    // While an agent's edit typed in, the rows were drawn before the frame
+    // typed more: the place drawn under the pointer, where its text is now.
+    if let Some(d) = ed.drawn.as_ref().filter(|d| d.rev == ed.revision) {
+        let row = (at.floor() as usize).min(d.count.saturating_sub(1));
+        if let Some(line) = row.checked_sub(d.first).and_then(|i| d.lines.get(i)) {
+            let col = if x < v.x {
+                0
+            } else {
+                d.hscroll + column_at(game, line, d.hscroll, x - v.x, scale)
+            };
+            let byte = line.char_indices().nth(col).map_or(line.len(), |(i, _)| i);
+            let place = d
+                .splices
+                .iter()
+                .fold((row, byte), |p, &(a, b, e)| after_splice(p, a, b, e));
+            let (row, byte) = ed.clamp_pos(place);
+            return Some((row, ed.lines[row][..byte].chars().count()));
+        }
+    }
     let row = (at.floor() as usize).min(ed.lines.len() - 1);
     let col = if x < v.x {
         0
     } else {
-        ed.hscroll + column_at(game, &ed.lines[row], ed.hscroll, x - v.x, st.s.ui.look.scale)
+        ed.hscroll + column_at(game, &ed.lines[row], ed.hscroll, x - v.x, scale)
     };
     Some((row, col))
 }
