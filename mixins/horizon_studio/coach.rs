@@ -3457,9 +3457,10 @@ fn disk_stamp(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
 /// the file), so a file written to disk looks live too: one undo step takes
 /// it back, and any key or click puts the rest in at once. While the view is
 /// the player's (they changed the code a moment ago, or hold a drag), it
-/// comes in at once, as an agent's edit does then, and what they see stays
-/// where it is. Otherwise it is read in at once, or with unsaved edits
-/// marked as a conflict, as before. True when it was read in at once.
+/// comes in at once, as an agent's edit does then, whatever its size and
+/// with Motion off too, and their selection and what they see stay where
+/// they are. Otherwise it is read in at once, or with unsaved edits marked
+/// as a conflict, as before. True when it was read in at once.
 pub fn sync_disk(st: &mut Studio) -> bool {
     // A change read in already coming in goes first: the file is looked at
     // again after. (An agent's edit coming in has made the buffer one with
@@ -3468,9 +3469,14 @@ pub fn sync_disk(st: &mut Studio) -> bool {
         return false;
     }
     let ui = &st.s.ui;
-    let seen = ui.open && ui.tab == Tab::Editor && !ui.collapsed && ui.look.motion;
+    let shown = ui.open && ui.tab == Tab::Editor && !ui.collapsed;
+    let seen = shown && ui.look.motion;
+    // A view the player holds takes the change through the editor's splices,
+    // however big: reading the file in whole would let go of a drag's other
+    // end, and leave the view on rows that lines put in above moved.
+    let held = shown && view_held(st);
     let ed = &st.s.editor;
-    if !seen || ed.dirty || ed.conflict || ed.removed {
+    if !(seen || held) || ed.dirty || ed.conflict || ed.removed {
         return st.s.editor.sync_disk();
     }
     let Some(path) = ed.path.clone() else {
@@ -3486,7 +3492,7 @@ pub fn sync_disk(st: &mut Studio) -> bool {
     let new: Vec<String> = Editor::normal(&read).split('\n').map(str::to_owned).collect();
     let change = changed_rows(&hashes(&ed.lines), &hashes(&new));
     let rows = (change.old_end - change.start).max(change.new_end - change.start);
-    if rows == 0 || rows > TYPED_RELOAD {
+    if rows == 0 || (rows > TYPED_RELOAD && !held) {
         return st.s.editor.sync_disk();
     }
     // What differs: all between what the two texts share at their start
@@ -3497,7 +3503,6 @@ pub fn sync_disk(st: &mut Studio) -> bool {
     let ins = now_text[pre..now_text.len() - suf].to_owned();
     let now = st.s.now;
     let page = st.s.ui.page.max(1);
-    let held = view_held(st);
     let ed = &mut st.s.editor;
     let (from, old_to) = (ed.pos_at(a), ed.pos_at(b));
     let count = ed.lines.len();
