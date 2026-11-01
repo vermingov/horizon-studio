@@ -1022,6 +1022,110 @@ fn a_press_off_the_code_in_a_requests_frame_leaves_the_view_to_the_agent() {
 }
 
 #[test]
+fn lines_put_in_at_the_views_top_under_a_hold_off_the_code_show_there() {
+    // A 5-line script, the view at its top. While the player selects the
+    // console's text in the pane under the code, or in the moment the
+    // studio fades out after they typed and pressed Escape, an agent puts
+    // two lines in at line 1: the edit lands at once, and the view stays
+    // where it is, so the two lines show at its top when the player looks.
+    // Only a hold on the code itself (a selection dragged there, a press on
+    // it, typing in the open studio) puts lines put in there above the text
+    // the view shows. A press on the Console tab in the edit's frame isn't
+    // one either: the edit types in, and the view stays.
+    use horizon_studio::game::hstudio::LogKind;
+    use horizon_studio::game::hstudio_ui::UiResult;
+    let src: String = (1..=5).map(|i| format!("local v{i} = {i}\n")).collect();
+    let top = json!({ "start_line": 1, "end_line": 0, "new_text": "local greeting = 'hello'\nlocal times = 3" });
+    for hold in ["console text", "escape", "console tab"] {
+        let (mut game, mut st) = editing(&format!("coach-top-off-code-{}", hold.len()), "tc", &src);
+        st.s.log(LogKind::Info, "a line of the console's to select");
+        for _ in 0..10 {
+            game_frame(&mut st, &mut game);
+        }
+        let y = text_at(&game, "v1").1;
+        let mut inputs = Vec::new();
+        match hold {
+            "console text" => {
+                let (x, ly) = text_at(&game, "a line of the console's to select");
+                handle(&mut st, &mut game, Input::Mouse(x + 2.0, ly + 4.0));
+                handle(&mut st, &mut game, Input::Button { left: true, down: true });
+                for k in 1..=20 {
+                    game_frame(&mut st, &mut game);
+                    handle(&mut st, &mut game, Input::Mouse(x + 2.0 + 4.0 * k as f32, ly + 4.0));
+                }
+                assert!(st.s.ui.dragging_any(), "{hold}: selecting");
+            }
+            "escape" => {
+                st.s.editor.click(2, 0, false);
+                handle(&mut st, &mut game, Input::Text("-".into()));
+                game_frame(&mut st, &mut game);
+                // The game starts the studio's fade on a Close.
+                let out = handle(&mut st, &mut game, key(Key::Escape, NONE));
+                assert_eq!(out, UiResult::Close, "{hold}");
+                st.s.ui.closing_at = Some(st.s.now);
+            }
+            _ => {
+                let at = texts_at(&game, "Console")
+                    .into_iter()
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .expect("the Console tab");
+                inputs = vec![
+                    Input::Mouse(at.0 + 4.0, at.1 + 4.0),
+                    Input::Button { left: true, down: true },
+                    Input::Button {
+                        left: true,
+                        down: false,
+                    },
+                ];
+            }
+        }
+        // The edit's frame, in the game's order.
+        redraw(&mut st, &mut game);
+        run_for(&mut st, &mut game, 0.05);
+        coach::input_coming(&mut st, &inputs);
+        let r = ask(&mut st, &mut game, "edit", top.clone()).unwrap();
+        let typed = hold == "console tab";
+        assert_eq!(r.get("typing").is_some(), typed, "{hold}: {r}");
+        for input in inputs {
+            handle(&mut st, &mut game, input);
+        }
+        assert_eq!(st.s.editor.scroll, 0, "{hold}: the view stays");
+        // The player lets go, comes back to the Editor tab, or opens the
+        // studio again.
+        match hold {
+            "console text" => handle(
+                &mut st,
+                &mut game,
+                Input::Button {
+                    left: true,
+                    down: false,
+                },
+            ),
+            "escape" => {
+                st.s.ui.closing_at = None;
+                st.s.ui.open = false;
+                run_for(&mut st, &mut game, 1.0);
+                st.s.ui.open = true;
+                st.s.ui.opened_at = st.s.now;
+                UiResult::Used
+            }
+            _ => {
+                assert_eq!(st.s.ui.tab, Tab::Console, "{hold}");
+                run_for(&mut st, &mut game, 3.0);
+                st.s.ui.tab = Tab::Editor;
+                UiResult::Used
+            }
+        };
+        for _ in 0..20 {
+            game_frame(&mut st, &mut game);
+        }
+        assert_eq!(st.s.editor.lines[0], "local greeting = 'hello'", "{hold}");
+        assert_eq!(st.s.editor.scroll, 0, "{hold}: the view stays");
+        assert_eq!(text_at(&game, "greeting").1, y, "{hold}: on the view's first line");
+    }
+}
+
+#[test]
 fn a_change_over_all_the_view_shows_leaves_the_view_at_its_line() {
     // While the view is the player's (they typed and saved a moment ago,
     // drag a selection, or press in the change's frame), or nobody sees it

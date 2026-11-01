@@ -774,6 +774,21 @@ fn view_held(st: &Studio) -> bool {
     ui.coach.player_editing(st.s.now) || ui.coach.code_press || holding(ui)
 }
 
+/// Whether the player holds the code itself, in the open studio (not
+/// fading out, no script's screen over it): a selection dragged in its
+/// text, a press on it in this frame's input, or their change to the code
+/// a moment ago. Text under the pointer, or at the caret, is what they
+/// hold then; a drag of a tab, a bar, the window or the console's text has
+/// nothing of the code under the pointer to keep in place.
+fn code_held(st: &Studio) -> bool {
+    let ui = &st.s.ui;
+    let c = &ui.coach;
+    ui.open
+        && ui.closing_at.is_none()
+        && st.s.screen.is_none()
+        && (ui.selecting_code() || c.code_press || c.player_editing(st.s.now))
+}
+
 /// Whether the player has a prompt or a menu open in the studio.
 fn prompted(st: &Studio) -> bool {
     let ui = &st.s.ui;
@@ -1364,7 +1379,7 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     complete(st, &mut typing);
     if !seen || hands_off {
         // What the player sees stays put: lines put in above the view move it with them.
-        keep_view(st, &typing, rows, seen && hands_off);
+        keep_view(st, &typing, rows, seen && code_held(st));
     }
     let mut result = land(st, &typing, None);
     if save {
@@ -1390,13 +1405,14 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
 /// of it is left after the change) leaves the view at its line, by number:
 /// nothing of what it showed is left to keep in place, and the lines the
 /// change put in or took out may be thousands. In a view the player holds
-/// on screen (`held`: they hold a drag, press in this frame, or changed the
-/// code a moment ago), a change that begins at the very start of the
-/// view's first line counts as one above it: lines put in there go in
-/// above the text under the pointer. In one nobody sees, a change that
-/// begins on the view's first line leaves the view there, so what it put in
-/// is in view when the player looks again: lines put in at the top of a
-/// script, or the script written anew.
+/// on screen by the code itself (`held`, `code_held`: a selection dragged
+/// in it, a press on it in this frame, their change to it a moment ago), a
+/// change that begins at the very start of the view's first line counts as
+/// one above it: lines put in there go in above the text under the pointer.
+/// In one nobody sees, or held by something else (a tab, a bar, the
+/// console's text), a change that begins on the view's first line leaves
+/// the view there, so what it put in is in view when the player looks:
+/// lines put in at the top of a script, or the script written anew.
 fn keep_view(st: &mut Studio, t: &Typing, rows: usize, held: bool) {
     let page = code_page(&st.s.ui).max(1);
     let ed = &mut st.s.editor;
@@ -3683,7 +3699,7 @@ pub fn sync_disk(st: &mut Studio) -> bool {
         // drag's ends in their places in the text.)
         complete(st, &mut typing);
         reloaded(st, &typing);
-        keep_view(st, &typing, count, held);
+        keep_view(st, &typing, count, code_held(st));
         return true;
     }
     // Where it changed, in view, unless the player moved the cursor since

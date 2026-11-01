@@ -950,6 +950,10 @@ impl Ui {
     pub fn dragging_any(&self) -> bool {
         self.dragging || self.text_drag || self.scroll_drag.is_some() || self.dock_drag.is_some() || self.drag.is_some()
     }
+    /// Whether the left button is held selecting the code's text.
+    pub fn selecting_code(&self) -> bool {
+        self.dragging
+    }
     /// The pane whose tab is lifted, dragged to another place.
     pub fn lifted(&self) -> Option<Pane> {
         match self.dock_drag {
