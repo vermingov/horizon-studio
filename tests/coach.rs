@@ -27,6 +27,13 @@ fn redraw(st: &mut Studio, game: &mut FakeGame) {
     draw(st, game);
 }
 
+/// A frame in the game's order: the studio draws, then its frame runs (an
+/// edit types on); the link's requests and the player's input come after.
+fn game_frame(st: &mut Studio, game: &mut FakeGame) {
+    redraw(st, game);
+    run_for(st, game, 0.05);
+}
+
 /// Where a drawn text starts, from the fake game's record of it.
 fn text_at(game: &FakeGame, text: &str) -> (f32, f32) {
     let line = game
@@ -589,6 +596,56 @@ fn a_drag_held_keeps_the_view_under_it() {
     );
     let ((r1, _), (r2, _)) = st.s.editor.selection().expect("a selection");
     assert_eq!((r1, r2), (1, 4), "lines 2 to 5");
+    // Five lines put in at line 2, above the view at line 30, while the
+    // player drags from v35 to v36: the view moves down with what it shows,
+    // as drawn too, so v35 and the caret stay where they are drawn and the
+    // drag goes on in the lines under the pointer, released in the edit's
+    // frame (the game handles the input after the link's requests) or later.
+    let block: Vec<String> = (1..=5).map(|i| format!("-- note {i}")).collect();
+    for later in [false, true] {
+        let (mut game, mut st) = editing(&format!("coach-drag-view-above-{later}"), "dr", &src);
+        st.s.editor.scroll = 29;
+        for _ in 0..20 {
+            game_frame(&mut st, &mut game);
+        }
+        let (x, y35) = text_at(&game, "v35");
+        let (_, y36) = text_at(&game, "v36");
+        handle(&mut st, &mut game, Input::Mouse(x + 1.0, y35 + 2.0));
+        handle(&mut st, &mut game, Input::Button { left: true, down: true });
+        handle(&mut st, &mut game, Input::Mouse(x + 1.0, y36 + 2.0));
+        for _ in 0..50 {
+            game_frame(&mut st, &mut game);
+        }
+        let caret = st.s.ui.caret_at;
+        assert!(caret.is_some(), "the caret drawn");
+        let edit = json!({ "start_line": 2, "end_line": 1, "new_text": block.join("\n") });
+        let r = ask(&mut st, &mut game, "edit", edit).unwrap();
+        assert_eq!(r["animated"], false, "{r}");
+        if later {
+            for _ in 0..5 {
+                game_frame(&mut st, &mut game);
+                assert_eq!(text_at(&game, "v35").1, y35, "v35 stays where it is drawn");
+                assert_eq!(st.s.ui.caret_at, caret, "the caret stays with it");
+                handle(&mut st, &mut game, Input::Mouse(x + 1.0, y36 + 2.0));
+            }
+        }
+        handle(&mut st, &mut game, Input::Mouse(x + 1.0, y36 + 2.0));
+        handle(
+            &mut st,
+            &mut game,
+            Input::Button {
+                left: true,
+                down: false,
+            },
+        );
+        let ed = &st.s.editor;
+        let ((r1, _), (r2, _)) = ed.selection().expect("a selection");
+        assert_eq!(
+            (ed.lines[r1].as_str(), ed.lines[r2].as_str()),
+            ("local v35 = 35", "local v36 = 36"),
+            "released later: {later}"
+        );
+    }
 }
 
 #[test]

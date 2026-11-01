@@ -1286,11 +1286,7 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     complete(st, &mut typing);
     if !seen || hands_off {
         // What the player sees stays put: lines put in above the view move it with them.
-        let ed = &mut st.s.editor;
-        if from.0 < ed.scroll {
-            let moved = ed.lines.len() as isize - rows as isize;
-            ed.scroll = (ed.scroll as isize + moved).clamp(0, ed.lines.len() as isize - 1) as usize;
-        }
+        keep_view(st, from.0, rows);
     }
     let mut result = land(st, &typing, None);
     if save {
@@ -1303,6 +1299,27 @@ pub fn edit(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -> 
     }
     keep_result(st, id, &result);
     Ok(result)
+}
+
+/// What the player sees stays put through a change put in at once that
+/// began at row `from` of a text of `rows` lines: lines put in or taken out
+/// above the view move it with them, and the view and the caret as drawn
+/// move as far, so nothing glides and a drag held goes on in the lines
+/// under the pointer.
+fn keep_view(st: &mut Studio, from: usize, rows: usize) {
+    let ed = &mut st.s.editor;
+    if from >= ed.scroll {
+        return;
+    }
+    let moved = ed.lines.len() as isize - rows as isize;
+    let scroll = (ed.scroll as isize + moved).clamp(0, ed.lines.len() as isize - 1) as usize;
+    let by = scroll as f32 - ed.scroll as f32;
+    ed.scroll = scroll;
+    let ui = &mut st.s.ui;
+    ui.smooth[1] = (ui.smooth[1] + by).max(0.0);
+    if let Some(c) = ui.caret.as_mut() {
+        c[0] = (c[0] + by).max(0.0);
+    }
 }
 
 /// Byte `at` of a file's text as the editor has it (`Editor::normal`:
