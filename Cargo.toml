@@ -7,6 +7,14 @@ license = "MIT"
 publish = false
 description = "Horizon Studio: a Lua mod creator for Horizon, with hot reloading, an in-game editor and console, and a mod library."
 
+# The voice chat's bundle crate (mixins/horizon_studio/voice) is a member, so
+# it builds with this lock and no Cargo.lock of its own lands in the bundle.
+[workspace]
+members = ["mixins/horizon_studio/voice"]
+# The protocol crate's stand-in stays a package of its own (cargo fmt leaves ViaHorizon's file in it as it is),
+# and so does the Opus check's command (tools/opus_interop.py builds it).
+exclude = ["tests/shim/horizon-protocol", "tools/opus_interop"]
+
 # The bundle's modules, mounted as the game mounts them (crate::game::<name>),
 # so their tests run here without the game.
 [lib]
@@ -28,6 +36,9 @@ sha1 = "0.10"
 png = "0.18"
 # The game's protocol crate, as far as ViaHorizon uses it: its added module.
 horizon-protocol = { path = "tests/shim/horizon-protocol" }
+# The voice chat's engine, the bundle's own crate: without its `audio`
+# feature (cpal, which needs ALSA's headers), as the tests drive it by hand.
+hstudio_voice = { path = "mixins/horizon_studio/voice", default-features = false }
 
 [dev-dependencies]
 # The preview test (tests/preview.rs): Horizon's fonts, rasterized as the game does, into PNG files.
