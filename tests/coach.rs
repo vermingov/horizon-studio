@@ -823,6 +823,66 @@ fn a_press_while_an_edit_comes_in_is_for_the_line_drawn_under_it() {
 }
 
 #[test]
+fn a_menu_about_the_code_goes_when_the_code_changes_under_it() {
+    // The player opens greet's menu in print(greet()) and pauses, and an
+    // agent's edit puts a line in at the top: the menu's Go to
+    // definition was for the code as it was. Picked before the studio
+    // draws again it does nothing, and drawn the menu goes; one opened
+    // again goes to the definition where it is now.
+    let src = "local function greet()\n  return 'hi'\nend\nprint(greet())\n";
+    let (mut game, mut st) = editing("coach-stale-menu", "gm", src);
+    let open_menu = |st: &mut Studio, game: &mut FakeGame| {
+        redraw(st, game);
+        let at = texts_at(game, "greet")
+            .into_iter()
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        handle(st, game, Input::Mouse(at.0 + 2.0, at.1 + 4.0));
+        handle(
+            st,
+            game,
+            Input::Button {
+                left: false,
+                down: true,
+            },
+        );
+        handle(
+            st,
+            game,
+            Input::Button {
+                left: false,
+                down: false,
+            },
+        );
+        let menu = st.s.ui.menu.as_ref().expect("greet's menu");
+        assert!(menu.items.iter().any(|i| i.label == "Go to definition"));
+    };
+    let agent_edit = |st: &mut Studio, game: &mut FakeGame| {
+        st.s.now += 5.0;
+        let edit = json!({ "start_line": 1, "end_line": 0, "new_text": "-- a note", "typing": false });
+        ask(st, game, "edit", edit).unwrap();
+    };
+    // Go to definition's letter, then a space, picks it.
+    let pick = |st: &mut Studio, game: &mut FakeGame| {
+        handle(st, game, Input::Text("g".into()));
+        handle(st, game, Input::Text(" ".into()));
+    };
+    open_menu(&mut st, &mut game);
+    agent_edit(&mut st, &mut game);
+    pick(&mut st, &mut game);
+    assert!(st.s.ui.menu.is_none());
+    assert_eq!(st.s.editor.lines[st.s.editor.row], "print(greet())", "the cursor stays");
+    open_menu(&mut st, &mut game);
+    agent_edit(&mut st, &mut game);
+    redraw(&mut st, &mut game);
+    assert!(st.s.ui.menu.is_none(), "drawn, it goes");
+    open_menu(&mut st, &mut game);
+    pick(&mut st, &mut game);
+    assert_eq!(st.s.editor.lines[st.s.editor.row], "local function greet()");
+    assert_eq!(st.s.editor.row, 2);
+}
+
+#[test]
 fn the_editors_suggestions_stay_with_the_players_word_through_an_edit() {
     let start = |st: &Studio| st.s.ui.suggest.as_ref().map(|s| s.start);
     // The player types after "local x = 1": the list opens at their word.

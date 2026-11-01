@@ -494,7 +494,10 @@ pub(crate) fn row_label(st: &Studio, row: &ScriptRow) -> String {
 /// pointer), which a menu with no room below opens above. `target` is the
 /// row it is for, outlined while it is open. A menu taller than the screen
 /// shows its items from `scroll` on (`shown`: the first and the end, as
-/// drawn), and the wheel and the keys scroll it.
+/// drawn), and the wheel and the keys scroll it. A menu about the code
+/// (the code's own, a problem's) has the editor's revision it was made
+/// for in `code`: its items hold places in that text, so it goes when the
+/// text changes under it (an agent's edit, the file read again).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Menu {
     pub at: [f32; 2],
@@ -506,6 +509,7 @@ pub struct Menu {
     pub target: Option<[f32; 4]>,
     pub scroll: usize,
     pub shown: (usize, usize),
+    pub code: Option<u64>,
 }
 
 impl Menu {
@@ -522,11 +526,16 @@ impl Menu {
             target: None,
             scroll: 0,
             shown: (0, 0),
+            code: None,
         }
     }
     /// Whether it was drawn with only some of its items (it scrolls).
     pub fn scrolls(&self) -> bool {
         self.rect.is_some() && self.shown != (0, self.items.len())
+    }
+    /// Whether it is about the code, which changed since it was made.
+    pub fn stale(&self, ed: &Editor) -> bool {
+        self.code.is_some_and(|r| r != ed.revision)
     }
 }
 
@@ -3118,6 +3127,10 @@ pub(crate) fn menu_pick(st: &mut Studio, game: &mut dyn GameApi, i: usize) -> Ui
     let Some(menu) = st.s.ui.menu.take() else {
         return UiResult::Used;
     };
+    // The code it was for changed under it: it just goes.
+    if menu.stale(&st.s.editor) {
+        return UiResult::Used;
+    }
     let Some(cmd) = menu.items.get(i).filter(|it| it.enabled).and_then(|it| it.cmd.clone()) else {
         return UiResult::Used;
     };

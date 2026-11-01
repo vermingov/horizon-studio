@@ -494,8 +494,13 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
     let dt = {
         let ui = &mut st.s.ui;
         // A menu left open goes when the studio opens again (or comes back
-        // from a script's screen).
-        if ui.menu.as_ref().is_some_and(|m| m.opened_at < ui.opened_at) {
+        // from a script's screen), and one about the code when the code
+        // changed under it.
+        if ui
+            .menu
+            .as_ref()
+            .is_some_and(|m| m.opened_at < ui.opened_at || m.stale(&st.s.editor))
+        {
             ui.menu = None;
         }
         ui.dp = k;

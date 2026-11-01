@@ -63,7 +63,8 @@ pub fn key_menu(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
                 .unwrap_or([ui.mouse.0, ui.mouse.1]);
             let ed = &st.s.editor;
             let items = code_items(st, (ed.row, ed.col));
-            open(st, at, code_line(), items, None)
+            let opened = open(st, at, code_line(), items, None);
+            about_code(st, opened)
         }
         Target::Console | Target::Agent => {
             let field = if target(ui) == Target::Agent {
@@ -106,7 +107,8 @@ pub fn key_menu(st: &mut Studio, game: &mut dyn GameApi) -> UiResult {
                 Some(r) => {
                     let (at, h) = below(r);
                     let items = problem_items(st, k);
-                    open(st, at, h, items, Some(r))
+                    let opened = open(st, at, h, items, Some(r));
+                    about_code(st, opened)
                 }
                 // No problem's row: the panel's own menu, under its tab
                 // (the last of the panel's spots drawn).
@@ -198,7 +200,21 @@ fn open_spot(st: &mut Studio, game: &mut dyn GameApi, spot: Spot, rect: [f32; 4]
             None,
         ),
     };
-    open(st, at, 0.0, items, target)
+    let opened = open(st, at, 0.0, items, target);
+    match spot {
+        Spot::Code | Spot::Problem(_) => about_code(st, opened),
+        _ => opened,
+    }
+}
+
+/// Whether a menu `opened`: one about the code is for the code as it is
+/// now, and goes when that changes (see `Menu::code`).
+fn about_code(st: &mut Studio, opened: bool) -> bool {
+    let revision = st.s.editor.revision;
+    if opened && let Some(menu) = st.s.ui.menu.as_mut() {
+        menu.code = Some(revision);
+    }
+    opened
 }
 
 // ----------------------------------------------------------------- the panel, the window, the themes
