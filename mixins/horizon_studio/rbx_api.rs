@@ -1,13 +1,13 @@
-//! Roblox's whole API, from its API dump (rbx_api_data.rs, which
-//! tools/gen_api.py makes): every class, property, method, event, callback
-//! and enum Roblox has.
-//!
-//! rbx.rs implements the classes and members scripts use by hand, with
-//! their behaviour. Everything else a script reaches is here, so that it
-//! exists as in Roblox: a property has its type and default and keeps what
-//! a script sets it to, a method returns what its type's empty value is,
-//! an event can be connected to, and a class Roblox can create can be
-//! created.
+// Roblox's whole API, from its API dump (rbx_api_data.rs, which
+// tools/gen_api.py makes): every class, property, method, event, callback
+// and enum Roblox has.
+//
+// rbx.rs implements the classes and members scripts use by hand, with
+// their behaviour. Everything else a script reaches is here, so that it
+// exists as in Roblox: a property has its type and default and keeps what
+// a script sets it to, a method returns what its type's empty value is,
+// an event can be connected to, and a class Roblox can create can be
+// created.
 
 use super::hstudio_lua::{Table, Value};
 use super::hstudio_rbx_api_data::API;

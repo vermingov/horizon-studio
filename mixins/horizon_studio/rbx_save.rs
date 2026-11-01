@@ -1,9 +1,9 @@
-//! Saving Instances as a Roblox XML model or place (.rbxmx, .rbxlx), the
-//! format Studio opens: what saveinstance writes. Each property is written
-//! as Roblox's API types it (rbx_api.rs), from the value the instance has;
-//! references inside the saved tree are kept, others are null, and scripts'
-//! sources are ProtectedStrings. The layer's reader (rbx_file.rs) reads
-//! these back.
+// Saving Instances as a Roblox XML model or place (.rbxmx, .rbxlx), the
+// format Studio opens: what saveinstance writes. Each property is written
+// as Roblox's API types it (rbx_api.rs), from the value the instance has;
+// references inside the saved tree are kept, others are null, and scripts'
+// sources are ProtectedStrings. The layer's reader (rbx_file.rs) reads
+// these back.
 
 use super::hstudio_lua::Value;
 use super::hstudio_rbx::{Id, Rbx};
