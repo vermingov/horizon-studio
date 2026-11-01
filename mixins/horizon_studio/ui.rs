@@ -3796,13 +3796,38 @@ pub(crate) fn editor_pos(st: &Studio, game: &mut dyn GameApi, x: f32, y: f32, dr
     Some((row, col))
 }
 
+/// Whether a press at `(x, y)` is on the code's text as the view was drawn
+/// (its line numbers too).
+fn on_text(v: &EditorView, (x, y): (f32, f32)) -> bool {
+    x >= v.x - 30.0 && y >= v.y && y <= v.y + code_line() * v.rows as f32 && x <= v.x + v.w + 4.0
+}
+
+/// Whether a press at `at` (the left button, or the right) lands on the
+/// code, by what the last frame drew, as `handle_input` and `right_press`
+/// take it: a left one puts the cursor in its text (no prompt or menu up,
+/// nothing else drawn there), a right one opens the code's menu there (no
+/// prompt up, nothing dragged, not on the menu up). It is for the line
+/// drawn under the pointer.
+pub(crate) fn press_on_code(ui: &Ui, at: (f32, f32), left: bool) -> bool {
+    if ui.naming.is_some() || ui.tab != Tab::Editor {
+        return false;
+    }
+    if !left {
+        let on_menu = ui.menu.as_ref().and_then(|m| m.rect).is_some_and(|r| inside(r, at));
+        return !ui.dragging_any() && !on_menu && matches!(spot_at(ui, at), Some((Spot::Code, _)));
+    }
+    ui.menu.is_none()
+        && matches!(hit_at(ui, at), None | Some(Action::Focus(Pane::Code)))
+        && ui.view.is_some_and(|v| on_text(&v, at))
+}
+
 /// A click or drag in the editor's text: moves the cursor there (a drag
 /// keeps the selection's other end).
 fn editor_point(st: &mut Studio, game: &mut dyn GameApi, x: f32, y: f32, drag: bool, drawn: f32) -> bool {
     let Some(v) = st.s.ui.view else {
         return false;
     };
-    if !drag && (x < v.x - 30.0 || y < v.y || y > v.y + code_line() * v.rows as f32 || x > v.x + v.w + 4.0) {
+    if !drag && !on_text(&v, (x, y)) {
         return false;
     }
     let Some((row, col)) = editor_pos(st, game, x, y, drawn) else {

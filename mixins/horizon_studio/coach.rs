@@ -64,8 +64,11 @@ pub struct Coach {
     pub(crate) pressed: Option<((f32, f32), (usize, usize))>,
     /// A press comes in this frame's input, which the game hands the studio
     /// after the link's requests: it is for what is drawn under the pointer,
-    /// so the view is the player's for those requests.
+    /// so the panes stay where they are for those requests.
     pub(crate) press_coming: bool,
+    /// And it lands on the code (the line drawn under the pointer, or a
+    /// right press's menu there), so the view is the player's too.
+    pub(crate) code_press: bool,
     /// The answers to the last requests that changed something, by the
     /// key their client gave: one sent again (after a timeout, on a new
     /// connection) gets the same answer and isn't done twice.
@@ -150,6 +153,7 @@ impl Default for Coach {
             input_at: f64::NEG_INFINITY,
             pressed: None,
             press_coming: false,
+            code_press: false,
             replies: VecDeque::new(),
             typing: None,
             flash: None,
@@ -338,14 +342,32 @@ fn used(input: &Input) -> bool {
 /// handled (the game handles them first, then the input): what of it
 /// reaches the studio counts as the player using it now, so a request that
 /// would open another file waits rather than have their keys, aimed at the
-/// file they see, land in another; and a press in it, aimed at what is
-/// drawn under the pointer, keeps the view where it is.
+/// file they see, land in another; a press in it, aimed at what is drawn
+/// under the pointer, keeps the panes where they are; and one that lands on
+/// the code (where the pointer is when it comes: the input's last move
+/// before it, else where the pointer was) keeps the view where it is.
 pub fn input_coming(st: &mut Studio, inputs: &[Input]) {
-    let reaches = st.s.ui.open && st.s.screen.is_none() && st.s.ui.closing_at.is_none();
-    if reaches && inputs.iter().any(used) {
-        st.s.ui.coach.input_at = st.s.now;
+    let ui = &st.s.ui;
+    let reaches = ui.open && st.s.screen.is_none() && ui.closing_at.is_none();
+    // Pointer moves come in GUI pixels, as handle_input takes them.
+    let k = ui.dp_factor() / ui.look.scale;
+    let (mut at, mut pressed, mut on_code) = (ui.mouse, false, false);
+    for input in inputs {
+        match input {
+            Input::Mouse(x, y) => at = (x * k, y * k),
+            Input::Button { left, down: true } => {
+                pressed = true;
+                on_code |= super::hstudio_ui::press_on_code(ui, at, *left);
+            }
+            _ => {}
+        }
     }
-    st.s.ui.coach.press_coming = reaches && inputs.iter().any(|i| matches!(i, Input::Button { down: true, .. }));
+    let c = &mut st.s.ui.coach;
+    if reaches && inputs.iter().any(used) {
+        c.input_at = st.s.now;
+    }
+    c.press_coming = reaches && pressed;
+    c.code_press = reaches && on_code;
 }
 
 /// After it: when it changed the code of the file that was open (not by
@@ -353,6 +375,7 @@ pub fn input_coming(st: &mut Studio, inputs: &[Input]) {
 pub fn after_input(st: &mut Studio, before: Before) {
     st.s.ui.coach.pressed = None;
     st.s.ui.coach.press_coming = false;
+    st.s.ui.coach.code_press = false;
     let ed = &st.s.editor;
     if ed.revision != before.revision && ed.path == before.path {
         st.s.ui.coach.player_at = st.s.now;
@@ -738,16 +761,17 @@ fn using(st: &Studio) -> bool {
 }
 
 /// Whether the view is the player's: they changed the code a moment ago,
-/// press a button in this frame's input (still to come, after the link's
-/// requests), or hold something (a drag of a selection, the scroll bar, a
-/// bar between panes, a pane's tab or the window, sizing from the keys),
-/// however long ago it began. An agent's edit (or a change on disk to the
-/// file open) then lands at once, and nothing an agent asks moves the
-/// view: a drag would go on selecting in the lines it moved to, and a click
-/// would leave the cursor out of it.
+/// press on the code in this frame's input (still to come, after the
+/// link's requests: a press elsewhere is for something else), or hold
+/// something (a drag of a selection, the scroll bar, a bar between panes,
+/// a pane's tab or the window, sizing from the keys), however long ago it
+/// began. An agent's edit (or a change on disk to the file open) then
+/// lands at once, and nothing an agent asks moves the view: a drag would
+/// go on selecting in the lines it moved to, and a click would leave the
+/// cursor out of it.
 fn view_held(st: &Studio) -> bool {
     let ui = &st.s.ui;
-    ui.coach.player_editing(st.s.now) || ui.coach.press_coming || holding(ui)
+    ui.coach.player_editing(st.s.now) || ui.coach.code_press || holding(ui)
 }
 
 /// Whether the player has a prompt or a menu open in the studio.
@@ -812,13 +836,16 @@ fn show_line(st: &mut Studio, n: usize, cursor: bool) {
 /// opens one, the Editor tab brought forward. Another file opens only when
 /// the player isn't using the studio and the file open has no unsaved
 /// edits (nothing of theirs is saved or put aside for an agent). `line`
-/// shows a line; `create` opens a file that isn't there yet, empty, to be
-/// typed into (it is written when saved).
+/// shows a line, unless the view is the player's (the answer says it
+/// wasn't shown then); `create` opens a file that isn't there yet, empty,
+/// to be typed into (it is written when saved).
 pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let create = flag(params, "create") == Some(true);
     let t = target(st, params, create)?;
     let line = line_param(params, "line")?;
     let already = st.s.editor.path.as_deref() == Some(t.path.as_path());
+    // The view stays the player's (the line isn't shown then).
+    let mut kept = false;
     if already {
         // Its tab comes forward when another file could open, the code at
         // the front of its group (the keys stay where they are).
@@ -827,10 +854,11 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
         }
         // The view moves to the line, unless it is the player's; their
         // cursor stays theirs.
-        if let Some(n) = line
-            && !view_held(st)
-        {
-            show_line(st, n, false);
+        if let Some(n) = line {
+            kept = view_held(st);
+            if !kept {
+                show_line(st, n, false);
+            }
         }
     } else {
         if let Some(wait) = switch_waits(st) {
@@ -852,6 +880,7 @@ pub fn open(st: &mut Studio, by: &By, params: &Json) -> Result<Json, String> {
     let did = match (already, t.exists, line) {
         (_, false, _) => format!("Opened {}, a new file: it is written when saved", t.file),
         (true, _, None) => format!("{} is open", t.file),
+        (true, _, Some(n)) if kept => format!("Didn't show line {n} of {}: the view stays with the player", t.file),
         (true, _, Some(n)) => format!("Showed line {n} of {}", t.file),
         (false, _, None) => format!("Opened {}", t.file),
         (false, _, Some(n)) => format!("Opened {} at line {n}", t.file),
@@ -3070,10 +3099,11 @@ pub fn lesson(st: &mut Studio, game: &mut dyn GameApi, by: &By, params: &Json) -
     // pane the player has the keys in, or a prompt or a menu is up (the
     // note has the explanation then); the Editor tab comes forward when
     // another file could open. While the player holds something (a drag,
-    // sizing from the keys) or presses in this frame, the groups stay where
-    // they are: the pane comes to the front of its group only while that
-    // group is shown, as showing a hidden one would move the others under
-    // the pointer (and end what it holds).
+    // sizing from the keys) or presses anywhere in this frame, the groups
+    // stay where they are: the pane comes to the front of its group only
+    // while that group is shown, as showing a hidden one would move the
+    // others under the pointer (and end what it holds). Its first step's
+    // lines show unless the view is the player's (a press on the code).
     let now = st.s.now;
     let (prompt, held) = (prompted(st), view_held(st));
     let busy = prompt || using(st);

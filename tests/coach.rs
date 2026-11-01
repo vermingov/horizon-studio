@@ -906,6 +906,122 @@ fn a_press_in_a_requests_frame_keeps_the_view_under_it() {
 }
 
 #[test]
+fn a_press_off_the_code_in_a_requests_frame_leaves_the_view_to_the_agent() {
+    // A press in a request's frame holds the view only when it lands on the
+    // code (the line drawn under the pointer, or a right press's menu
+    // there). One on the panel's Agent tab, or one on the code that only
+    // closes a menu, is for something else: an agent's edit far below types
+    // in where the view goes, open_script of a line there shows it, and a
+    // lesson there shows its first step, as with no press at all.
+    use horizon_studio::game::hstudio_ui::Pane;
+    let src: String = (1..=200).map(|i| format!("local v{i} = {i}\n")).collect();
+    let requests = [
+        (
+            "edit",
+            json!({ "start_line": 151, "end_line": 150, "new_text": "a = 1\nb = 2\nc = 3" }),
+        ),
+        ("open", json!({ "id": "pr", "line": 150 })),
+        (
+            "lesson",
+            json!({ "title": "Down", "steps": [{ "start_line": 153, "note": "Down here." }] }),
+        ),
+    ];
+    for (method, params) in requests {
+        for on in ["the Agent tab", "the code, a menu up"] {
+            let case = format!("{method}, a press on {on}");
+            let (mut game, mut st) = editing(&format!("coach-press-off-{method}-{}", on.len()), "pr", &src);
+            for _ in 0..5 {
+                game_frame(&mut st, &mut game);
+            }
+            let at = if on == "the Agent tab" {
+                let tab = st.s.ui.dock_drawn.iter().flat_map(|l| l.tabs.iter());
+                let tab = tab.clone().find(|(p, _)| *p == Pane::Agent).expect("the Agent tab").1;
+                (tab[0] + tab[2] / 2.0, tab[1] + tab[3] / 2.0)
+            } else {
+                // The code's menu, opened on v5; the press is on v2, off it.
+                let (x, y5) = text_at(&game, "v5");
+                handle(&mut st, &mut game, Input::Mouse(x + 1.0, y5 + 2.0));
+                for down in [true, false] {
+                    handle(&mut st, &mut game, Input::Button { left: false, down });
+                }
+                assert!(st.s.ui.menu.is_some(), "{case}: the code's menu");
+                game_frame(&mut st, &mut game);
+                let (x, y2) = text_at(&game, "v2");
+                (x + 1.0, y2 + 2.0)
+            };
+            // The press's frame, in the game's order: the studio draws, its
+            // frame runs, the input is noted, the request comes, then the input.
+            redraw(&mut st, &mut game);
+            run_for(&mut st, &mut game, 0.05);
+            let inputs = [
+                Input::Mouse(at.0, at.1),
+                Input::Button { left: true, down: true },
+                Input::Button {
+                    left: true,
+                    down: false,
+                },
+            ];
+            coach::input_coming(&mut st, &inputs);
+            let r = ask(&mut st, &mut game, method, params.clone()).unwrap();
+            for input in inputs {
+                handle(&mut st, &mut game, input);
+            }
+            match method {
+                "edit" => assert_eq!(r["did"], "Typing into pr.lua", "{case}: {r}"),
+                "open" => assert_eq!(r["did"], "Showed line 150 of pr.lua", "{case}: {r}"),
+                _ => assert_eq!(r["ok"], true, "{case}: {r}"),
+            }
+            for _ in 0..30 {
+                game_frame(&mut st, &mut game);
+            }
+            let scroll = st.s.editor.scroll;
+            assert!((121..=152).contains(&scroll), "{case}: the view went there ({scroll})");
+            if on == "the Agent tab" {
+                assert!(st.s.ui.dock.is_front(Pane::Agent), "{case}: the press took the tab");
+            } else {
+                assert!(st.s.ui.menu.is_none(), "{case}: the press closed the menu");
+                assert_eq!(st.s.editor.row, 4, "{case}: the cursor stays where the menu put it");
+            }
+        }
+    }
+    // A press on the code holds the view: open_script says it didn't show
+    // the line, and the Agent pane's line about it still goes there.
+    let (mut game, mut st) = editing("coach-press-on-code-open", "pr", &src);
+    for _ in 0..5 {
+        game_frame(&mut st, &mut game);
+    }
+    let (x, y5) = text_at(&game, "v5");
+    redraw(&mut st, &mut game);
+    run_for(&mut st, &mut game, 0.05);
+    let inputs = [
+        Input::Mouse(x + 1.0, y5 + 2.0),
+        Input::Button { left: true, down: true },
+        Input::Button {
+            left: true,
+            down: false,
+        },
+    ];
+    coach::input_coming(&mut st, &inputs);
+    let r = ask(&mut st, &mut game, "open", json!({ "id": "pr", "line": 150 })).unwrap();
+    for input in inputs {
+        handle(&mut st, &mut game, input);
+    }
+    assert_eq!(
+        r["did"], "Didn't show line 150 of pr.lua: the view stays with the player",
+        "{r}"
+    );
+    for _ in 0..10 {
+        game_frame(&mut st, &mut game);
+    }
+    assert_eq!(st.s.editor.scroll, 0, "the view stays");
+    assert_eq!(st.s.editor.row, 4, "the press's line");
+    assert_eq!(
+        actions(&st).last().map(String::as_str),
+        Some("Claude Code: Didn't show line 150 of pr.lua: the view stays with the player")
+    );
+}
+
+#[test]
 fn a_change_over_all_the_view_shows_leaves_the_view_at_its_line() {
     // While the view is the player's (they typed and saved a moment ago,
     // drag a selection, or press in the change's frame), or nobody sees it

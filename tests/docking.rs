@@ -1617,10 +1617,19 @@ fn a_lesson_leaves_a_hidden_agent_pane_hidden_under_what_the_player_holds() {
     redraw(&mut st, &mut game);
     let code = middle(leaf(&st, Pane::Code).rect);
     let press = Input::Button { left: true, down: true };
-    coach::input_coming(&mut st, &[Input::Mouse(code.0, code.1), press]);
+    coach::input_coming(&mut st, &[Input::Mouse(code.0, code.1), press.clone()]);
     lesson(&mut st, &mut game, "Explained in the note again.");
     assert!(!st.s.ui.dock.shown(Pane::Agent), "the panel stays hidden");
     click(&mut st, &mut game, code);
+    // So is one off the code (the script list's tab), which doesn't hold
+    // the view but would land on another pane once the panel moved it.
+    st.s.now += 5.0;
+    redraw(&mut st, &mut game);
+    let tab = middle(tab_of(&st, Pane::Scripts));
+    coach::input_coming(&mut st, &[Input::Mouse(tab.0, tab.1), press]);
+    lesson(&mut st, &mut game, "Explained in the note once more.");
+    assert!(!st.s.ui.dock.shown(Pane::Agent), "the panel stays hidden");
+    click(&mut st, &mut game, tab);
     // With nothing held, a lesson shows the Agent pane with its explanation.
     st.s.now += 5.0;
     lesson(&mut st, &mut game, "Explained in the pane.");
