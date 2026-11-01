@@ -1,5 +1,5 @@
 frame 1
-  log Info Horizon Studio 0.7.3. Type Lua and press Enter; help() lists the API.
+  log Info Horizon Studio 0.8.0. Type Lua and press Enter; help() lists the API.
 frame 2
 lua 1 + 2
   log Input > 1 + 2

@@ -5,7 +5,7 @@
 # vendored (src/opus, rusty-opus 1.0.2).
 [package]
 name = "hstudio_voice"
-version = "0.7.3"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT AND BSD-3-Clause"
