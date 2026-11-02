@@ -36,7 +36,7 @@ pub use super::hstudio_quads::Shade;
 
 pub const ID: &str = "horizon_studio";
 pub const NAME: &str = "Horizon Studio";
-pub const VERSION: &str = "0.8.0";
+pub const VERSION: &str = "0.9.0";
 pub const DESCRIPTION: &str = "Make mods in Lua inside the game: an editor, a console that runs code at once, hot reloading and a library of your script mods. F8 opens it in a world.";
 /// The key that opens the studio, rebindable in Options > Mods.
 pub const OPEN_KEY: &str = "key.keyboard.f8";

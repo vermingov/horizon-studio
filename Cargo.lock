@@ -358,7 +358,7 @@ version = "0.0.0"
 
 [[package]]
 name = "horizon-studio"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "ab_glyph",
  "flate2",
@@ -374,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "hstudio_voice"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "cpal",
  "ring",
