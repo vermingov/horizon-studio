@@ -426,8 +426,10 @@ fn lighting_workspace_and_camera_reach_the_game() {
         run(&mut st, &mut game, "look"),
         ["view at 0.00 0.00 0.00 -90.0 0.0", "look -90.0 0.0", "view game"]
     );
+    // 100 pixels right of the middle comes to the crosshair: atan(100 / f)
+    // with the 540 dp tall view's 70 degrees (f is 385.6 pixels).
     let m = run(&mut st, &mut game, "turn");
-    assert_eq!(m, ["turn 15.0 0.0"]);
+    assert_eq!(m, ["turn 14.5 0.0"]);
     assert!(game.sent.is_empty(), "{:?}", game.sent);
 }
 

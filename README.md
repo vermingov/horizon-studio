@@ -964,8 +964,15 @@ executors run as mods:
   PNG).
 - **Network**, the internet only: `request` (it waits for the answer), `game:HttpGet`, `game:HttpPost`, HttpService's
   `GetAsync`, `PostAsync` and `RequestAsync`, and `WebSocket.connect` with `Send`, `Close`, `OnMessage`, `OnClose`.
-- **Drawing:** `Drawing.new` with Line, Text, Image, Circle, Square, Quad and Triangle, drawn over the HUD in dp;
-  `cleardrawcache`, `getrenderproperty`, `setrenderproperty`, `isrenderobj`.
+- **Drawing:** `Drawing.new` with Line, Text, Image, Circle, Square, Quad and Triangle, drawn over the HUD in dp
+  (`Transparency` is the opacity, as executors have it); `cleardrawcache`, `getrenderproperty`, `setrenderproperty`,
+  `isrenderobj`. A menu drawn with Drawings (an ESP's) takes the mouse with Left Alt, as the GUI does.
+- **ESP and aim:** ESP scripts (Unnamed ESP, OwlHub's universal ESP) draw their boxes, tracers and name, distance and
+  health tags over the other players from the Camera's `WorldToViewportPoint`; the server's scoreboard teams are
+  Roblox's Teams (each Player's `Team`, `TeamColor`, `Neutral`), so their team colours and team checks work.
+  `mousemoverel` while playing turns the view by the angle the pixels make, so an aimbot's move to its target's
+  screen point lands on it. Roblox model assets (`game:GetObjects`, OwlHub's UI library) need a Roblox account: an
+  error says so.
 - **Instances and signals:** `cloneref`, `compareinstances`, `gethui`, `getinstances`, `getnilinstances`,
   `fireclickdetector`, `fireproximityprompt`, `firetouchinterest`, `getcallbackvalue`, `getconnections`,
   `firesignal`; `replicatesignal` errors (there is no server).

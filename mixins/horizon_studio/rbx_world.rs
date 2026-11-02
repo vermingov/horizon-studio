@@ -1619,6 +1619,7 @@ fn sync_players(rbx: &mut Rbx, game: &mut dyn GameApi, looking: bool) {
         rbx.raw_set(player, "DisplayName", Value::str(shown));
     }
     count_players(rbx);
+    sync_teams(rbx, game);
 }
 
 /// A player who joined: a locked Player of the studio's (scripts can't
@@ -2321,4 +2322,65 @@ pub fn set_attribute(rbx: &mut Rbx, id: Id, name: &str, v: Value) {
     }
     rbx.fire(id, "AttributeChanged", vec![Value::str(name)]);
     rbx.fire(id, &format!("attr:{name}"), Vec::new());
+}
+
+/// The players' scoreboard teams as Roblox's Teams: a Team in the Teams
+/// service for each team a player is on (its TeamColor the BrickColor
+/// nearest the team's colour, White for none), and each Player's Team,
+/// TeamColor and Neutral, as ESP and aimbot scripts read them for their
+/// team checks. The Teams the layer made go when no player is on them.
+fn sync_teams(rbx: &mut Rbx, game: &mut dyn GameApi) {
+    use super::hstudio_rbx_types::BrickColor;
+    use super::hstudio_rbx_values::{Data, wrap};
+    let Some(service) = rbx.service("Teams") else { return };
+    let ours = |rbx: &Rbx, id: Id| {
+        rbx.try_inst(id)
+            .is_some_and(|i| i.owner.is_none() && i.locked && !i.destroyed)
+    };
+    let mut players = vec![rbx.local_player];
+    players.extend(rbx.world.others.iter().map(|o| o.player));
+    let mut kept = Vec::new();
+    for player in players {
+        let name = rbx.inst(player).name.clone();
+        let Some((team, rgb)) = game.team_of(&name) else {
+            rbx.raw_set(player, "Team", Value::Nil);
+            rbx.raw_set(player, "Neutral", Value::Bool(true));
+            continue;
+        };
+        let brick = rgb.map_or_else(
+            || BrickColor::from_name("White"),
+            |c| {
+                let ch = |s: u32| f64::from((c >> s) & 0xFF) / 255.0;
+                BrickColor::from_rgb(ch(16), ch(8), ch(0))
+            },
+        );
+        let found = rbx
+            .children(service)
+            .iter()
+            .copied()
+            .find(|&t| ours(rbx, t) && rbx.inst(t).name == team);
+        let t = found.unwrap_or_else(|| {
+            let t = rbx.make("Team", None);
+            rbx.inst_mut(t).name = team.clone();
+            rbx.raw_set(t, "AutoAssignable", Value::Bool(false));
+            let _ = rbx.set_parent(t, Some(service));
+            rbx.inst_mut(t).locked = true;
+            t
+        });
+        rbx.raw_set(t, "TeamColor", wrap(Data::Brick(brick)));
+        let tv = rbx.value(t);
+        rbx.raw_set(player, "Team", tv);
+        rbx.raw_set(player, "TeamColor", wrap(Data::Brick(brick)));
+        rbx.raw_set(player, "Neutral", Value::Bool(false));
+        kept.push(t);
+    }
+    let gone: Vec<Id> = rbx
+        .children(service)
+        .iter()
+        .copied()
+        .filter(|&t| ours(rbx, t) && !kept.contains(&t))
+        .collect();
+    for t in gone {
+        rbx.destroy(t);
+    }
 }

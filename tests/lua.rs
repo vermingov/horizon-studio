@@ -473,7 +473,12 @@ fn string_format() {
     assert_eq!(eval("return string.format('%c%c', 72, 105)"), "\"Hi\"");
     assert_eq!(eval("return string.format('100%%')"), "\"100%\"");
     assert_eq!(eval("return string.format('%+d % d', 5, 5)"), "\"+5  5\"");
-    assert!(error_of("return string.format('%d', 1.5)").contains("no integer representation"));
+    // As Luau, a fraction is cut toward zero (scripts print distances so).
+    assert_eq!(
+        eval("return string.format('%d|%d|%x', 1.5, -9.7, 255.9)"),
+        "\"1|-9|ff\""
+    );
+    assert!(error_of("return string.format('%d', math.huge)").contains("no integer representation"));
     assert!(error_of("return string.format('%d')").contains("no value"));
 }
 

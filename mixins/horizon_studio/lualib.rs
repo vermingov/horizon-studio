@@ -666,6 +666,17 @@ fn s_split(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res
 
 // string.format
 
+/// An integer for string.format's `%d` and the like: as Luau's, a number
+/// with a fraction is cut toward zero (`%d` of 9.7 is 9); only infinities
+/// and NaN have none.
+fn format_int(lua: &Lua, args: &[Value], i: usize) -> Result<i64, Throw> {
+    let n = check_num(lua, args, i, "format")?;
+    if !n.is_finite() {
+        return Err(bad_arg(lua, i, "format", "number has no integer representation"));
+    }
+    Ok(n.trunc() as i64)
+}
+
 fn s_format(lua: &mut Lua, h: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
     let fmt = check_str(lua, &args, 0, "format")?;
     let mut out: Vec<u8> = Vec::new();
@@ -730,8 +741,9 @@ fn s_format(lua: &mut Lua, h: &mut dyn Host, _: &Native, args: Vec<Value>) -> Re
             }
         };
         let (body, numeric): (Vec<u8>, bool) = match conv {
+            // As Luau, a number with a fraction is cut to its whole part.
             b'd' | b'i' => {
-                let n = check_int(lua, &args, argi, "format")?;
+                let n = format_int(lua, &args, argi)?;
                 let mut digits = n.unsigned_abs().to_string();
                 if let Some(p) = precision {
                     while digits.len() < p {
@@ -740,10 +752,10 @@ fn s_format(lua: &mut Lua, h: &mut dyn Host, _: &Native, args: Vec<Value>) -> Re
                 }
                 (format!("{}{digits}", sign(n < 0)).into_bytes(), true)
             }
-            b'u' => (check_int(lua, &args, argi, "format")?.to_string().into_bytes(), true),
-            b'c' => (vec![check_int(lua, &args, argi, "format")? as u8], false),
+            b'u' => (format_int(lua, &args, argi)?.to_string().into_bytes(), true),
+            b'c' => (vec![format_int(lua, &args, argi)? as u8], false),
             b'x' | b'X' | b'o' => {
-                let n = check_int(lua, &args, argi, "format")? as u64;
+                let n = format_int(lua, &args, argi)? as u64;
                 let s = match conv {
                     b'x' => format!("{}{n:x}", if alt && n != 0 { "0x" } else { "" }),
                     b'X' => format!("{}{n:X}", if alt && n != 0 { "0X" } else { "" }),

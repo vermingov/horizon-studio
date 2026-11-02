@@ -599,7 +599,7 @@ fn drawing() {
         0.6,
     );
     assert_eq!(p[0], "50\ttrue\ttrue\tfalse\tfalse");
-    assert_eq!(p[1], "40\ttrue\t0");
+    assert_eq!(p[1], "40\ttrue\t1");
     assert!(p[2].starts_with("true\tfalse\t"), "{}", p[2]);
     assert!(p[3].starts_with("false\tfalse\t"), "{}", p[3]);
     game.drawn.clear();

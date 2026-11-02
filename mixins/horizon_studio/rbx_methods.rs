@@ -408,7 +408,35 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
         }
         // Assets load as they are drawn here: nothing to wait for.
         ("ContentProvider", "Preload" | "PreloadAsync") => none(),
+        // The teams (the scoreboard's, hstudio_rbx_world), and who is on one.
+        ("Teams", "GetTeams") => {
+            let rbx = env.rbx();
+            let teams: Vec<Id> = rbx
+                .children(id)
+                .iter()
+                .copied()
+                .filter(|&t| rbx.inst(t).class.name == "Team")
+                .collect();
+            one(rbx.list(&teams))
+        }
+        ("Team", "GetPlayers") => {
+            let rbx = env.rbx();
+            let on: Vec<Id> = super::hstudio_rbx_world::players_of(rbx)
+                .into_iter()
+                .filter(|&p| rbx.id_of(&rbx.raw_get(p, "Team")) == Some(id))
+                .collect();
+            one(rbx.list(&on))
+        }
         ("DataModel", "BindToClose") => none(),
+        // Roblox's models (a hub's UI kept as a model asset) only come to a
+        // signed-in Roblox account: as Roblox's own when a load fails, an
+        // error saying so, not an empty list a script then indexes.
+        ("DataModel", "GetObjects") => {
+            let content = text_arg(lua, args, 1, name)?;
+            Err(lua.rt_error(format!(
+                "GetObjects can't load {content}: Roblox's assets need a signed-in Roblox account, which the studio hasn't"
+            )))
+        }
         (
             "Players",
             "GetPlayers"
@@ -873,6 +901,9 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             one(Value::Num(s.x * s.y * s.z * 0.7))
         }
         ("BasePart", "GetTouchingParts") => one(Value::table(Table::new())),
+        // Where the part is drawn: where it is (the layer draws no
+        // interpolation of its own between them).
+        ("BasePart", "GetRenderCFrame") => one(cf(as_cf(&env.rbx().raw_get(id, "CFrame")).unwrap_or_default())),
         ("Humanoid", "MoveTo") => {
             let p = args
                 .get(1)

@@ -2038,9 +2038,18 @@ pub fn objects_at(rbx: &Rbx, x: f64, y: f64) -> Vec<Id> {
 }
 
 /// Whether the GUI wants the pointer: a Modal button or a focused TextBox
-/// shows, or Left Alt asked for it over a GUI one can click.
+/// shows, or Left Alt asked for it over a GUI one can click, or over
+/// Drawings (a menu drawn with the Drawing library, as ESP scripts' are,
+/// takes its clicks from UserInputService).
 pub fn wants_pointer(rbx: &Rbx) -> bool {
-    let Some(f) = &rbx.layout else { return false };
+    let drawn = || {
+        rbx.drawings
+            .iter()
+            .any(|d| d.props.iter().any(|p| p.0 == "Visible" && p.1.truthy()))
+    };
+    let Some(f) = &rbx.layout else {
+        return rbx.pointer.focus.is_some() || (rbx.pointer.asked && drawn());
+    };
     let shown = |n: &NodeId| f.layout.get(*n).is_some_and(|p| p.shown);
     let mut clickable = false;
     for n in f.layout.draw_order.iter().filter(|n| shown(n)) {
@@ -2057,7 +2066,7 @@ pub fn wants_pointer(rbx: &Rbx) -> bool {
     if rbx.pointer.focus.is_some() {
         return true;
     }
-    rbx.pointer.asked && clickable
+    rbx.pointer.asked && (clickable || drawn())
 }
 
 // ---------------------------------------------------------------- input

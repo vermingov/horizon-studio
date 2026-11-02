@@ -623,6 +623,12 @@ pub trait GameApi {
     fn players(&mut self) -> Option<Vec<PlayerEntry>> {
         None
     }
+    /// The scoreboard team a player (by name) is on: its name and its
+    /// colour (RGB) if it has one. None for no team.
+    fn team_of(&mut self, player: &str) -> Option<(String, Option<u32>)> {
+        let _ = player;
+        None
+    }
     /// An item as a 3D model in the world: `m` is its frame (its x, y and z
     /// axes and its origin, in blocks); `display` how the game shows it
     /// ("head", "hand", "left_hand", "fixed", "ground", "gui"); lit by the

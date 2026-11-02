@@ -517,6 +517,7 @@ pub static CLASSES: &[C] = &[
             p("CharacterAppearanceId", Num, N(1.0)),
             ro("Guest", Bool, B(false)),
             p("Neutral", Bool, B(true)),
+            p("TeamColor", K::Brick, D::Brick(1)),
         ],
         &[
             "Chatted",
@@ -1299,7 +1300,19 @@ pub static CLASSES: &[C] = &[
     kept("RemoteEvent", "Instance"),
     kept("RemoteFunction", "Instance"),
     kept("UnreliableRemoteEvent", "Instance"),
-    kept("Team", "Instance"),
+    // A team (the scoreboard's, hstudio_rbx_world): it takes any property.
+    C {
+        lenient: true,
+        ..class(
+            "Team",
+            "Instance",
+            &[
+                p("TeamColor", K::Brick, D::Brick(1)),
+                p("AutoAssignable", Bool, B(true)),
+            ],
+            &["PlayerAdded", "PlayerRemoved"],
+        )
+    },
     kept("Sky", "Instance"),
     kept("Atmosphere", "Instance"),
     kept("BloomEffect", "Instance"),
@@ -2605,7 +2618,10 @@ const METHODS: &[(&str, &str)] = &[
     ("Preload", "ContentProvider"),
     ("PreloadAsync", "ContentProvider"),
     ("BindToClose", "DataModel"),
+    ("GetObjects", "DataModel"),
     ("GetPlayers", "Players"),
+    ("GetTeams", "Teams"),
+    ("GetPlayers", "Team"),
     ("GetPlayerFromCharacter", "Players"),
     ("GetPlayerByUserId", "Players"),
     ("GetNameFromUserIdAsync", "Players"),
@@ -2699,6 +2715,7 @@ const METHODS: &[(&str, &str)] = &[
     ("GetPrimaryPartCFrame", "Model"),
     ("GetMass", "BasePart"),
     ("GetTouchingParts", "BasePart"),
+    ("GetRenderCFrame", "BasePart"),
     ("MoveTo", "Humanoid"),
     ("TakeDamage", "Humanoid"),
     ("ChangeState", "Humanoid"),

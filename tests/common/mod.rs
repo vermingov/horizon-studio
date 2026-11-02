@@ -91,6 +91,8 @@ pub struct FakeGame {
     pub session_ends: usize,
     pub away: Option<PlayerInfo>,
     pub own_volume: Option<f32>,
+    /// The scoreboard team of each player by name: its name and colour.
+    pub teams: HashMap<String, (String, Option<u32>)>,
 }
 
 /// The fake game's play packets by id (a few of the game's).
@@ -218,6 +220,7 @@ impl FakeGame {
             session_ends: 0,
             away: None,
             own_volume: None,
+            teams: HashMap::new(),
         }
     }
     /// The player leaves the server or world for the menus (the title
@@ -626,6 +629,9 @@ impl GameApi for FakeGame {
     fn entities(&mut self, max: usize) -> Vec<EntityInfo> {
         self.entity_asks += 1;
         self.entities.iter().take(max).cloned().collect()
+    }
+    fn team_of(&mut self, player: &str) -> Option<(String, Option<u32>)> {
+        self.teams.get(player).cloned()
     }
     fn players(&mut self) -> Option<Vec<PlayerEntry>> {
         self.players.clone()

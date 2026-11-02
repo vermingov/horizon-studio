@@ -972,7 +972,9 @@ fn defaults(kind: &str) -> Vec<(&'static str, Value)> {
     let mut p: Vec<(&'static str, Value)> = vec![
         ("Visible", Value::Bool(false)),
         ("ZIndex", Value::Num(1.0)),
-        ("Transparency", Value::Num(0.0)),
+        // As the executors' Drawing library, Transparency is the opacity:
+        // 1 (the default) opaque, 0 invisible.
+        ("Transparency", Value::Num(1.0)),
         ("Color", c3(Color3::new(1.0, 1.0, 1.0))),
     ];
     let more: Vec<(&'static str, Value)> = match kind {
@@ -1106,7 +1108,7 @@ pub fn draw_drawings(rbx: &Rbx, game: &mut dyn GameApi, textures: &mut ImageCach
         .collect();
     order.sort_by(|a, b| num(a, "ZIndex").total_cmp(&num(b, "ZIndex")));
     for d in order {
-        let alpha = 1.0 - num(d, "Transparency");
+        let alpha = num(d, "Transparency");
         if alpha <= 0.0 {
             continue;
         }
@@ -2826,11 +2828,22 @@ impl Ctx<'_> {
                             super::hstudio_rbx_draw::pointer_moved(rbx, x + dx, y + dy);
                         } else {
                             // The pointer is the game's (the crosshair): moving the mouse
-                            // turns the view, as it turns Roblox's camera (0.15 degrees a
-                            // pixel, the game's default sensitivity).
-                            let fx = &mut rbx.world.effects;
-                            fx.turn.0 += (dx * 0.15) as f32;
-                            fx.turn.1 += (dy * 0.15) as f32;
+                            // turns the view, as it turns Roblox's camera, so that what
+                            // was `dx`, `dy` from the middle of the screen comes to the
+                            // crosshair (an aimbot's move to its target's screen point);
+                            // 0.15 degrees a pixel without a camera.
+                            let (_, h, _) = self.game.dp();
+                            let degrees = |d: f64| match self.game.camera() {
+                                Some(c) if h > 0.0 => {
+                                    let f = f64::from(h) / 2.0 / (f64::from(c.fov) / 2.0).to_radians().tan();
+                                    (d / f).atan().to_degrees()
+                                }
+                                _ => d * 0.15,
+                            };
+                            let (tx, ty) = (degrees(dx) as f32, degrees(dy) as f32);
+                            let fx = &mut self.s.rbx.world.effects;
+                            fx.turn.0 += tx;
+                            fx.turn.1 += ty;
                         }
                     }
                     _ => {

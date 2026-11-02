@@ -865,6 +865,11 @@ impl GameApi for Host<'_, '_> {
             })
             .collect()
     }
+    fn team_of(&mut self, player: &str) -> Option<(String, Option<u32>)> {
+        let t = self.g().score.board.players_team(player)?;
+        let color = t.color.as_deref().and_then(horizon_client::scoreboard::team_color_rgb);
+        Some((t.name.clone(), color))
+    }
     fn players(&mut self) -> Option<Vec<PlayerEntry>> {
         // A server's list fetches the players' skins as it is read: only while the game can change.
         let g = self.g_mut()?;
