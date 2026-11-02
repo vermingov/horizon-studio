@@ -5,8 +5,8 @@
 // command can reach the game's own command path) do nothing.
 
 use super::hstudio::{
-    BODY_PARTS, Body, Camera, Corner, EntityInfo, Font, GameApi, ID, NAME, OPEN_KEY, PartFrame, PlayerEntry, PlayerInfo, PlayerPose,
-    Reply, Studio, TexRef, VERSION, ViaInfo, WorldTri,
+    BODY_PARTS, Body, Camera, CameraView, Corner, EntityInfo, Font, GameApi, ID, NAME, OPEN_KEY, PartFrame,
+    PlayerEntry, PlayerInfo, PlayerPose, Reply, Studio, TexRef, VERSION, ViaInfo, WorldTri,
 };
 use horizon_client::net::hstudio_via as via;
 use super::hstudio_ui::{Input, Key, Mods, UiResult, draw, draw_screen, handle, handle_screen};
@@ -193,6 +193,198 @@ fn keep_view(game: &mut Game<'_>) {
     }
 }
 
+
+thread_local! {
+    /// What Roblox scripts hold of the view and the input (hstudio_rbx_world's
+    /// game_effects): read by the camera, mouse and window hooks.
+    static HOLD: RefCell<Hold> = const {
+        RefCell::new(Hold {
+            view: None,
+            perspective: None,
+            sunk: Vec::new(),
+            look: false,
+            mouse: [0.0; 2],
+            sensitivity: 1.0,
+            frozen: false,
+        })
+    };
+    /// Whether the player plays (no screen up, the chat closed): the keys
+    /// scripts take are theirs only then.
+    static PLAYING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The view and input scripts hold.
+struct Hold {
+    /// Where the view is while a script's Camera has it.
+    view: Option<CameraView>,
+    /// The game's perspective while the view is away (it shows the body).
+    perspective: Option<super::perspective::CameraType>,
+    /// The keys the game doesn't get (`key.keyboard.w`), and whether the
+    /// mouse turns no player.
+    sunk: Vec<String>,
+    look: bool,
+    /// The mouse's movement since the studio last asked, in pixels.
+    mouse: [f64; 2],
+    /// The mouse's sensitivity, a multiple of the player's.
+    sensitivity: f64,
+    /// The character is anchored: the player holds still.
+    frozen: bool,
+}
+
+/// The view (`Camera.update`, ahead of the game's): where a script's Camera
+/// put it, else the game's own. Detached, it is where the script says; on
+/// another entity, at its eyes looking as it looks in first person, else
+/// behind it as the player looks (Roblox's camera turns about its subject
+/// with the mouse); around a point, behind it as the player looks, as far
+/// as the third person view goes, pulled in where blocks are in the way.
+pub(super) fn camera_view(
+    game: &mut Game<'_>,
+    partial: f32,
+) -> std::ops::ControlFlow<Option<(glam::DVec3, f32, f32)>> {
+    use super::perspective::CameraType;
+    use std::ops::ControlFlow::{Break, Continue};
+    let (view, mut perspective) = HOLD.with(|h| {
+        let h = h.borrow();
+        (h.view, h.perspective)
+    });
+    let Some(view) = view else { return Continue(()) };
+    if !game.native_on(ID) || game.player.is_none() {
+        return Continue(());
+    }
+    // F5 while the view is away (the body shown as in third person) turns
+    // the perspective it has, and comes back to.
+    if game.camera_type != CameraType::ThirdPersonBack {
+        perspective = perspective.map(|p| match p {
+            CameraType::FirstPerson => CameraType::ThirdPersonBack,
+            CameraType::ThirdPersonBack => CameraType::ThirdPersonFront,
+            CameraType::ThirdPersonFront => CameraType::FirstPerson,
+        });
+        HOLD.with(|h| h.borrow_mut().perspective = perspective);
+        game.camera_type = CameraType::ThirdPersonBack;
+    }
+    let first = perspective.is_none_or(|p| p.first_person());
+    let distance = game
+        .player
+        .as_mut()
+        .and_then(|p| p.attribute("minecraft:camera_distance").ok())
+        .unwrap_or(4.0);
+    let (eye, yaw, pitch, back) = match view {
+        CameraView::At { pos, yaw, pitch } => (pos, yaw, pitch, 0.0),
+        CameraView::Entity(id) => {
+            let Some(m) = game.mobs.iter().find(|m| m.id == id && !m.removed) else {
+                return Continue(());
+            };
+            let e = super::remote_camera::mob_camera_entity(m);
+            let p = f64::from(partial);
+            let at: [f64; 3] = std::array::from_fn(|i| e.previous[i] + (e.position[i] - e.previous[i]) * p);
+            let eye = [at[0], at[1] + f64::from(e.eye_height), at[2]];
+            if first {
+                (eye, e.view_y_rot(partial), e.view_x_rot(partial), 0.0)
+            } else {
+                (eye, game.yaw, game.pitch, distance)
+            }
+        }
+        CameraView::Around(p) => (p, game.yaw, game.pitch, if first { 0.0 } else { distance }),
+    };
+    let mut v = game.view;
+    v.set_rotation(yaw, pitch);
+    v.position = eye;
+    v.eye = eye;
+    v.eye_rotation = [yaw, pitch];
+    if back > 0.0 {
+        let d = clear_behind(game, eye, v.forwards, back);
+        v.move_by(-(d as f32), 0.0, 0.0);
+    }
+    v.detached = true;
+    game.view = v;
+    Break(Some((glam::DVec3::from_array(v.position), v.y_rot, v.x_rot)))
+}
+
+/// How far back from `eye` (against `forwards`) the view can go, up to
+/// `distance`, before a solid block: a step at a time, stopping a little
+/// short of it.
+fn clear_behind(game: &Game<'_>, eye: [f64; 3], forwards: [f32; 3], distance: f64) -> f64 {
+    let facts = game.res.facts();
+    let step = 0.1;
+    let mut d = 0.0;
+    while d < distance {
+        let next = (d + step).min(distance);
+        let p: [f64; 3] = std::array::from_fn(|i| eye[i] - f64::from(forwards[i]) * next);
+        let state = game
+            .world
+            .block(p[0].floor() as i32, p[1].floor() as i32, p[2].floor() as i32);
+        if facts.get(state).solid_render {
+            return (d - step).max(0.0);
+        }
+        d = next;
+    }
+    distance
+}
+
+/// The mouse's turn of the player (`MouseHandler.turnPlayer`, each frame):
+/// its movement goes to the scripts (UserInputService's mouse delta), at
+/// their sensitivity; while a script's action takes it, it turns no one.
+pub(super) fn mouse_look(game: &mut Game<'_>) -> std::ops::ControlFlow<()> {
+    use std::ops::ControlFlow::{Break, Continue};
+    let grabbed = (game.captured || game.agent_pointer) && game.screen == Screen::Playing && game.player.is_some();
+    if !grabbed || !game.native_on(ID) {
+        return Continue(());
+    }
+    let (dx, dy) = game.mouse.accumulated();
+    let (look, k) = HOLD.with(|h| {
+        let mut h = h.borrow_mut();
+        h.mouse[0] += dx;
+        h.mouse[1] += dy;
+        (h.look, h.sensitivity)
+    });
+    if look {
+        game.mouse.add_motion(-dx, -dy);
+        return Break(());
+    }
+    if (k - 1.0).abs() > 1e-9 {
+        game.mouse.add_motion(dx * (k - 1.0), dy * (k - 1.0));
+    }
+    Continue(())
+}
+
+/// A key the scripts' actions take, pressed while the player plays: the
+/// scripts get it (UserInputService, the action), the game doesn't (W
+/// walks no one while a free camera flies with it, E opens no inventory).
+/// Its release reaches both, so the game lets go of what it held.
+fn sunk_key(event: &mut WindowEvent) -> bool {
+    let WindowEvent::KeyboardInput { event: k, .. } = &*event else {
+        return false;
+    };
+    let PhysicalKey::Code(code) = k.physical_key else {
+        return false;
+    };
+    if k.state != ElementState::Pressed || !PLAYING.with(Cell::get) || CHAT_FREE.with(Cell::get) {
+        return false;
+    }
+    let Some(name) = horizon_client::keybinds::key_name(code) else {
+        return false;
+    };
+    if !HOLD.with(|h| h.borrow().sunk.iter().any(|s| s == name)) {
+        return false;
+    }
+    if !k.repeat {
+        key(name, true);
+    }
+    *event = WindowEvent::HoveredFileCancelled;
+    true
+}
+
+/// Each frame: an anchored character's player stays still (what pushed it
+/// stops), and whether the player plays, for the window hook.
+fn keep_still(game: &mut Game<'_>) {
+    PLAYING.with(|p| p.set(game.screen == Screen::Playing && game.player.is_some()));
+    if HOLD.with(|h| h.borrow().frozen)
+        && let Some(p) = game.player.as_mut()
+    {
+        p.velocity = horizon_core::geometry::Vec3::new(0.0, 0.0, 0.0);
+        p.fall_distance = 0.0;
+    }
+}
 /// A call that changes the game, kept for the next frame.
 enum Later {
     Chat(String),
@@ -1466,6 +1658,134 @@ impl GameApi for Host<'_, '_> {
         g.yaw += dyaw;
         g.pitch = (g.pitch + dpitch).clamp(-90.0, 90.0);
     }
+    fn set_camera_view(&mut self, view: Option<CameraView>) {
+        let Some(g) = self.g_mut() else { return };
+        // While the view is away from the player, their body shows (as in
+        // third person); the game's own perspective comes back after.
+        let current = g.camera_type;
+        let back = HOLD.with(|h| {
+            let mut h = h.borrow_mut();
+            h.view = view;
+            if view.is_some() {
+                h.perspective.get_or_insert(current);
+                None
+            } else {
+                h.perspective.take()
+            }
+        });
+        if view.is_some() {
+            g.camera_type = super::perspective::CameraType::ThirdPersonBack;
+        } else if let Some(b) = back {
+            g.camera_type = b;
+        }
+    }
+    fn set_perspective(&mut self, first_person: bool) {
+        use super::perspective::CameraType;
+        let Some(g) = self.g_mut() else { return };
+        let to = if first_person {
+            CameraType::FirstPerson
+        } else {
+            CameraType::ThirdPersonBack
+        };
+        // A view held away from the player comes back to this one.
+        let held = HOLD.with(|h| {
+            let mut h = h.borrow_mut();
+            h.perspective.as_mut().map(|p| *p = to).is_some()
+        });
+        if !held && g.camera_type != to {
+            g.camera_type = to;
+            g.check_entity_post_effect(first_person);
+        }
+    }
+    fn set_camera_distance(&mut self, blocks: Option<f64>) {
+        let Some(p) = self.g_mut().and_then(|g| g.player.as_mut()) else { return };
+        // The game's distance is 4 blocks (the attribute's base).
+        let scale = blocks.map_or(1.0, |b| b.clamp(0.0, 400.0) / 4.0);
+        scale_attribute(&mut p.attributes, "minecraft:camera_distance", "horizon_studio:zoom", scale);
+    }
+    fn sink_input(&mut self, keys: &[String], look: bool) {
+        HOLD.with(|h| {
+            let mut h = h.borrow_mut();
+            h.sunk = keys.to_vec();
+            h.look = look;
+        });
+        // A key held as a script takes it lets go in the game.
+        if let Some(g) = self.g_mut() {
+            g.keys
+                .retain(|k| horizon_client::keybinds::key_name(*k).is_none_or(|n| !keys.iter().any(|s| s == n)));
+        }
+    }
+    fn mouse_delta(&mut self) -> [f64; 2] {
+        HOLD.with(|h| std::mem::take(&mut h.borrow_mut().mouse))
+    }
+    fn set_hitboxes(&mut self, on: bool) {
+        let Some(g) = self.g_mut() else { return };
+        // F3+B's switch, as the debug key turns it.
+        if g.debug_entry("entity_hitboxes") != on {
+            let overlay = g.debug;
+            g.debug_entries.toggle_status("entity_hitboxes", overlay);
+        }
+    }
+    fn set_mouse_sensitivity(&mut self, scale: f64) {
+        HOLD.with(|h| h.borrow_mut().sensitivity = scale);
+    }
+    fn move_entity(&mut self, id: u32, feet: [f64; 3]) -> bool {
+        let Some(g) = self.g_mut() else { return false };
+        let at = horizon_core::geometry::Vec3::new(feet[0], feet[1], feet[2]);
+        if let Some(m) = g.mobs.iter_mut().find(|m| m.id == id) {
+            m.position = at;
+            m.previous = at;
+            return true;
+        }
+        if let Some(d) = g.dropped.iter_mut().find(|d| d.id == id) {
+            d.position = at;
+            d.previous = at;
+            return true;
+        }
+        if let Some(o) = g.orbs.iter_mut().find(|o| o.id == id) {
+            o.position = at;
+            o.previous = at;
+            return true;
+        }
+        false
+    }
+    fn press(&mut self, key: &str, down: bool) -> bool {
+        let Some(g) = self.g_mut() else { return false };
+        if g.screen != Screen::Playing || g.player.is_none() {
+            return false;
+        }
+        // A click as the mouse's own: an attack or a use, and the mods' (the
+        // studio's own on("key")) hear it.
+        if let Some(button) = horizon_client::keybinds::mouse_button(key) {
+            g.extras_mouse(button, down);
+            return g.play_mouse(button, down).is_ok();
+        }
+        // A key held as the keyboard's: the player walks, jumps, sneaks with
+        // it; the mods hear it.
+        let Some(code) = horizon_client::keybinds::key_code(key) else {
+            return false;
+        };
+        if down {
+            g.keys.insert(code);
+        } else {
+            g.keys.remove(&code);
+        }
+        g.native_key_event(code, down, false);
+        true
+    }
+    fn set_player_frozen(&mut self, on: bool) -> bool {
+        HOLD.with(|h| h.borrow_mut().frozen = on);
+        let Some(p) = self.g_mut().and_then(|g| g.player.as_mut()) else {
+            return false;
+        };
+        // An anchored character: no walking, jumping or falling.
+        let scale = if on { 0.0 } else { 1.0 };
+        for attribute in ["minecraft:movement_speed", "minecraft:jump_strength", "minecraft:gravity"] {
+            scale_attribute(&mut p.attributes, attribute, "horizon_studio:anchored", scale);
+        }
+        p.velocity = horizon_core::geometry::Vec3::new(0.0, 0.0, 0.0);
+        true
+    }
     fn place(&mut self, corner: Corner, w: f32, h: f32) -> (f32, f32) {
         match self.corners.as_deref_mut() {
             Some(c) => c.place(game_corner(corner), w, h),
@@ -1519,6 +1839,7 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &dyn EventLoopCtl) {
     catch_up(game);
     keep_view(game);
     remember_server(game);
+    keep_still(game);
     // Once frames stop (a hidden window), the network thread answers the
     // server's pings itself: it learns here when the last frame began, and
     // which connection to answer on.
@@ -1840,6 +2161,9 @@ pub(super) fn window_input(event: &mut WindowEvent) {
                 *event = WindowEvent::HoveredFileCancelled;
                 return;
             }
+        }
+        if sunk_key(event) {
+            return;
         }
         // The chat open: the pointer, free, reaches the scripts' GUI, which
         // keeps a press or the wheel over it from the chat.

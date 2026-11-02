@@ -346,6 +346,59 @@ pub trait GameApi {
     fn set_look(&mut self, yaw: f32, pitch: f32) {
         let _ = (yaw, pitch);
     }
+    /// The view as a Roblox script's Camera puts it (None: the game's own,
+    /// at the player). The player stays where they are.
+    fn set_camera_view(&mut self, view: Option<CameraView>) {
+        let _ = view;
+    }
+    /// First person, or third person from behind (F5's first two views).
+    fn set_perspective(&mut self, first_person: bool) {
+        let _ = first_person;
+    }
+    /// How far the third person view is from the player, in blocks (None:
+    /// the game's own, 4).
+    fn set_camera_distance(&mut self, blocks: Option<f64>) {
+        let _ = blocks;
+    }
+    /// Keys (`key.keyboard.w`) the game doesn't get while scripts take them
+    /// (they reach the scripts still), and whether the mouse stops turning
+    /// the player (its movement still reaches `mouse_delta`).
+    fn sink_input(&mut self, keys: &[String], look: bool) {
+        let _ = (keys, look);
+    }
+    /// How far the mouse moved while it turns the view, since the last call
+    /// (the pointer's pixels, right and down).
+    fn mouse_delta(&mut self) -> [f64; 2] {
+        [0.0; 2]
+    }
+    /// Shows the entities' hitboxes (F3+B) or not.
+    fn set_hitboxes(&mut self, on: bool) {
+        let _ = on;
+    }
+    /// The mouse's sensitivity as a multiple of the player's setting.
+    fn set_mouse_sensitivity(&mut self, scale: f64) {
+        let _ = scale;
+    }
+    /// Moves an entity in the client's world only, by its feet (the server's
+    /// next move of it puts it back). Whether there was one.
+    fn move_entity(&mut self, id: u32, feet: [f64; 3]) -> bool {
+        let _ = (id, feet);
+        false
+    }
+    /// A key or mouse button pressed or let go as the player's own would be
+    /// (`key.mouse.left`, `key.keyboard.w`): the game acts on it (a click
+    /// attacks, W walks), and the studio hears of it as of the player's own.
+    /// Whether the game took it (else the studio has it alone).
+    fn press(&mut self, key: &str, down: bool) -> bool {
+        let _ = (key, down);
+        false
+    }
+    /// The player holds still (an anchored character): no walking, jumping,
+    /// flying or falling while `on`.
+    fn set_player_frozen(&mut self, on: bool) -> bool {
+        let _ = on;
+        false
+    }
     /// Turns the player's view by this much (degrees).
     fn turn_player(&mut self, dyaw: f32, dpitch: f32) {
         let _ = (dyaw, dpitch);
@@ -890,6 +943,20 @@ impl Camera {
             depth,
         ))
     }
+}
+
+/// Where the view is when a Roblox script's Camera takes it from the player
+/// (`GameApi::set_camera_view`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CameraView {
+    /// Detached: at `pos`, looking this way (degrees; yaw 0 looks south).
+    At { pos: [f64; 3], yaw: f32, pitch: f32 },
+    /// Following another entity, by its id: from its eyes in first person,
+    /// behind it in third.
+    Entity(u32),
+    /// Around a point (a part's centre), as the third person camera is
+    /// around the player: behind it as the player looks.
+    Around([f64; 3]),
 }
 
 const NEAR: f64 = 0.05;
@@ -3263,6 +3330,9 @@ impl Studio {
             rbx.world.noclip = noclip;
             game.set_noclip(noclip);
         }
+        // Where the view is, the perspective, the input scripts take, the
+        // anchored character, and what scripts took out of the client's world.
+        super::hstudio_rbx_world::game_effects(rbx, game);
         // What scripts set of the game's lighting, sky, camera and gravity.
         let fx = &mut rbx.world.effects;
         if let Some(light) = fx.light.take() {

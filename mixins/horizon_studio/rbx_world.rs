@@ -14,11 +14,11 @@
 // game, and they come and go with Roblox's events. A UI script that never
 // looks costs the game nothing.
 
-use super::hstudio::{EntityInfo, GameApi, Owner, PlayerEntry, PlayerInfo, PlayerPose, Reply};
+use super::hstudio::{CameraView, EntityInfo, GameApi, Owner, PlayerEntry, PlayerInfo, PlayerPose, Reply};
 use super::hstudio_lua::{Lua, Res, Value, bad_arg, check_num, check_text};
 use super::hstudio_rbx::{Env, Id, Rbx};
 use super::hstudio_rbx_types::{CFrame, Vector3};
-use super::hstudio_rbx_values::{as_c3, as_cf, cf, enum_item, enum_value, v3};
+use super::hstudio_rbx_values::{as_c3, as_cf, as_item, cf, enum_item, enum_value, v3};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -139,6 +139,35 @@ pub struct World {
     /// and the Mouse's TargetFilter.
     pub frames: u64,
     pub mouse_at: Option<(u64, bool, f64, f64, Option<Id>)>,
+    /// The block the Mouse last pointed at, when its Target is the Terrain.
+    pub mouse_block: Option<(i32, i32, i32)>,
+    /// The player's facing at this frame's sync (degrees), and where their
+    /// root part's centre was.
+    pub yaw: f32,
+    pub pitch: f32,
+    pub root_at: Vector3,
+    /// The Camera's CFrame as a script last set it, since the view was last
+    /// worked out (`camera_frame`), and whether an action took the mouse's
+    /// movement then; and the view the game was last given.
+    pub camera_set: Option<(CFrame, bool)>,
+    pub view: Option<CameraView>,
+    /// The camera's distance as Roblox's zoom keeps it, once a script set
+    /// the zoom's limits (CameraMinZoomDistance and CameraMaxZoomDistance),
+    /// and whether they changed since; whether LockFirstPerson holds the
+    /// view in first person.
+    pub zoom: Option<f64>,
+    pub zoom_changed: bool,
+    pub first_locked: bool,
+    /// What the game was last told: the keys scripts' actions take and
+    /// whether one takes the mouse's movement; whether the character is
+    /// anchored.
+    pub sunk: (Vec<String>, bool),
+    pub frozen: bool,
+    /// What scripts took out of the client's world or moved in it, for the
+    /// next frame: blocks (the Mouse's, as its Target the Terrain was
+    /// destroyed) and where an entity's feet go (a mirror's root part moved).
+    pub ghosts: Vec<(i32, i32, i32)>,
+    pub entity_moves: Vec<(u32, [f64; 3])>,
 }
 
 impl Default for World {
@@ -170,6 +199,19 @@ impl Default for World {
             boxes: Default::default(),
             frames: 0,
             mouse_at: None,
+            mouse_block: None,
+            yaw: 0.0,
+            pitch: 0.0,
+            root_at: Vector3::ZERO,
+            camera_set: None,
+            view: None,
+            zoom: None,
+            zoom_changed: false,
+            first_locked: false,
+            sunk: (Vec::new(), false),
+            frozen: false,
+            ghosts: Vec::new(),
+            entity_moves: Vec::new(),
         }
     }
 }
@@ -205,6 +247,8 @@ pub struct Mirror {
     pub count: u32,
     /// The width, height and eyes its boxes were made for.
     pub shape: (f64, f64, f64),
+    /// How far its root part's centre is over its feet.
+    pub lift: f64,
 }
 
 /// A walk Humanoid:MoveTo started: its Humanoid, where to and when; whether
@@ -234,9 +278,9 @@ pub struct Rig {
 /// A player's character, R6 in blocks: a Model named `name` whose
 /// PrimaryPart, the HumanoidRootPart, is the torso's box, a Head (the head's
 /// 8-pixel cube), a Humanoid, and the Torso, Left Arm, Right Arm, Left Leg
-/// and Right Leg. Its parts are invisible (the game draws the player),
-/// anchored, and touch nothing; like the services it is locked, so scripts
-/// can add to it but not take it apart. Not in the Workspace yet.
+/// and Right Leg. Its parts are invisible (the game draws the player) and
+/// touch nothing; as Roblox's, they aren't anchored (anchoring the local
+/// one's holds the player still). Not in the Workspace yet.
 pub fn build_character(rbx: &mut Rbx, name: &str) -> Rig {
     let model = rbx.make("Model", None);
     rbx.inst_mut(model).name = name.into();
@@ -260,6 +304,9 @@ pub fn build_character(rbx: &mut Rbx, name: &str) -> Rig {
     let _ = rbx.set_parent(humanoid, Some(model));
     rbx.raw_set(model, "PrimaryPart", root_v);
     let limbs = LIMBS.map(|(limb, width, _, _)| rig_part(rbx, model, limb, Vector3::new(width, 12.0, 4.0) * PX));
+    for part in [root, head].into_iter().chain(limbs) {
+        rbx.raw_set(part, "Anchored", Value::Bool(false));
+    }
     // Scripts may take the character apart, as in Roblox: what follows the
     // player is whatever the LocalPlayer's Character has (resolve_character).
     let animator = rbx.make("Animator", None);
@@ -399,6 +446,7 @@ fn sync_local(rbx: &mut Rbx, p: &PlayerInfo, pose: Option<&PlayerPose>) {
         rbx.respawn_at = Some(rbx.now + wait);
     }
     identity(rbx, p);
+    (rbx.world.yaw, rbx.world.pitch) = (p.yaw, p.pitch);
     let yaw = f64::from(p.yaw).to_radians();
     let pitch = f64::from(p.pitch).to_radians();
     let feet = Vector3::new(p.x, p.y, p.z);
@@ -412,6 +460,7 @@ fn sync_local(rbx: &mut Rbx, p: &PlayerInfo, pose: Option<&PlayerPose>) {
     let (rp, hd, hum) = (rbx.root_part, rbx.head, rbx.humanoid);
     // Kept quiet so a script's teleport isn't undone by the player's own place.
     let root_cf = CFrame::look_at(root, root + flat, Vector3::Y_AXIS);
+    rbx.world.root_at = root;
     rbx.quiet_set(rp, "CFrame", cf(root_cf));
     rbx.fire(rp, "prop:CFrame", Vec::new());
     let limbs = rbx.world.limbs;
@@ -737,6 +786,14 @@ pub struct Effects {
     pub look: Option<(f32, f32)>,
     /// How far to turn the player's view (yaw, pitch in degrees).
     pub turn: (f32, f32),
+    /// First person (true) or third (LocalPlayer.CameraMode, the zoom).
+    pub perspective: Option<bool>,
+    /// The third person view's distance in blocks (None: the game's).
+    pub distance: Option<Option<f64>>,
+    /// The mouse's sensitivity (UserInputService.MouseDeltaSensitivity).
+    pub sensitivity: Option<f64>,
+    /// The entities' hitboxes shown (RenderSettings.ShowBoundingBoxes).
+    pub hitboxes: Option<bool>,
 }
 
 /// Roblox's default Workspace.Gravity, in studs per second squared.
@@ -804,17 +861,241 @@ pub fn effect_set(rbx: &mut Rbx, id: Id, prop: &str) {
             let fov = rbx.raw_get(id, "FieldOfView").to_num().unwrap_or(70.0);
             rbx.world.effects.fov = Some(Some(fov.clamp(1.0, 120.0) as f32));
         }
+        // Where the view goes is worked out once a frame (`camera_frame`).
         ("Camera", "CFrame") if id == rbx.camera => {
-            if let Some(cf) = as_cf(&rbx.raw_get(id, "CFrame")) {
-                let look = cf.look_vector();
-                // Minecraft's yaw: 0 faces +Z (south), 90 faces -X; pitch is down.
-                let yaw = (-look.x).atan2(look.z).to_degrees() as f32;
-                let pitch = (-look.y).clamp(-1.0, 1.0).asin().to_degrees() as f32 + 0.0;
-                rbx.world.effects.look = Some((yaw, pitch));
-            }
+            let captured = rbx.world.sunk.1;
+            rbx.world.camera_set = as_cf(&rbx.raw_get(id, "CFrame")).map(|c| (c, captured));
+        }
+        ("Player", "CameraMode") if id == rbx.local_player => {
+            let mode = as_item(&rbx.raw_get(id, "CameraMode")).map_or("Classic", |m| m.name);
+            let first = mode == "LockFirstPerson";
+            rbx.world.first_locked = first;
+            rbx.world.effects.perspective = Some(first);
+            rbx.world.zoom = Some(if first { MIN_ZOOM } else { GAME_DISTANCE });
+        }
+        ("Player", "CameraMaxZoomDistance" | "CameraMinZoomDistance") if id == rbx.local_player => {
+            rbx.world.zoom_changed = true;
+        }
+        ("RenderSettings", "ShowBoundingBoxes") => {
+            rbx.world.effects.hitboxes = Some(rbx.raw_get(id, "ShowBoundingBoxes").truthy());
+        }
+        ("UserInputService", "MouseDeltaSensitivity") => {
+            let k = rbx.raw_get(id, "MouseDeltaSensitivity").to_num().unwrap_or(1.0);
+            rbx.world.effects.sensitivity = Some(k.clamp(0.0, 10.0));
         }
         _ => {}
     }
+}
+
+/// Minecraft's yaw and pitch for a way to look (yaw 0 faces +Z, south; 90
+/// faces -X; a positive pitch looks down).
+pub fn yaw_pitch(look: Vector3) -> (f32, f32) {
+    let yaw = (-look.x).atan2(look.z).to_degrees() as f32;
+    let pitch = (-look.y).clamp(-1.0, 1.0).asin().to_degrees() as f32 + 0.0;
+    (yaw, pitch)
+}
+
+// ---------------------------------------------------------------- the view and the input
+
+/// The zoom (Roblox's camera distance, in blocks) under which the view is
+/// first person, as Roblox's camera has it.
+const FIRST_PERSON_ZOOM: f64 = 1.0;
+/// Roblox's least zoom: CameraMinZoomDistance's default, first person.
+const MIN_ZOOM: f64 = 0.5;
+/// The game's own third person distance, in blocks.
+const GAME_DISTANCE: f64 = 4.0;
+/// How near where the view is a script may set the Camera's CFrame for it
+/// to turn the player rather than move the view, in blocks.
+const SAME_PLACE: f64 = 0.25;
+
+/// What the layer asks of the game's view, input and world each frame,
+/// before what Effects holds is sent: the perspective and the third person
+/// distance (`zoom`), the keys and mouse movement scripts' actions take
+/// (`hstudio_rbx_draw::sunk_input`), where the view is (`camera_frame`),
+/// whether the anchored character holds still, and the blocks and entities
+/// scripts took out of the client's world or moved in it.
+pub fn game_effects(rbx: &mut Rbx, game: &mut dyn GameApi) {
+    zoom(rbx, game);
+    let sunk = super::hstudio_rbx_draw::sunk_input(rbx);
+    if sunk != rbx.world.sunk {
+        game.sink_input(&sunk.0, sunk.1);
+        rbx.world.sunk = sunk;
+    }
+    camera_frame(rbx, game);
+    let frozen = anchored(rbx);
+    if frozen != rbx.world.frozen && game.set_player_frozen(frozen) {
+        rbx.world.frozen = frozen;
+    }
+    for (x, y, z) in std::mem::take(&mut rbx.world.ghosts) {
+        game.set_client_block(x, y, z, "minecraft:air");
+    }
+    for (id, feet) in std::mem::take(&mut rbx.world.entity_moves) {
+        game.move_entity(id, feet);
+    }
+    let fx = &mut rbx.world.effects;
+    if let Some(first) = fx.perspective.take() {
+        game.set_perspective(first);
+    }
+    if let Some(d) = fx.distance.take() {
+        game.set_camera_distance(d);
+    }
+    if let Some(k) = fx.sensitivity.take() {
+        game.set_mouse_sensitivity(k);
+    }
+    if let Some(on) = fx.hitboxes.take() {
+        game.set_hitboxes(on);
+    }
+}
+
+/// Roblox's zoom as the game's perspective. LockFirstPerson holds the view
+/// in first person. Once a script sets the zoom's limits (the LocalPlayer's
+/// CameraMinZoomDistance and CameraMaxZoomDistance), the zoom is kept
+/// within them, from where the view is (first person is Roblox's least
+/// zoom, third the game's distance): under a block, the view is first
+/// person; else third person, that far behind. Limits that leave the zoom
+/// where it is change nothing (as after camdistance's, the zoom stays).
+fn zoom(rbx: &mut Rbx, game: &mut dyn GameApi) {
+    if rbx.world.first_locked && game.body_shown() && rbx.world.effects.perspective.is_none() {
+        game.set_perspective(true);
+    }
+    if !std::mem::take(&mut rbx.world.zoom_changed) {
+        return;
+    }
+    let p = rbx.local_player;
+    let max = rbx.raw_get(p, "CameraMaxZoomDistance").to_num().unwrap_or(128.0);
+    let min = rbx
+        .raw_get(p, "CameraMinZoomDistance")
+        .to_num()
+        .unwrap_or(MIN_ZOOM)
+        .min(max);
+    let shown = game.body_shown();
+    let was = rbx.world.zoom.unwrap_or(if shown { GAME_DISTANCE } else { MIN_ZOOM });
+    let z = was.clamp(min, max.max(min));
+    if (z - was).abs() < 1e-9 {
+        return;
+    }
+    rbx.world.zoom = Some(z);
+    let first = z < FIRST_PERSON_ZOOM || rbx.world.first_locked;
+    if first != !shown {
+        rbx.world.effects.perspective = Some(first);
+    }
+    if !first {
+        rbx.world.effects.distance = Some(Some(z));
+    }
+}
+
+/// Where the view is this frame, as Roblox's camera puts it. A Scriptable
+/// (or Fixed) Camera stays where scripts put it: its CFrame, place and
+/// rotation, is the view, wherever the player goes. Another Camera follows
+/// its CameraSubject (`subject_view`), but a CFrame a script set since the
+/// last frame (a render step's) is the view for this frame: moved away from
+/// where the view was, or while a script's action takes the mouse's
+/// movement (a free camera's), the view goes there. Unless an action takes
+/// the mouse, the player turns to look that way too, as Roblox's camera
+/// keeps its new rotation. The game is told only of a change.
+pub fn camera_frame(rbx: &mut Rbx, game: &mut dyn GameApi) {
+    let cam = rbx.camera;
+    let kind = as_item(&rbx.raw_get(cam, "CameraType")).map_or("Custom", |k| k.name);
+    let set = rbx.world.camera_set.take();
+    let view = if matches!(kind, "Scriptable" | "Fixed") {
+        let frame = set
+            .map(|s| s.0)
+            .or_else(|| as_cf(&rbx.raw_get(cam, "CFrame")))
+            .unwrap_or_default();
+        Some(view_at(frame))
+    } else if let Some((frame, then)) = set {
+        let captured = then || rbx.world.sunk.1;
+        let here = game.camera().map(|c| Vector3::new(c.pos[0], c.pos[1], c.pos[2]));
+        let near = here.is_some_and(|h| (frame.position() - h).magnitude() <= SAME_PLACE);
+        if !captured {
+            rbx.world.effects.look = Some(yaw_pitch(frame.look_vector()));
+        }
+        if captured || !near {
+            Some(view_at(frame))
+        } else {
+            subject_view(rbx)
+        }
+    } else {
+        subject_view(rbx)
+    };
+    if view != rbx.world.view {
+        game.set_camera_view(view);
+        rbx.world.view = view;
+    }
+}
+
+/// The view at a CFrame: its place, looking along its LookVector.
+fn view_at(frame: CFrame) -> CameraView {
+    let p = frame.position();
+    let (yaw, pitch) = yaw_pitch(frame.look_vector());
+    CameraView::At {
+        pos: [p.x, p.y, p.z],
+        yaw,
+        pitch,
+    }
+}
+
+/// Where the Camera's CameraSubject puts the view: the local character (or
+/// a part of it) or none, the game's own; another entity's mirror (its
+/// Humanoid, its model, a part of it), that entity's view; any other
+/// part, model or Humanoid, around its centre (a Humanoid's, its root
+/// part's).
+fn subject_view(rbx: &Rbx) -> Option<CameraView> {
+    let s = rbx.id_of(&rbx.raw_get(rbx.camera, "CameraSubject"))?;
+    let inst = rbx.try_inst(s).filter(|i| !i.destroyed)?;
+    let ch = rbx.character;
+    if s == ch || rbx.is_descendant_of(s, ch) || s == rbx.humanoid {
+        return None;
+    }
+    if let Some((&id, _)) = rbx
+        .world
+        .mirrors
+        .iter()
+        .find(|(_, m)| s == m.model || rbx.is_descendant_of(s, m.model))
+    {
+        return Some(CameraView::Entity(id));
+    }
+    let target = if inst.class.name == "Humanoid" {
+        rbx.id_of(&rbx.raw_get(s, "RootPart")).or(inst.parent)?
+    } else {
+        s
+    };
+    let t = rbx.try_inst(target)?;
+    // Out of the Workspace (a character parked in Lighting), nothing to see.
+    if !super::hstudio_rbx::is_a(t.class, "PVInstance") || !rbx.is_descendant_of(target, rbx.workspace) {
+        return None;
+    }
+    let at = super::hstudio_rbx_methods::pivot(rbx, target).position();
+    Some(CameraView::Around([at.x, at.y, at.z]))
+}
+
+/// A script's Destroy (or Remove) of the Terrain as the Mouse's Target:
+/// the block the Mouse points at goes from the client's world, as Roblox's
+/// client deletes a part for itself alone (a ghost block: the server's next
+/// word on it puts it back). Whether there was one.
+pub fn local_delete(rbx: &mut Rbx, id: Id) -> bool {
+    let terrain = rbx.id_of(&rbx.raw_get(rbx.workspace, "Terrain"));
+    if Some(id) != terrain {
+        return false;
+    }
+    match rbx.world.mouse_block.take() {
+        Some(b) => {
+            rbx.world.ghosts.push(b);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Whether a part of the local character is anchored (anchoring one
+/// anchors the whole character in Roblox, its parts joined).
+fn anchored(rbx: &Rbx) -> bool {
+    let ch = rbx.character;
+    ch != rbx.spare_model
+        && rbx.descendants(ch).into_iter().any(|d| {
+            rbx.try_inst(d)
+                .is_some_and(|i| super::hstudio_rbx::is_a(i.class, "BasePart") && i.get("Anchored").truthy())
+        })
 }
 
 // ---------------------------------------------------------------- the world's entities
@@ -1038,6 +1319,7 @@ fn build_mirror(rbx: &mut Rbx, e: &EntityInfo) {
             state: entity_state(e),
             count: e.item.as_ref().map_or(0, |i| i.1),
             shape: (0.0, 0.0, 0.0),
+            lift: 0.0,
         },
     );
     update_mirror(rbx, e, true);
@@ -1151,6 +1433,9 @@ fn place(rbx: &mut Rbx, e: &EntityInfo, root: Id, head: Option<Id>, resize: bool
         "CFrame",
         cf(CFrame::look_at(root_at, root_at + body, Vector3::Y_AXIS)),
     );
+    if let Some(m) = rbx.world.mirrors.get_mut(&e.id) {
+        m.lift = root_at.y - feet.y;
+    }
     if let Some(head) = head {
         rbx.quiet_set(
             head,
@@ -1708,13 +1993,47 @@ pub fn state_of(rbx: &Rbx, humanoid: Id) -> &'static str {
 /// tween): the player goes there, their feet as far under its centre as
 /// this frame's pose has them, with a /tp at the end of the frame. A later
 /// move takes the earlier's place.
+///
+/// The player faces the way it faces, as a character turns with its root
+/// part (a script turning it to look at someone): a frame with a rotation
+/// of its own, that is, not a bare position (`CFrame.new(x, y, z)`), whose
+/// yaw isn't the player's. Set where it is (turned on the spot, or put
+/// back), it moves no one: as in Roblox, the player keeps their motion.
 pub fn root_moved(rbx: &mut Rbx) {
-    let to = as_cf(&rbx.raw_get(rbx.root_part, "CFrame")).unwrap_or_default();
-    let feet = to.position() - Vector3::new(0.0, rbx.world.root_y, 0.0);
+    let frame = as_cf(&rbx.raw_get(rbx.root_part, "CFrame")).unwrap_or_default();
+    let at = frame.position();
+    let look = frame.look_vector();
+    let bare = (look - Vector3::new(0.0, 0.0, -1.0)).magnitude() < 1e-9
+        && (frame.up_vector() - Vector3::Y_AXIS).magnitude() < 1e-9;
+    if !bare && Vector3::new(look.x, 0.0, look.z).magnitude() > 0.1 {
+        let (yaw, _) = yaw_pitch(look);
+        let turn = (yaw - rbx.world.yaw + 540.0).rem_euclid(360.0) - 180.0;
+        if turn.abs() > 0.5 {
+            rbx.world.effects.look = Some((yaw, rbx.world.pitch));
+            rbx.world.yaw = yaw;
+        }
+    }
+    let feet = at - Vector3::new(0.0, rbx.world.root_y, 0.0);
     // Out of the world, or where Roblox destroys the character, it doesn't go.
-    if super::hstudio_rbx_body::root_moved(rbx, to, feet) {
+    let goes = super::hstudio_rbx_body::root_moved(rbx, frame, feet);
+    if (at - rbx.world.root_at).magnitude() < 1e-6 {
+        rbx.world.teleport = None;
+    } else if goes {
         rbx.world.teleport = Some(feet);
     }
+}
+
+/// A part moved by a script: another entity's mirror's root part moves
+/// the entity in the client's world (as Roblox's client moves another
+/// player's character, until the server's next word on it).
+pub fn mirror_moved(rbx: &mut Rbx, id: Id) {
+    let Some((&entity, m)) = rbx.world.mirrors.iter().find(|(_, m)| m.root == id) else {
+        return;
+    };
+    let lift = m.lift;
+    let at = as_cf(&rbx.raw_get(id, "CFrame")).unwrap_or_default().position();
+    rbx.world.entity_moves.retain(|(e, _)| *e != entity);
+    rbx.world.entity_moves.push((entity, [at.x, at.y - lift, at.z]));
 }
 
 /// Where Model:MoveTo puts the player's root part, asked for `at`: Roblox
@@ -1823,10 +2142,20 @@ pub fn mover_velocity(rbx: &Rbx) -> Option<Vector3> {
 /// agent's goto, and MoveToFinished fires with whether they got there:
 /// false after 8 seconds (Roblox's timeout), and when another MoveTo takes
 /// the walk's place. Another Humanoid has no one to walk: its MoveToFinished
-/// fires with false.
+/// fires with false. A MoveTo to the block the walk goes to already (a
+/// follow loop's, each frame) keeps the walk going, its timeout anew.
 pub fn move_to(rbx: &mut Rbx, humanoid: Id, to: Vector3) {
     if humanoid != rbx.humanoid {
         rbx.fire(humanoid, "MoveToFinished", vec![Value::Bool(false)]);
+        return;
+    }
+    let block = |v: Vector3| (v.x.floor(), v.y.floor(), v.z.floor());
+    let now = rbx.now;
+    if let Some(w) = rbx.world.walk.as_mut()
+        && w.humanoid == humanoid
+        && block(w.to) == block(to)
+    {
+        w.since = now;
         return;
     }
     let stop = match rbx.world.walk.take() {

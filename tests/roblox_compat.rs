@@ -422,8 +422,12 @@ fn lighting_workspace_and_camera_reach_the_game() {
     assert!(m.contains(&"fog Some(64.0)".to_owned()), "{m:?}");
     assert_eq!(run(&mut st, &mut game, "gravity"), ["gravity 0.00"]);
     assert_eq!(run(&mut st, &mut game, "fov"), ["fov Some(100.0)"]);
-    // Looking along +x: Minecraft's yaw -90.
-    assert_eq!(run(&mut st, &mut game, "look"), ["look -90.0 0.0"]);
+    // Looking along +x: Minecraft's yaw -90; the view is at the origin for
+    // that frame (as Roblox's camera, which then follows the player again).
+    assert_eq!(
+        run(&mut st, &mut game, "look"),
+        ["view at 0.00 0.00 0.00 -90.0 0.0", "look -90.0 0.0", "view game"]
+    );
     let m = run(&mut st, &mut game, "turn");
     assert_eq!(m, ["turn 15.0 0.0"]);
     assert!(game.sent.is_empty(), "{:?}", game.sent);

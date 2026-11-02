@@ -2029,6 +2029,59 @@ pub fn input_object(rbx: &mut Rbx, key: Option<&'static str>, kind: &str, state:
     Value::table(t)
 }
 
+/// The keys the game and Roblox both name, other than letters, digits and
+/// the function and keypad digit keys: the game's name (after
+/// `key.keyboard.`) and the KeyCode's.
+const NAMED_KEYS: &[(&str, &str)] = &[
+    ("space", "Space"),
+    ("enter", "Return"),
+    ("escape", "Escape"),
+    ("tab", "Tab"),
+    ("backspace", "Backspace"),
+    ("delete", "Delete"),
+    ("insert", "Insert"),
+    ("home", "Home"),
+    ("end", "End"),
+    ("page.up", "PageUp"),
+    ("page.down", "PageDown"),
+    ("up", "Up"),
+    ("down", "Down"),
+    ("left", "Left"),
+    ("right", "Right"),
+    ("left.shift", "LeftShift"),
+    ("right.shift", "RightShift"),
+    ("left.control", "LeftControl"),
+    ("right.control", "RightControl"),
+    ("left.alt", "LeftAlt"),
+    ("right.alt", "RightAlt"),
+    ("left.win", "LeftSuper"),
+    ("right.win", "RightSuper"),
+    ("caps.lock", "CapsLock"),
+    ("num.lock", "NumLock"),
+    ("scroll.lock", "ScrollLock"),
+    ("print.screen", "Print"),
+    ("pause", "Pause"),
+    ("menu", "Menu"),
+    ("minus", "Minus"),
+    ("equal", "Equals"),
+    ("comma", "Comma"),
+    ("period", "Period"),
+    ("slash", "Slash"),
+    ("semicolon", "Semicolon"),
+    ("apostrophe", "Quote"),
+    ("left.bracket", "LeftBracket"),
+    ("right.bracket", "RightBracket"),
+    ("backslash", "BackSlash"),
+    ("grave.accent", "Backquote"),
+    ("keypad.enter", "KeypadEnter"),
+    ("keypad.add", "KeypadPlus"),
+    ("keypad.subtract", "KeypadMinus"),
+    ("keypad.multiply", "KeypadMultiply"),
+    ("keypad.divide", "KeypadDivide"),
+    ("keypad.decimal", "KeypadPeriod"),
+    ("keypad.equal", "KeypadEquals"),
+];
+
 /// The KeyCode of a key as the game names it ("key.keyboard.e").
 pub fn keycode(key: &str) -> Option<&'static str> {
     let k = key.strip_prefix("key.keyboard.")?;
@@ -2073,56 +2126,88 @@ pub fn keycode(key: &str) -> Option<&'static str> {
         ];
         return Some(P[n]);
     }
-    Some(match k {
-        "space" => "Space",
-        "enter" => "Return",
-        "escape" => "Escape",
-        "tab" => "Tab",
-        "backspace" => "Backspace",
-        "delete" => "Delete",
-        "insert" => "Insert",
-        "home" => "Home",
-        "end" => "End",
-        "page.up" => "PageUp",
-        "page.down" => "PageDown",
-        "up" => "Up",
-        "down" => "Down",
-        "left" => "Left",
-        "right" => "Right",
-        "left.shift" => "LeftShift",
-        "right.shift" => "RightShift",
-        "left.control" => "LeftControl",
-        "right.control" => "RightControl",
-        "left.alt" => "LeftAlt",
-        "right.alt" => "RightAlt",
-        "left.win" => "LeftSuper",
-        "right.win" => "RightSuper",
-        "caps.lock" => "CapsLock",
-        "num.lock" => "NumLock",
-        "scroll.lock" => "ScrollLock",
-        "print.screen" => "Print",
-        "pause" => "Pause",
-        "menu" => "Menu",
-        "minus" => "Minus",
-        "equal" => "Equals",
-        "comma" => "Comma",
-        "period" => "Period",
-        "slash" => "Slash",
-        "semicolon" => "Semicolon",
-        "apostrophe" => "Quote",
-        "left.bracket" => "LeftBracket",
-        "right.bracket" => "RightBracket",
-        "backslash" => "BackSlash",
-        "grave.accent" => "Backquote",
-        "keypad.enter" => "KeypadEnter",
-        "keypad.add" => "KeypadPlus",
-        "keypad.subtract" => "KeypadMinus",
-        "keypad.multiply" => "KeypadMultiply",
-        "keypad.divide" => "KeypadDivide",
-        "keypad.decimal" => "KeypadPeriod",
-        "keypad.equal" => "KeypadEquals",
-        _ => return None,
-    })
+    NAMED_KEYS.iter().find(|(name, _)| *name == k).map(|(_, code)| *code)
+}
+
+/// The game's name for the key a KeyCode names (`keycode`'s other way):
+/// "W" is "key.keyboard.w".
+pub fn game_key(code: &str) -> Option<String> {
+    let digits = [
+        "Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+    ];
+    let name = if code.len() == 1 && code.as_bytes()[0].is_ascii_uppercase() {
+        code.to_ascii_lowercase()
+    } else if let Some(d) = digits.iter().position(|d| *d == code) {
+        d.to_string()
+    } else if let Some(d) = code
+        .strip_prefix("Keypad")
+        .and_then(|n| digits.iter().position(|d| *d == n))
+    {
+        format!("keypad.{d}")
+    } else if code.len() > 1 && code.starts_with('F') && code[1..].parse::<u32>().is_ok_and(|n| (1..=15).contains(&n)) {
+        code.to_ascii_lowercase()
+    } else {
+        NAMED_KEYS.iter().find(|(_, c)| *c == code)?.0.to_owned()
+    };
+    Some(format!("key.keyboard.{name}"))
+}
+
+/// The mouse moved while the game turns the view with it (`dx`, `dy` in
+/// pixels, MouseDeltaSensitivity applied): UserInputService's InputChanged
+/// with a MouseMovement input and its Delta, GetMouseDelta's answer, the
+/// Mouse's Move, and the actions bound to MouseMovement (as their Change).
+pub fn mouse_motion(rbx: &mut Rbx, dx: f64, dy: f64) {
+    let uis = rbx.service("UserInputService").unwrap_or(rbx.game);
+    let k = rbx.raw_get(uis, "MouseDeltaSensitivity").to_num().unwrap_or(1.0);
+    let (dx, dy) = (dx * k, dy * k);
+    rbx.pointer.delta = (dx, dy);
+    if dx == 0.0 && dy == 0.0 {
+        return;
+    }
+    let mut t = Table::new();
+    t.set_str("KeyCode", enum_value(enum_item("KeyCode", "Unknown")));
+    t.set_str("UserInputType", enum_value(enum_item("UserInputType", "MouseMovement")));
+    t.set_str("UserInputState", enum_value(enum_item("UserInputState", "Change")));
+    t.set_str("Position", v3(Vector3::new(rbx.pointer.x, rbx.pointer.y, 0.0)));
+    t.set_str("Delta", v3(Vector3::new(dx, dy, 0.0)));
+    t.set_str("ClassName", Value::str("InputObject"));
+    t.set_str("Name", Value::str("InputObject"));
+    let input = Value::table(t);
+    rbx.fire(uis, "InputChanged", vec![input.clone(), Value::Bool(false)]);
+    let mouse = rbx.mouse;
+    rbx.fire(mouse, "Move", Vec::new());
+    let item = enum_item("UserInputType", "MouseMovement");
+    if let Some((name, owner, f)) = rbx
+        .actions
+        .iter()
+        .find(|a| a.3.contains(&item))
+        .map(|a| (a.0.clone(), a.1, a.2.clone()))
+    {
+        let st = enum_value(enum_item("UserInputState", "Change"));
+        rbx.deferred.push((owner, f, vec![Value::str(&name), st, input]));
+    }
+}
+
+/// The keys the game shouldn't get while ContextActionService's actions
+/// take them (as Roblox's player controls don't: a bound action sinks its
+/// input), by the game's names, and whether one takes the mouse's movement
+/// (which then turns no player). Escape stays the game's.
+pub fn sunk_input(rbx: &Rbx) -> (Vec<String>, bool) {
+    let mut keys: Vec<String> = Vec::new();
+    let mut look = false;
+    for a in &rbx.actions {
+        for item in &a.3 {
+            match (item.enum_name, item.name) {
+                ("UserInputType", "MouseMovement") => look = true,
+                ("KeyCode", "Escape") => {}
+                ("KeyCode", code) => keys.extend(game_key(code)),
+                _ => {}
+            }
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    (keys, look)
 }
 
 /// The KeyCode of a key a screen names ("enter", "a").
@@ -2767,7 +2852,13 @@ pub fn draw_parts(rbx: &Rbx, game: &mut dyn GameApi, budget: &mut usize) {
         if !is_a(inst.class, "BasePart") || inst.class.name == "Terrain" {
             continue;
         }
-        let t = inst.get("Transparency").to_num().unwrap_or(0.0);
+        // LocalTransparencyModifier (an x-ray's) makes it see-through as Roblox does.
+        let local = inst
+            .get("LocalTransparencyModifier")
+            .to_num()
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
+        let t = 1.0 - (1.0 - inst.get("Transparency").to_num().unwrap_or(0.0)) * (1.0 - local);
         if t >= 1.0 {
             continue;
         }
@@ -3088,6 +3179,8 @@ pub fn step(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64, dt: f64, frame_no: 
         return;
     }
     sync(rbx, game);
+    let [dx, dy] = game.mouse_delta();
+    mouse_motion(rbx, dx, dy);
     copy_starter_gui(rbx);
     step_events(rbx, now, dt, frame_no);
     super::hstudio_sunc::poll_network(rbx);
@@ -3102,7 +3195,13 @@ pub fn sync(rbx: &mut Rbx, game: &mut dyn GameApi) {
     super::hstudio_rbx_world::sync(rbx, game);
     if let Some(cam) = game.camera() {
         let c = rbx.camera;
-        rbx.quiet_set(c, "CFrame", cf(camera_cframe(&cam)));
+        // A camera scripts hold (Scriptable, or put somewhere this frame)
+        // is where they put it, not where the game drew the last frame.
+        let held = matches!(rbx.world.view, Some(super::hstudio::CameraView::At { .. }))
+            || as_item(&rbx.raw_get(c, "CameraType")).is_some_and(|k| matches!(k.name, "Scriptable" | "Fixed"));
+        if !held {
+            rbx.quiet_set(c, "CFrame", cf(camera_cframe(&cam)));
+        }
         rbx.quiet_set(c, "FieldOfView", Value::Num(f64::from(cam.fov)));
         let (w, h, _) = game.dp();
         rbx.quiet_set(c, "ViewportSize", v2(Vector2::new(f64::from(w), f64::from(h))));

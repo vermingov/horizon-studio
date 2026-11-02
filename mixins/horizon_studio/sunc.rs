@@ -2434,7 +2434,28 @@ impl Ctx<'_> {
             2110..=2118 => {
                 let rbx = &mut self.s.rbx;
                 rbx.active = true;
+                // The crosshair the game's: the click is the game's too (an
+                // attack, a use), which hands it back to the layer as the
+                // player's own.
+                let game_has = !rbx.pointer.free && !rbx.pointer.chat_open;
                 match id {
+                    2110..=2115 if game_has => {
+                        let button = if id < 2113 { "key.mouse.left" } else { "key.mouse.right" };
+                        let downs: &[bool] = match id {
+                            2110 | 2113 => &[true, false],
+                            2111 | 2114 => &[true],
+                            _ => &[false],
+                        };
+                        let mut taken = true;
+                        for &down in downs {
+                            taken &= self.game.press(button, down);
+                        }
+                        if !taken {
+                            for &down in downs {
+                                super::hstudio_rbx_draw::pointer_button(&mut self.s.rbx, id < 2113, down);
+                            }
+                        }
+                    }
                     2110..=2115 => {
                         let left = id < 2113;
                         if matches!(id, 2110 | 2113) {
@@ -2505,13 +2526,14 @@ impl Ctx<'_> {
             2125 | 2126 | 2129 => {
                 let vk = check_num(lua, &args, 0, fname)? as i64;
                 let key = vk_key(vk).ok_or_else(|| lua.rt_error(format!("{fname}: no key with code {vk}")))?;
-                let rbx = &mut self.s.rbx;
-                rbx.active = true;
-                if id != 2126 {
-                    super::hstudio_rbx_draw::game_input(rbx, &key, true, false);
-                }
-                if id != 2125 {
-                    super::hstudio_rbx_draw::game_input(rbx, &key, false, false);
+                self.s.rbx.active = true;
+                // Playing, the game has the key (W walks, E opens the
+                // inventory), which hands it back to the layer.
+                let game_has = !self.s.rbx.pointer.free && !self.s.rbx.pointer.chat_open;
+                for (down, wanted) in [(true, id != 2126), (false, id != 2125)] {
+                    if wanted && !(game_has && self.game.press(&key, down)) {
+                        super::hstudio_rbx_draw::game_input(&mut self.s.rbx, &key, down, false);
+                    }
                 }
                 none()
             }

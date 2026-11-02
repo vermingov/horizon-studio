@@ -273,6 +273,7 @@ const PART: &[P] = &[
     p("Size", K::V3, D::V3(4.0, 1.0, 2.0)),
     p("Color", K::C3, Rgb(163.0, 162.0, 165.0)),
     p("Transparency", Num, N(0.0)),
+    p("LocalTransparencyModifier", Num, N(0.0)),
     p("Reflectance", Num, N(0.0)),
     p("Material", K::Enum("Material"), D::E("Plastic")),
     p("Anchored", Bool, B(false)),
@@ -490,7 +491,11 @@ pub static CLASSES: &[C] = &[
     },
     lenient_service("VoiceChatService"),
     lenient_service("NetworkSettings"),
-    lenient_service("RenderSettings"),
+    // ShowBoundingBoxes: the game's entity hitboxes (F3+B).
+    C {
+        lenient: true,
+        ..service("RenderSettings", &[p("ShowBoundingBoxes", Bool, B(false))], &[])
+    },
     lenient_service("UserGameSettings"),
     lenient_service("ScriptContext"),
     lenient_service("AnalyticsService"),
@@ -636,6 +641,7 @@ pub static CLASSES: &[C] = &[
             p("DisplayName", Str, S("")),
             p("RigType", K::Enum("HumanoidRigType"), D::E("R15")),
             ro("MoveDirection", K::V3, D::V3(0.0, 0.0, 0.0)),
+            p("WalkToPoint", K::V3, D::V3(0.0, 0.0, 0.0)),
             ro("FloorMaterial", K::Enum("Material"), D::E("Air")),
             p("RootPart", Obj, D::Nil),
         ],
@@ -1597,6 +1603,8 @@ pub struct Pointer {
     /// The game's chat is open, its pointer free over the GUI (Studio's
     /// set_chat_open): the pointer stays where the mouse is, not the crosshair.
     pub chat_open: bool,
+    /// How far the mouse turned the view this frame (GetMouseDelta).
+    pub delta: (f64, f64),
 }
 
 pub struct Rbx {
@@ -3753,6 +3761,7 @@ impl Rbx {
             ("Sound", "Playing") if self.raw_get(id, "Playing").truthy() => self.play_sound(id),
             (_, "CFrame") if id == self.root_part => super::hstudio_rbx_world::root_moved(self),
             (_, "CFrame") if id == self.head => super::hstudio_rbx_body::head_moved(self),
+            (_, "CFrame") => super::hstudio_rbx_world::mirror_moved(self, id),
             ("Humanoid", "WalkSpeed" | "JumpPower" | "JumpHeight") if id == self.humanoid => {
                 super::hstudio_rbx_world::speeds_set(self, prop)
             }
@@ -3763,7 +3772,19 @@ impl Rbx {
                 super::hstudio_rbx_body::root_velocity(self, prop)
             }
             ("Humanoid", "Health") if id == self.humanoid => super::hstudio_rbx_world::health_set(self),
-            ("Player", "Character") if id == self.local_player => super::hstudio_rbx_world::resolve_character(self),
+            // Setting WalkToPoint walks there, as MoveTo does.
+            ("Humanoid", "WalkToPoint") if id == self.humanoid => {
+                let to = super::hstudio_rbx_values::as_v3(&self.raw_get(id, "WalkToPoint")).unwrap_or_default();
+                super::hstudio_rbx_world::move_to(self, id, to);
+            }
+            ("Player", "Character") if id == self.local_player => {
+                super::hstudio_rbx_world::resolve_character(self);
+                // As Roblox's camera takes the new character's Humanoid.
+                if self.humanoid != self.spare_humanoid {
+                    let (cam, hum) = (self.camera, self.value(self.humanoid));
+                    self.raw_set(cam, "CameraSubject", hum);
+                }
+            }
             ("Model", "PrimaryPart") if id == self.character => super::hstudio_rbx_world::resolve_character(self),
             ("TextBox", "Text") => {}
             _ => {}

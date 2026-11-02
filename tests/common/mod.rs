@@ -3,8 +3,8 @@
 #![allow(dead_code)]
 
 use horizon_studio::game::hstudio::{
-    Body, Camera, ClientAction, ClientInfo, Corner, EntityInfo, Font, GameApi, PlayerEntry, PlayerInfo, PlayerPose,
-    Reply, Studio, ViaInfo, VoiceChange, VoiceInfo,
+    Body, Camera, CameraView, ClientAction, ClientInfo, Corner, EntityInfo, Font, GameApi, PlayerEntry, PlayerInfo,
+    PlayerPose, Reply, Studio, ViaInfo, VoiceChange, VoiceInfo,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -68,6 +68,10 @@ pub struct FakeGame {
     /// says: `select_slot`, `click_item` and `drop_held` act on them (and on
     /// the player's `slot` and `held`), each noted in `moves`.
     pub inventory: Option<Vec<Option<(String, u32)>>>,
+    /// How far the mouse moved since the studio last asked (`mouse_delta`),
+    /// and whether the player's own body is drawn (third person).
+    pub mouse: [f64; 2],
+    pub third_person: bool,
 }
 
 /// A particle spawned: its id, place, speed and colour.
@@ -163,6 +167,8 @@ impl FakeGame {
             client: ClientInfo::default(),
             client_done: Vec::new(),
             inventory: None,
+            mouse: [0.0; 2],
+            third_person: true,
         }
     }
     /// An inventory of 36 slots with these stacks in them (slot, item, count).
@@ -319,6 +325,87 @@ impl GameApi for FakeGame {
     }
     fn set_look(&mut self, yaw: f32, pitch: f32) {
         self.moves.push(format!("look {yaw:.1} {pitch:.1}"));
+        if let Some(p) = self.player.as_mut() {
+            (p.yaw, p.pitch) = (yaw, pitch);
+        }
+    }
+    // The camera follows the view asked for: at a place, at another
+    // entity's eyes or a point's, or back at the player's eyes.
+    fn set_camera_view(&mut self, view: Option<CameraView>) {
+        let (pos, yaw, pitch) = match view {
+            Some(CameraView::At { pos, yaw, pitch }) => {
+                self.moves.push(format!(
+                    "view at {:.2} {:.2} {:.2} {yaw:.1} {pitch:.1}",
+                    pos[0], pos[1], pos[2]
+                ));
+                (pos, yaw, pitch)
+            }
+            Some(CameraView::Entity(id)) => {
+                self.moves.push(format!("view entity {id}"));
+                let Some(e) = self.entities.iter().find(|e| e.id == id) else {
+                    return;
+                };
+                ([e.pos[0], e.pos[1] + e.eye, e.pos[2]], e.head_yaw, e.pitch)
+            }
+            Some(CameraView::Around(p)) => {
+                self.moves
+                    .push(format!("view around {:.2} {:.2} {:.2}", p[0], p[1], p[2]));
+                let Some(pl) = self.player.as_ref() else { return };
+                (p, pl.yaw, pl.pitch)
+            }
+            None => {
+                self.moves.push("view game".into());
+                let Some(pl) = self.player.as_ref() else { return };
+                ([pl.x, pl.y + 1.62, pl.z], pl.yaw, pl.pitch)
+            }
+        };
+        if let Some(c) = self.camera.as_mut() {
+            (c.pos, c.yaw, c.pitch) = (pos, yaw, pitch);
+        }
+    }
+    fn set_perspective(&mut self, first_person: bool) {
+        self.third_person = !first_person;
+        self.moves
+            .push(format!("perspective {}", if first_person { "first" } else { "third" }));
+    }
+    fn set_camera_distance(&mut self, blocks: Option<f64>) {
+        self.moves.push(format!("distance {blocks:?}"));
+    }
+    fn sink_input(&mut self, keys: &[String], look: bool) {
+        self.moves.push(format!("sink {} look {look}", keys.join(",")));
+    }
+    fn mouse_delta(&mut self) -> [f64; 2] {
+        std::mem::take(&mut self.mouse)
+    }
+    fn set_hitboxes(&mut self, on: bool) {
+        self.moves.push(format!("hitboxes {on}"));
+    }
+    fn set_mouse_sensitivity(&mut self, scale: f64) {
+        self.moves.push(format!("sensitivity {scale:.2}"));
+    }
+    fn move_entity(&mut self, id: u32, feet: [f64; 3]) -> bool {
+        self.moves
+            .push(format!("entity {id} {:.3} {:.3} {:.3}", feet[0], feet[1], feet[2]));
+        match self.entities.iter_mut().find(|e| e.id == id) {
+            Some(e) => {
+                e.pos = feet;
+                true
+            }
+            None => false,
+        }
+    }
+    // The game hears it (recorded); the studio keeps it too, as the fake
+    // game hands nothing back.
+    fn press(&mut self, key: &str, down: bool) -> bool {
+        self.moves.push(format!("press {key} {down}"));
+        false
+    }
+    fn set_player_frozen(&mut self, on: bool) -> bool {
+        self.moves.push(format!("frozen {on}"));
+        true
+    }
+    fn body_shown(&self) -> bool {
+        self.third_person
     }
     fn turn_player(&mut self, dyaw: f32, dpitch: f32) {
         self.moves.push(format!("turn {dyaw:.1} {dpitch:.1}"));

@@ -64,7 +64,8 @@ fn the_character_is_an_r6_rig_on_the_player() {
     // At the torso's centre over the feet (10.5, 64, -3.25), facing north (yaw 180).
     assert_eq!(p[2], "10.500 65.055 -3.250    0.000 0.000 -1.000");
     assert_eq!(p[3], "10.500 65.620 -3.250    0.000 0.000 -1.000");
-    assert_eq!(p[4], "1    true    false    false    true    false");
+    // Not anchored, as Roblox's (anchoring it holds the player still).
+    assert_eq!(p[4], "1    false    false    false    true    false");
     // As in Roblox, a script may take the character apart.
     assert_eq!(p[5], "true");
     assert_eq!(p[6], "true");
@@ -243,8 +244,9 @@ fn moving_the_root_part_moves_the_player_in_the_client() {
     assert_eq!(moved_by(&mut st, &mut game, "partpivot"), ["move 11.000 73.945 12.000"]);
     // One teleport a frame: the last move's.
     assert_eq!(moved_by(&mut st, &mut game, "twice"), ["move 1.000 79.945 1.000"]);
-    // The client moved them there; moving the character where it is keeps them there.
-    assert_eq!(moved_by(&mut st, &mut game, "stay"), ["move 1.000 79.945 1.000"]);
+    // The client moved them there: moving the character where it is moves
+    // no one (as in Roblox, they keep their motion).
+    assert!(moved_by(&mut st, &mut game, "stay").is_empty());
     // Crouching, the root part is lower, and the teleport still lands the feet where they are.
     game.pose = Some(PlayerPose {
         pose: "crouching".into(),
@@ -253,7 +255,7 @@ fn moving_the_root_part_moves_the_player_in_the_client() {
     });
     run_for(&mut st, &mut game, 0.05);
     assert!(moved_by(&mut st, &mut game, "where").is_empty());
-    assert_eq!(moved_by(&mut st, &mut game, "stay"), ["move 1.000 79.945 1.000"]);
+    assert!(moved_by(&mut st, &mut game, "stay").is_empty());
     // A script's own parts move nothing; the head moves the character, the eyes there.
     assert!(moved_by(&mut st, &mut game, "others").is_empty());
     assert_eq!(moved_by(&mut st, &mut game, "head"), ["move 1.000 68.730 3.000"]);
@@ -499,6 +501,7 @@ fn humanoid_move_to_walks_only_you_and_says_when_it_is_done() {
         hum.MoveToFinished:Connect(function(reached) table.insert(log, "me " .. tostring(reached)) end)
         npc.MoveToFinished:Connect(function(reached) table.insert(log, "npc " .. tostring(reached)) end)
         command("walk", function() hum:MoveTo(Vector3.new(12.5, 64, -3.5)) end)
+        command("walk2", function() hum:MoveTo(Vector3.new(14.5, 64, -3.5)) end)
         command("npc", function() npc:MoveTo(Vector3.new(1, 2, 3)) end)
         command("log", function() print(table.concat(log, ", ")) end)
     "#;
@@ -522,11 +525,17 @@ fn humanoid_move_to_walks_only_you_and_says_when_it_is_done() {
     tx.send(r#"{"ok": true, "arrived": true}"#.into()).unwrap();
     run_for(&mut st, &mut game, 0.1);
     // Another MoveTo takes the walk's place: the first stops, unfinished.
+    // (One to where it goes already keeps it going, as a follow loop's.)
     assert!(st.command("walk"));
     run_for(&mut st, &mut game, 0.1);
     assert!(st.command("walk"));
     run_for(&mut st, &mut game, 0.1);
-    assert_eq!(game.agent_calls[2..], [goto, "stop", goto]);
+    assert!(st.command("walk2"));
+    run_for(&mut st, &mut game, 0.1);
+    assert_eq!(
+        game.agent_calls[2..],
+        [goto, "stop", "goto 14 64 -4 --near 1 --timeout 8"]
+    );
     // No answer: it gives up after 8 seconds, as Roblox's does.
     run_for(&mut st, &mut game, 7.5);
     assert!(st.command("log"));
@@ -805,10 +814,16 @@ fn mirrors_are_locked_but_take_children() {
         assert!(line.starts_with("false") && line.contains("locked"), "{line}");
     }
     assert_eq!(p[2], "true    0.000 100.000 0.000");
-    // The game's place again on the next frame.
-    assert_eq!(p[3], "12.500 64.745 -3.250    Zombie");
+    // The zombie moved there in the client's world too (as Roblox's client
+    // moves another's part): its mirror follows it there.
+    assert_eq!(p[3], "0.000 100.000 0.000    Zombie");
+    assert!(
+        game.moves.contains(&"entity 5 0.000 99.255 0.000".into()),
+        "{:?}",
+        game.moves
+    );
     // The script's folder went with the zombie.
-    assert_eq!(p[4], "12.500 64.745 -3.250    nil");
+    assert_eq!(p[4], "0.000 100.000 0.000    nil");
 }
 
 #[test]

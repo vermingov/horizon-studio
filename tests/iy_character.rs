@@ -154,15 +154,7 @@ fn sit_sits_the_model_and_holds_the_player_until_the_jump_key() {
     step(&mut st, &mut game, "state", 0.05);
     // lay: seated, laid over, it lies.
     let m = step(&mut st, &mut game, "lay", 0.3);
-    assert_eq!(
-        m,
-        [
-            "speed 0.00 1.00",
-            "body pose=sitting",
-            "move 10.500 64.000 -3.250",
-            "body pose=lying"
-        ]
-    );
+    assert_eq!(m, ["speed 0.00 1.00", "body pose=sitting", "body pose=lying"]);
     st.key("key.keyboard.space", true);
     let m = step(&mut st, &mut game, "", 0.1);
     st.key("key.keyboard.space", false);
@@ -481,7 +473,8 @@ fn edgejump_breakvelocity_tpwalk_and_cframefly_move_the_player() {
     game.pose = pose(false);
     game.player.as_mut().unwrap().velocity = [0.0, -1.0, 0.0];
     let m = step(&mut st, &mut game, "", 0.15);
-    assert_eq!(m, ["move 10.500 64.000 -3.250", "velocity 0.00 0.42 0.00"]);
+    // (Its root part set where it is moves no one: the velocity is the jump.)
+    assert_eq!(m, ["velocity 0.00 0.42 0.00"]);
     game.pose = pose(true);
     game.player.as_mut().unwrap().velocity = [4.0, 0.0, 0.0];
     run_for(&mut st, &mut game, 0.1);
@@ -505,8 +498,19 @@ fn edgejump_breakvelocity_tpwalk_and_cframefly_move_the_player() {
     step(&mut st, &mut game, "untpwalk", 0.1);
     let z = game.player.as_ref().unwrap().z;
     let m = step(&mut st, &mut game, "cframefly", 0.1);
-    assert_eq!(m, [format!("move 10.500 67.000 {z:.3}").as_str(), "speed 0.00 0.00"]);
-    assert_eq!(step(&mut st, &mut game, "uncframefly", 0.1), ["speed 1.00 1.00"]);
+    // The anchored Head holds the character still but where the script puts it.
+    assert_eq!(
+        m,
+        [
+            format!("move 10.500 67.000 {z:.3}").as_str(),
+            "speed 0.00 0.00",
+            "frozen true"
+        ]
+    );
+    assert_eq!(
+        step(&mut st, &mut game, "uncframefly", 0.1),
+        ["speed 1.00 1.00", "frozen false"]
+    );
 }
 
 #[test]

@@ -601,7 +601,9 @@ fn mouse_moves(rbx: &mut Rbx) {
     let turned =
         before.is_some_and(|(at, look)| (at - view.0).magnitude() > 1e-4 || (look - view.1).magnitude() > 1e-5);
     // Handles being dragged have the mouse: they fire MouseDrag instead.
-    if turned && takes_clicks(rbx) && !rbx.pointer.free && rbx.tools.handle.is_none() {
+    // (The mouse's own movement fired it already this frame.)
+    let moved = rbx.pointer.delta != (0.0, 0.0);
+    if turned && !moved && takes_clicks(rbx) && !rbx.pointer.free && rbx.tools.handle.is_none() {
         let mouse = rbx.mouse;
         rbx.fire(mouse, "Move", Vec::new());
     }

@@ -378,9 +378,20 @@ pub fn mouse_hit(env: &mut dyn Env, origin: Vector3, dir: Vector3) -> (Vector3, 
         include: false,
         ignore_water: true,
     };
-    match cast(env, origin, dir * 500.0, &filter) {
+    let hit = cast(env, origin, dir * 500.0, &filter);
+    // The block met, a hair past where the ray enters it.
+    let rbx = env.rbx();
+    rbx.world.mouse_block = hit.as_ref().filter(|h| h.block.is_some()).map(|h| {
+        let inside = h.at + dir * 1e-4;
+        (
+            inside.x.floor() as i32,
+            inside.y.floor() as i32,
+            inside.z.floor() as i32,
+        )
+    });
+    match hit {
         Some(hit) => {
-            let (target, _) = what_was_hit(env.rbx(), &hit);
+            let (target, _) = what_was_hit(rbx, &hit);
             (hit.at, target, surface(hit.face))
         }
         None => (origin + dir * 500.0, Value::Nil, "Top"),

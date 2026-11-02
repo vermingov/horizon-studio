@@ -192,6 +192,11 @@ fn instance_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, args: &
         }
         "GetFullName" => one(Value::str(&rbx.full_name(id))),
         "Destroy" | "Remove" => {
+            // The Terrain as the Mouse's Target: its block goes from the
+            // client's world (hstudio_rbx_world::local_delete).
+            if super::hstudio_rbx_world::local_delete(rbx, id) {
+                return none();
+            }
             // Locked (a service, the mouse, settings()): never, parent or not.
             let parentless_ok = rbx.inst(id).parent.is_none() && !rbx.unparented_locked(id);
             // An entity's mirror: the client deletes the entity from its own
@@ -477,7 +482,10 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             let p = &env.rbx().pointer;
             one(v2(Vector2::new(p.x, p.y)))
         }
-        ("UserInputService", "GetMouseDelta") => one(v2(Vector2::ZERO)),
+        ("UserInputService", "GetMouseDelta") => {
+            let (x, y) = env.rbx().pointer.delta;
+            one(v2(Vector2::new(x, y)))
+        }
         ("UserInputService", "GetKeysPressed") => {
             let mut held: Vec<&'static str> = env.rbx().pointer.held.iter().copied().collect();
             held.sort_unstable();
@@ -1309,6 +1317,8 @@ pub fn step_tweens(rbx: &mut Rbx, dt: f64) {
             // A tween of the player's root part moves the player.
             if id == rbx.root_part && prop == "CFrame" {
                 super::hstudio_rbx_world::root_moved(rbx);
+            } else if prop == "CFrame" {
+                super::hstudio_rbx_world::mirror_moved(rbx, id);
             }
         }
     }
@@ -1367,6 +1377,8 @@ fn move_to(rbx: &mut Rbx, id: Id, target: CFrame) {
             rbx.raw_set(d, "CFrame", cf(delta * c));
             if d == rbx.root_part {
                 super::hstudio_rbx_world::root_moved(rbx);
+            } else {
+                super::hstudio_rbx_world::mirror_moved(rbx, d);
             }
         }
     }

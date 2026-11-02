@@ -530,6 +530,33 @@ bindings = [
   { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
 ]
 
+# A Roblox script's Camera takes the view from the player: detached where
+# its CFrame is (a free camera, a Scriptable camera), on another entity (its
+# CameraSubject: spectating), or around a part; the player stays put.
+[[injection]]
+id = "camera"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::perspective::Game<'_>::camera_view"
+helper = "camera.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "partial", ty = "f32", value = "partial" },
+]
+
+# The mouse's movement reaches the scripts (UserInputService's InputChanged
+# and GetMouseDelta), at MouseDeltaSensitivity; while a script's action
+# takes it (ContextActionService), it turns no player.
+[[injection]]
+id = "mouse"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::Game<'_>::apply_mouse_look"
+helper = "mouse.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
 [[injection]]
 id = "zoom"
 kind = "HEAD"
