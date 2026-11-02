@@ -497,20 +497,36 @@ pub trait GameApi {
         let _ = id;
         false
     }
-    /// The game's saves folder, the one Singleplayer lists (saveinstance's
-    /// worlds go in it). None where the game has none.
-    fn saves_dir(&self) -> Option<PathBuf> {
-        None
-    }
     /// saveinstance: starts saving the world as the client has it (the
     /// loaded chunks with their block entities, the entities, level.dat,
     /// the player, the maps, the server's registries as a data pack...) into
-    /// `world`, a folder of `saves_dir` hstudio_dump::prepare made. It goes
+    /// `world`, a folder of the workspace hstudio_dump::prepare made. It goes
     /// on over the next frames and on the game's writer threads; the job's
     /// number is for `dump_poll`.
     fn dump_world(&mut self, world: &Path) -> Result<u64, String> {
         let _ = world;
         Err("there is no world here to save".into())
+    }
+    /// What the server sent the client that it acts on, for
+    /// ReplicatedStorage.Server: its resource packs, the plugin channels it
+    /// registered or used, its command tree, its registries and tags. None
+    /// off a server, or when the connection (`session`) and every part's
+    /// version are those given; else each part whose version is new.
+    fn server_content(
+        &mut self,
+        session: Option<u64>,
+        versions: [u64; 4],
+    ) -> Option<super::hstudio_rbx_server::ServerContent> {
+        let _ = (session, versions);
+        None
+    }
+    /// The studio's override pack (`pack`, a resource pack's folder whose
+    /// files are scripts' edits of the server's), stacked above the
+    /// server's packs, and a resource reload with it; None takes it away.
+    /// A reload that fails leaves the resources as they were.
+    fn resource_override(&mut self, pack: Option<&Path>) -> Result<(), String> {
+        let _ = pack;
+        Err("the game can't reload its resources here".into())
     }
     /// A dump's end: None while it is being written, then once Ok (the
     /// world is on the disk) or why it failed.
@@ -3504,6 +3520,13 @@ impl Studio {
         let (now, frame) = (self.s.now, self.s.frame_no);
         remote::ensure(&mut self.s.rbx, game.packet_names());
         super::hstudio_rbx_draw::step(&mut self.s.rbx, game, now, dt, frame);
+        // ReplicatedStorage.Server follows what the server sent; edits of its
+        // packs' files go into the override pack.
+        super::hstudio_rbx_server::step(&mut self.s.rbx, game);
+        for (error, note) in std::mem::take(&mut self.s.rbx.server.notes) {
+            let kind = if error { LogKind::Error } else { LogKind::Info };
+            self.s.log(kind, format!("ReplicatedStorage.Server: {note}"));
+        }
         // The Backpack follows the inventory, and the tools act.
         if self.s.rbx.active {
             let mut ctx = Ctx {
@@ -4029,6 +4052,14 @@ impl Studio {
             self.s.rbx.ready.push((owner, thread, vec![args[0].clone()]));
         }
         self.s.rbx.fire(id, "OnClientEvent", args);
+    }
+
+    /// A custom payload from the server: its plugin channel's RemoteEvent in
+    /// ReplicatedStorage.Server fires OnClientEvent with it.
+    pub fn server_payload(&mut self, channel: &str, data: &[u8]) {
+        if self.s.started {
+            super::hstudio_rbx_server::payload(&mut self.s.rbx, channel, data);
+        }
     }
 
     /// A command typed in chat (no slash): whether the studio takes it. It

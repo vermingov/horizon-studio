@@ -80,6 +80,8 @@ pub mod game {
     pub mod hstudio_rbx_query;
     #[path = "../../mixins/horizon_studio/rbx_remote.rs"]
     pub mod hstudio_rbx_remote;
+    #[path = "../../mixins/horizon_studio/rbx_server.rs"]
+    pub mod hstudio_rbx_server;
     #[path = "../../mixins/horizon_studio/rbx_tools.rs"]
     pub mod hstudio_rbx_tools;
     #[path = "../../mixins/horizon_studio/rbx_types.rs"]
@@ -110,6 +112,14 @@ pub mod net {
     #[path = "../../mixins/horizon_studio/via.rs"]
     pub mod hstudio_via;
 }
+
+/// The title's world list, as the game's library has it (`horizon_client::title`).
+pub mod title {
+    pub use crate::title_worlds as hstudio_worlds;
+}
+#[doc(hidden)]
+#[path = "../mixins/horizon_studio/worlds.rs"]
+pub mod title_worlds;
 
 /// Natrium's switches, as horizon-core has them (`horizon_core::natrium`).
 #[path = "../mixins/horizon_studio/natrium_flags.rs"]

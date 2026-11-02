@@ -56,6 +56,30 @@ fn bool_arg(args: &[Value], i: usize) -> bool {
 /// A method of an instance (`owner_class` says which class has it).
 pub fn method(env: &mut dyn Env, lua: &mut Lua, name: &str, owner_class: &str, args: Vec<Value>) -> Res {
     let id = me(env, lua, &args, name)?;
+    // A folder of the server's content fills as its children are asked for
+    // (all that is under it, asked for inside ReplicatedStorage.Server).
+    let rbx: &Rbx = env.rbx();
+    if rbx.server.is_lazy(id) || rbx.server.holds(rbx, id) {
+        let deep = match name {
+            "GetDescendants" | "FindFirstDescendant" => true,
+            "FindFirstChild" | "FindFirstChildOfClass" | "FindFirstChildWhichIsA" => bool_arg(&args, 2),
+            _ => false,
+        };
+        let rbx = env.rbx();
+        if deep && rbx.server.holds(rbx, id) {
+            super::hstudio_rbx_server::fill_all(rbx, id);
+        } else if matches!(
+            name,
+            "GetChildren"
+                | "FindFirstChild"
+                | "FindFirstChildOfClass"
+                | "FindFirstChildWhichIsA"
+                | "WaitForChild"
+                | "ClearAllChildren"
+        ) {
+            super::hstudio_rbx_server::fill(rbx, id);
+        }
+    }
     super::hstudio_rbx_world::before_call(env, id, name, &args);
     super::hstudio_rbx_client::called(env.rbx(), id, name);
     // CollectionService:AddTag(instance, tag) is the instance's own.
@@ -1001,6 +1025,12 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
         }
         ("RemoteEvent", "FireServer") if env.rbx().remotes.is_remote(id) => {
             super::hstudio_rbx_remote::fire_server(env, lua, id, &args[1..])
+        }
+        // A plugin's channel (ReplicatedStorage.Server.Plugins): a custom payload.
+        ("RemoteEvent", "FireServer") if env.rbx().server.channel_of(id).is_some() => {
+            let now = env.now();
+            let (rbx, game) = env.rbx_and_game();
+            super::hstudio_rbx_server::fire(rbx, game, now, lua, id, &args[1..])
         }
         ("RemoteFunction", "InvokeServer") if env.rbx().remotes.is_remote(id) => {
             super::hstudio_rbx_remote::invoke_server(env, lua, id, &args[1..])

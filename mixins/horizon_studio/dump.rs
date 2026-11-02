@@ -1,6 +1,8 @@
 // saveinstance as a world downloader (hstudio_dump): what the studio itself
 // decides about a dump, with no game in it. The world's folder in the
-// game's saves (its name, kept to one plain folder there), the marker that
+// studio's workspace folder, where executors write what they save (its
+// name, kept to one plain folder there; Singleplayer lists it through
+// hstudio_worlds, beside the saves), the marker that
 // says a folder is a dump saveinstance may add to, and the vanilla structure
 // file (`.nbt`, the structure block's format) that saveinstance(part)
 // writes of the blocks in a part's or a model's box. The world itself (its
@@ -118,15 +120,15 @@ pub fn folder_name(asked: Option<&str>, client: &ClientInfo, date: &str) -> Stri
     sanitize(&format!("{} {date}", source.replace(':', " ")))
 }
 
-/// The world folder `folder` in `saves`, ready for a dump: made with its
-/// marker, or one saveinstance made before (its marker there), which the
-/// dump adds to. Any other folder (a world of the player's own) is refused
-/// and left as it is.
-pub fn prepare(saves: &Path, folder: &str, source: &str) -> Result<PathBuf, String> {
+/// The world folder `folder` in `dir` (the workspace folder), ready for a
+/// dump: made with its marker, or one saveinstance made before (its marker
+/// there), which the dump adds to. Any other folder (one of the player's
+/// own, a file) is refused and left as it is.
+pub fn prepare(dir: &Path, folder: &str, source: &str) -> Result<PathBuf, String> {
     let name = sanitize(folder);
-    let world = saves.join(&name);
-    // One folder, right in the saves: nothing else is ever written.
-    if world.parent() != Some(saves) || world.file_name().and_then(|n| n.to_str()) != Some(name.as_str()) {
+    let world = dir.join(&name);
+    // One folder, right in the workspace: nothing else is ever written.
+    if world.parent() != Some(dir) || world.file_name().and_then(|n| n.to_str()) != Some(name.as_str()) {
         return Err(format!("'{folder}' is not a folder name"));
     }
     let marker = world.join(MARKER);
@@ -136,11 +138,11 @@ pub fn prepare(saves: &Path, folder: &str, source: &str) -> Result<PathBuf, Stri
     let mut first = now;
     if world.exists() {
         if !world.is_dir() {
-            return Err(format!("'{name}' in the saves folder is a file, not a world"));
+            return Err(format!("'{name}' in the workspace folder is a file, not a world"));
         }
         if !marker.is_file() {
             return Err(format!(
-                "the saves folder already has a world '{name}' that saveinstance didn't make: it is left as it is \
+                "the workspace folder already has a folder '{name}' that saveinstance didn't make: it is left as it is \
                  (give saveinstance another FilePath)"
             ));
         }

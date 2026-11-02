@@ -7,7 +7,8 @@
 // thread of its own writes the rest (level.dat, the player, the maps, the
 // server's registries and tags as a data pack, the command tree, the icon
 // and the server's resource pack: hstudio_world_files). Everything goes into the one world
-// folder hstudio_dump::prepare made in the saves. What the server never
+// folder hstudio_dump::prepare made in the studio's workspace (Singleplayer
+// lists it there: hstudio_worlds). What the server never
 // sends (its plugins, its data packs' functions, chunks the player never
 // had loaded) can't be in it.
 
@@ -89,12 +90,17 @@ pub(super) fn start(g: &Game<'_>, world: &Path) -> Result<u64, String> {
     if g.player.is_none() || g.world.chunks.is_empty() {
         return Err("there is no world loaded to save (join a server or open a world first)".into());
     }
-    // Only a folder of the saves that hstudio_dump::prepare made (or made
-    // before): its marker says it is a dump.
+    // Only a folder of the workspace (or, from 0.10, of the saves) that
+    // hstudio_dump::prepare made (or made before): its marker says it is a dump.
     let saves = std::env::current_dir().map(|d| d.join("saves")).unwrap_or_default();
-    if world.parent().is_none_or(|p| !same_folder(p, &saves)) || !world.join(super::hstudio_dump::MARKER).is_file() {
+    let workspace = horizon_client::title::hstudio_worlds::workspace(&saves);
+    if world
+        .parent()
+        .is_none_or(|p| !same_folder(p, &workspace) && !same_folder(p, &saves))
+        || !world.join(super::hstudio_dump::MARKER).is_file()
+    {
         return Err(format!(
-            "'{}' is not a world saveinstance made in the saves folder",
+            "'{}' is not a world saveinstance made in the workspace folder",
             world.display()
         ));
     }

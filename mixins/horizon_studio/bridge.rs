@@ -946,12 +946,18 @@ impl GameApi for Host<'_, '_> {
         let state = g.world.block(x, y, z);
         Some(g.res.facts().get(state).name.to_string())
     }
-    fn saves_dir(&self) -> Option<PathBuf> {
-        // Where the title screen's world list reads (`Title::new`).
-        std::env::current_dir().ok().map(|d| d.join("saves"))
-    }
     fn dump_world(&mut self, world: &std::path::Path) -> Result<u64, String> {
         super::hstudio_world_dump::start(self.g(), world)
+    }
+    fn server_content(
+        &mut self,
+        session: Option<u64>,
+        versions: [u64; 4],
+    ) -> Option<super::hstudio_rbx_server::ServerContent> {
+        super::hstudio_server_content::content(self.g(), session, versions)
+    }
+    fn resource_override(&mut self, pack: Option<&std::path::Path>) -> Result<(), String> {
+        super::hstudio_server_content::set_override(self.g(), pack)
     }
     fn dump_poll(&mut self, job: u64) -> Option<Result<(), String>> {
         super::hstudio_world_dump::poll(job)
@@ -1012,7 +1018,10 @@ impl GameApi for Host<'_, '_> {
         Ok(())
     }
     fn data_dir(&self) -> PathBuf {
-        self.g().native_data_dir(ID)
+        let dir = self.g().native_data_dir(ID);
+        // Singleplayer's list shows the worlds saveinstance saves there.
+        horizon_client::title::hstudio_worlds::set_workspace(dir.join("workspace"));
+        dir
     }
     fn clipboard(&mut self) -> String {
         self.g_mut().map(|g| g.clipboard.get()).unwrap_or_default()
@@ -1994,6 +2003,8 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &dyn EventLoopCtl) {
     // container the player has open, remembered for them.
     if game.native_on(ID) {
         super::hstudio_world_dump::frame(game);
+        // The override pack of ReplicatedStorage.Server's edits: its reloads.
+        super::hstudio_server_content::frame(game);
     }
     keep_view(game);
     remember_server(game);
@@ -3220,6 +3231,9 @@ pub(super) fn session_end(g: &mut Game<'_>) {
     end_input(g);
     end_client(g);
     end_player(g);
+    // ReplicatedStorage.Server's edits are the session's: the override pack
+    // leaves the resources (a reload without it).
+    super::hstudio_server_content::session_end();
     // What saveinstance remembers of the world left (the containers seen):
     // not while the player is in another already.
     if g.remote.is_none() && g.integrated.is_none() {
@@ -3991,6 +4005,11 @@ pub(super) fn packet_in(game: &Game<'_>, packet: &C) {
         return;
     }
     super::hstudio_world_dump::heard(packet);
+    super::hstudio_server_content::heard(packet);
+    // A plugin channel's payload: its RemoteEvent in ReplicatedStorage.Server.
+    if let C::CustomPayload(p) = packet {
+        with(|st| st.server_payload(&p.channel, &p.data));
+    }
     let names = horizon_protocol::ids::play::clientbound::NAMES;
     let Some(name) = names.get(packet.id() as usize) else {
         return;

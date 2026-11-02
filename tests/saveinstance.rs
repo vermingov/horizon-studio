@@ -1,8 +1,9 @@
-// saveinstance as a world downloader: the world the client has goes to the
-// game's saves as a Minecraft world (the game writes it: the fake game
-// here records the dump), the calling thread waits until it is written,
-// and a part's or model's blocks become a vanilla structure file. Nothing
-// of Roblox's file formats is written.
+// saveinstance as a world downloader: the world the client has goes into
+// the studio's workspace folder as a Minecraft world (the game writes it:
+// the fake game here records the dump), which Singleplayer lists beside the
+// saves (hstudio_worlds); the calling thread waits until it is written (code
+// that can't wait gets the folder at once), and a part's or model's blocks
+// become a vanilla structure file. Nothing of Roblox's file formats is written.
 
 mod common;
 
@@ -11,11 +12,12 @@ use horizon_studio::game::hstudio::{ClientInfo, ServerInfo};
 use horizon_studio::game::hstudio_dump::{
     self as dump, MARKER, Region, RegionBlock, block_box, date_of, folder_name, sanitize, structure_nbt,
 };
+use horizon_studio::title::hstudio_worlds as worlds;
 use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::path::PathBuf;
 
-fn on_server(game: &mut FakeGame, address: &str) -> PathBuf {
+fn on_server(game: &mut FakeGame, address: &str) {
     game.client = ClientInfo {
         server: Some(ServerInfo {
             address: address.into(),
@@ -27,8 +29,7 @@ fn on_server(game: &mut FakeGame, address: &str) -> PathBuf {
     };
     let saves = game.dir.join("saves");
     std::fs::create_dir_all(&saves).unwrap();
-    game.saves = Some(saves.clone());
-    saves
+    game.saves = Some(saves);
 }
 
 fn printed(st: &horizon_studio::game::hstudio::Studio) -> Vec<String> {
@@ -39,9 +40,9 @@ fn printed(st: &horizon_studio::game::hstudio::Studio) -> Vec<String> {
 }
 
 #[test]
-fn saveinstance_dumps_the_world_into_the_saves_and_waits_until_it_is_written() {
+fn saveinstance_dumps_the_world_into_the_workspace_and_waits_until_it_is_written() {
     let mut game = FakeGame::new("save-world");
-    let saves = on_server(&mut game, "play.example.net:25565");
+    on_server(&mut game, "play.example.net:25565");
     game.dump_polls = 10;
     let mut st = studio(&mut game);
     game.write_mod(
@@ -71,9 +72,11 @@ fn saveinstance_dumps_the_world_into_the_saves_and_waits_until_it_is_written() {
     assert_eq!(game.dumps.len(), 1);
     run_for(&mut st, &mut game, 3.0);
     let date = dump::today();
-    let first = saves.join(format!("play.example.net 25565 {date}"));
-    let mine = saves.join("My Dump");
-    let other = saves.join("other");
+    let ws = st.s.rbx.workspace_dir.clone();
+    assert_eq!(ws, st.s.dir.join("workspace"));
+    let first = ws.join(format!("play.example.net 25565 {date}"));
+    let mine = ws.join("My Dump");
+    let other = ws.join("other");
     assert_eq!(
         printed(&st),
         [
@@ -95,14 +98,21 @@ fn saveinstance_dumps_the_world_into_the_saves_and_waits_until_it_is_written() {
     assert_eq!(marker["source"], "play.example.net:25565");
     assert!(marker["first_saved"].as_u64().unwrap() <= marker["last_saved"].as_u64().unwrap());
     assert!(other.join("level.dat").is_file());
-    // No Roblox file anywhere.
-    let ws = st.s.rbx.workspace_dir.clone();
-    let rbx_files: Vec<_> = walk(&saves)
+    // Nothing went into the saves, and no Roblox file anywhere.
+    assert!(walk(&game.dir.join("saves")).is_empty());
+    let rbx_files: Vec<_> = walk(&ws)
         .into_iter()
-        .chain(walk(&ws))
         .filter(|p| p.to_string_lossy().contains(".rbx"))
         .collect();
     assert!(rbx_files.is_empty(), "{rbx_files:?}");
+    // Singleplayer lists them, by their path from the saves.
+    let saves = game.dir.join("saves");
+    for w in [&first, &mine, &other] {
+        let name = w.file_name().unwrap().to_str().unwrap();
+        let folder = worlds::listed(&saves, &ws, name).expect("a dump world is listed");
+        assert!(folder.starts_with("../"), "{folder}");
+        assert_eq!(worlds::resolve_in(&saves, &ws, &folder).as_deref(), Some(w.as_path()));
+    }
 }
 
 fn walk(dir: &std::path::Path) -> Vec<PathBuf> {
@@ -120,13 +130,14 @@ fn walk(dir: &std::path::Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn saveinstance_never_writes_into_a_world_it_did_not_make() {
+fn saveinstance_never_writes_into_a_folder_it_did_not_make() {
     let mut game = FakeGame::new("save-refuse");
-    let saves = on_server(&mut game, "mc.example.org");
-    std::fs::create_dir_all(saves.join("Survival")).unwrap();
-    std::fs::write(saves.join("Survival").join("level.dat"), b"the player's own").unwrap();
-    std::fs::write(saves.join("a file"), b"not a world").unwrap();
+    on_server(&mut game, "mc.example.org");
     let mut st = studio(&mut game);
+    let ws = st.s.dir.join("workspace");
+    std::fs::create_dir_all(ws.join("Survival")).unwrap();
+    std::fs::write(ws.join("Survival").join("level.dat"), b"the player's own").unwrap();
+    std::fs::write(ws.join("a file"), b"not a world").unwrap();
     game.write_mod(
         "t.lua",
         r#"
@@ -142,28 +153,32 @@ fn saveinstance_never_writes_into_a_world_it_did_not_make() {
     assert_eq!(p.len(), 3, "{:?}", log(&st));
     assert!(
         p[0].starts_with(
-            "false\tsaveinstance: the saves folder already has a world 'Survival' that saveinstance didn't make"
+            "false\tsaveinstance: the workspace folder already has a folder 'Survival' that saveinstance didn't make"
         ),
         "{p:?}"
     );
     assert!(
-        p[1].starts_with("false\tsaveinstance: 'a file' in the saves folder is a file"),
+        p[1].starts_with("false\tsaveinstance: 'a file' in the workspace folder is a file"),
         "{p:?}"
     );
-    // A path is one folder's name in the saves, never a way out of them.
-    let escaped = saves.join("_.._escape");
+    // A path is one folder's name in the workspace, never a way out of it.
+    let escaped = ws.join("_.._escape");
     assert_eq!(p[2], format!("true\t{}", escaped.display()), "{p:?}");
     assert_eq!(game.dumps, [escaped]);
     assert_eq!(
-        std::fs::read(saves.join("Survival").join("level.dat")).unwrap(),
+        std::fs::read(ws.join("Survival").join("level.dat")).unwrap(),
         b"the player's own"
     );
-    assert!(!saves.join("Survival").join(MARKER).exists());
+    assert!(!ws.join("Survival").join(MARKER).exists());
     assert!(!game.dir.join("escape").exists());
+    // The world list shows none but saveinstance's.
+    let saves = game.dir.join("saves");
+    assert_eq!(worlds::listed(&saves, &ws, "Survival"), None);
+    assert_eq!(worlds::listed(&saves, &ws, "a file"), None);
 }
 
 #[test]
-fn a_dump_that_fails_is_a_lua_error_and_no_world_is_no_dump() {
+fn a_dump_that_fails_is_a_lua_error() {
     let mut game = FakeGame::new("save-fail");
     on_server(&mut game, "mc.example.org");
     game.dump_result = Err("the disk is full".into());
@@ -183,19 +198,80 @@ fn a_dump_that_fails_is_a_lua_error_and_no_world_is_no_dump() {
         "{:?}",
         log(&st)
     );
+}
 
-    // A game with no saves folder (none of a world) says so at once.
-    let mut game = FakeGame::new("save-none");
+#[test]
+fn code_that_cant_wait_still_saves_the_world() {
+    // Inside gsub's callback no thread can wait: the folder comes back at
+    // once, the dump goes on, and the chat says when it is written.
+    let mut game = FakeGame::new("save-nowait");
+    on_server(&mut game, "mc.example.org");
+    game.dump_polls = 5;
     let mut st = studio(&mut game);
-    game.write_mod("t.lua", r#"task.spawn(function() print(pcall(saveinstance)) end)"#);
-    run_for(&mut st, &mut game, 0.5);
-    assert_eq!(
-        printed(&st),
-        ["false\tsaveinstance: the game has no saves folder here"],
-        "{:?}",
-        log(&st)
+    game.write_mod(
+        "t.lua",
+        r#"
+        local got
+        string.gsub("x", "x", function() got = saveinstance({ FilePath = "Clicked" }) end)
+        print("got", got)
+        "#,
     );
-    assert!(game.dumps.is_empty());
+    for _ in 0..100 {
+        run_for(&mut st, &mut game, 0.05);
+        if !printed(&st).is_empty() {
+            break;
+        }
+    }
+    let world = st.s.dir.join("workspace").join("Clicked");
+    assert_eq!(printed(&st), [format!("got\t{}", world.display())], "{:?}", log(&st));
+    assert_eq!(game.dumps, std::slice::from_ref(&world));
+    run_for(&mut st, &mut game, 1.0);
+    assert!(world.join("level.dat").is_file());
+    let said = format!("saveinstance: the world is saved in {}", world.display());
+    assert!(game.chats.iter().any(|c| c == &said), "{:?}", game.chats);
+}
+
+#[test]
+fn the_world_list_finds_workspace_worlds_from_the_saves() {
+    let root = std::env::temp_dir().join(format!("hstudio-worlds-{}", std::process::id()));
+    let saves = root.join("saves");
+    let ws = root.join("horizon-mods/.horizon-mod-data/horizon_studio/workspace");
+    let world = ws.join("play.example.net 2026-11-02");
+    std::fs::create_dir_all(&world).unwrap();
+    std::fs::create_dir_all(&saves).unwrap();
+    // The marker's name is saveinstance's.
+    assert_eq!(worlds::MARKER, MARKER);
+    let folder = worlds::folder_for(&saves, &world);
+    assert_eq!(
+        folder,
+        "../horizon-mods/.horizon-mod-data/horizon_studio/workspace/play.example.net 2026-11-02"
+    );
+    // Opened as the game opens a world: saves/<folder>.
+    assert_eq!(
+        std::fs::canonicalize(saves.join(&folder)).unwrap(),
+        std::fs::canonicalize(&world).unwrap()
+    );
+    // Without its marker and level.dat it's no world of saveinstance's.
+    assert_eq!(worlds::listed(&saves, &ws, "play.example.net 2026-11-02"), None);
+    std::fs::write(world.join(MARKER), b"{}").unwrap();
+    assert_eq!(worlds::listed(&saves, &ws, "play.example.net 2026-11-02"), None);
+    std::fs::write(world.join("level.dat"), b"x").unwrap();
+    assert_eq!(
+        worlds::listed(&saves, &ws, "play.example.net 2026-11-02").as_deref(),
+        Some(folder.as_str())
+    );
+    // The world list's own worlds and other paths are left to the game.
+    assert_eq!(worlds::resolve_in(&saves, &ws, "Survival"), None);
+    assert_eq!(worlds::resolve_in(&saves, &ws, "../elsewhere/x"), None);
+    assert_eq!(worlds::resolve_in(&saves, &ws, &folder), Some(world.clone()));
+    // Without a workspace named, it is the one beside the saves.
+    assert_eq!(worlds::workspace_beside(&saves), ws);
+    // A world list read inside the hook is the game's own.
+    let outer = worlds::listing().expect("not listing yet");
+    assert!(worlds::listing().is_none());
+    drop(outer);
+    assert!(worlds::listing().is_some());
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

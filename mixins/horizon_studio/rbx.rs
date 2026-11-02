@@ -1695,7 +1695,8 @@ pub struct Rbx {
     pub hui: Id,
     /// HTTP requests on their way, with the threads that wait for them.
     pub http: Vec<HttpWait>,
-    /// The threads waiting in saveinstance for the game's dump to be written.
+    /// The threads waiting in saveinstance for the game's dump to be written
+    /// (and the dumps no thread waits for).
     pub dumps: Vec<DumpWait>,
     /// Open WebSockets.
     pub sockets: Vec<SocketEntry>,
@@ -1738,6 +1739,9 @@ pub struct Rbx {
     /// The Backpack as the player's inventory, and the tools it holds
     /// (hstudio_rbx_tools).
     pub tools: super::hstudio_rbx_tools::Tools,
+    /// What the server sent the client: ReplicatedStorage.Server
+    /// (hstudio_rbx_server).
+    pub server: super::hstudio_rbx_server::Server,
 }
 
 /// An HTTP request a thread waits for.
@@ -1748,10 +1752,11 @@ pub struct HttpWait {
 }
 
 /// A thread waiting in saveinstance: the game's dump job, and the world's
-/// folder it gets back when the job is done.
+/// folder it gets back when the job is done (none waits for a dump started
+/// where code can't wait: the chat says when it is done).
 pub struct DumpWait {
     pub owner: Owner,
-    pub thread: Rc<Thread>,
+    pub thread: Option<Rc<Thread>>,
     pub job: u64,
     pub world: std::path::PathBuf,
 }
@@ -1879,6 +1884,7 @@ impl Rbx {
             starter_copied: HashSet::new(),
             client: Default::default(),
             tools: Default::default(),
+            server: Default::default(),
         };
         r.build();
         r
@@ -2976,6 +2982,8 @@ pub fn call(env: &mut dyn Env, lua: &mut Lua, id: u32, args: Vec<Value>) -> Res 
         }
         INST_TOSTRING => {
             let id = inst_arg(env, lua, &args, 0, "tostring")?;
+            // A folder of the server's content an explorer shows fills.
+            super::hstudio_rbx_server::fill(env.rbx(), id);
             Ok(vec![Value::str(&env.rbx().inst(id).name)])
         }
         SIGNAL_INDEX => {
@@ -3151,6 +3159,13 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
         lua.charge(nodes * 16)?;
     }
     let rbx = env.rbx();
+    // A folder of the server's content fills when a child is looked for in it.
+    if rbx.server.is_lazy(id) && !matches!(k.as_str(), "Name" | "ClassName" | "Parent") {
+        let c = rbx.inst(id).class;
+        if find_prop(c, &k).is_none() && !has_event(c, &k) && find_method(c, &k).is_none() {
+            super::hstudio_rbx_server::fill(rbx, id);
+        }
+    }
     if k == "ClockTime" && rbx.inst(id).class.name == "Lighting" {
         let v = rbx.inst(id).get("ClockTime");
         super::hstudio_rbx_client::clock_read(rbx, &v);
@@ -3673,6 +3688,13 @@ fn newindex(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Result<(), Thro
             return Err(lua.rt_error(format!("Unable to assign property {key}. Property is read only")));
         }
         let value = coerce(rbx, p.k, &v).ok_or_else(|| bad(&kind_name(p.k), &v))?;
+        // A file of the server's resource pack: into the override pack, if
+        // the Lua gives that file's data (hstudio_rbx_server).
+        if p.name == "Source" && rbx.server.owns_source(id) {
+            super::hstudio_rbx_server::set_source(rbx, lua, id, &value)?;
+            rbx.after_set(id, p.name);
+            return Ok(());
+        }
         rbx.raw_set(id, p.name, value);
         rbx.after_set(id, p.name);
         return Ok(());

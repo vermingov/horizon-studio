@@ -986,7 +986,9 @@ executors run as mods:
   `getscriptbytecode`'s bytes carry.
 - **saveinstance is a world downloader.** `saveinstance()` (or `saveinstance(game)`, `saveinstance({ FilePath = "name"
   })`, `saveinstance(game, options)`, UniversalSynSaveInstance's option tables, its other keys ignored) saves what the
-  client has of the server as a real Minecraft world in the game's `saves` folder, which Singleplayer lists: every
+  client has of the server as a real Minecraft world in the studio's `workspace` folder (where executors write what
+  they save), which Singleplayer lists beside the saves (worlds a 0.10 saveinstance wrote into `saves` stay there,
+  listed as ever): every
   chunk loaded in the dimension the player is in (blocks, biomes, light, heightmaps, and the block entities the
   client knows: signs, banners, skulls, beds, and the chests and other containers the player opened, with what they
   showed), the entities with Horizon's own entity NBT (other players aren't saved with chunks, as in vanilla),
@@ -999,12 +1001,18 @@ executors run as mods:
   resource pack as the world's `resourcepacks/resources.zip`. The generator is a void flat one (air over
   `the_void`), so nothing of a generator's own grows beside the saved area. The folder is named after the server's
   address and the date (a world of the player's own: its name), unless `FilePath` (or `FileName`) names it; the name
-  is kept to one plain folder in `saves`, and the world gets `horizon-studio-dump.json`. Calling it again on the
+  is kept to one plain folder in the workspace (Dex's `.txt` and Roblox's file extensions taken off), and the world
+  gets `horizon-studio-dump.json`. Singleplayer lists every such folder of the workspace by its path from the saves
+  (`../horizon-mods/.horizon-mod-data/horizon_studio/workspace/<name>`), which playing, renaming, the icon and
+  Delete follow (no link is made in the saves: Windows makes those only with privileges); a backup of one fails, as
+  its zip is named after that path. Calling it again on the
   same server adds to and updates that world (walk on and call it again to grow the download), but saveinstance
   never writes into a folder without that file: a world of the player's own is refused, left as it is. The chunks
   are copied a few at a time each frame and encoded and written on Horizon's region writer, the rest on a thread of
   its own; the calling thread waits until the world is on the disk (as Roblox's saveinstance yields), then gets
-  the world's folder; a failure is an error. Single player works the same way, from the client's copy of its world.
+  the world's folder; a failure is an error. Called where code can't wait (a GUI's event handler run outside a
+  thread, a metamethod), it still saves: it returns the folder at once and the chat says when the world is written
+  (or why it couldn't be). Single player works the same way, from the client's copy of its world.
   What the server never sends can't be in it: its plugins and their data, its data packs' functions, loot tables,
   advancements and recipes, other dimensions than the one the player is in, chunks the player never had loaded,
   container contents never opened, other players' inventories, and custom biomes (the client keeps a chunk's biomes
@@ -1013,6 +1021,45 @@ executors run as mods:
   names ending in `.txt`, taken off; Elysian's `SaveInstance(object, file)`): the blocks in its box (a stud is a
   block) as a vanilla structure file, `<name>.nbt` in the studio's `workspace` folder, with the block states and the
   block entities the client knows; a structure block loads it once it is in a world's `generated/minecraft/structures`.
+- **ReplicatedStorage.Server is what the server sent the client.** A Minecraft server runs no code on the client:
+  its plugins (Java) and its data packs' functions run on the server and never reach it, so they can't be shown.
+  What does reach the client is mirrored here, rebuilt from the game's data each session (and part by part when the
+  server sends a part anew: its commands after an op, its packs):
+  - `ResourcePacks.Server Pack` (`Server Pack 2`...): each of the server's resource packs, its file tree as Folders,
+    each file a ModuleScript whose Source is working Lua that gives the file back: a JSON file (models, blockstates,
+    lang, `sounds.json`, fonts, atlases, post effects, `pack.mcmeta`) the table literal of its data, so
+    `require(file)` gives the data; a shader (`.vsh`, `.fsh`, `.glsl`: GLSL the game compiles for the GPU) or
+    another text its text in a long string; a PNG its `Width`, `Height` and `Image` (getcustomasset of the copy put
+    in the workspace's `.server-packs`, what an ImageLabel takes); a sound its size. `decompile` and Dex's script
+    viewer show that Source.
+  - **Editing applies.** Setting a file's `Source` (from a script, the console or Dex's Properties) to Lua that
+    still gives that file's kind of data (a table for JSON, with names for keys, a list for a list; a string for a
+    shader or text) writes the file into the studio's override pack (`server-overrides/hstudio-overrides` in the
+    studio's folder), stacked above the server's packs, and the game's resources reload with it. Anything else is
+    refused with an error naming the file and why (it doesn't run, it gives another kind of value, a language entry
+    that isn't text, a blockstate without variants or multipart, an image's pixels, `pack.mcmeta`), and the
+    Source and the file stay as they were. The reload runs as a server's pack reload does: one that fails leaves the
+    resources as they were and never touches the player's own pack selection. Files Minecraft merges across packs
+    (lang, `sounds.json`, fonts, atlases) merge with the server's below as in vanilla. The edits are the session's:
+    leaving the server takes the override pack out of the resources (a reload), and the next session's first edit
+    starts it anew; the folder stays on the disk till then, to copy from.
+  - `Plugins.<namespace>`: each plugin the server's channels (its `minecraft:register` list, in the configuration
+    and in play, and the channels it sends on) and commands (Bukkit's `plugin:command` names) name, such as
+    `worldedit`, `bungeecord`, `voicechat`, `luckperms`; `minecraft` and `bukkit` are the server's own. Each holds a
+    RemoteEvent per channel (its `Channel` attribute the whole name) wired to the real custom payloads:
+    `FireServer(data)` (a string or a buffer, at most 32767 bytes) sends one on that channel, and the server's fire
+    `OnClientEvent(data)`; and a `Commands` ModuleScript of its commands (their shape and usage).
+  - `Commands`: the command tree the server sent, a ModuleScript per command (`type`, `parser`, `executable`,
+    `children`, `redirect`, and `usage` lines such as `/tp <targets> <location>`).
+  - `Registries`: the registries the server sent while the client configured (biomes, dimension types, damage
+    types, enchantments...), a ModuleScript each, and `Registries.Tags`.
+  - `Channels` (every channel) and `README`. What the server sent can't be changed here: the Source of Commands,
+    Registries and the lists is refused.
+  - Joining makes a handful of instances: a pack's folder (and Commands and Registries) makes its children when
+    they are first read (GetChildren, FindFirstChild, an index by name, WaitForChild; GetDescendants and
+    `FindFirstChild(name, true)` inside ReplicatedStorage.Server make everything under it) or when an explorer
+    shows it (`tostring`), so Dex's tree fills one level ahead of what is open, and `game:GetDescendants()` makes
+    none of it. A search of Dex's finds only the folders opened.
 
 As every script here is a mod, all code is the executor's: `checkcaller()` is true but for the game's own packets
 reaching a `__namecall` hook, and `getcallingscript()` is the calling mod's `script` (nil for the console's code and
@@ -1102,6 +1149,9 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `travel.rs` (`hstudio_travel`) | The player's moves scripts make, in steps a server takes: as far a tick as its moved-too-quickly check lets, round the blocks in the way, dipping on a long way through the air |
 | `rbx_gear.rs` (`hstudio_rbx_gear`) | The other players' held item as a Tool in their Character, their armour as Accessories, their Backpack what they were seen holding; a held Tool's touch attacking |
 | `lag.rs` (`hstudio_lag`) | IncomingReplicationLag: the server's packets held back that long |
+| `rbx_server.rs` (`hstudio_rbx_server`) | ReplicatedStorage.Server: the server's resource packs file by file as ModuleScripts (JSON as Lua table literals, shaders and text as long strings), made as they are looked at; edits checked and written into the override pack; the plugins its channels and commands name, their channels' RemoteEvents on custom payloads; its commands and registries |
+| `server_content.rs`, `channels.rs` (`hstudio_server_content`, `net::hstudio_channels`) | ReplicatedStorage.Server's side in the game: the server's packs, channels (the configuration's, from the network thread), commands and registries, versioned part by part; the override pack on top of the server's packs, its reloads, and its end with the session |
+| `worlds.rs` (`title::hstudio_worlds`) | In the game's library: the worlds saveinstance saved in the workspace, in Singleplayer's list by their path from the saves |
 | `rbx_remote.rs` (`hstudio_rbx_remote`) | The game's packets as remotes (ReplicatedStorage.Minecraft): fields to Lua and back, the game's packets through `__namecall` hooks, FireServer, OnClientEvent, a packet's `Debug` form read as fields |
 | `rbx_query.rs` (`hstudio_rbx_query`) | What scripts ask of the world: raycasts through its blocks and parts, the Mouse's target, the bounds queries, Terrain's reads |
 | `exec.rs` (`hstudio_exec`) | The executor (sUNC) functions that need only the interpreter: hooks, newcclosure, debug, metatables, encoding, getgc |
@@ -1120,7 +1170,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `dock.rs` (`hstudio_dock`) | The Editor tab's panes: where they are (a tree of splits and groups of tabs), their sizes, moving them, and the layout kept (`layout.txt`) |
 | `examples.rs` (`hstudio_examples`) | The bundled examples, generated from `examples/` |
 | `bridge.rs` (`hstudio_bridge`) | The module that knows Horizon's `Game`: the hooks and the game's side of the API |
-| `dump.rs` (`hstudio_dump`) | saveinstance's side in the studio: the dump world's folder in the saves and its marker, and the structure file (`.nbt`) of a part's blocks |
+| `dump.rs` (`hstudio_dump`) | saveinstance's side in the studio: the dump world's folder in the workspace and its marker, and the structure file (`.nbt`) of a part's blocks |
 | `world_dump.rs`, `world_files.rs` (`hstudio_world_dump`, `hstudio_world_files`) | saveinstance's world in the game, with Horizon's save code: the chunks copied each frame onto its region writer, the entities, the containers seen; level.dat, the player, the maps, the server's registries and tags as a data pack, on a thread |
 | `tags.rs` (`horizon_protocol::hstudio_tags`) | In the protocol crate: the tags the server sent in the configuration, for saveinstance's data pack |
 | `quads.rs` (`hstudio_quads`) | The HUD's quads cut, turned and coloured (a gradient in bands), for the bridge's drawing of Roblox GUIs |
@@ -1177,6 +1227,9 @@ particle, Video Settings, merge, pickup and swim hooks can answer in their funct
 | packet-out | `game::remote::Game::send` | each serverbound play packet of the game's: while a script hooks `__namecall`, through it as `remote:FireServer` (which may stop it or send another in its place) |
 | packet-in | `game::remote::Game::handle_packet` | each clientbound play packet: its remote's `OnClientEvent`, while a script listens; the command tree, icon and tags the game keeps no copy of, for saveinstance |
 | tags-in | `horizon_protocol::registry::Dynamic::add_tags` | the tags the server sends in the configuration (the game keeps the dialogs' only), for saveinstance's data pack |
+| channels-in | `net::receive_brand` | the configuration's custom payloads: the plugin channels the server registers or sends on, for ReplicatedStorage.Server |
+| pack-override | `game::packs::startup_root` | while the client is on a server and scripts edited its packs' files, the studio's override pack on top of the server's in the resource stack |
+| worlds-list, worlds-path | `title::list_worlds`, `title::world_management::world_path` | Singleplayer's list shows saveinstance's worlds in the workspace beside the saves, and its rename, icon and delete find them there |
 | voice-packet | `game::remote::Game::handle_packet` | the server's `voicechat:*` payloads (which the game drops) and the Login that starts the voice chat |
 | voice-frame, voice-key, voice-chat | `native_frame`, `native_key`, `game::remote::Game::chat_line` | the voice chat's frame (the places, its payloads out), its keys, the server's "incompatible version" line |
 | hud, key, command, zoom, list, settings, click | Horizon's [native hook points](https://github.com/horizon-rust/horizon/blob/main/crates/horizon-client/src/game/native_hooks.rs) | the HUD, keys, commands, `view.zoom`, the Options → Mods row and page |

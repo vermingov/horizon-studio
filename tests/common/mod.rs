@@ -76,8 +76,8 @@ pub struct FakeGame {
     /// one answers with an error instead (as the game refuses a bad one).
     pub packets: Vec<horizon_studio::game::hstudio_rbx_remote::Packet>,
     pub packet_error: Option<String>,
-    /// The game's saves folder (`saves_dir`), the worlds saveinstance asked
-    /// to be dumped there (`dump_world`), how many polls each dump takes
+    /// The game's saves folder (tests that make one), the worlds saveinstance
+    /// asked to be dumped (`dump_world`), how many polls each dump takes
     /// before it is written, how many polls it had so far, and what it ends with.
     pub saves: Option<PathBuf>,
     pub dumps: Vec<PathBuf>,
@@ -98,6 +98,11 @@ pub struct FakeGame {
     /// held back (`set_incoming_lag`).
     pub move_limits: Option<MoveLimits>,
     pub incoming_lag: f64,
+    /// What the server sent (ReplicatedStorage.Server's content: the parts
+    /// a caller hasn't the version of are given), and the override packs
+    /// the studio asked the resources to reload with.
+    pub content: Option<horizon_studio::game::hstudio_rbx_server::ServerContent>,
+    pub overrides: Vec<Option<PathBuf>>,
 }
 
 /// The fake game's play packets by id (a few of the game's).
@@ -228,6 +233,8 @@ impl FakeGame {
             teams: HashMap::new(),
             move_limits: None,
             incoming_lag: 0.0,
+            content: None,
+            overrides: Vec::new(),
         }
     }
     /// The player leaves the server or world for the menus (the title
@@ -306,13 +313,34 @@ impl GameApi for FakeGame {
                 .unwrap_or_else(|| "minecraft:air".into()),
         )
     }
-    fn saves_dir(&self) -> Option<PathBuf> {
-        self.saves.clone()
-    }
     fn dump_world(&mut self, world: &std::path::Path) -> Result<u64, String> {
         self.dumps.push(world.to_path_buf());
         self.dump_polled.push(0);
         Ok(self.dumps.len() as u64 - 1)
+    }
+    fn server_content(
+        &mut self,
+        session: Option<u64>,
+        versions: [u64; 4],
+    ) -> Option<horizon_studio::game::hstudio_rbx_server::ServerContent> {
+        let c = self.content.as_ref()?;
+        let fresh = session != Some(c.session);
+        if !fresh && versions == c.versions {
+            return None;
+        }
+        let new = |i: usize| fresh || versions[i] != c.versions[i];
+        Some(horizon_studio::game::hstudio_rbx_server::ServerContent {
+            session: c.session,
+            versions: c.versions,
+            packs: c.packs.clone().filter(|_| new(0)),
+            channels: c.channels.clone().filter(|_| new(1)),
+            commands: c.commands.clone().filter(|_| new(2)),
+            registries: c.registries.clone().filter(|_| new(3)),
+        })
+    }
+    fn resource_override(&mut self, pack: Option<&std::path::Path>) -> Result<(), String> {
+        self.overrides.push(pack.map(std::path::Path::to_path_buf));
+        Ok(())
     }
     fn dump_poll(&mut self, job: u64) -> Option<Result<(), String>> {
         let polled = self.dump_polled.get_mut(job as usize)?;

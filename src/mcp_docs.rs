@@ -2086,6 +2086,25 @@ print(lib.greet("you"))
 - **`InvokeServer`** sends the request and waits for the server's answer, returning its fields: `CommandSuggestion:InvokeServer({ id = 7, command = "/gamem" })` returns `{ id = 7, start = 1, length = 5, suggestions = { { text = "gamemode" } } }`. The answer is matched by its id (`transaction` for the tag queries, `time` for a ping).
 - **`OnClientEvent`** fires for each clientbound packet with its fields and payload, deferred like every signal, while a script listens to that remote (`Connect`, `Once` or `Wait`): only then does the game read them.
 
+**`ReplicatedStorage.Server` is what the server sent the client.** A Minecraft server runs no code on the client: its plugins' Java code and its data packs' functions never reach it, so they can't be here; what reaches the client is, rebuilt each session.
+
+- **`ResourcePacks.Server Pack`** (`Server Pack 2`...): the server's resource packs, file trees as Folders, each file a ModuleScript whose Source is Lua that gives the file back: JSON (models, blockstates, lang, `sounds.json`, fonts, atlases, post effects, `pack.mcmeta`) as a table literal, so `require(file)` gives the data; shaders (`.vsh`, `.fsh`, `.glsl`, GLSL that runs on the GPU) and other text as a long string; a PNG as `{ Path, Width, Height, Bytes, File, Image }` (`Image` is getcustomasset of its copy in the workspace's `.server-packs`, for an ImageLabel); a sound as its size. `decompile` gives the Source.
+- **Editing applies.** Set a file's `Source` to Lua that still gives that file's kind of data (a table for JSON, a string for text) and the file goes into the studio's override pack (`server-overrides/hstudio-overrides`), above the server's packs, and the resources reload with it. Anything else is an error naming the file and why, and the Source and file stay as they were; a reload that fails leaves the resources as they were. The edits are the session's: leaving the server takes the override pack out.
+- **`Plugins.<namespace>`**: each plugin the server's channels (`minecraft:register` and the traffic) and commands name (`worldedit`, `bungeecord`, `luckperms`...): a RemoteEvent per channel (attribute `Channel`) wired to its custom payloads, `FireServer(data)` sending a string or buffer on it and `OnClientEvent(data)` hearing the server's; and a `Commands` ModuleScript.
+- **`Commands`** (a ModuleScript per command: its parsers, `executable`, `children`, `usage`), **`Registries`** (a ModuleScript per registry, and `Registries.Tags`), **`Channels`**, **`README`**: what the server sent, read only.
+- A folder makes its children when they are first read (GetChildren, FindFirstChild, an index, WaitForChild; GetDescendants inside it makes all) or an explorer shows it (`tostring`): joining a server with a pack of thousands of files makes a handful of instances, and `game:GetDescendants()` none of the pack.
+
+```lua
+local server = game:GetService("ReplicatedStorage"):WaitForChild("Server")
+local stone = server.ResourcePacks["Server Pack"].assets.minecraft.models.block["stone.json"]
+local model = require(stone)                  -- { parent = "minecraft:block/cube_all", textures = {...} }
+stone.Source = 'return { parent = "minecraft:block/cube_all", textures = { all = "minecraft:block/dirt" } }'
+local cui = server.Plugins.worldedit.cui      -- the worldedit:cui channel
+cui.OnClientEvent:Connect(function(data) print("worldedit says", data) end)
+cui:FireServer("v|4")
+print(require(server.Commands.tp).usage[1])   -- /tp <targets>
+```
+
 ```lua
 local mc = game:GetService("ReplicatedStorage").Minecraft
 local old
@@ -8049,10 +8068,12 @@ local r = NumberRange.new(1, 5)
 `saveinstance([game | object | file, options])`
 
 A world downloader: saves what the client has received from the server as
-a real Minecraft world in the game's `saves` folder, which Singleplayer
-lists, and returns the world's folder. The calling thread waits until the
-world is written (run it in a thread that can wait: a mod's top level,
-`task.spawn`); a failure is an error.
+a real Minecraft world in the workspace folder (where executors write what
+they save), which Singleplayer lists beside the saves, and returns the
+world's folder. The calling thread waits until the world is written; a
+failure is an error. Where code can't wait (a GUI handler run outside a
+thread, a metamethod) it still saves: the folder comes back at once and the
+chat says when the world is written.
 
 The world holds every chunk loaded in the player's dimension (blocks,
 biomes, light, heightmaps, the block entities the client knows, and the
@@ -8064,8 +8085,9 @@ as the data pack `datapacks/server`, its command tree
 (`server_commands.json`), its icon and its resource pack. The generator is
 a void flat one. The folder is the server's address and the date unless
 `FilePath` or `FileName` names it (UniversalSynSaveInstance's options; the
-others are ignored). Calling it again adds to the same world; a folder
-saveinstance didn't make (no `horizon-studio-dump.json`) is refused.
+others are ignored; Dex's `.txt` is taken off). Calling it again adds to the
+same world; a folder saveinstance didn't make (no `horizon-studio-dump.json`)
+is refused.
 Plugins, data pack functions and chunks never loaded aren't sent to the
 client, so they can't be saved.
 
@@ -8075,9 +8097,9 @@ workspace folder (a `.txt` on the name is taken off), returned at once.
 
 ```lua
 task.spawn(function()
-    local world = saveinstance()                      -- saves/<server> <date>
+    local world = saveinstance()                      -- workspace/<server> <date>
     print("saved to", world)
-    saveinstance({ FilePath = "spawn town" })        -- saves/spawn town
+    saveinstance({ FilePath = "spawn town" })        -- workspace/spawn town
     print(saveinstance(workspace.House, "house"))   -- house.nbt
 end)
 ```
@@ -8090,12 +8112,12 @@ end)
 `SaveInstance(object, file)`
 
 Elysian's name for `saveinstance`: `game` (or none) saves the world into
-the saves folder, a part or model its blocks as `<file>.nbt` in the
-workspace folder.
+the workspace folder (Singleplayer lists it), a part or model its blocks as
+`<file>.nbt` there.
 
 ```lua
 task.spawn(function()
-    print(SaveInstance(game, "my dump"))       -- saves/my dump
+    print(SaveInstance(game, "my dump"))       -- workspace/my dump
     print(SaveInstance(workspace.Model, "m"))  -- m.nbt
 end)
 ```

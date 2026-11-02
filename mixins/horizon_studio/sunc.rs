@@ -932,18 +932,27 @@ pub fn poll_network(rbx: &mut Rbx) {
 }
 
 /// The game's dumps saveinstance waits for: each thread gets the world's
-/// folder once it is written, or why it couldn't be.
+/// folder once it is written, or why it couldn't be (the chat says it for
+/// a dump no thread waits for).
 pub fn poll_dumps(rbx: &mut Rbx, game: &mut dyn GameApi) {
     let mut i = 0;
     while i < rbx.dumps.len() {
         match game.dump_poll(rbx.dumps[i].job) {
             Some(done) => {
                 let w = rbx.dumps.remove(i);
+                let Some(thread) = w.thread else {
+                    // No thread waited: the chat says how it went.
+                    rbx.warnings.push(match done {
+                        Ok(()) => format!("\u{1}saveinstance: the world is saved in {}", w.world.display()),
+                        Err(why) => format!("\u{1}saveinstance: {why}"),
+                    });
+                    continue;
+                };
                 let back = match done {
                     Ok(()) => vec![Value::str(&w.world.to_string_lossy())],
                     Err(why) => vec![Value::Nil, Value::str(&format!("saveinstance: {why}"))],
                 };
-                rbx.ready.push((w.owner, w.thread, back));
+                rbx.ready.push((w.owner, thread, back));
             }
             None => i += 1,
         }
@@ -2502,7 +2511,7 @@ impl Ctx<'_> {
             // saveinstance([object | path, object | options]) and Elysian's
             // SaveInstance(object, file), as a world downloader: the game
             // (or none) saves the world the client has as a Minecraft world
-            // in the game's saves, which Singleplayer lists; a part, model or
+            // in the workspace folder, which Singleplayer lists; a part, model or
             // folder saves the blocks in its box as a structure file in the
             // workspace folder. Nothing of Roblox's formats is written. The
             // prelude's saveinstance makes `nil, why` an error.
@@ -2538,16 +2547,6 @@ impl Ctx<'_> {
                         Err(why) => fail(why),
                     },
                     None => {
-                        if !lua.is_yieldable() {
-                            return fail(
-                                "it waits for the world to be written, and this code can't wait \
-                                 (run it with task.spawn)"
-                                    .into(),
-                            );
-                        }
-                        let Some(saves) = self.game.saves_dir() else {
-                            return fail("the game has no saves folder here".into());
-                        };
                         let client = self.game.client();
                         let folder =
                             super::hstudio_dump::folder_name(file.as_deref(), &client, &super::hstudio_dump::today());
@@ -2562,7 +2561,7 @@ impl Ctx<'_> {
                                 }
                             })
                             .unwrap_or_default();
-                        let world = match super::hstudio_dump::prepare(&saves, &folder, &source) {
+                        let world = match super::hstudio_dump::prepare(&self.workspace(), &folder, &source) {
                             Ok(w) => w,
                             Err(why) => return fail(why),
                         };
@@ -2571,15 +2570,25 @@ impl Ctx<'_> {
                             Err(why) => return fail(why),
                         };
                         let owner = self.owner;
+                        // Code that can't wait (a GUI's event handler run
+                        // where no thread waits, a metamethod) still saves:
+                        // the world's folder at once, and the chat says when
+                        // it is written.
+                        let thread = lua.is_yieldable().then(|| lua.current_thread());
+                        let waits = thread.is_some();
                         let rbx = &mut self.s.rbx;
                         rbx.active = true;
                         rbx.dumps.push(super::hstudio_rbx::DumpWait {
                             owner,
-                            thread: lua.current_thread(),
+                            thread,
                             job,
-                            world,
+                            world: world.clone(),
                         });
-                        Err(Throw::Yield(Vec::new()))
+                        if waits {
+                            Err(Throw::Yield(Vec::new()))
+                        } else {
+                            one(Value::str(&world.to_string_lossy()))
+                        }
                     }
                 }
             }
