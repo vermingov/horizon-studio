@@ -4,7 +4,7 @@
 // (player_model_visibility). Only the player's own model is marked (OWN, in
 // its hidden_model_parts, whose top bit the game leaves clear).
 
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 /// The parts the studio can hide, in the mask's order (hstudio::BODY_PARTS).
 pub const PARTS: [&str; 12] = [
@@ -26,6 +26,19 @@ pub const PARTS: [&str; 12] = [
 pub const OWN: u8 = 0x80;
 
 static HIDDEN: AtomicU16 = AtomicU16::new(0);
+static NOCLIP: AtomicBool = AtomicBool::new(false);
+
+/// Whether the player passes through blocks (a noclip script keeps the
+/// character's parts from colliding): each local tick of theirs moves them
+/// as a spectator's, which the world played alone would otherwise put back
+/// as the game mode has it every tick.
+pub fn set_noclip(on: bool) {
+    NOCLIP.store(on, Ordering::Relaxed);
+}
+
+pub fn noclip() -> bool {
+    NOCLIP.load(Ordering::Relaxed)
+}
 
 /// The parts hidden now, as a mask over PARTS.
 pub fn set(mask: u16) {

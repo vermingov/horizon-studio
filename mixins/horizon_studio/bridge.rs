@@ -1320,6 +1320,7 @@ impl GameApi for Host<'_, '_> {
     fn set_noclip(&mut self, on: bool) -> bool {
         let Some(g) = self.g_mut() else { return false };
         // The spectator's physics: through blocks. Back as the game mode has it.
+        horizon_client::mobs::hstudio_body::set_noclip(on);
         let spectator = on || g.mode == horizon_client::command::args::GameMode::Spectator;
         let Some(p) = g.player.as_mut() else { return false };
         p.spectator = spectator;
@@ -1469,6 +1470,7 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &dyn EventLoopCtl) {
                 give_back(game);
             }
             OPEN.with(|o| o.set(false));
+            horizon_client::mobs::hstudio_body::set_noclip(false);
             super::hstudio_link::stop();
             chat_commands_off(game);
             return;

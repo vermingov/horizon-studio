@@ -403,6 +403,17 @@ name = "hstudio_body"
 source = "body.rs"
 visibility = "pub"
 
+# A noclip script's noclip each local tick (hstudio_bridge::set_noclip): a
+# world played alone sets the game mode's physics back as its tick starts.
+[[injection]]
+id = "noclip-tick"
+kind = "HEAD"
+target = "horizon_client::motion::MotionWorld<'_,'_,'_>::controlled_simulation_tick_with_sprint_window"
+helper = "noclip_tick.rs"
+bindings = [
+  { name = "world", ty = "&mut MotionWorld<'_, '_, '_>", value = "&mut *self" },
+]
+
 [[injection]]
 id = "body-parts"
 kind = "RETURN"
