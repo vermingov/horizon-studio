@@ -514,3 +514,55 @@ fn json_encode_writes_null_for_what_json_cannot_hold_and_methods_take_lowercase_
     );
     assert_eq!(p, ["{\"v\":null}\t[null,1,null]", "0.5\t-1"]);
 }
+
+#[test]
+fn esp_in_a_folder_in_core_gui_draws_its_boxes_and_name_tags() {
+    // Infinite Yield's ESP: a Folder in CoreGui with a BoxHandleAdornment per
+    // part (coloured by the older BrickColor Color) and a BillboardGui tag.
+    let mut game = FakeGame::new("compat-esp");
+    let mut st = studio(&mut game);
+    game.write_mod(
+        "t.lua",
+        r#"
+        local p = Instance.new("Part")
+        p.Anchored = true
+        p.Size = Vector3.new(2, 2, 2)
+        p.CFrame = CFrame.new(10.5, 65.62, -13.25)
+        p.Parent = workspace
+        local holder = Instance.new("Folder")
+        holder.Name = "Alex_ESP"
+        holder.Parent = game:GetService("CoreGui")
+        local box = Instance.new("BoxHandleAdornment")
+        box.Adornee = p
+        box.AlwaysOnTop = true
+        box.Size = p.Size
+        box.Transparency = 0.3
+        box.Color = BrickColor.new("Bright red")
+        box.Parent = holder
+        local tag = Instance.new("BillboardGui")
+        tag.Adornee = p
+        tag.Size = UDim2.new(0, 100, 0, 150)
+        tag.AlwaysOnTop = true
+        tag.Parent = holder
+        local label = Instance.new("TextLabel")
+        label.BackgroundTransparency = 1
+        label.Size = UDim2.new(0, 100, 0, 100)
+        label.Text = "Name: Alex"
+        label.Parent = tag
+        print(box.Visible)
+        "#,
+    );
+    run_for(&mut st, &mut game, 0.7);
+    st.hud(&mut game);
+    let box_red = game
+        .drawn
+        .iter()
+        .any(|d| d.starts_with("rect") && d.ends_with(&format!("b3{:06x}", 0xc4281c)));
+    let tag = game.drawn.iter().any(|d| d.starts_with("text Name: Alex"));
+    assert!(box_red && tag, "{:?}", game.drawn);
+    assert_eq!(
+        log(&st).iter().filter(|l| l.as_str() == "[t] true").count(),
+        1,
+        "adornments are Visible"
+    );
+}

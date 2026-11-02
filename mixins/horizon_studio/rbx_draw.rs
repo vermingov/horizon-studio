@@ -386,31 +386,41 @@ pub fn text_size(game: &mut dyn GameApi, text: &str, size: f64, font: Font, widt
     (widest.ceil(), (lines as f64 * size).ceil())
 }
 
-/// The ScreenGuis drawn: those in the PlayerGui and in CoreGui.
-fn screen_guis(rbx: &Rbx) -> Vec<Id> {
+/// The GUIs of class `class` (ScreenGui, BillboardGui) in the PlayerGui,
+/// CoreGui and gethui()'s folder: their children, and those in Folders and
+/// the other containers that aren't GUI there, as Roblox draws them (a
+/// script's ESP keeps its BillboardGuis in a Folder in CoreGui). Not those
+/// inside another GUI.
+fn gui_roots(rbx: &Rbx, class: &str) -> Vec<Id> {
     let mut out = Vec::new();
-    for root in [rbx.player_gui, rbx.core_gui, rbx.hui] {
-        for &c in rbx.children(root) {
-            if rbx.inst(c).class.name == "ScreenGui" {
-                out.push(c);
-            }
+    let mut stack: Vec<Id> = [rbx.player_gui, rbx.core_gui, rbx.hui]
+        .iter()
+        .flat_map(|&r| rbx.children(r).iter().rev().copied().collect::<Vec<_>>())
+        .collect();
+    stack.reverse();
+    while let Some(id) = stack.pop() {
+        let Some(inst) = rbx.try_inst(id).filter(|i| !i.destroyed) else {
+            continue;
+        };
+        if inst.class.name == class {
+            out.push(id);
+        } else if !is_a(inst.class, "GuiBase2d") {
+            stack.extend(inst.children.iter().rev().copied());
         }
     }
     out
+}
+
+/// The ScreenGuis drawn: those in the PlayerGui and in CoreGui.
+fn screen_guis(rbx: &Rbx) -> Vec<Id> {
+    gui_roots(rbx, "ScreenGui")
 }
 
 /// The BillboardGuis that may be drawn: those in the PlayerGui, CoreGui
 /// and gethui()'s folder, and those anywhere in the Workspace (not inside
 /// another GUI).
 fn billboard_guis(rbx: &Rbx) -> Vec<Id> {
-    let mut out = Vec::new();
-    for root in [rbx.player_gui, rbx.core_gui, rbx.hui] {
-        for &c in rbx.children(root) {
-            if rbx.inst(c).class.name == "BillboardGui" {
-                out.push(c);
-            }
-        }
-    }
+    let mut out = gui_roots(rbx, "BillboardGui");
     out.extend(
         rbx.descendants(rbx.workspace)
             .into_iter()
@@ -422,12 +432,9 @@ fn billboard_guis(rbx: &Rbx) -> Vec<Id> {
 /// Whether a BillboardGui is one `billboard_guis` draws.
 fn board_root(rbx: &Rbx, id: Id) -> bool {
     let parent = rbx.try_inst(id).and_then(|i| i.parent);
-    if parent.is_some_and(|p| [rbx.player_gui, rbx.core_gui, rbx.hui].contains(&p)) {
-        return true;
-    }
     let mut at = parent;
     while let Some(p) = at {
-        if p == rbx.workspace {
+        if p == rbx.workspace || [rbx.player_gui, rbx.core_gui, rbx.hui].contains(&p) {
             return true;
         }
         let inst = rbx.inst(p);
@@ -3471,6 +3478,14 @@ const ADORNMENTS: &[&str] = &[
 /// A property of a kept class: what a script set, else Roblox's default.
 fn adorn_prop(rbx: &Rbx, id: Id, name: &str) -> Value {
     let inst = rbx.inst(id);
+    // An adornment's older Color (a BrickColor) is its Color3 when that
+    // isn't set itself, as in Roblox, where setting one sets the other.
+    if name == "Color3"
+        && !inst.extra.contains_key("Color3")
+        && let Some(Data::Brick(b)) = inst.extra.get("Color").and_then(get)
+    {
+        return super::hstudio_rbx_values::c3(b.color());
+    }
     if let Some(v) = inst.props.iter().find(|(k, _)| **k == name).map(|(_, v)| v.clone()) {
         return v;
     }

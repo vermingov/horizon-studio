@@ -60,6 +60,28 @@ pub struct Api {
     pub enums: Vec<(&'static str, Vec<(&'static str, i32)>)>,
 }
 
+/// Switches the API dump gives no default (it has defaults only for the
+/// classes that declare them as instances), which are on in Roblox: an
+/// adornment is Visible, a light or a script Enabled, a part CanCollide.
+const TRUE_BY_DEFAULT: &[(&str, &str)] = &[
+    ("Instance", "Archivable"),
+    ("Instance", "archivable"),
+    ("BaseCoreGuiConfiguration", "Enabled"),
+    ("Constraint", "Enabled"),
+    ("GuiObject", "Visible"),
+    ("GuiBase2d", "AutoLocalize"),
+    ("LayerCollector", "Enabled"),
+    ("GuiBase3d", "Visible"),
+    ("JointInstance", "Enabled"),
+    ("Light", "Enabled"),
+    ("BaseScript", "Enabled"),
+    ("BasePart", "CanCollide"),
+    ("BasePart", "CanQuery"),
+    ("BasePart", "CanTouch"),
+    ("PostEffect", "Enabled"),
+    ("SoundEffect", "Enabled"),
+];
+
 pub fn api() -> &'static Api {
     static API_TABLE: OnceLock<Api> = OnceLock::new();
     API_TABLE.get_or_init(parse)
@@ -93,7 +115,11 @@ fn parse() -> Api {
                     "P" => Member::Prop {
                         cat: at(2),
                         ty: at(3),
-                        default: at(4),
+                        default: if at(4).is_empty() && TRUE_BY_DEFAULT.contains(&(c.name, at(1))) {
+                            "true"
+                        } else {
+                            at(4)
+                        },
                         read_only: at(5).contains('r'),
                         hidden: at(5).contains('h'),
                     },
