@@ -9,7 +9,7 @@ frame 1
   dp_rect [362.0, 834.0, 236.0, 36.0] 8 ff282c36
   dp_text "Ender pearl  —  8" [416.5135, 842.1545] 13.58 Regular ff3ca078
   dp_text "Close (G)" [460.794, 886.374] 7.76 Regular ffa0a5b4
-  log Info Horizon Studio 0.9.0. Type Lua and press Enter; help() lists the API.
+  log Info Horizon Studio 0.10.0. Type Lua and press Enter; help() lists the API.
 frame 2
   dp_rect [350.0, 702.0, 260.0, 216.0] 12 ff181a20
   dp_border [349.5, 701.5, 261.0, 217.0] 12.5 ff464b5a
