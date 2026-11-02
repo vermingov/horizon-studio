@@ -54,11 +54,11 @@ thread_local! {
     static LATER: RefCell<Vec<Later>> = const { RefCell::new(Vec::new()) };
     /// What Roblox scripts' Lighting, Workspace and Camera ask of the view:
     /// read by the FOV and fog hooks and each frame.
-    static FX: Cell<Fx> = const { Cell::new(Fx { light: 0.0, time: None, fog: None, fov: None }) };
+    static FX: Cell<Fx> = const { Cell::new(Fx::GAME) };
     /// How the player's own model looks as Roblox scripts make the local
     /// character (hstudio::Body), for the model's hooks; the parts hidden
     /// are in the library's mobs::hstudio_body.
-    static BODY: Cell<BodyNow> = const { Cell::new(BodyNow { gone: false, pose: 0, spin: 0.0, still: false, fixed: false }) };
+    static BODY: Cell<BodyNow> = const { Cell::new(BodyNow::GAME) };
     /// A script's Roblox tool is in hand while the player plays: the mouse's
     /// left and right buttons are its (hstudio_rbx_tools), not the game's;
     /// and the presses it took, whose releases are its too.
@@ -79,6 +79,17 @@ struct BodyNow {
     spin: f32,
     still: bool,
     fixed: bool,
+}
+
+impl BodyNow {
+    /// As the game draws it.
+    const GAME: BodyNow = BodyNow {
+        gone: false,
+        pose: 0,
+        spin: 0.0,
+        still: false,
+        fixed: false,
+    };
 }
 
 /// After the player's model takes its tick (tick_player_model): posed as
@@ -150,6 +161,16 @@ struct Fx {
     fov: Option<f32>,
 }
 
+impl Fx {
+    /// The game's own view.
+    const GAME: Fx = Fx {
+        light: 0.0,
+        time: None,
+        fog: None,
+        fov: None,
+    };
+}
+
 fn fx_set(f: impl FnOnce(&mut Fx)) {
     FX.with(|c| {
         let mut v = c.get();
@@ -197,17 +218,7 @@ fn keep_view(game: &mut Game<'_>) {
 thread_local! {
     /// What Roblox scripts hold of the view and the input (hstudio_rbx_world's
     /// game_effects): read by the camera, mouse and window hooks.
-    static HOLD: RefCell<Hold> = const {
-        RefCell::new(Hold {
-            view: None,
-            perspective: None,
-            sunk: Vec::new(),
-            look: false,
-            mouse: [0.0; 2],
-            sensitivity: 1.0,
-            frozen: false,
-        })
-    };
+    static HOLD: RefCell<Hold> = const { RefCell::new(Hold::NONE) };
     /// Whether the player plays (no screen up, the chat closed): the keys
     /// scripts take are theirs only then.
     static PLAYING: Cell<bool> = const { Cell::new(false) };
@@ -229,6 +240,19 @@ struct Hold {
     sensitivity: f64,
     /// The character is anchored: the player holds still.
     frozen: bool,
+}
+
+impl Hold {
+    /// Nothing held: the game's own view and input.
+    const NONE: Hold = Hold {
+        view: None,
+        perspective: None,
+        sunk: Vec::new(),
+        look: false,
+        mouse: [0.0; 2],
+        sensitivity: 1.0,
+        frozen: false,
+    };
 }
 
 /// The view (`Camera.update`, ahead of the game's): where a script's Camera
@@ -1201,6 +1225,11 @@ impl GameApi for Host<'_, '_> {
     fn client(&self) -> super::hstudio::ClientInfo {
         client_info(self.g())
     }
+    fn session_end(&mut self) {
+        if let Some(g) = self.g_mut() {
+            session_end(g);
+        }
+    }
     fn client_do(&mut self, action: super::hstudio::ClientAction) -> Result<(), String> {
         client_check(self.g(), &action)?;
         // Leaving and joining change the whole game: at the next frame's
@@ -1718,6 +1747,11 @@ impl GameApi for Host<'_, '_> {
         } else {
             CameraType::ThirdPersonBack
         };
+        // The player's own, for the session's end.
+        let own = HOLD.with(|h| h.borrow().perspective).unwrap_or(g.camera_type);
+        UNDO.with(|u| {
+            u.borrow_mut().perspective.get_or_insert(own);
+        });
         // A view held away from the player comes back to this one.
         let held = HOLD.with(|h| {
             let mut h = h.borrow_mut();
@@ -1751,8 +1785,13 @@ impl GameApi for Host<'_, '_> {
     }
     fn set_hitboxes(&mut self, on: bool) {
         let Some(g) = self.g_mut() else { return };
-        // F3+B's switch, as the debug key turns it.
-        if g.debug_entry("entity_hitboxes") != on {
+        // F3+B's switch, as the debug key turns it (the player's own back
+        // as the session ends).
+        let own = g.debug_entry("entity_hitboxes");
+        UNDO.with(|u| {
+            u.borrow_mut().hitboxes.get_or_insert(own);
+        });
+        if own != on {
             let overlay = g.debug;
             g.debug_entries.toggle_status("entity_hitboxes", overlay);
         }
@@ -1785,6 +1824,14 @@ impl GameApi for Host<'_, '_> {
         if g.screen != Screen::Playing || g.player.is_none() {
             return false;
         }
+        // What scripts hold down, let go as the session ends.
+        UNDO.with(|u| {
+            let pressed = &mut u.borrow_mut().pressed;
+            pressed.retain(|k| k != key);
+            if down {
+                pressed.push(key.to_owned());
+            }
+        });
         // A click as the mouse's own: an attack or a use, and the mods' (the
         // studio's own on("key")) hear it.
         if let Some(button) = horizon_client::keybinds::mouse_button(key) {
@@ -2707,8 +2754,9 @@ thread_local! {
     /// The HUD's parts Roblox scripts hid: the chat and the player list.
     static HIDE_CHAT: Cell<bool> = const { Cell::new(false) };
     static HIDE_TAB: Cell<bool> = const { Cell::new(false) };
-    /// The player's graphics settings while scripts have them lowered.
-    static GRAPHICS: RefCell<Option<Graphics>> = const { RefCell::new(None) };
+    /// What scripts changed that the session's end gives back
+    /// (session_end); the player's settings are hstudio_kept's.
+    static UNDO: RefCell<Undo> = const { RefCell::new(Undo::NONE) };
     /// The lights Roblox scripts put in the world.
     static LIGHTS: RefCell<Vec<([f64; 3], u32, f32, f32)>> = const { RefCell::new(Vec::new()) };
 }
@@ -2797,40 +2845,52 @@ fn rejoin_step(game: &mut Game<'_>) {
     }
 }
 
-/// The graphics settings `ClientAction::LowGraphics` lowers.
-struct Graphics {
-    render_distance: i32,
-    particles: u8,
-    clouds: String,
-    entity_shadows: bool,
-    entity_distance: f32,
-    biome_blend: i32,
-    weather_radius: i32,
+/// What scripts changed of the game that the session's end gives back, as
+/// the player had it: the HUD hidden (F1), the hitboxes shown (F3+B), the
+/// perspective (F5); the keys and buttons they hold down (keypress); and
+/// whether they muted voices.
+struct Undo {
+    hide_gui: Option<bool>,
+    hitboxes: Option<bool>,
+    perspective: Option<super::perspective::CameraType>,
+    pressed: Vec<String>,
+    muted: bool,
 }
 
-fn graphics(g: &Game<'_>) -> Graphics {
-    let s = &g.settings;
-    Graphics {
-        render_distance: s.render_distance,
-        particles: s.particles,
-        clouds: s.clouds.clone(),
-        entity_shadows: s.entity_shadows,
-        entity_distance: s.entity_distance,
-        biome_blend: s.biome_blend,
-        weather_radius: s.weather_radius,
-    }
+impl Undo {
+    const NONE: Undo = Undo {
+        hide_gui: None,
+        hitboxes: None,
+        perspective: None,
+        pressed: Vec::new(),
+        muted: false,
+    };
 }
 
-fn set_graphics(g: &mut Game<'_>, v: Graphics) {
+/// The graphics lowered (`ClientAction::LowGraphics`), the player's own
+/// kept (hstudio_kept): whether they were lowered now.
+fn lower_graphics(g: &mut Game<'_>) -> bool {
+    use horizon_client::settings::hstudio_kept as kept;
     let s = &mut g.settings;
-    s.render_distance = v.render_distance;
-    s.particles = v.particles;
-    s.clouds = v.clouds;
-    s.entity_shadows = v.entity_shadows;
-    s.entity_distance = v.entity_distance;
-    s.biome_blend = v.biome_blend;
-    s.weather_radius = v.weather_radius;
-    g.apply_settings();
+    kept::with(|k| {
+        if k.lowered {
+            return false;
+        }
+        k.lowered = true;
+        let (rd, ed, wr) = (
+            s.render_distance.min(8),
+            s.entity_distance.min(0.5),
+            s.weather_radius.min(3),
+        );
+        kept::change(&mut k.render_distance, &mut s.render_distance, rd);
+        kept::change(&mut k.particles, &mut s.particles, 2);
+        kept::change(&mut k.clouds, &mut s.clouds, "false".into());
+        kept::change(&mut k.entity_shadows, &mut s.entity_shadows, false);
+        kept::change(&mut k.entity_distance, &mut s.entity_distance, ed);
+        kept::change(&mut k.biome_blend, &mut s.biome_blend, 0);
+        kept::change(&mut k.weather_radius, &mut s.weather_radius, wr);
+        true
+    })
 }
 
 /// The server the player is on, how the last connection ended (the
@@ -2896,6 +2956,7 @@ fn client_check(g: &Game<'_>, action: &super::hstudio::ClientAction) -> Result<(
 /// Does what a Roblox script asked of the client, at a frame's start.
 fn client_now(game: &mut Game<'_>, action: super::hstudio::ClientAction) {
     use super::hstudio::ClientAction as A;
+    use horizon_client::settings::hstudio_kept as kept;
     match action {
         A::Leave(reason) => {
             if game.remote.is_some() || game.integrated.is_some() {
@@ -2937,34 +2998,36 @@ fn client_now(game: &mut Game<'_>, action: super::hstudio::ClientAction) {
                 })
             });
         }
+        // The settings scripts change are the player's own again as the
+        // session ends, and options.txt keeps the player's (hstudio_kept).
         A::MasterVolume(v) => {
             let v = v.clamp(0.0, 1.0);
-            game.settings.master_volume = v;
+            kept::with(|k| kept::change(&mut k.master_volume, &mut game.settings.master_volume, v));
             game.audio.master = v;
         }
         A::LowGraphics(true) => {
-            if GRAPHICS.with(|g| g.borrow().is_some()) {
-                return;
+            if lower_graphics(game) {
+                game.apply_settings();
             }
-            let was = graphics(game);
-            let low = Graphics {
-                render_distance: was.render_distance.min(8),
-                particles: 2,
-                clouds: "false".into(),
-                entity_shadows: false,
-                entity_distance: was.entity_distance.min(0.5),
-                biome_blend: 0,
-                weather_radius: was.weather_radius.min(3),
-            };
-            GRAPHICS.with(|g| *g.borrow_mut() = Some(was));
-            set_graphics(game, low);
         }
         A::LowGraphics(false) => {
-            if let Some(was) = GRAPHICS.with(|g| g.borrow_mut().take()) {
-                set_graphics(game, was);
+            let s = &mut game.settings;
+            let lowered = kept::with(|k| {
+                let was = k.lowered;
+                if was {
+                    k.give_back_graphics(s);
+                }
+                was
+            });
+            if lowered {
+                game.apply_settings();
             }
         }
-        A::ToggleFullscreen => game.toggle_fullscreen(),
+        A::ToggleFullscreen => {
+            let (mut now, to) = (game.settings.fullscreen, !game.settings.fullscreen);
+            kept::with(|k| kept::change(&mut k.fullscreen, &mut now, to));
+            game.toggle_fullscreen();
+        }
         // The hotbar slot held, said again: the server counts it as the
         // player's action (its idle timer starts over), and nothing changes.
         A::Activity => {
@@ -2976,18 +3039,34 @@ fn client_now(game: &mut Game<'_>, action: super::hstudio::ClientAction) {
                 ));
             }
         }
-        A::MuteVoice(who, muted) => super::hstudio_voicechat::global(|v| v.vc.mute_voice(who, muted)),
+        A::MuteVoice(who, muted) => {
+            UNDO.with(|u| u.borrow_mut().muted |= muted);
+            super::hstudio_voicechat::global(|v| v.vc.mute_voice(who, muted));
+        }
         A::VoiceListener(at) => super::hstudio_voicechat::global(|v| v.listener_at = at),
         A::Hud(part, shown) => match part.as_str() {
             "chat" => HIDE_CHAT.with(|c| c.set(!shown)),
             "playerlist" => HIDE_TAB.with(|c| c.set(!shown)),
-            "all" => game.ui.hide_gui = !shown,
+            "all" => {
+                let own = game.ui.hide_gui;
+                UNDO.with(|u| {
+                    u.borrow_mut().hide_gui.get_or_insert(own);
+                });
+                game.ui.hide_gui = !shown;
+            }
             _ => {}
         },
         A::WorldRendering(on) => horizon_core::natrium::set_world_hidden(!on),
         A::Lights(list) => LIGHTS.with(|l| *l.borrow_mut() = list),
         A::ChatBackground(opacity) => {
-            game.settings.text_background_opacity = opacity.clamp(0.0, 1.0);
+            let to = opacity.clamp(0.0, 1.0);
+            kept::with(|k| {
+                kept::change(
+                    &mut k.text_background_opacity,
+                    &mut game.settings.text_background_opacity,
+                    to,
+                )
+            });
             game.apply_settings();
         }
     }
@@ -3020,6 +3099,147 @@ pub(super) fn chat_hidden(game: &Game<'_>) -> bool {
 /// The player list (Tab) is drawn unless a Roblox script hid it.
 pub(super) fn player_list_hidden(game: &Game<'_>) -> bool {
     game.native_on(ID) && HIDE_TAB.with(Cell::get)
+}
+
+// ----------------------------------------------------------------- the session's end
+
+/// The end of a session (GameApi::session_end, from Studio::session_end,
+/// once the player has left the server or world they were on): what the
+/// game keeps for the Roblox layer goes back to the game's own, and what
+/// scripts changed of the game itself back to the player's. Safe to call
+/// again: what is the game's own stays so.
+///
+/// This is the game's one place a session ends. State that scripts set
+/// and that would outlive the session (a thread local here or in another
+/// game module, a setting, something of the player's) registers its reset
+/// here, as a small reset function of its own module or a line in one of
+/// these. What goes on across sessions stays: the server joined last and a
+/// rejoin under way (LAST_SERVER, REJOIN), the calls kept for the next
+/// frame, saveinstance's jobs. The client's world goes with the world left
+/// (its blocks set and entities hidden by scripts, the attribute modifiers
+/// of a player the game makes again).
+pub(super) fn session_end(g: &mut Game<'_>) {
+    end_body();
+    end_view(g);
+    end_input(g);
+    end_client(g);
+    end_player(g);
+    // What saveinstance remembers of the world left (the containers seen):
+    // not while the player is in another already.
+    if g.remote.is_none() && g.integrated.is_none() {
+        super::hstudio_world_dump::session_end();
+    }
+}
+
+/// The player's own model as the game draws it: no part hidden, no pose.
+fn end_body() {
+    horizon_client::mobs::hstudio_body::reset();
+    BODY.with(|b| b.set(BodyNow::GAME));
+}
+
+/// The view as the game has it: its own light, time, fog and field of view;
+/// the view at the player, in the player's own perspective; the mouse at
+/// the player's sensitivity, no keys taken, not anchored; the hitboxes as
+/// the player had them.
+fn end_view(g: &mut Game<'_>) {
+    FX.with(|f| f.set(Fx::GAME));
+    keep_view(g);
+    let hold = HOLD.with(|h| std::mem::replace(&mut *h.borrow_mut(), Hold::NONE));
+    if hold.view.is_some()
+        && let Some(p) = hold.perspective
+    {
+        g.camera_type = p;
+    }
+    let (perspective, hitboxes) = UNDO.with(|u| {
+        let mut u = u.borrow_mut();
+        (u.perspective.take(), u.hitboxes.take())
+    });
+    if let Some(p) = perspective
+        && g.camera_type != p
+    {
+        g.camera_type = p;
+        g.check_entity_post_effect(p.first_person());
+    }
+    if let Some(on) = hitboxes
+        && g.debug_entry("entity_hitboxes") != on
+    {
+        let overlay = g.debug;
+        g.debug_entries.toggle_status("entity_hitboxes", overlay);
+    }
+}
+
+/// The keys and buttons scripts hold down (keypress) let go; the mouse's
+/// buttons and the prompt's key the game's.
+fn end_input(g: &mut Game<'_>) {
+    let pressed = UNDO.with(|u| std::mem::take(&mut u.borrow_mut().pressed));
+    for key in pressed {
+        if let Some(button) = horizon_client::keybinds::mouse_button(&key) {
+            if g.player.is_some() {
+                g.extras_mouse(button, false);
+                let _ = g.play_mouse(button, false);
+            }
+        } else if let Some(code) = horizon_client::keybinds::key_code(&key)
+            && g.keys.remove(&code)
+        {
+            g.native_key_event(code, false, false);
+        }
+    }
+    TOOL_CLICKS.with(|c| c.set(false));
+    TOOL_HELD.with(|c| c.set([false; 2]));
+    PROMPT_KEY.with(|k| *k.borrow_mut() = None);
+}
+
+/// The client as the player had it: the HUD's chat, player list and the
+/// rest shown, the world drawn without the scripts' lights, the player's
+/// own volume, graphics, chat background and full screen (hstudio_kept),
+/// every voice heard, from the camera.
+fn end_client(g: &mut Game<'_>) {
+    HIDE_CHAT.with(|c| c.set(false));
+    HIDE_TAB.with(|c| c.set(false));
+    LIGHTS.with(|l| l.borrow_mut().clear());
+    horizon_core::natrium::set_world_hidden(false);
+    let (hide_gui, muted) = UNDO.with(|u| {
+        let mut u = u.borrow_mut();
+        (u.hide_gui.take(), std::mem::take(&mut u.muted))
+    });
+    if let Some(own) = hide_gui {
+        g.ui.hide_gui = own;
+    }
+    let mut own = horizon_client::settings::hstudio_kept::take();
+    own.give_back(&mut g.settings);
+    g.apply_settings();
+    if let Some(k) = own.fullscreen
+        && g.settings.fullscreen == k.set
+        && k.own != k.set
+    {
+        g.toggle_fullscreen();
+    }
+    super::hstudio_voicechat::global(|v| {
+        if muted {
+            v.vc.mute_voice(None, false);
+        }
+        v.listener_at = None;
+    });
+}
+
+/// The player's own speeds, gravity, zoom and collisions: the studio's
+/// attribute modifiers off a player still there, through blocks no more.
+fn end_player(g: &mut Game<'_>) {
+    horizon_client::mobs::hstudio_body::set_noclip(false);
+    let spectator = g.mode == horizon_client::command::args::GameMode::Spectator;
+    let Some(p) = g.player.as_mut() else { return };
+    p.spectator = spectator;
+    for (attribute, id) in [
+        ("minecraft:movement_speed", "horizon_studio:walk_speed"),
+        ("minecraft:jump_strength", "horizon_studio:jump"),
+        ("minecraft:gravity", "horizon_studio:gravity"),
+        ("minecraft:camera_distance", "horizon_studio:zoom"),
+        ("minecraft:movement_speed", "horizon_studio:anchored"),
+        ("minecraft:jump_strength", "horizon_studio:anchored"),
+        ("minecraft:gravity", "horizon_studio:anchored"),
+    ] {
+        scale_attribute(&mut p.attributes, attribute, id, 1.0);
+    }
 }
 
 // ----------------------------------------------------------------- packets

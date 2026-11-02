@@ -842,6 +842,16 @@ end)
 - **`game`** is the DataModel, shared by every mod as one game is by every script, and keeps the studio's `game.run`
   and friends. `game:GetService(...)`, `workspace`, `script` (a LocalScript named after the mod) and `shared` work as
   in Roblox. What a mod makes goes when it stops or reloads.
+- **A server is a session, as a Roblox game is.** Leaving the server or world you are on (Disconnect, a kick, a
+  rejoin or a teleport, quitting to the title) ends everything scripts did there: every thread and connection stops,
+  what they changed of the game is undone (parts taken off the character, its look, speeds and gravity, fullbright,
+  the time, fog and field of view, the camera and the keys and mouse they took, the HUD they hid, the hitboxes, the
+  perspective, the lights, voices muted), the volume, graphics, chat background and full screen are yours again (and
+  options.txt never keeps a script's), and the next session starts with a new DataModel (a new LocalPlayer and
+  character, an empty CoreGui and PlayerGui), new executor globals (`getgenv`) and nothing hooked. Your mods that are
+  on start again, fresh; code run from the console (Infinite Yield loaded with `loadstring`) doesn't come back by
+  itself: `queue_on_teleport`'s code does, with the teleport's data. Over a kick's Disconnected screen (Roblox's
+  kick prompt) the session goes on until you go back or join again, so a script's autorejoin can rejoin.
 - **Instances** have Roblox's properties (checked as Roblox checks them), events and methods: `FindFirstChild`,
   `WaitForChild`, `GetChildren`, `GetDescendants`, `Clone`, `Destroy`, `IsA`, attributes, tags,
   `GetPropertyChangedSignal`, a child by its name. Signals have `Connect`, `Once` and `Wait`, and are deferred, as
@@ -1099,6 +1109,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `via_picker.rs`, `via_menu.rs` (`hstudio_via_picker`, `hstudio_via_menu`) | The multiplayer screen's button and the version picker (drawn with the design system's shapes and fonts) |
 | `via_net.rs` (`horizon_protocol::hstudio_via_net`) | In the protocol crate: ViaProxy's internal host, the redirect, OpenAuthMod's answers, the pings answered while the game draws no frames |
 | `via_lend.rs` (`net::hstudio_via_lend`) | Lends the server connection's writer to the network thread for those answers |
+| `kept.rs` (`settings::hstudio_kept`) | In the renderer's settings: the player's own settings while Roblox scripts changed some for the session, written to options.txt in their place and given back as the session ends |
 | `natrium.rs` (`hstudio_natrium`) | Natrium's settings, its Options → Mods row and page, the preset |
 | `natrium_video.rs` (`options_ui::natrium_video`) | Natrium's section of Video Settings, whose buttons are its page's |
 | `natrium_flags.rs` (`horizon_core::natrium`) | In the core crate, which the renderer and the server both read: Natrium's switches and counts |
@@ -1108,7 +1119,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `voicechat.rs` (`hstudio_voicechat`) | The voice chat with the player's settings, keys, Options → Mods rows and HUD, without the game |
 | `voice_game.rs` (`hstudio_voice_game`) | The voice chat's side of Horizon: the server's packets, the camera and the players' places, the keys |
 
-The hooks, HEAD hooks but where it says otherwise (suggest, packet-out, via-address, via-srv, via-recv, via-ping, via-pong and Natrium's
+The hooks, HEAD hooks but where it says otherwise (suggest, packet-out, settings-save, via-address, via-srv, via-recv, via-ping, via-pong and Natrium's
 particle, Video Settings, merge, pickup and swim hooks can answer in their function's place):
 
 | Hook | Target | For |
@@ -1135,6 +1146,7 @@ particle, Video Settings, merge, pickup and swim hooks can answer in their funct
 | natrium-particles-render | `horizon_client_render::particles::ParticleEngine::render` | Natrium's particle loop in its place, while particle culling is on |
 | natrium-frame | `horizon_client_render::gfx::Renderer::render` | this frame's fog, and whether it hides what is past it |
 | natrium-fog, natrium-fog-inside | `horizon_client_render::gfx::<Frusta as Cull>::intersects`, `::contains` (RETURN) | in `Resident::visible`'s column walk, a chunk column or section wholly past that fog counts as out of view, and a column reaching into it as not wholly in view (its sections are tested one by one) |
+| settings-save | `horizon_client_render::settings::Settings::save` | while Roblox scripts have changed the volume, the graphics, the chat's background or full screen for the session, options.txt is written with the player's own values |
 | natrium-video-rows | `horizon_client_render::options_ui::pairs` | after Video Settings' Preferences, Natrium's section |
 | natrium-video-search | `horizon_client_render::options_ui::OptionsUi::page` | the settings search's text, which the section follows |
 | natrium-merge, natrium-pickups, natrium-swim | `entities::merge_with_neighbours`, `game::villagers::Game::villager_pickups`, `mobs::path::Finder::swim_neighbors` | Natrium's versions in their place, while faster ticks are on |

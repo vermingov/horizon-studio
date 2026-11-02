@@ -477,6 +477,18 @@ pub fn effects(rbx: &mut Rbx, game: &mut dyn GameApi) {
     }
 }
 
+/// The end of a session (Studio::session_end): the player's own model as the
+/// game draws it (no part hidden, no pose or spin) and their own speeds.
+pub fn session_end(rbx: &mut Rbx, game: &mut dyn GameApi) {
+    let b = &mut rbx.world.body;
+    if b.sent.take().is_some_and(|sent| sent != Body::default()) {
+        game.set_body(&Body::default());
+    }
+    if b.scales_sent.take().is_some_and(|s| s != (1.0, 1.0)) {
+        game.set_player_speed(1.0, 1.0);
+    }
+}
+
 /// How fast the player rises standing on a platform a script keeps under
 /// the character (a float script's anchored part in it, under the root
 /// part): held where the platform has them, following it down or up as it

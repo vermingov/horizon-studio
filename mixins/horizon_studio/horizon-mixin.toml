@@ -834,6 +834,28 @@ bindings = [
   { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "&mut *batch" },
 ]
 
+# The player's own settings while Roblox scripts changed some for the
+# session (the volume, the graphics, the chat's background, full screen):
+# options.txt is written with the player's, and the session's end gives them
+# back (hstudio_bridge::session_end).
+[[module]]
+id = "kept"
+file = "crates/horizon-client-render/src/settings.rs"
+name = "hstudio_kept"
+source = "kept.rs"
+visibility = "pub"
+
+[[injection]]
+id = "settings-save"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client_render::settings::Settings::save"
+helper = "settings_save.rs"
+bindings = [
+  { name = "settings", ty = "&Settings", value = "self" },
+  { name = "path", ty = "&Path", value = "path" },
+]
+
 # Natrium: its switches in horizon-core (read by the renderer and the
 # server), its particle loop in the game's particles module.
 [[module]]

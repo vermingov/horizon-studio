@@ -26,6 +26,15 @@ thread_local! {
     static IDENTITIES: RefCell<HashMap<usize, i64>> = RefCell::new(HashMap::new());
 }
 
+/// The end of a session (Studio::session_end): the executor's natives are
+/// marked again as the next session's globals are made, and its threads'
+/// identities go with them.
+pub fn session_end() {
+    EXECUTOR_NATIVES.with(|s| s.borrow_mut().clear());
+    IDENTITIES.with(|s| s.borrow_mut().clear());
+    GAME_CALLS.with(|g| g.set(false));
+}
+
 /// The identity a thread runs at unless set: an executor's, 8.
 pub const DEFAULT_IDENTITY: i64 = 8;
 

@@ -577,6 +577,14 @@ pub trait GameApi {
         let _ = action;
         Err("the game can't do that here".into())
     }
+    /// The session is over (the player left the server or the world, as
+    /// leaving a Roblox game): the game undoes what scripts changed of it
+    /// that only it knows, the player's own settings back (the volume, the
+    /// graphics, the chat's background, full screen, the HUD, the hitboxes,
+    /// the perspective), the keys scripts hold let go, and whatever it keeps
+    /// for the Roblox layer back to the game's own. The studio has undone
+    /// what it asked through the other calls already (Studio::session_end).
+    fn session_end(&mut self) {}
     /// The play state's packets, by id, as vanilla names them
     /// ("move_player_pos"): serverbound, then clientbound. The Roblox layer
     /// makes a remote of each (ReplicatedStorage.Minecraft).
@@ -1484,6 +1492,27 @@ pub struct State {
     particles: usize,
     sounds: usize,
     started: bool,
+    /// The session the player is in: the server or world they are on
+    /// (Studio::follow_session).
+    pub session: Session,
+}
+
+/// The server or world the player is on, as the studio follows it: leaving
+/// it ends the session (Studio::session_end), as leaving a Roblox game ends
+/// everything in it.
+#[derive(Default)]
+pub struct Session {
+    /// Whether the studio has seen where the player is yet (its first frame).
+    pub seen: bool,
+    /// Where the player is: (a world of their own, the server's address, its
+    /// name); None in the menus.
+    pub on: Option<(bool, String, String)>,
+    /// The player was disconnected from `on` (the game's Disconnected
+    /// screen, Roblox's kick prompt): the session goes on until they go back
+    /// to the menus or join again.
+    pub left: bool,
+    /// Sessions ended so far.
+    pub ends: u64,
 }
 
 enum Request {
@@ -1660,6 +1689,7 @@ impl Studio {
                 particles: 0,
                 sounds: 0,
                 started: false,
+                session: Session::default(),
             },
         }
     }
@@ -3230,6 +3260,7 @@ impl Studio {
     /// the hooks queued, ticks, timers, agent replies, then `frame` handlers.
     pub fn frame(&mut self, game: &mut dyn GameApi, dt: f64) {
         self.start(game);
+        self.follow_session(game);
         let dt = if dt.is_finite() { dt.clamp(0.0, 1.0) } else { 0.0 };
         self.s.now += dt;
         super::hstudio_ui::agent_poll(self);
@@ -3283,6 +3314,117 @@ impl Studio {
         self.s.frame_no += 1;
         if self.s.toast.as_ref().is_some_and(|t| t.1 < self.s.now) {
             self.s.toast = None;
+        }
+    }
+
+    // ------------------------------------------------------------- sessions
+
+    /// Each frame: where the player is (GameApi::client). Leaving the server
+    /// or the world they were on, for the menus or for another (a
+    /// disconnect, a kick, a rejoin, a teleport, quitting to the title),
+    /// ends the session, once (`session_end`). A kick's Disconnected screen
+    /// is Roblox's kick prompt, over which the scripts still run (Infinite
+    /// Yield's autorejoin rejoins from there): the session ends as the
+    /// player goes back to the menus or joins again.
+    fn follow_session(&mut self, game: &mut dyn GameApi) {
+        let info = game.client();
+        let now = info
+            .server
+            .as_ref()
+            .map(|s| (s.own_world, s.address.clone(), s.name.clone()));
+        let s = &mut self.s.session;
+        if !s.seen {
+            s.seen = true;
+            s.on = now;
+            return;
+        }
+        if now == s.on && !s.left {
+            return;
+        }
+        if now.is_none() && s.on.is_some() && info.disconnected.is_some() {
+            s.left = true;
+            return;
+        }
+        let was = std::mem::replace(&mut s.on, now);
+        s.left = false;
+        if was.is_some() {
+            self.session_end(game);
+        }
+    }
+
+    /// The end of a session: the player left the server or world they were
+    /// on, and, as leaving a Roblox game ends everything in it, nothing the
+    /// scripts did there goes on into the next.
+    ///
+    /// This is the one place a session ends on the studio's side; the
+    /// game's is the bridge's `session_end` (GameApi::session_end). State
+    /// that scripts set and that would outlive the session (a thread local,
+    /// a static, something the game keeps) registers its reset in one of
+    /// the two: a `session_end` of its own module, called from here (the
+    /// studio and the Roblox layer: undone through the GameApi calls that
+    /// set it) or from the bridge's (what only the game knows).
+    ///
+    /// 1. The mods' `unload` handlers run (in the session still), then the
+    ///    mods and what the console ran (Infinite Yield loaded with
+    ///    loadstring) stop: their threads, timers, connections and screens.
+    /// 2. What the Roblox layer asked of the game is undone: the
+    ///    character's look and speeds, the view, the input it took, the
+    ///    lighting, fog, gravity and field of view, the HUD, the graphics,
+    ///    the volume... (rbx_body, rbx_world, rbx_client, then the game's).
+    /// 3. A new DataModel (a new LocalPlayer and character, an empty
+    ///    CoreGui and PlayerGui; no Drawings, WebSockets or __namecall
+    ///    hooks), a new interpreter and new globals (getgenv, getrenv), with
+    ///    nothing hooked. queue_on_teleport's scripts and the teleport's
+    ///    data go on to the next server, where they run.
+    /// 4. The mods that are on start again, fresh, as LocalScripts do in a
+    ///    game joined (they run in the menus too, as from the studio's
+    ///    start). Code run from the console doesn't come back by itself.
+    pub fn session_end(&mut self, game: &mut dyn GameApi) {
+        self.s.session.ends += 1;
+        self.s.log(
+            LogKind::Info,
+            "Left the server (or world): every script stops and what it changed is undone; the mods start again",
+        );
+        // 1. The scripts stop.
+        for i in 0..self.s.mods.len() {
+            if self.s.mods[i].running() {
+                self.unload(game, i);
+            }
+        }
+        self.s.stop_console();
+        self.s.screen = None;
+        self.s.screen_request = None;
+        self.s.rbx_screen = None;
+        self.s.thread_errors.clear();
+        self.s.queued_events.clear();
+        self.s.overlay.clear();
+        // 2. What they asked of the game, undone.
+        super::hstudio_rbx_body::session_end(&mut self.s.rbx, game);
+        super::hstudio_rbx_world::session_end(&mut self.s.rbx, game);
+        let carried = super::hstudio_rbx_client::session_end(&mut self.s.rbx, game);
+        game.session_end();
+        // 3. A new DataModel, interpreter and globals.
+        super::hstudio_rbx_values::session_end();
+        super::hstudio_sunc::session_end();
+        super::hstudio_exec::session_end();
+        let mut lua = Lua::new();
+        lua.started = self.lua.started;
+        lua.rng = self.lua.rng;
+        self.lua = lua;
+        let old = std::mem::take(&mut self.s.rbx);
+        for s in &old.sockets {
+            s.socket.close();
+        }
+        self.s.rbx.workspace_dir = old.workspace_dir.clone();
+        self.s.rbx.screen_images = old.screen_images;
+        super::hstudio_rbx_client::session_start(&mut self.s.rbx, carried, &game.client());
+        self.s.genv = None;
+        self.s.renv = None;
+        self.s.console_env = None;
+        // 4. The mods start again.
+        let on: Vec<usize> = (0..self.s.mods.len()).filter(|&i| self.s.mods[i].enabled).collect();
+        for i in self.load_order(&on) {
+            self.load(game, i);
         }
     }
 

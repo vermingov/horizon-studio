@@ -947,6 +947,37 @@ pub fn game_effects(rbx: &mut Rbx, game: &mut dyn GameApi) {
     }
 }
 
+/// The end of a session (Studio::session_end): what the layer asked of the
+/// game's view, input and player undone, through the calls that asked it:
+/// the view back at the player, no keys or mouse taken, not anchored, not
+/// through blocks, and the game's own lighting, time, fog, gravity, field
+/// of view, zoom distance and mouse sensitivity. (The perspective and the
+/// hitboxes are the player's own again by the game, GameApi::session_end.)
+pub fn session_end(rbx: &mut Rbx, game: &mut dyn GameApi) {
+    let w = &mut rbx.world;
+    if w.view.take().is_some() {
+        game.set_camera_view(None);
+    }
+    if !w.sunk.0.is_empty() || w.sunk.1 {
+        w.sunk = (Vec::new(), false);
+        game.sink_input(&[], false);
+    }
+    if std::mem::take(&mut w.frozen) {
+        game.set_player_frozen(false);
+    }
+    if std::mem::take(&mut w.noclip) {
+        game.set_noclip(false);
+    }
+    w.effects = Effects::default();
+    game.set_fullbright(0.0);
+    game.set_time_of_day(None);
+    game.set_fog_end(None);
+    game.set_gravity_scale(1.0);
+    game.set_fov(None);
+    game.set_camera_distance(None);
+    game.set_mouse_sensitivity(1.0);
+}
+
 /// Roblox's zoom as the game's perspective. LockFirstPerson holds the view
 /// in first person. Once a script sets the zoom's limits (the LocalPlayer's
 /// CameraMinZoomDistance and CameraMaxZoomDistance), the zoom is kept

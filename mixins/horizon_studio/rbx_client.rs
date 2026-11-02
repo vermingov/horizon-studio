@@ -16,7 +16,7 @@
 // Minecraft (the recorder, the inspect menu, friend requests, other
 // places) says so, as Roblox's own prompt would.
 
-use super::hstudio::{ClientAction, GameApi, ServerInfo};
+use super::hstudio::{ClientAction, ClientInfo, GameApi, ServerInfo};
 use super::hstudio_lua::{Lua, Res, Value, check_num};
 use super::hstudio_rbx::{Env, Id, Rbx};
 use super::hstudio_rbx_types::{Color3, UDim2, Vector3};
@@ -68,6 +68,10 @@ pub struct Client {
     listener: Option<Id>,
     heard_at: Option<[f64; 3]>,
     rendering: bool,
+    /// Whether scripts lowered the graphics and muted voices, to give them
+    /// back as the session ends.
+    low_graphics: bool,
+    muted: bool,
     /// StarterGui:SetCore("DevConsoleVisible", true): the studio's console.
     pub console: bool,
     /// Each chatting player's TextSource, and the messages kept.
@@ -139,21 +143,7 @@ fn server_changed(rbx: &mut Rbx, now: Option<&ServerInfo>) {
 /// layer, what they asked of the client.
 pub fn frame(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64) {
     let info = game.client();
-    if !rbx.client.seen || info.server != rbx.client.server {
-        let was = rbx.client.server.take();
-        server_changed(rbx, info.server.as_ref());
-        let joined = match (&was, &info.server) {
-            (None, Some(_)) => true,
-            (Some(a), Some(b)) => a.address != b.address || a.name != b.name,
-            _ => false,
-        };
-        if joined && rbx.client.seen {
-            rbx.client.run_now.append(&mut rbx.client.queued);
-            rbx.client.arrived_data = std::mem::take(&mut rbx.client.teleport_data);
-        }
-        rbx.client.server = info.server.clone();
-        rbx.client.seen = true;
-    }
+    follow_server(rbx, &info);
     if info.disconnected != rbx.client.error {
         rbx.client.error = info.disconnected.clone();
         if let (Some(why), Some(gs)) = (info.disconnected, rbx.service("GuiService")) {
@@ -176,6 +166,116 @@ pub fn frame(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64) {
         if let Err(e) = game.client_do(a) {
             rbx.warnings.push(e);
         }
+    }
+}
+
+/// The server as the game says it now: game.JobId and the place follow it,
+/// and on a join queue_on_teleport's scripts run there and the teleport's
+/// data is there for GetLocalPlayerTeleportData.
+fn follow_server(rbx: &mut Rbx, info: &ClientInfo) {
+    if rbx.client.seen && info.server == rbx.client.server {
+        return;
+    }
+    let was = rbx.client.server.take();
+    server_changed(rbx, info.server.as_ref());
+    let joined = match (&was, &info.server) {
+        (None, Some(_)) => true,
+        (Some(a), Some(b)) => a.address != b.address || a.name != b.name,
+        _ => false,
+    };
+    if joined && rbx.client.seen {
+        rbx.client.run_now.append(&mut rbx.client.queued);
+        rbx.client.arrived_data = std::mem::take(&mut rbx.client.teleport_data);
+    }
+    rbx.client.server = info.server.clone();
+    rbx.client.seen = true;
+}
+
+// ---------------------------------------------------------------- sessions
+
+/// What one session hands the next, as Roblox's teleport does:
+/// queue_on_teleport's scripts, the data a teleport carries (as plain data:
+/// what Roblox's TeleportData can hold), and the server and the error as the
+/// layer last saw them (so that the next join is seen as one, and the same
+/// disconnect isn't said again).
+pub struct Carried {
+    queued: Vec<String>,
+    teleport_data: Value,
+    server: Option<ServerInfo>,
+    seen: bool,
+    error: Option<String>,
+}
+
+/// The end of a session (Studio::session_end): what the layer asked of the
+/// client is undone (the HUD's parts shown, the graphics and the 3D
+/// rendering back, no lights, voices heard from the camera and those muted
+/// unmuted; the volume, the chat's background and full screen are the
+/// game's to give back, GameApi::session_end), and what goes on to the next
+/// session is taken.
+pub fn session_end(rbx: &mut Rbx, game: &mut dyn GameApi) -> Carried {
+    let c = &mut rbx.client;
+    let mut undo: Vec<ClientAction> = c
+        .hud
+        .iter()
+        .filter(|&(_, &shown)| !shown)
+        .map(|(&part, _)| ClientAction::Hud(part.into(), true))
+        .collect();
+    if c.low_graphics {
+        undo.push(ClientAction::LowGraphics(false));
+    }
+    if c.rendering {
+        undo.push(ClientAction::WorldRendering(true));
+    }
+    if !c.lit.is_empty() {
+        undo.push(ClientAction::Lights(Vec::new()));
+    }
+    if c.heard_at.is_some() {
+        undo.push(ClientAction::VoiceListener(None));
+    }
+    if c.muted {
+        undo.push(ClientAction::MuteVoice(None, false));
+    }
+    for a in undo {
+        let _ = game.client_do(a);
+    }
+    Carried {
+        queued: std::mem::take(&mut c.queued),
+        teleport_data: plain(&std::mem::take(&mut c.teleport_data), 0),
+        server: c.server.take(),
+        seen: c.seen,
+        error: c.error.take(),
+    }
+}
+
+/// A new session's DataModel takes what the last handed on, and the server
+/// the player is on now (`follow_server`: on a join, the queued scripts run).
+pub fn session_start(rbx: &mut Rbx, carried: Carried, info: &ClientInfo) {
+    let c = &mut rbx.client;
+    c.queued = carried.queued;
+    c.teleport_data = carried.teleport_data;
+    c.server = carried.server;
+    c.seen = carried.seen;
+    c.error = carried.error;
+    follow_server(rbx, info);
+}
+
+/// `v` as plain data: nil, booleans, numbers, strings and tables of them
+/// (a teleport's data, which Roblox serializes); nothing of the session it
+/// came from (its functions, threads, Instances).
+fn plain(v: &Value, depth: usize) -> Value {
+    match v {
+        Value::Nil | Value::Bool(_) | Value::Num(_) | Value::Str(_) => v.clone(),
+        Value::Table(t) if depth < 32 => {
+            let mut out = super::hstudio_lua::Table::new();
+            for (k, x) in t.borrow().entries() {
+                let (k, x) = (plain(&k, depth + 1), plain(&x, depth + 1));
+                if !k.is_nil() && !x.is_nil() {
+                    let _ = out.set(k, x);
+                }
+            }
+            Value::table(out)
+        }
+        _ => Value::Nil,
     }
 }
 
@@ -491,9 +591,9 @@ pub fn extra_set(rbx: &mut Rbx, id: Id, key: &str) {
                 .unwrap_or(0);
             // Roblox's lowest levels (1 to 3) are the game's graphics lowered;
             // Automatic and the rest, the player's own.
-            rbx.client
-                .actions
-                .push(ClientAction::LowGraphics((1..=3).contains(&level)));
+            let low = (1..=3).contains(&level);
+            rbx.client.low_graphics = low;
+            rbx.client.actions.push(ClientAction::LowGraphics(low));
         }
         _ => {}
     }
@@ -787,12 +887,14 @@ pub fn method(env: &mut dyn Env, lua: &mut Lua, _id: Id, class: &str, name: &str
             let uid = check_num(lua, args, 1, name)?;
             let paused = arg(2).truthy();
             if let Some(uuid) = other_by_user_id(rbx, uid) {
+                rbx.client.muted |= paused;
                 rbx.client.actions.push(ClientAction::MuteVoice(Some(uuid), paused));
             }
             Ok(Vec::new())
         }
         ("VoiceChatInternal", "SubscribePauseAll") => {
             let paused = arg(1).truthy();
+            rbx.client.muted |= paused;
             rbx.client.actions.push(ClientAction::MuteVoice(None, paused));
             Ok(Vec::new())
         }

@@ -247,7 +247,9 @@ fn a_kick_and_shutdown_leave_and_a_teleport_here_rejoins() {
             ClientAction::Rejoin,
         ]
     );
-    // Back on the server: the queued script runs there.
+    // Back on the server: the queued script runs there, and the mod, as a
+    // LocalScript does in a game joined, starts again (its teleport to
+    // place 123 fails again).
     game.client.disconnected = None;
     game.client.server = Some(server("play.example.net"));
     run_for(&mut st, &mut game, 0.2);
@@ -256,7 +258,8 @@ fn a_kick_and_shutdown_leave_and_a_teleport_here_rejoins() {
         p,
         [
             "failed\tSteve\tGameNotFound",
-            "error\tKicked for spamming\tKicked for spamming"
+            "error\tKicked for spamming\tKicked for spamming",
+            "failed\tSteve\tGameNotFound"
         ],
         "{:?}",
         log(&st)

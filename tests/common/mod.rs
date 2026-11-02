@@ -4,7 +4,7 @@
 
 use horizon_studio::game::hstudio::{
     Body, Camera, CameraView, ClientAction, ClientInfo, Corner, EntityInfo, Font, GameApi, PlayerEntry, PlayerInfo,
-    PlayerPose, Reply, Studio, ViaInfo, VoiceChange, VoiceInfo,
+    PlayerPose, Reply, ServerInfo, Studio, ViaInfo, VoiceChange, VoiceInfo,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -84,6 +84,13 @@ pub struct FakeGame {
     pub dump_polls: usize,
     pub dump_polled: Vec<usize>,
     pub dump_result: Result<(), String>,
+    /// Sessions the game was told ended (`session_end`), the player while
+    /// they are away from a world (`leave`), and the master volume the
+    /// player had before a script changed it, which a session's end gives
+    /// back as the game's does.
+    pub session_ends: usize,
+    pub away: Option<PlayerInfo>,
+    pub own_volume: Option<f32>,
 }
 
 /// The fake game's play packets by id (a few of the game's).
@@ -208,7 +215,35 @@ impl FakeGame {
             dump_polls: 3,
             dump_polled: Vec::new(),
             dump_result: Ok(()),
+            session_ends: 0,
+            away: None,
+            own_volume: None,
         }
+    }
+    /// The player leaves the server or world for the menus (the title
+    /// screen), as the game does: no server, no player.
+    pub fn leave(&mut self) {
+        self.client.server = None;
+        self.client.disconnected = None;
+        if let Some(p) = self.player.take() {
+            self.away = Some(p);
+        }
+        self.screen = "title".into();
+    }
+    /// The server kicks the player: the Disconnected screen says why.
+    pub fn kicked(&mut self, why: &str) {
+        self.leave();
+        self.client.disconnected = Some(why.into());
+        self.screen = "disconnected".into();
+    }
+    /// The player joins `server` (again), as the game puts them there.
+    pub fn join(&mut self, server: ServerInfo) {
+        self.client.server = Some(server);
+        self.client.disconnected = None;
+        if self.player.is_none() {
+            self.player = self.away.take();
+        }
+        self.screen = "playing".into();
     }
     /// An inventory of 36 slots with these stacks in them (slot, item, count).
     pub fn give(&mut self, stacks: &[(usize, &str, u32)]) {
@@ -659,7 +694,10 @@ impl GameApi for FakeGame {
     }
     fn client_do(&mut self, action: ClientAction) -> Result<(), String> {
         match &action {
-            ClientAction::MasterVolume(v) => self.client.master_volume = *v,
+            ClientAction::MasterVolume(v) => {
+                self.own_volume.get_or_insert(self.client.master_volume);
+                self.client.master_volume = *v;
+            }
             ClientAction::ToggleFullscreen => self.client.fullscreen = !self.client.fullscreen,
             // The real voice chat's own, with one.
             ClientAction::MuteVoice(who, on) => {
@@ -676,6 +714,14 @@ impl GameApi for FakeGame {
         }
         self.client_done.push(action);
         Ok(())
+    }
+    // As the game's: the player's own volume back.
+    fn session_end(&mut self) {
+        self.session_ends += 1;
+        self.moves.push("session end".into());
+        if let Some(v) = self.own_volume.take() {
+            self.client.master_volume = v;
+        }
     }
     fn voice_set(&mut self, change: VoiceChange) -> Result<(), String> {
         self.voice_changes.push(change.clone());

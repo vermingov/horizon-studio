@@ -146,6 +146,15 @@ fn same_folder(a: &Path, b: &Path) -> bool {
 
 // ---------------------------------------------------------------- what the game hears
 
+/// The session's end, out of a world (hstudio_bridge::session_end): the
+/// containers seen there and the block last used are forgotten. (The
+/// server's command tree, icon and tags stay until the next server sends
+/// its own; the dumps under way finish.)
+pub(super) fn session_end() {
+    SEEN.with(|s| *s.borrow_mut() = Seen::default());
+    USED_ON.with(|u| u.set(None));
+}
+
 /// The server's packets the game keeps no copy of.
 pub(super) fn heard(packet: &C) {
     match packet {

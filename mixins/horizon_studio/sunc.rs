@@ -1026,14 +1026,30 @@ fn defaults(kind: &str) -> Vec<(&'static str, Value)> {
 }
 
 thread_local! {
-    static DRAWING_META: TableRef = {
-        let mut t = Table::new();
-        t.set_type_name("Drawing");
-        t.set_str("__index", Native::host("__index", DRAWING_INDEX));
-        t.set_str("__newindex", Native::host("__newindex", DRAWING_NEWINDEX));
-        t.set_str("__tostring", Native::host("__tostring", DRAWING_TOSTRING));
-        Rc::new(RefCell::new(t))
-    };
+    /// The Drawings' metatable, made once a session (hookmetamethod can
+    /// hook its functions: `session_end` lets go of it).
+    static DRAWING_META: RefCell<Option<TableRef>> = const { RefCell::new(None) };
+}
+
+fn drawing_meta() -> TableRef {
+    DRAWING_META.with(|m| {
+        m.borrow_mut()
+            .get_or_insert_with(|| {
+                let mut t = Table::new();
+                t.set_type_name("Drawing");
+                t.set_str("__index", Native::host("__index", DRAWING_INDEX));
+                t.set_str("__newindex", Native::host("__newindex", DRAWING_NEWINDEX));
+                t.set_str("__tostring", Native::host("__tostring", DRAWING_TOSTRING));
+                Rc::new(RefCell::new(t))
+            })
+            .clone()
+    })
+}
+
+/// The end of a session (Studio::session_end): the next session's Drawings
+/// get a new metatable, with nothing of this one's hooks.
+pub fn session_end() {
+    DRAWING_META.with(|m| m.borrow_mut().take());
 }
 
 fn draw_ref(v: &Value) -> Option<u32> {
@@ -2688,7 +2704,7 @@ impl Ctx<'_> {
                     owner,
                     props: defaults(kind),
                 });
-                let meta = DRAWING_META.with(Rc::clone);
+                let meta = drawing_meta();
                 one(Userdata::value(DrawRef(did), Some(meta)))
             }
             2081 => {

@@ -49,6 +49,13 @@ pub fn mask() -> u16 {
     HIDDEN.load(Ordering::Relaxed)
 }
 
+/// The session's end (hstudio_bridge::session_end): no part hidden, not
+/// through blocks.
+pub fn reset() {
+    set(0);
+    set_noclip(false);
+}
+
 /// After a player model's visibility is set up: the player's own (marked
 /// OWN) hides the parts the studio hides.
 pub fn hide(p: &mut super::anim::Poses, hidden: u8) {

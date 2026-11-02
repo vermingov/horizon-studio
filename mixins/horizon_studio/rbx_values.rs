@@ -94,6 +94,17 @@ thread_local! {
     static METAS: RefCell<HashMap<&'static str, TableRef>> = RefCell::new(HashMap::new());
     /// Enum items, made once each, so `==` and table keys work on them.
     static ITEMS: RefCell<HashMap<(&'static str, &'static str), Value>> = RefCell::new(HashMap::new());
+    /// The types' methods, made once each (`method`).
+    static METHODS: RefCell<HashMap<(&'static str, String), Value>> = RefCell::new(HashMap::new());
+}
+
+/// The end of a session (Studio::session_end): the types' metatables, enum
+/// items and methods are made again for the next, so nothing a script
+/// hooked of them (hookfunction, hookmetamethod) goes on.
+pub fn session_end() {
+    METAS.with(|m| m.borrow_mut().clear());
+    ITEMS.with(|m| m.borrow_mut().clear());
+    METHODS.with(|m| m.borrow_mut().clear());
 }
 
 fn meta(name: &'static str) -> TableRef {
@@ -883,9 +894,6 @@ fn raycast_params_new(_: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) 
 
 /// A method of a type: a builtin named as the method, made once.
 fn method(type_name: &'static str, name: &str) -> Option<Value> {
-    thread_local! {
-        static METHODS: RefCell<HashMap<(&'static str, String), Value>> = RefCell::new(HashMap::new());
-    }
     let f: super::hstudio_lua::Builtin = match type_name {
         "Vector3" | "Vector2" => vector_method,
         "CFrame" => cframe_method,
