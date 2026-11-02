@@ -1014,7 +1014,9 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             let state = super::hstudio_rbx_world::state_of(env.rbx(), id);
             one(enum_value(enum_item("HumanoidStateType", state)))
         }
-        ("Humanoid", "UnequipTools") => none(),
+        ("Humanoid", "UnequipTools" | "EquipTool")
+        | ("Tool", "Activate" | "Deactivate")
+        | ("HopperBin", "ToggleSelect" | "Disable") => super::hstudio_rbx_tools::method(env, lua, id, name, args),
         ("Humanoid" | "Animator", "GetPlayingAnimationTracks") => {
             let rbx = env.rbx();
             // A Humanoid's tracks and its Animator's are the same tracks.

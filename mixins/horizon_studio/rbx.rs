@@ -1156,7 +1156,30 @@ pub static CLASSES: &[C] = &[
     kept("Shirt", "Instance"),
     kept("Pants", "Instance"),
     kept("Accessory", "Instance"),
-    kept("Tool", "Instance"),
+    // A Tool (a Backpack's item, or a stack of the player's inventory) and
+    // the older HopperBin: hstudio_rbx_tools equips them, activates them and
+    // gives the HopperBins their tools.
+    C {
+        lenient: true,
+        ..class(
+            "Tool",
+            "Instance",
+            &[
+                p("Enabled", Bool, B(true)),
+                p("CanBeDropped", Bool, B(true)),
+                p("RequiresHandle", Bool, B(true)),
+                p("ManualActivationOnly", Bool, B(false)),
+                p("TextureId", Str, S("")),
+                p("ToolTip", Str, S("")),
+                p("Grip", K::CF, D::CF0),
+                p("GripPos", K::V3, D::V3(0.0, 0.0, 0.0)),
+                p("GripForward", K::V3, D::V3(0.0, 0.0, -1.0)),
+                p("GripRight", K::V3, D::V3(1.0, 0.0, 0.0)),
+                p("GripUp", K::V3, D::V3(0.0, 1.0, 0.0)),
+            ],
+            &["Activated", "Deactivated", "Equipped", "Unequipped"],
+        )
+    },
     // Body movers: one in the local character's root part moves the player
     // (hstudio_rbx_world::mover_velocity); elsewhere they are kept.
     class(
@@ -1253,7 +1276,19 @@ pub static CLASSES: &[C] = &[
         &[p("Force", K::V3, D::V3(0.0, 0.0, 0.0)), p("Enabled", Bool, B(true))],
         &[],
     ),
-    kept("HopperBin", "Instance"),
+    C {
+        lenient: true,
+        ..class(
+            "HopperBin",
+            "Instance",
+            &[
+                p("Active", Bool, B(false)),
+                p("BinType", K::Enum("BinType"), D::E("Script")),
+                p("TextureId", Str, S("")),
+            ],
+            &["Selected", "Deselected", "ReplicatedSelected"],
+        )
+    },
     kept("RemoteEvent", "Instance"),
     kept("RemoteFunction", "Instance"),
     kept("UnreliableRemoteEvent", "Instance"),
@@ -1674,6 +1709,9 @@ pub struct Rbx {
     pub starter_copied: HashSet<Id>,
     /// What Roblox's own client does for scripts (hstudio_rbx_client).
     pub client: super::hstudio_rbx_client::Client,
+    /// The Backpack as the player's inventory, and the tools it holds
+    /// (hstudio_rbx_tools).
+    pub tools: super::hstudio_rbx_tools::Tools,
 }
 
 /// An HTTP request a thread waits for.
@@ -1796,6 +1834,7 @@ impl Rbx {
             page_turns: Vec::new(),
             starter_copied: HashSet::new(),
             client: Default::default(),
+            tools: Default::default(),
         };
         r.build();
         r
@@ -2177,6 +2216,11 @@ impl Rbx {
             self.fire(d, "AncestryChanged", vec![me.clone(), pv.clone()]);
         }
         self.changed(id, "Parent", &Value::Nil);
+        // A Tool or a HopperBin moving in or out of the character is
+        // equipped or unequipped, and may change the player's hotbar.
+        if super::hstudio_rbx_tools::is_tool(self, id) {
+            super::hstudio_rbx_tools::moved(self, id, old, parent);
+        }
         Ok(())
     }
 
@@ -2622,6 +2666,11 @@ const METHODS: &[(&str, &str)] = &[
     ("GetFVariable", "GlobalSettings"),
     ("GetState", "Humanoid"),
     ("UnequipTools", "Humanoid"),
+    ("EquipTool", "Humanoid"),
+    ("Activate", "Tool"),
+    ("Deactivate", "Tool"),
+    ("ToggleSelect", "HopperBin"),
+    ("Disable", "HopperBin"),
     ("GetPlayingAnimationTracks", "Humanoid"),
     ("Fire", "BindableEvent"),
     ("Invoke", "BindableFunction"),

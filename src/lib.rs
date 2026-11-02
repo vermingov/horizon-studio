@@ -68,6 +68,8 @@ pub mod game {
     pub mod hstudio_rbx_query;
     #[path = "../../mixins/horizon_studio/rbx_save.rs"]
     pub mod hstudio_rbx_save;
+    #[path = "../../mixins/horizon_studio/rbx_tools.rs"]
+    pub mod hstudio_rbx_tools;
     #[path = "../../mixins/horizon_studio/rbx_types.rs"]
     pub mod hstudio_rbx_types;
     #[path = "../../mixins/horizon_studio/rbx_values.rs"]

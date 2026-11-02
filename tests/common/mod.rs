@@ -64,6 +64,10 @@ pub struct FakeGame {
     /// what Roblox scripts asked of it (`client_do`), newest last.
     pub client: ClientInfo,
     pub client_done: Vec<ClientAction>,
+    /// The player's 36 inventory slots (0 to 8 the hotbar), if the game
+    /// says: `select_slot`, `click_item` and `drop_held` act on them (and on
+    /// the player's `slot` and `held`), each noted in `moves`.
+    pub inventory: Option<Vec<Option<(String, u32)>>>,
 }
 
 /// A particle spawned: its id, place, speed and colour.
@@ -158,6 +162,24 @@ impl FakeGame {
             body: Body::default(),
             client: ClientInfo::default(),
             client_done: Vec::new(),
+            inventory: None,
+        }
+    }
+    /// An inventory of 36 slots with these stacks in them (slot, item, count).
+    pub fn give(&mut self, stacks: &[(usize, &str, u32)]) {
+        let mut inv = vec![None; 36];
+        for (slot, item, n) in stacks {
+            inv[*slot] = Some(((*item).to_owned(), *n));
+        }
+        self.inventory = Some(inv);
+        self.held_follows();
+    }
+    /// The player's held item is the selected slot's.
+    fn held_follows(&mut self) {
+        let slot = self.player.as_ref().map_or(0, |p| p.slot);
+        let held = self.inventory.as_ref().and_then(|inv| inv.get(slot).cloned().flatten());
+        if let Some(p) = self.player.as_mut() {
+            p.held = held;
         }
     }
     pub fn mods_dir(&self) -> PathBuf {
@@ -427,6 +449,49 @@ impl GameApi for FakeGame {
     }
     fn players(&mut self) -> Option<Vec<PlayerEntry>> {
         self.players.clone()
+    }
+    fn inventory(&mut self) -> Option<Vec<Option<(String, u32)>>> {
+        self.player.as_ref()?;
+        self.inventory.clone()
+    }
+    fn select_slot(&mut self, slot: usize) -> bool {
+        if slot >= 9 || self.player.is_none() {
+            return false;
+        }
+        self.moves.push(format!("select {slot}"));
+        if let Some(p) = self.player.as_mut() {
+            p.slot = slot;
+        }
+        self.held_follows();
+        true
+    }
+    fn click_item(&mut self, attack: bool) -> bool {
+        let slot = self.player.as_ref().map_or(0, |p| p.slot);
+        self.moves
+            .push(format!("{} {slot}", if attack { "attack" } else { "use" }));
+        true
+    }
+    fn drop_held(&mut self, all: bool) -> bool {
+        let slot = self.player.as_ref().map_or(0, |p| p.slot);
+        self.moves.push(format!("drop {slot}{}", if all { " all" } else { "" }));
+        if let Some(stack) = self.inventory.as_mut().and_then(|inv| inv.get_mut(slot)) {
+            match stack {
+                Some((_, n)) if !all && *n > 1 => *n -= 1,
+                _ => *stack = None,
+            }
+        }
+        self.held_follows();
+        true
+    }
+    fn set_client_block(&mut self, x: i32, y: i32, z: i32, block: &str) -> bool {
+        self.moves.push(format!("block {x} {y} {z} {block}"));
+        self.blocks.insert((x, y, z), block.to_owned());
+        true
+    }
+    fn hide_entity(&mut self, id: u32) -> bool {
+        self.moves.push(format!("hide {id}"));
+        self.entities.retain(|e| e.id != id);
+        true
     }
     fn voice(&self) -> VoiceInfo {
         match &self.voice_glue {

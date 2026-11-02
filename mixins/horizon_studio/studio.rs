@@ -369,6 +369,43 @@ pub trait GameApi {
     fn set_body(&mut self, body: &Body) {
         let _ = body;
     }
+    /// The player's inventory as the game has it: its 36 slots in order (0
+    /// to 8 the hotbar, 9 to 35 the rest), each stack's item id and count.
+    /// None out of a world. The selected hotbar slot is PlayerInfo's `slot`.
+    fn inventory(&mut self) -> Option<Vec<Option<(String, u32)>>> {
+        None
+    }
+    /// Selects hotbar slot `slot` (0 to 8), as its number key does.
+    fn select_slot(&mut self, slot: usize) -> bool {
+        let _ = slot;
+        false
+    }
+    /// Clicks with the held item once, as the mouse does: a right click
+    /// uses it (eats, places, throws), a left click (`attack`) attacks.
+    fn click_item(&mut self, attack: bool) -> bool {
+        let _ = attack;
+        false
+    }
+    /// Drops the held stack (`all`) or one of it, as Ctrl+Q and Q do.
+    fn drop_held(&mut self, all: bool) -> bool {
+        let _ = all;
+        false
+    }
+    /// Sets a block (`minecraft:air` to clear it) in the client's copy of a
+    /// server's world only: a ghost block, as a Roblox client's own change
+    /// to the place is, which the server's next update of it undoes. False
+    /// where the world isn't a server's copy, or the block isn't loaded.
+    fn set_client_block(&mut self, x: i32, y: i32, z: i32, block: &str) -> bool {
+        let _ = (x, y, z, block);
+        false
+    }
+    /// Takes an entity out of the client's copy of a server's world only, as
+    /// the server's removing it would (it comes back when the server sends
+    /// it again). False where the world isn't a server's copy.
+    fn hide_entity(&mut self, id: u32) -> bool {
+        let _ = id;
+        false
+    }
     /// The studio's own screens draw with Horizon's design system, in dp
     /// (the launcher's logical pixels): the screen in dp, and dp per GUI pixel.
     fn dp(&mut self) -> (f32, f32, f32);
@@ -3129,6 +3166,16 @@ impl Studio {
     fn roblox_frame(&mut self, game: &mut dyn GameApi, dt: f64) {
         let (now, frame) = (self.s.now, self.s.frame_no);
         super::hstudio_rbx_draw::step(&mut self.s.rbx, game, now, dt, frame);
+        // The Backpack follows the inventory, and the tools act.
+        if self.s.rbx.active {
+            let mut ctx = Ctx {
+                game: &mut *game,
+                s: &mut self.s,
+                owner: Owner::Console,
+                phase: Phase::Normal,
+            };
+            super::hstudio_rbx_tools::step(&mut ctx);
+        }
         self.roblox_effects(game);
         let ours = self.rbx_screen_open();
         let pending = match (&self.s.screen_request, &self.s.rbx_screen) {
@@ -3454,6 +3501,8 @@ impl Studio {
         }
         // Highlights and the other adornments, through walls.
         super::hstudio_rbx_draw::draw_adornments(&self.s.rbx, game);
+        // The scripts' tools, as slots after the hotbar's.
+        super::hstudio_rbx_tools::draw(&self.s.rbx, game);
         super::hstudio_sunc::draw_drawings(&self.s.rbx, game, &mut images);
         self.s.rbx.screen_images = images;
         // The voice chat's microphone, its state and who is talking.

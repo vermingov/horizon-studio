@@ -59,6 +59,11 @@ thread_local! {
     /// character (hstudio::Body), for the model's hooks; the parts hidden
     /// are in the library's mobs::hstudio_body.
     static BODY: Cell<BodyNow> = const { Cell::new(BodyNow { gone: false, pose: 0, spin: 0.0, still: false, fixed: false }) };
+    /// A script's Roblox tool is in hand while the player plays: the mouse's
+    /// left and right buttons are its (hstudio_rbx_tools), not the game's;
+    /// and the presses it took, whose releases are its too.
+    static TOOL_CLICKS: Cell<bool> = const { Cell::new(false) };
+    static TOOL_HELD: Cell<[bool; 2]> = const { Cell::new([false; 2]) };
 }
 
 /// hstudio::Body as the model's hooks read it.
@@ -1269,6 +1274,76 @@ impl GameApi for Host<'_, '_> {
         }
         Ok(())
     }
+    fn inventory(&mut self) -> Option<Vec<Option<(String, u32)>>> {
+        let g = self.g();
+        g.player.as_ref()?;
+        Some(
+            g.inventory
+                .iter()
+                .take(36)
+                .map(|s| s.as_ref().map(|s| (s.item.to_string(), s.count)))
+                .collect(),
+        )
+    }
+    fn select_slot(&mut self, slot: usize) -> bool {
+        let Some(g) = self.g_mut() else { return false };
+        if slot >= 9 || g.player.is_none() {
+            return false;
+        }
+        // As the number keys do: the next tick tells a server (the carried slot).
+        g.selected = slot;
+        true
+    }
+    fn click_item(&mut self, attack: bool) -> bool {
+        let Some(g) = self.g_mut() else { return false };
+        if g.screen != Screen::Playing || g.player.is_none() {
+            return false;
+        }
+        // A press and a release, as the agent's use-item clicks: the next
+        // tick acts on it (Minecraft.startUseItem, startAttack).
+        let button = if attack { MouseButton::Left } else { MouseButton::Right };
+        g.play_mouse(button, true).is_ok() && g.play_mouse(button, false).is_ok()
+    }
+    fn drop_held(&mut self, all: bool) -> bool {
+        let Some(g) = self.g_mut() else { return false };
+        if g.screen != Screen::Playing || g.player.is_none() {
+            return false;
+        }
+        // As Q and Ctrl+Q: on a server (and the single-player server thread)
+        // the server throws the stack, the client predicts it.
+        if g.remote.is_some() {
+            if !g.spectator() {
+                g.remote_drop(all);
+            }
+        } else {
+            g.drop_held(all);
+        }
+        true
+    }
+    fn set_client_block(&mut self, x: i32, y: i32, z: i32, block: &str) -> bool {
+        let Some(g) = self.g_mut() else { return false };
+        // Only a server's copy of its world: a world of the client's own
+        // would keep the change.
+        if g.remote.is_none() || g.player.is_none() || !g.world.loaded(x, z) {
+            return false;
+        }
+        let Some(state) = g.pack.assets.registry.default_state(block) else {
+            return false;
+        };
+        g.world.set(x, y, z, state).is_ok()
+    }
+    fn hide_entity(&mut self, id: u32) -> bool {
+        let Some(g) = self.g_mut() else { return false };
+        if g.remote.is_none() {
+            return false;
+        }
+        // As the server's removing it does to the client's lists of them.
+        let before = g.mobs.len() + g.dropped.len() + g.orbs.len();
+        g.mobs.retain(|m| m.id != id);
+        g.dropped.retain(|d| d.id != id);
+        g.orbs.retain(|o| o.id != id);
+        g.mobs.len() + g.dropped.len() + g.orbs.len() != before
+    }
     fn move_player(&mut self, feet: [f64; 3]) -> bool {
         let Some(g) = self.g_mut() else { return false };
         let at = horizon_core::geometry::Vec3::new(feet[0], feet[1], feet[2]);
@@ -1567,6 +1642,8 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &dyn EventLoopCtl) {
             give_back(game);
         }
         OPEN.with(|o| o.set(st.overlay_open()));
+        let tool = super::hstudio_rbx_tools::takes_clicks(&st.s.rbx);
+        TOOL_CLICKS.with(|c| c.set(tool && game.screen == Screen::Playing && !st.overlay_open()));
         let chat_free = game.screen == Screen::Chat && !st.overlay_open();
         CHAT_FREE.with(|c| c.set(chat_free));
         st.set_chat_open(chat_free);
@@ -1728,6 +1805,23 @@ pub(super) fn window_input(event: &mut WindowEvent) {
         {
             TOGGLE.with(|t| t.set(true));
         }
+        // A script's tool in hand: the buttons are its, for the frame hook.
+        if let WindowEvent::MouseInput { state, button, .. } = &*event
+            && matches!(button, MouseButton::Left | MouseButton::Right)
+        {
+            let i = usize::from(*button == MouseButton::Right);
+            let down = *state == ElementState::Pressed;
+            let mut held = TOOL_HELD.with(Cell::get);
+            let take = if down { TOOL_CLICKS.with(Cell::get) } else { held[i] };
+            if take {
+                held[i] = down;
+                TOOL_HELD.with(|h| h.set(held));
+                let key = if i == 0 { "key.mouse.left" } else { "key.mouse.right" };
+                with(|st| st.key(key, down));
+                *event = WindowEvent::HoveredFileCancelled;
+                return;
+            }
+        }
         // The chat open: the pointer, free, reaches the scripts' GUI, which
         // keeps a press or the wheel over it from the chat.
         if CHAT_FREE.with(Cell::get) {
@@ -1842,6 +1936,23 @@ pub(super) fn key(key: &str, pressed: bool) {
             st.key(key, pressed);
         }
     });
+}
+
+/// Wheel steps while playing: whether the scripts' Roblox tools take them
+/// (past the hotbar's ends, and through their own slots). Back out of
+/// theirs, the game's slot they come to is selected here.
+pub(super) fn wheel(game: &mut Game<'_>, steps: f32) -> bool {
+    if !game.native_window() || !game.native_on(ID) || game.player.is_none() {
+        return false;
+    }
+    let slot = game.selected;
+    let Some(r) = with(|st| super::hstudio_rbx_tools::wheel(&mut st.s.rbx, f64::from(steps), slot)).flatten() else {
+        return false;
+    };
+    if let Some(to) = r {
+        game.selected = to;
+    }
+    true
 }
 
 /// A command typed in chat: whether a script (or the studio) takes it.

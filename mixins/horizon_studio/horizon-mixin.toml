@@ -112,6 +112,12 @@ name = "hstudio_rbx_query"
 source = "rbx_query.rs"
 
 [[module]]
+id = "rbx_tools"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_tools"
+source = "rbx_tools.rs"
+
+[[module]]
 id = "crypt"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_crypt"
@@ -335,6 +341,19 @@ helper = "key.rs"
 bindings = [
   { name = "key", ty = "&str", value = "key" },
   { name = "pressed", ty = "bool", value = "pressed" },
+]
+
+# The wheel while playing: past the hotbar's ends, into the slots of the
+# scripts' Roblox tools (hstudio_rbx_tools::wheel).
+[[injection]]
+id = "wheel"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_wheel"
+helper = "wheel.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "steps", ty = "f32", value = "steps" },
+  { name = "claimed", ty = "&mut bool", value = "&mut *claimed" },
 ]
 
 [[injection]]

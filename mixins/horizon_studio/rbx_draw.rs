@@ -2152,6 +2152,7 @@ fn screen_keycode(key: &str) -> Option<&'static str> {
 /// UserInputService's events, ContextActionService's actions and the Mouse.
 pub fn game_input(rbx: &mut Rbx, key: &str, down: bool, processed: bool) {
     super::hstudio_rbx_client::input(rbx);
+    super::hstudio_rbx_tools::input(rbx, key, down, processed);
     if key == "key.keyboard.left.alt" && down && !processed {
         rbx.pointer.asked = !rbx.pointer.asked;
         rbx.pointer.dismissed = false;
