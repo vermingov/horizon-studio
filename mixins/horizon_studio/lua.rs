@@ -2704,6 +2704,11 @@ pub struct Proto {
     keys: Vec<Option<Key>>,
     /// Names of the operands of instructions that can fail, for messages.
     descs: Vec<(u32, [Desc; 2])>,
+    /// A script's own code (a mod's files, a ModuleScript's Source): the
+    /// game's scripts as executors see them, not the executor's
+    /// (`isexecutorclosure` is false for it). Code run by the console or
+    /// `loadstring` is the executor's.
+    pub script: std::cell::Cell<bool>,
 }
 
 #[allow(dead_code)]
@@ -2876,7 +2881,28 @@ impl<'a> Gen<'a> {
             imports: self.imports,
             keys: self.keys,
             descs: self.descs,
+            script: std::cell::Cell::new(false),
         }
+    }
+}
+
+/// The game's send, as the C function a hook the game's call entered was
+/// called from: it does nothing.
+fn game_send(_: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {
+    Ok(Vec::new())
+}
+
+/// Marks a compiled chunk, and every function in it, as a script's own
+/// code (`Proto::script`).
+pub fn mark_script(f: &Value) {
+    fn mark(p: &Proto) {
+        p.script.set(true);
+        for c in &p.protos {
+            mark(c);
+        }
+    }
+    if let Value::Func(c) = f {
+        mark(&c.proto());
     }
 }
 
@@ -4474,7 +4500,6 @@ struct ThreadState {
 /// The live objects, when tracked (`getgc`).
 #[derive(Default)]
 struct Registry {
-    closures: Vec<Weak<Closure>>,
     tables: Vec<Weak<RefCell<Table>>>,
     threads: Vec<Weak<Thread>>,
     prune_at: usize,
@@ -4595,7 +4620,14 @@ pub struct Lua {
     via_wrapper: Option<Rc<Native>>,
     /// How the next frame entered is entered (a hook's call).
     pending_entry: Entry,
+    /// The C function that stands for the game below a hook its call
+    /// entered (`debug.getinfo` of that level).
+    game_caller: Rc<Native>,
     registry: Option<Registry>,
+    /// Every closure made, tracked or not (getgc finds the scripts' functions
+    /// made before a scanner asked), and when to drop the dead ones.
+    closures: Vec<Weak<Closure>>,
+    closures_prune_at: usize,
     events: Rc<[Key]>,
     nil_cell: Cell,
 }
@@ -4629,7 +4661,13 @@ impl Lua {
             namecall: None,
             via_wrapper: None,
             pending_entry: Entry::Plain,
+            game_caller: match Native::builtin("send", game_send) {
+                Value::Native(n) => n,
+                _ => unreachable!("a builtin is a native"),
+            },
             registry: None,
+            closures: Vec::new(),
+            closures_prune_at: 1024,
             events: EVENTS.with(Rc::clone),
             nil_cell: Rc::new(RefCell::new(Value::Nil)),
         }
@@ -6724,6 +6762,11 @@ impl Lua {
                 }
                 l += 1;
             }
+            // Below a hook the game's own call entered is the game, a C
+            // function (a remote spy asks who called), and nothing more.
+            if matches!(self.cur.frames[i].entry, Entry::Game(_)) {
+                return (l == level).then(|| Err(self.game_caller.clone()));
+            }
         }
         None
     }
@@ -6791,8 +6834,8 @@ impl Lua {
         let n = self.frame_at(level)?.body.proto.maxstack;
         Some((0..n).map(|i| self.get_stack(level, i).unwrap_or_default()).collect())
     }
-    /// Keeps a list of the closures and tables made from now on, for
-    /// `getgc` (off by default).
+    /// Keeps a list of the tables made from now on, for `getgc` (off by
+    /// default; closures are always kept).
     pub fn track_objects(&mut self, on: bool) {
         if on && self.registry.is_none() {
             self.registry = Some(Registry {
@@ -6804,9 +6847,10 @@ impl Lua {
         }
     }
     fn track_closure(&mut self, c: &Rc<Closure>) {
-        if let Some(r) = &mut self.registry {
-            r.closures.push(Rc::downgrade(c));
-            r.prune();
+        self.closures.push(Rc::downgrade(c));
+        if self.closures.len() >= self.closures_prune_at {
+            self.closures.retain(|w| w.strong_count() > 0);
+            self.closures_prune_at = (self.closures.len() * 2).max(1024);
         }
     }
     fn track_table(&mut self, t: &TableRef) {
@@ -6826,11 +6870,9 @@ impl Lua {
             .map(|r| r.threads.iter().filter_map(Weak::upgrade).collect())
             .unwrap_or_default()
     }
-    /// The tracked closures still alive.
+    /// The closures still alive.
     pub fn live_closures(&mut self) -> Vec<Rc<Closure>> {
-        self.registry
-            .as_ref()
-            .map_or_else(Vec::new, |r| r.closures.iter().filter_map(Weak::upgrade).collect())
+        self.closures.iter().filter_map(Weak::upgrade).collect()
     }
     /// The tracked tables still alive.
     pub fn live_tables(&mut self) -> Vec<TableRef> {
@@ -6842,13 +6884,12 @@ impl Lua {
 
 impl Registry {
     fn prune(&mut self) {
-        if self.closures.len() + self.tables.len() < self.prune_at {
+        if self.tables.len() < self.prune_at {
             return;
         }
-        self.closures.retain(|w| w.strong_count() > 0);
         self.tables.retain(|w| w.strong_count() > 0);
         self.threads.retain(|w| w.strong_count() > 0);
-        self.prune_at = ((self.closures.len() + self.tables.len()) * 2).max(1024);
+        self.prune_at = (self.tables.len() * 2).max(1024);
     }
 }
 

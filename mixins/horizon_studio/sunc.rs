@@ -165,6 +165,7 @@ fn vk_key(vk: i64) -> Option<String> {
 const CACHE: &[(&str, u32)] = &[("invalidate", 2100), ("iscached", 2101), ("replace", 2102)];
 
 const WS_OPEN: u32 = 2031;
+const MODELS: u32 = 2032;
 const CONN_FIRE: u32 = 2053;
 const CONN_DEFER: u32 = 2054;
 const CONN_DISCONNECT: u32 = 2055;
@@ -187,7 +188,7 @@ const BLOCKED: &[&str] = &[
 
 /// The Lua that turns the host's answers into Roblox's methods and errors.
 const PRELUDE: &str = r#"
-local request, ws_open, save = ...
+local request, ws_open, save, models = ...
 local function http(url, method, body, content_type, headers)
     local h = {}
     if type(headers) == "table" then
@@ -215,6 +216,20 @@ function M.RequestAsync(self, options)
     local r = request(options)
     if r.StatusCode == 0 then error(r.StatusMessage, 2) end
     return r
+end
+-- game:GetObjects(url): a model file's Instances, from a Roblox asset kept
+-- in the workspace, a web address or a workspace file.
+function M.GetObjects(self, content)
+    local desc, url = models(content)
+    if url then
+        local r = http(url, "GET")
+        if not r.Success then error(`GetObjects: HTTP {r.StatusCode} ({r.StatusMessage}) from {url}`, 2) end
+        desc = models(content, r.Body)
+    end
+    return build(desc)
+end
+function M.LoadLocalAsset(self, path)
+    return M.GetObjects(self, path)[1]
 end
 -- As in Roblox, Invoke before OnInvoke is set waits until it is.
 function M.Invoke(self, ...)
@@ -280,14 +295,16 @@ pub fn executor_globals(lua: &mut Lua, genv: &TableRef, rbx: &mut Rbx) {
     g.set_str("cache", Value::table(cache));
     // The prelude: HttpGet and friends, and WebSocket.connect.
     let ws_open = Native::host("connect", WS_OPEN);
+    let models = Native::host("GetObjects", MODELS);
     let save = g.get_str("saveinstance");
     drop(g);
-    let f = lua.load(PRELUDE, "=[executor]", genv).expect("the prelude compiles");
+    let prelude = [super::hstudio_rbx_objects::BUILD, PRELUDE].concat();
+    let f = lua.load(&prelude, "=[executor]", genv).expect("the prelude compiles");
     let r = lua
         .call(
             &mut super::hstudio_lua::NoHost::default(),
             &f,
-            vec![request, ws_open, save],
+            vec![request, ws_open, save, models],
         )
         .unwrap_or_default();
     // saveinstance and SaveInstance: the prelude's, a C closure as the
@@ -310,6 +327,8 @@ pub fn executor_globals(lua: &mut Lua, genv: &TableRef, rbx: &mut Rbx) {
             ("HttpService", "PostAsync"),
             ("HttpService", "RequestAsync"),
             ("BindableFunction", "Invoke"),
+            ("DataModel", "GetObjects"),
+            ("InsertService", "LoadLocalAsset"),
         ] {
             rbx.lua_methods.push((class, name, m.borrow().get_str(name)));
         }
@@ -2025,7 +2044,9 @@ impl Ctx<'_> {
         let Value::Table(env) = self.script_env(id) else {
             return None;
         };
-        lua.load_bytes(&src, &chunk, &env).ok()
+        let f = lua.load_bytes(&src, &chunk, &env).ok()?;
+        super::hstudio_lua::mark_script(&f);
+        Some(f)
     }
     fn running_script(&self, id: Id) -> Option<(usize, Value)> {
         self.s
@@ -2209,6 +2230,31 @@ impl Ctx<'_> {
                     pending: super::hstudio_net::send(req, false),
                 });
                 Err(Throw::Yield(Vec::new()))
+            }
+            // GetObjects(content[, body]): the model described (its
+            // body fetched, for a web address), or nil and the address
+            // to fetch.
+            MODELS => {
+                use super::hstudio_rbx_objects as objects;
+                let content = check_text(lua, &args, 0, "GetObjects")?;
+                let bytes = match (objects::source(&content), args.get(1).and_then(Value::as_bytes)) {
+                    (objects::Source::Url(_), Some(body)) => body.to_vec(),
+                    (objects::Source::Url(url), None) => return Ok(vec![Value::Nil, Value::str(&url)]),
+                    (objects::Source::Asset(id), _) => {
+                        let ws = self.workspace();
+                        objects::asset_files(id)
+                            .iter()
+                            .find_map(|f| std::fs::read(ws.join(f)).ok())
+                            .ok_or_else(|| lua.rt_error(objects::asset_missing(id)))?
+                    }
+                    (objects::Source::File(path), _) => {
+                        let p = sandboxed(lua, &self.workspace(), &path, "GetObjects")?;
+                        std::fs::read(&p).map_err(|_| lua.rt_error(format!("GetObjects: '{path}' does not exist")))?
+                    }
+                };
+                let file = super::hstudio_rbx_file::read(&bytes)
+                    .map_err(|e| lua.rt_error(format!("GetObjects: {content}: {e}")))?;
+                one(objects::describe(&file))
             }
             WS_OPEN => {
                 let url = check_text(lua, &args, 0, "WebSocket.connect")?;

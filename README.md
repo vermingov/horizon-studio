@@ -1019,8 +1019,14 @@ more, with `checkcaller()` true, so `if not checkcaller() then self:IsA(...) end
 Roblox, a method call is `__namecall`'s alone: `hookfunction` of `remote.FireServer` sees `remote.FireServer(remote)`
 calls, not `remote:FireServer()`; the original `__namecall` finds the method without `__index` (an `__index` hook
 isn't called for it), and keeps the hook's own method whatever methods the hook called first. A `newcclosure` is a C
-level of its own to `debug.info`. `getgc` and `filtergc` see what was made once the studio started tracking objects (from the
-first mod that names them). The MCP's `executor` topic (`docs`) has each function's details.
+level of its own to `debug.info`, and so is a Lua hook given to `hookmetamethod` (`debug.getinfo(3)` in it is the
+caller; for the game's packets a C function `send`). A mod's own code (its files, its ModuleScripts' Source) stands
+for the game's scripts to remote spies and scanners: `isexecutorclosure`/`checkclosure` is false for it, while the
+console's and `loadstring`'s functions are the executor's. `getgc` has every function made so far, and the tables made
+once the studio started tracking objects (from the first mod that names them). `game:GetObjects(content)` loads a
+model file (`.rbxm`, `.rbxmx`) from a web address, the workspace, or a Roblox asset kept in the workspace as
+`.roblox-assets/<id>.rbxm`: Roblox serves models only to a signed-in account, so save them there from Roblox Studio
+(Hydroxide's UI is the models 11389137937 and 5042114982). The MCP's `executor` topic (`docs`) has each function's details.
 
 ### Examples
 
@@ -1090,6 +1096,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `rbx_draw.rs` (`hstudio_rbx_draw`) | The Roblox layer on the game: ScreenGuis drawn and clicked, input, Parts in the world, raycasts, each frame's step |
 | `rbx_image.rs` (`hstudio_rbx_image`) | Roblox's images: `rbxasset://` files from the Client Tracker's mirror, thumbnails fetched, and a thumbnail's original size (its resampling's trace, and the crops and slices scripts make) so sprite sheets cut where scripts mean |
 | `rbx_world.rs` (`hstudio_rbx_world`) | The Roblox layer's world: the LocalPlayer and its character following the player, teleports, `Humanoid:MoveTo`, the entities and other players mirrored once a script looks |
+| `rbx_file.rs`, `rbx_objects.rs` (`hstudio_rbx_file`, `hstudio_rbx_objects`) | Roblox model and place files (binary and XML) read into a tree, and `game:GetObjects`: where a model comes from (a web address, the workspace, a Roblox asset kept in `.roblox-assets`) and its items as the Lua that makes them Instances |
 | `rbx_remote.rs` (`hstudio_rbx_remote`) | The game's packets as remotes (ReplicatedStorage.Minecraft): fields to Lua and back, the game's packets through `__namecall` hooks, FireServer, OnClientEvent, a packet's `Debug` form read as fields |
 | `rbx_query.rs` (`hstudio_rbx_query`) | What scripts ask of the world: raycasts through its blocks and parts, the Mouse's target, the bounds queries, Terrain's reads |
 | `exec.rs` (`hstudio_exec`) | The executor (sUNC) functions that need only the interpreter: hooks, newcclosure, debug, metatables, encoding, getgc |

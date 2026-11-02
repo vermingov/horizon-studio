@@ -383,6 +383,9 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             match rbx.service(&n).or_else(|| rbx.api_service(&n)) {
                 Some(s) => one(rbx.value(s)),
                 None if name == "FindService" => one(Value::Nil),
+                // A class that isn't a service is none (remote spies' paths
+                // try each class as a service); only an unknown name errors.
+                None if class_def(&n).is_some() => one(Value::Nil),
                 None => Err(lua.rt_error(format!("'{n}' is not a valid Service name"))),
             }
         }

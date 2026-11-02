@@ -2130,12 +2130,13 @@ box.Visible = true
 
 **What is different from a Roblox executor**, because the scripts are mods and the game is Minecraft:
 
-- Every Lua function and thread is the executor's: there are no game scripts. `checkcaller()` is true but while the game's own packets go through a `__namecall` hook (see `roblox`: remotes are Minecraft's packets); what that hook calls is the executor's again (a method it calls goes through the hook once more with `checkcaller()` true, so it can't call itself forever), `getcallingscript()` is the calling mod's `script` (nil for the console and the game's packets), `getscriptfromthread()` is nil, and `filtergc`'s `IgnoreExecutor` (true by default) skips every Lua function: pass `IgnoreExecutor = false`.
+- Every Lua function and thread is the executor's: there are no game scripts. `checkcaller()` is true but while the game's own packets go through a `__namecall` hook (see `roblox`: remotes are Minecraft's packets); what that hook calls is the executor's again (a method it calls goes through the hook once more with `checkcaller()` true, so it can't call itself forever), `getcallingscript()` is the calling mod's `script` (nil for the console and the game's packets), `getscriptfromthread()` is nil. A mod's own code (its files, its ModuleScripts' Source) stands for the game's scripts to scanners: `isexecutorclosure` is false for it and `filtergc`'s `IgnoreExecutor` (true by default) keeps it, while the console's and `loadstring`'s functions are the executor's.
 - `getgc`, `filtergc`, `getreg` and live protos see what was made after the studio began tracking objects: from the load of the first mod whose source names one of them (or their first call), as tracking costs a little on every function and table made.
 - Hooks are global: `hookfunction(print, ...)` changes `print` for every mod. They stay until `restorefunction` (or the game restarts), even after the mod that made them stops.
 - `getscriptbytecode` is the studio's own dump of a mod's compiled main file, not Luau bytecode; `getscripthash` hashes that. A ModuleScript runs under `require` from its hidden `Source` (set with `sethiddenproperty`). A module's files are ModuleScripts too (see `roblox`), but their `Source` is nil: `require` runs the file itself, and `getloadedmodules` lists them once required. Once `require` has run one (from its top level on), it is a running script: `getrunningscripts` lists it, `getsenv` gives the file's own environment (`getfenv()` in the file: its `script` is that ModuleScript, everything else the mod's globals), and `getscriptclosure`, `getscriptbytecode` and `getscripthash` give the file's code. Before that, or when its top level failed, `getsenv` errors and the others give nil.
 - As in Roblox, a method call goes to `__namecall` alone: `hookfunction(remote.FireServer, ...)` sees `remote.FireServer(remote, ...)` calls, not `remote:FireServer(...)` (remote spies hook both). The original `__namecall` looks the method up without `__index` (an `__index` hook isn't called for it), and inside a hook `getnamecallmethod()` and the original keep the hook's own call's method, whatever methods the hook called first. A `newcclosure` is a C level of its own to `debug.info` and `debug.getinfo`, as in Luau.
 - `replicatesignal` errors: there is no server. `fireclickdetector`, `fireproximityprompt` and `firetouchinterest` fire the events here, deferred like every signal.
+- `game:GetObjects(content)` loads a model file (binary `.rbxm` or XML `.rbxmx`) as unparented Instances: from a web address, a file in the workspace, or a Roblox asset (`rbxassetid://123`) kept in the workspace as `.roblox-assets/123.rbxm` (or `.rbxmx`). Roblox gives models only to a signed-in account, so save one there from Roblox Studio (Save to File); Hydroxide's UI is two such models. `InsertService:LoadLocalAsset(path)` gives the first. Classes the layer hasn't come as Folders, and properties it can't set are left as they are.
 - Files live in the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), which scripts can't leave. `request`, `game:HttpGet` and WebSockets reach the internet only, never this computer or its network.
 - Drawings are in dp, Horizon's logical pixels (the Camera's ViewportSize), over the HUD and the mods' GUIs. As in the executors' Drawing library, `Transparency` is the opacity (1, the default, is opaque). A menu drawn with Drawings (an ESP's) takes the mouse as a GUI does: Left Alt frees the pointer over it, and its clicks reach `UserInputService.InputBegan` and `InputEnded` with `GetMouseLocation()` in the same dp. Images (Drawing's `Data` and ImageLabels with a `getcustomasset` id) are PNGs, drawn as the GUI's images are.
 - `base64encode`, `base64decode`, `lz4compress` and `lz4decompress` are globals. For the older [UNC](https://github.com/unified-naming-convention/NamingStandard) standard the `crypt` library is here too (`crypt.base64encode`, `crypt.generatekey`, `crypt.hash`, `crypt.encrypt`/`decrypt` over AES), with `base64` and `cache` tables; sUNC deprecates `crypt` (its test warns one exists), UNC needs it.
@@ -8589,7 +8590,7 @@ restorefunction(f)
         r##"
 `hookmetamethod(object, name, hook)`
 
-Hooks the metamethod `name` (`"__index"`, `"__namecall"`, `"__newindex"`...) of the object's raw metatable and returns the original. Instances and `game` share one metatable, as in Roblox, so hooking `game`'s hooks every Instance's. A `__namecall` hook gets every method call, and every packet the game sends as `remote:FireServer(fields)` on its remote in `ReplicatedStorage.Minecraft` (see `roblox`); `getnamecallmethod()` names the method.
+Hooks the metamethod `name` (`"__index"`, `"__namecall"`, `"__newindex"`...) of the object's raw metatable and returns the original. Instances and `game` share one metatable, as in Roblox, so hooking `game`'s hooks every Instance's. A Lua hook runs as a C closure, as executors wrap it: in the hook, `debug.getinfo(3)` is the code that made the call (for the game's packets, a C function `send` standing for the game). A `__namecall` hook gets every method call, and every packet the game sends as `remote:FireServer(fields)` on its remote in `ReplicatedStorage.Minecraft` (see `roblox`); `getnamecallmethod()` names the method.
 
 ```lua
 local old
@@ -8685,7 +8686,7 @@ print(islclosure(function() end))
         r##"
 `isexecutorclosure(f)`
 
-Whether `f` is the executor's: any Lua function (every script is a mod's), the executor library's and the studio's functions, and `newcclosure`s; not Roblox's (`print`, `game`'s methods).
+Whether `f` is the executor's: Lua functions run from the console or made by `loadstring`, the executor library's and the studio's functions, and `newcclosure`s. Not a mod's own code (its files and its ModuleScripts' Source: the game's scripts, as remote spies and scanners see them), nor Roblox's (`print`, `game`'s methods).
 
 ```lua
 print(isexecutorclosure(getgenv), isexecutorclosure(print))
@@ -9148,7 +9149,7 @@ setfenv(f, { x = 1 })
         r##"
 `getgc([includeTables])`
 
-The live functions (and tables, with `true`) made since the studio started tracking them: from the load of the first mod whose source names `getgc`, `filtergc`, `getreg` or `getproto` (or the first call to one).
+The live functions, every one made so far, and with `true` the tables made since the studio started tracking them: from the load of the first mod whose source names `getgc`, `filtergc`, `getreg` or `getproto` (or the first call to one).
 
 ```lua
 for _, f in getgc() do end
@@ -9161,7 +9162,7 @@ for _, f in getgc() do end
         r##"
 `filtergc(kind, options[, returnOne])`
 
-`getgc` filtered: `kind` `"function"` with `Name`, `Hash` (getfunctionhash), `Constants` and `Upvalues` (every item must be there) and `IgnoreExecutor` (true by default, which skips every Lua function here: they are all mods'), or `"table"` with `Keys`, `Values`, `KeyValuePairs` and `Metatable`. A list, or the first match with `returnOne`.
+`getgc` filtered: `kind` `"function"` with `Name`, `Hash` (getfunctionhash), `Constants` and `Upvalues` (every item must be there) and `IgnoreExecutor` (true by default, which skips the executor's functions, `isexecutorclosure`: the console's and `loadstring`'s; a mod's own code is found), or `"table"` with `Keys`, `Values`, `KeyValuePairs` and `Metatable`. A list, or the first match with `returnOne`.
 
 ```lua
 local f = filtergc("function", { Name = "update", IgnoreExecutor = false }, true)

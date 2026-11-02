@@ -2096,6 +2096,7 @@ impl Studio {
                 return;
             }
         };
+        super::hstudio_lua::mark_script(&f);
         self.s.mods[i].state = ModState::Running;
         self.s.mods[i].main_fn = Some(f.clone());
         // In a coroutine, as Roblox runs a script: its top level can wait.
@@ -5825,6 +5826,7 @@ impl Ctx<'_> {
         let chunk = rbx.full_name(m);
         let env = super::hstudio_exec::caller_env(lua).ok_or_else(|| lua.rt_error("require: no environment"))?;
         let f = lua.load_bytes(&src, &chunk, &env).map_err(|e| lua.rt_error(e))?;
+        super::hstudio_lua::mark_script(&f);
         let r = lua.call(self, &f, Vec::new())?;
         let v = match r.into_iter().next() {
             Some(v) if !v.is_nil() => v,
@@ -5897,6 +5899,7 @@ impl Ctx<'_> {
         };
         let chunk = format!("{}/{rel}", self.s.owner_name(self.owner));
         let f = lua.load_bytes(&src, &chunk, &env).map_err(|e| lua.rt_error(e))?;
+        super::hstudio_lua::mark_script(&f);
         // Running from here on (getsenv(script) works in its top level),
         // unless its top level fails.
         if let Some(ms) = ms {

@@ -70,6 +70,8 @@ pub mod game {
     pub mod hstudio_rbx_layout;
     #[path = "../../mixins/horizon_studio/rbx_methods.rs"]
     pub mod hstudio_rbx_methods;
+    #[path = "../../mixins/horizon_studio/rbx_objects.rs"]
+    pub mod hstudio_rbx_objects;
     #[path = "../../mixins/horizon_studio/rbx_parts.rs"]
     pub mod hstudio_rbx_parts;
     #[path = "../../mixins/horizon_studio/rbx_query.rs"]

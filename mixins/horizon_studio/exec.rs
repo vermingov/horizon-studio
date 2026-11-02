@@ -280,6 +280,20 @@ fn hookmetamethod(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>)
             String::from_utf8_lossy(&name)
         )));
     }
+    // A Lua hook runs as a C closure, as executors' hookmetamethod wraps
+    // it: debug.getinfo(3) in the hook is the code that called the method.
+    let h = match &h {
+        Value::Func(c) => {
+            let w = Native::of(
+                c.proto().debug_name.as_deref().unwrap_or(""),
+                NativeKind::Wrap(h.clone()),
+                Vec::new(),
+            );
+            mark(&w);
+            w
+        }
+        _ => h,
+    };
     one(hook(lua, &f, h)?)
 }
 
@@ -293,14 +307,21 @@ fn islclosure(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> 
     one(Value::Bool(matches!(f, Value::Func(_))))
 }
 
-/// Lua functions are all a mod's; natives are the executor's when it made them.
-fn isexecutorclosure(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
-    let f = func_arg(lua, &args, 0, "isexecutorclosure")?;
-    one(Value::Bool(match &f {
-        Value::Func(_) => true,
+/// A Lua function is the executor's unless it is a script's own code (a
+/// mod's files, a ModuleScript's: the game's scripts here); code from the
+/// console or `loadstring` is the executor's. Natives are the executor's
+/// when it made them.
+pub fn is_executor_fn(f: &Value) -> bool {
+    match f {
+        Value::Func(c) => !c.proto().script.get(),
         Value::Native(n) => is_marked(n),
         _ => false,
-    }))
+    }
+}
+
+fn isexecutorclosure(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let f = func_arg(lua, &args, 0, "isexecutorclosure")?;
+    one(Value::Bool(is_executor_fn(&f)))
 }
 
 /// The globals of the code calling: its function's environment.
@@ -904,11 +925,11 @@ fn filtergc(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Re
             let consts = o("Constants");
             let ups = o("Upvalues");
             for c in lua.live_closures() {
-                // Every Lua function here is a mod's: the executor's own.
-                if ignore_exec {
-                    break;
-                }
                 let p = c.proto();
+                // The executor's own: the console's and loadstring's.
+                if ignore_exec && !p.script.get() {
+                    continue;
+                }
                 if let Some(n) = &name
                     && p.debug_name.as_deref() != Some(n.as_str())
                 {

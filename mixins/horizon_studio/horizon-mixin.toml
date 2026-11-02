@@ -76,6 +76,18 @@ name = "hstudio_rbx_api_data"
 source = "rbx_api_data.rs"
 
 [[module]]
+id = "rbx_file"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_file"
+source = "rbx_file.rs"
+
+[[module]]
+id = "rbx_objects"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_objects"
+source = "rbx_objects.rs"
+
+[[module]]
 id = "rbx_remote"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_rbx_remote"

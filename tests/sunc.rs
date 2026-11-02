@@ -60,7 +60,9 @@ fn closures() {
         local wrapped = newcclosure(function(...) return ... end)
         print(iscclosure(wrapped), islclosure(wrapped), wrapped("Hello"))
         print(iscclosure(print), iscclosure(getgc), iscclosure(dummy_func), islclosure(dummy_func))
-        print(isexecutorclosure(dummy_func), isexecutorclosure(wrapped), isexecutorclosure(getgc), isexecutorclosure(print))
+        -- A mod's own code is a game script's to the executor (remote
+        -- spies' scanners look at it); what loadstring makes is the executor's.
+        print(isexecutorclosure(dummy_func), isexecutorclosure(wrapped), isexecutorclosure(getgc), isexecutorclosure(print), isexecutorclosure(loadstring("return function() end")()))
 
         local function dummy_function() print("Hello") end
         local cloned = clonefunction(dummy_function)
@@ -99,7 +101,7 @@ fn closures() {
         "5\ttrue",
         "true\tfalse\tHello",
         "true\ttrue\tfalse\ttrue",
-        "true\ttrue\ttrue\tfalse",
+        "false\ttrue\ttrue\tfalse\ttrue",
         "true\tdummy_function\tfalse\ttrue",
         "Hello",
         "false\t0",
