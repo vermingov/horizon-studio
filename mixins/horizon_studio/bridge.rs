@@ -1875,6 +1875,7 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &dyn EventLoopCtl) {
     }
     keep_view(game);
     remember_server(game);
+    rejoin_step(game);
     keep_still(game);
     // Once frames stop (a hidden window), the network thread answers the
     // server's pings itself: it learns here when the last frame began, and
@@ -2700,6 +2701,9 @@ pub(super) fn settings_click(game: &mut Game<'_>, button: usize) {
 thread_local! {
     /// The server joined last (address, player name), to rejoin once it is left.
     static LAST_SERVER: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
+    /// A rejoin under way: joined again only once the server (or a proxy in
+    /// front of it, such as Velocity) has let the old connection go.
+    static REJOIN: RefCell<Option<Rejoin>> = const { RefCell::new(None) };
     /// The HUD's parts Roblox scripts hid: the chat and the player list.
     static HIDE_CHAT: Cell<bool> = const { Cell::new(false) };
     static HIDE_TAB: Cell<bool> = const { Cell::new(false) };
@@ -2707,6 +2711,90 @@ thread_local! {
     static GRAPHICS: RefCell<Option<Graphics>> = const { RefCell::new(None) };
     /// The lights Roblox scripts put in the world.
     static LIGHTS: RefCell<Vec<([f64; 3], u32, f32, f32)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A rejoin: where to, when to try next (or when the try began), and how
+/// many tries were made.
+struct Rejoin {
+    address: String,
+    name: String,
+    at: std::time::Instant,
+    tries: u32,
+    /// The last try is under way (joining, or refused).
+    trying: bool,
+}
+
+/// How long the old connection is given to close before joining again: a
+/// proxy refuses a player it still has ("You are already connected to this
+/// proxy!") until it has noticed them leave.
+const REJOIN_WAIT: std::time::Duration = std::time::Duration::from_millis(2500);
+/// Tries in all while the server still has the player.
+const REJOIN_TRIES: u32 = 5;
+
+/// Whether a refusal says the server (or its proxy) still has the player
+/// from the connection just left: Velocity's, BungeeCord's and vanilla's.
+fn still_connected(reason: &str) -> bool {
+    let r = reason.to_lowercase();
+    [
+        "already connected",
+        "already online",
+        "already playing",
+        "logged in from another location",
+        "duplicate login",
+    ]
+    .iter()
+    .any(|k| r.contains(k))
+}
+
+/// Each frame: a rejoin's next try once the old connection has had time to
+/// close, and again (waiting longer each time) while the server says the
+/// player is still there.
+fn rejoin_step(game: &mut Game<'_>) {
+    use horizon_client::multiplayer::Screen as Multiplayer;
+    use horizon_client::title::Mode;
+    let now = std::time::Instant::now();
+    let refused = match game.title.as_ref().map(|t| &t.mode) {
+        Some(Mode::Multiplayer(Multiplayer::Disconnected { reason, .. })) => Some(reason.clone()),
+        _ => None,
+    };
+    let joined = game.remote.is_some() && game.title.is_none();
+    let go = REJOIN.with(|r| {
+        let mut r = r.borrow_mut();
+        let j = r.as_mut()?;
+        if j.trying {
+            if joined {
+                *r = None;
+                return None;
+            }
+            match refused {
+                Some(why) if still_connected(&why) && j.tries < REJOIN_TRIES => {
+                    j.trying = false;
+                    j.at = now + REJOIN_WAIT * (j.tries + 1);
+                }
+                // Refused for another reason, or out of tries: the
+                // Disconnected screen says why.
+                Some(_) => *r = None,
+                // Still joining; a try that neither joins nor is refused
+                // in a minute (the player went back to the menus) ends it.
+                None if now > j.at + std::time::Duration::from_secs(60) => *r = None,
+                None => {}
+            }
+            return None;
+        }
+        if now < j.at || game.remote.is_some() {
+            return None;
+        }
+        j.trying = true;
+        j.tries += 1;
+        j.at = now;
+        Some((j.address.clone(), j.name.clone()))
+    });
+    if let Some((address, name)) = go
+        && let Err(e) = game.connect_server(&address, &name)
+    {
+        log::warn!("Horizon Studio: rejoining {address}: {e}");
+        REJOIN.with(|r| *r.borrow_mut() = None);
+    }
 }
 
 /// The graphics settings `ClientAction::LowGraphics` lowers.
@@ -2825,15 +2913,29 @@ fn client_now(game: &mut Game<'_>, action: super::hstudio::ClientAction) {
             let Some((address, name)) = here.or_else(|| LAST_SERVER.with(|l| l.borrow().clone())) else {
                 return;
             };
+            // A rejoin of this server under way goes on as it is, with its
+            // count (autorejoin asks again at each refusal), and its join
+            // isn't cut short.
+            if REJOIN.with(|r| r.borrow().as_ref().is_some_and(|j| j.address == address && j.name == name)) {
+                return;
+            }
             if game.remote.is_some()
                 && let Err(e) = game.leave_server(None)
             {
                 log::warn!("Horizon Studio: leaving the server to rejoin it: {e}");
                 return;
             }
-            if let Err(e) = game.connect_server(&address, &name) {
-                log::warn!("Horizon Studio: rejoining {address}: {e}");
-            }
+            // Joined again by rejoin_step, once the old connection has had
+            // time to close (a proxy refuses a player it still has).
+            REJOIN.with(|r| {
+                *r.borrow_mut() = Some(Rejoin {
+                    address,
+                    name,
+                    at: std::time::Instant::now() + REJOIN_WAIT,
+                    tries: 0,
+                    trying: false,
+                })
+            });
         }
         A::MasterVolume(v) => {
             let v = v.clamp(0.0, 1.0);
