@@ -30,15 +30,16 @@ jobs:
         include:
           - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, musl: true, run: true }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, musl: true, run: true }
-          - { os: macos-15, target: aarch64-apple-darwin, run: true }
-          - { os: macos-15, target: x86_64-apple-darwin, run: false }
+          # Intel macOS is cross-built in the same job: GitHub's Mac runners are scarce, and a
+          # job waiting for one too long is cancelled (each Mac job is another wait).
+          - { os: macos-15, target: aarch64-apple-darwin, also: x86_64-apple-darwin, run: true }
           - { os: windows-latest, target: x86_64-pc-windows-msvc, run: true }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.also && format('{0},{1}', matrix.target, matrix.also) || matrix.target }}
       - if: matrix.musl
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build
@@ -46,6 +47,9 @@ jobs:
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
+      - name: Build (${{ matrix.also }})
+        if: matrix.also
+        run: cargo build --release --locked --bin horizon-studio-mcp --target ${{ matrix.also }}
       - name: It answers MCP
         if: matrix.run
         shell: bash
@@ -66,10 +70,14 @@ jobs:
           else
             tar -czf "$GITHUB_WORKSPACE/horizon-studio-mcp-${{ matrix.target }}.tar.gz" horizon-studio-mcp
           fi
+          if [ -n "${{ matrix.also }}" ]; then
+            cd "$GITHUB_WORKSPACE/target/${{ matrix.also }}/release"
+            tar -czf "$GITHUB_WORKSPACE/horizon-studio-mcp-${{ matrix.also }}.tar.gz" horizon-studio-mcp
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: mcp-${{ matrix.target }}
-          path: horizon-studio-mcp-${{ matrix.target }}.*
+          path: horizon-studio-mcp-*.*
 
   # The modded game, built as the launcher builds it (its Rust, the release profile, the same
   # horizon-mixins and bundle), for install.sh (install.ps1 on Windows) to put in place instead
