@@ -1770,8 +1770,97 @@ fn bytecode(f: &Value) -> Option<Vec<u8>> {
             dump(child, out);
         }
     }
+    let p = c.proto();
     let mut out = b"HSBC1\n".to_vec();
-    dump(&c.proto(), &mut out);
+    // The source rides along, so `decompile` gives the code back.
+    if let Some(src) = p.source_text() {
+        out.extend_from_slice(format!("source {}\n", src.len()).as_bytes());
+        out.extend_from_slice(src);
+        out.push(b'\n');
+    }
+    dump(&p, &mut out);
+    Some(out)
+}
+
+/// What `decompile` gives for a function: its own source text when it is
+/// kept (every function compiled here keeps it), else the function laid out
+/// from its compiled form (parameters, constants and instructions).
+fn decompile_function(f: &Value) -> String {
+    match f {
+        Value::Func(c) => {
+            let p = c.proto();
+            match p.source_text() {
+                Some(src) => String::from_utf8_lossy(src).into_owned(),
+                None => laid_out(&p, 0),
+            }
+        }
+        Value::Native(n) => match &n.kind {
+            super::hstudio_lua::NativeKind::Wrap(inner) => decompile_function(inner),
+            _ => format!("-- {}: a built-in function, with no Lua source", n.name),
+        },
+        _ => String::new(),
+    }
+}
+
+/// A function without its source, written out from what it compiled to.
+fn laid_out(p: &super::hstudio_lua::Proto, depth: usize) -> String {
+    let pad = "    ".repeat(depth);
+    let mut params: Vec<String> = (0..p.nparams)
+        .map(|i| {
+            p.locals
+                .iter()
+                .find(|l| l.reg as usize == i && l.start == 0)
+                .map_or_else(|| format!("arg{}", i + 1), |l| l.name.to_string())
+        })
+        .collect();
+    if p.vararg {
+        params.push("...".into());
+    }
+    let mut out = String::new();
+    if depth == 0 {
+        out.push_str(&format!("-- {} (no source kept: its compiled form)\n", p.name));
+    }
+    let name = p.debug_name.as_deref().unwrap_or("");
+    out.push_str(&format!("{pad}local function {name}({})\n", params.join(", ")));
+    let ks: Vec<String> = p
+        .constant_slots()
+        .into_iter()
+        .flatten()
+        .map(|v| match &v {
+            Value::Str(s) => format!("{:?}", String::from_utf8_lossy(s)),
+            other => other.plain_text(),
+        })
+        .collect();
+    if !ks.is_empty() {
+        out.push_str(&format!("{pad}    -- constants: {}\n", ks.join(", ")));
+    }
+    for (i, op) in p.code.iter().enumerate() {
+        let line = p.lines.get(i).copied().unwrap_or(0);
+        out.push_str(&format!("{pad}    -- [{line}] {op:?}\n"));
+    }
+    for child in &p.protos {
+        out.push_str(&laid_out(child, depth + 1));
+    }
+    out.push_str(&format!("{pad}end\n"));
+    out
+}
+
+/// `decompile` of what `getscriptbytecode` gave: the source it carries, or
+/// its listing as comments.
+fn decompile_bytecode(b: &[u8]) -> Option<String> {
+    let rest = b.strip_prefix(b"HSBC1\n")?;
+    if let Some(head) = rest.strip_prefix(b"source ") {
+        let nl = head.iter().position(|&c| c == b'\n')?;
+        let len: usize = std::str::from_utf8(&head[..nl]).ok()?.parse().ok()?;
+        let src = head.get(nl + 1..nl + 1 + len)?;
+        return Some(String::from_utf8_lossy(src).into_owned());
+    }
+    let mut out = String::from("-- compiled code without its source: the listing\n");
+    for line in String::from_utf8_lossy(rest).lines() {
+        out.push_str("-- ");
+        out.push_str(line);
+        out.push('\n');
+    }
     Some(out)
 }
 
@@ -2328,9 +2417,31 @@ impl Ctx<'_> {
                 one(Value::str(&name))
             }
             // decompile: the script's own source, which is at hand here
-            // (its Source, or the mod's file it runs).
+            // (its Source, or the mod's file it runs); a function's own text
+            // (or its compiled form laid out); the source getscriptbytecode's
+            // bytes carry.
             2068 => {
+                match args.first() {
+                    Some(f @ (Value::Func(_) | Value::Native(_))) => {
+                        return one(Value::str(&decompile_function(f)));
+                    }
+                    Some(Value::Str(b)) => {
+                        return match decompile_bytecode(b) {
+                            Some(text) => one(Value::str(&text)),
+                            None => Err(bad_arg(lua, 0, fname, "bytecode from getscriptbytecode expected")),
+                        };
+                    }
+                    _ => {}
+                }
                 let sid = inst(self, lua, &args, 0, fname)?;
+                if !is_a(self.s.rbx.inst(sid).class, "LuaSourceContainer") {
+                    let n = self.s.rbx.inst(sid);
+                    return one(Value::str(&format!(
+                        "-- {} is a {}, not a script: it has no code",
+                        self.s.rbx.full_name(sid),
+                        n.class.name
+                    )));
+                }
                 if let Some(src) = self.script_source(sid) {
                     return one(Value::bytes(&src));
                 }
@@ -2348,6 +2459,10 @@ impl Ctx<'_> {
                 });
                 if let Some(text) = file.and_then(|f| std::fs::read(f).ok()) {
                     return one(Value::bytes(&text));
+                }
+                // A running script whose file is gone: the code it runs.
+                if let Some((_, f)) = self.running_script(sid) {
+                    return one(Value::str(&decompile_function(&f)));
                 }
                 let name = self.s.rbx.full_name(sid);
                 one(Value::str(&format!("-- {name}: no source to show (it has none here)")))

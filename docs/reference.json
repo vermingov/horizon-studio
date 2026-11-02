@@ -1917,7 +1917,7 @@
     {
       "name": "decompile",
       "topic": "executor",
-      "doc": "`decompile(script)`\n\nA script's source as text: its Source, or the file of a mod it runs (here\nthe source itself is at hand, so nothing is guessed from bytecode). A\nscript with none gives a comment saying so.\n\n```lua\nprint(decompile(game.Players.LocalPlayer.Character.Animate))\n```"
+      "doc": "`decompile(script | function | bytecode)`\n\nThe code, as text. Every function compiled here keeps its source, so\nnothing is guessed from bytecode:\n- a script: its Source, the file of a mod it runs, or the code a running\n  script runs;\n- a function (also one wrapped by `newcclosure`, or from `loadstring`,\n  `getscriptclosure`, `getgc`): its own text, from `function` (or\n  `local function`) through its `end`; a built-in gives a comment saying so;\n- what `getscriptbytecode` gave: the source those bytes carry (bytes without\n  one give their listing as comments).\n\nAn Instance that isn't a script gives a comment saying it has no code.\n\n```lua\nlocal function add(a, b) return a + b end\nprint(decompile(add))         --> local function add(a, b) return a + b end\nprint(decompile(game.Players.LocalPlayer.Character.Animate))\nprint(decompile(getscriptbytecode(script)) == decompile(script)) --> true\n```"
     },
     {
       "name": "PhysicalProperties.new",

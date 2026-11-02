@@ -8074,14 +8074,25 @@ SaveInstance(workspace.Model, "model")       -- model.rbxmx
         "decompile",
         "executor",
         r##"
-`decompile(script)`
+`decompile(script | function | bytecode)`
 
-A script's source as text: its Source, or the file of a mod it runs (here
-the source itself is at hand, so nothing is guessed from bytecode). A
-script with none gives a comment saying so.
+The code, as text. Every function compiled here keeps its source, so
+nothing is guessed from bytecode:
+- a script: its Source, the file of a mod it runs, or the code a running
+  script runs;
+- a function (also one wrapped by `newcclosure`, or from `loadstring`,
+  `getscriptclosure`, `getgc`): its own text, from `function` (or
+  `local function`) through its `end`; a built-in gives a comment saying so;
+- what `getscriptbytecode` gave: the source those bytes carry (bytes without
+  one give their listing as comments).
+
+An Instance that isn't a script gives a comment saying it has no code.
 
 ```lua
+local function add(a, b) return a + b end
+print(decompile(add))         --> local function add(a, b) return a + b end
 print(decompile(game.Players.LocalPlayer.Character.Animate))
+print(decompile(getscriptbytecode(script)) == decompile(script)) --> true
 ```
 "##
     ),

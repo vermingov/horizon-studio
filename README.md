@@ -962,7 +962,9 @@ executors run as mods:
 - **Scripts and reflection:** `getscripts`, `getrunningscripts`, `getloadedmodules`, `getsenv`, `getscriptclosure`,
   `getscriptbytecode`, `getscripthash`, `getcallingscript`, `getscriptfromthread`, `gethiddenproperty`,
   `sethiddenproperty`, `isscriptable`, `setscriptable`, `getthreadidentity`, `setthreadidentity`,
-  `identifyexecutor`.
+  `identifyexecutor`. `decompile` gives the real code back: a script's source, a function's own text (every
+  function compiled here keeps its source, including `loadstring`'s and `newcclosure`-wrapped ones), or the source
+  `getscriptbytecode`'s bytes carry.
 
 As every script here is a mod, all code is the executor's: `checkcaller()` is true but for the game's own packets
 reaching a `__namecall` hook, and `getcallingscript()` is the calling mod's `script` (nil for the console's code and

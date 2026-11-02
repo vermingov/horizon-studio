@@ -1270,6 +1270,9 @@ struct FuncAst {
     vars: Vec<VarAst>,
     upvals: Vec<UpDesc>,
     body: Vec<Stmt>,
+    /// Where its text is in the chunk's source, in bytes (`local function`
+    /// or `function` through its `end`; the whole source for a main chunk).
+    span: (u32, u32),
 }
 
 struct Stmt {
@@ -1643,6 +1646,8 @@ impl Parser {
             vars: fs.vars,
             upvals: Vec::new(),
             body,
+            // The whole source: `load` knows its length.
+            span: (0, 0),
         })
     }
     fn block_follow(&self) -> bool {
@@ -2208,6 +2213,27 @@ impl Parser {
         }
     }
     fn body(&mut self, name: String, debug_name: Option<Rc<str>>, method: bool, line: u32) -> PResult<Box<FuncAst>> {
+        // The text starts at its `function` (back over the name: `t.a:b`),
+        // or the `local` before it.
+        let mut first = self.pos;
+        while first > 0 {
+            first -= 1;
+            match &self.toks[first].0 {
+                Tok::Op("function") => break,
+                Tok::Op("." | ":") | Tok::Name(_) => {}
+                _ => {
+                    first = self.pos;
+                    break;
+                }
+            }
+        }
+        if first > 0
+            && matches!(self.toks[first - 1].0, Tok::Op("local"))
+            && matches!(self.toks[first].0, Tok::Op("function"))
+        {
+            first -= 1;
+        }
+        let start = self.starts.get(first).copied().unwrap_or(0) as u32;
         self.fs.push(FuncState::new(false));
         self.open_scope();
         if method {
@@ -2237,6 +2263,7 @@ impl Parser {
         let nparams = self.fs().actives.len();
         let body = self.statements()?;
         self.expect_match("end", "function", line)?;
+        let end = self.starts.get(self.pos - 1).map_or(start, |&e| e as u32 + 3);
         self.close_scope();
         let fs = self.fs.pop().expect("the function being parsed");
         let name = if name.is_empty() {
@@ -2253,6 +2280,7 @@ impl Parser {
             vars: fs.vars,
             upvals: fs.upvals,
             body,
+            span: (start, end),
         }))
     }
     fn exprlist(&mut self) -> PResult<Vec<Expr>> {
@@ -2648,6 +2676,10 @@ pub struct Proto {
     /// The name it was declared with, as Luau's `debug.info(f, "n")` gives it.
     pub debug_name: Option<Rc<str>>,
     pub chunk: Rc<str>,
+    /// The source it was compiled from (shared by the chunk's functions),
+    /// and where its own text is in it: what `decompile` gives back.
+    pub source: Option<Rc<[u8]>>,
+    pub span: (u32, u32),
     /// Where it was defined (0: a main chunk).
     pub line: u32,
     pub nparams: usize,
@@ -2827,6 +2859,8 @@ impl<'a> Gen<'a> {
             name: self.f.name.clone(),
             debug_name: self.f.debug_name.clone(),
             chunk: chunk.clone(),
+            source: None,
+            span: self.f.span,
             line: self.f.line,
             nparams: self.f.nparams,
             vararg: self.f.vararg,
@@ -2843,6 +2877,24 @@ impl<'a> Gen<'a> {
             keys: self.keys,
             descs: self.descs,
         }
+    }
+}
+
+/// Gives a freshly compiled function and those inside it their source.
+fn keep_source(p: &mut Proto, src: &Rc<[u8]>) {
+    p.source = Some(src.clone());
+    for child in &mut p.protos {
+        if let Some(c) = Rc::get_mut(child) {
+            keep_source(c, src);
+        }
+    }
+}
+
+impl Proto {
+    /// Its own text in the source it was compiled from, if that is kept.
+    pub fn source_text(&self) -> Option<&[u8]> {
+        let src = self.source.as_deref()?;
+        src.get(self.span.0 as usize..(self.span.1 as usize).min(src.len()))
     }
 }
 
@@ -4580,7 +4632,9 @@ impl Lua {
             fenv: false,
         };
         let ast = parser.chunk()?;
-        let proto = compile(&ast, &parser.chunk, &parser.written, parser.fenv)?;
+        let mut proto = compile(&ast, &parser.chunk, &parser.written, parser.fenv)?;
+        proto.span = (0, src.len() as u32);
+        keep_source(&mut proto, &Rc::from(src));
         let c = Rc::new(Closure::new(Rc::new(proto), Vec::new(), env.clone()));
         self.track_closure(&c);
         Ok(Value::Func(c))
