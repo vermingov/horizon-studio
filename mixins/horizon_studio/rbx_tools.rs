@@ -24,8 +24,9 @@
 // game's (the bridge keeps them from the game): its Activated and
 // Deactivated, the Mouse's Button1Down and Button1Up. The HopperBins of
 // BinType Hammer, Clone and Grab do as Roblox's did: the Hammer deletes the
-// part clicked, the Clone copies it on top of itself, the Grab drags it
-// along the Mouse. On the world's blocks (the Terrain) they change the
+// part clicked, the Clone copies it on top of itself, the Grab (and the
+// GameTool, Roblox's old tool for moving bricks) drags it along the Mouse.
+// On the world's blocks (the Terrain) they change the
 // client's copy of a server's world only, as a Roblox client's own changes
 // are: the Hammer breaks the block, the Clone puts a copy of it on the face
 // clicked, the Grab lifts it and puts it down where the button is let go.
@@ -92,6 +93,9 @@ pub struct Tools {
     pub last_step: Option<f64>,
     /// The parts with a TouchInterest the character is in.
     pub touching: Vec<Id>,
+    /// The character the stacks' Tools were last in: a new one (a respawn)
+    /// gets them afresh.
+    pub character: Id,
 }
 
 /// The classes `watched` keeps.
@@ -611,6 +615,19 @@ fn mirror(rbx: &mut Rbx, inv: &[Option<(String, u32)>], slot: usize) {
         rbx.tools.stacks = (0..SLOTS).map(|_| None).collect();
     }
     let was = std::mem::replace(&mut rbx.tools.quiet, true);
+    // A new character (a respawn): the stacks' Tools that went with the old
+    // one come back, and the one in hand goes into the new one.
+    if rbx.tools.character != rbx.character {
+        rbx.tools.character = rbx.character;
+        for s in rbx.tools.stacks.iter_mut() {
+            if s.as_ref()
+                .is_some_and(|s| rbx.insts.get(&s.tool).is_none_or(|i| i.destroyed))
+            {
+                *s = None;
+            }
+        }
+        rbx.tools.selected = None;
+    }
     let chosen = rbx.tools.selected != Some(slot);
     for i in 0..SLOTS {
         let want = inv.get(i).cloned().flatten().filter(|(_, n)| *n > 0);
@@ -812,6 +829,8 @@ fn bins(env: &mut dyn Env) {
         }
         _ => "",
     };
+    // The GameTool, Roblox's old tool for moving bricks, drags as the Grab.
+    let bin = if bin == "GameTool" { "Grab" } else { bin };
     if bin != "Grab" && rbx.tools.grab.is_some() {
         put_back_grab(rbx);
     }

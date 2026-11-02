@@ -240,6 +240,18 @@ fn a_tool_put_in_the_workspace_drops_its_stack() {
 }
 
 #[test]
+fn a_new_character_holds_the_stack_in_hand_again() {
+    let (mut game, mut st) = stocked("tools-respawn");
+    let out = lua(
+        &mut st,
+        &mut game,
+        "lp:LoadCharacter() task.wait(0.2) print(lp.Character ~= ch, lp.Character:FindFirstChildOfClass('Tool').Name)",
+        0.4,
+    );
+    assert_eq!(out, ["true    Diamond Pickaxe"]);
+}
+
+#[test]
 fn a_destroyed_stack_tool_leaves_the_backpack_until_the_stack_changes() {
     let (mut game, mut st) = stocked("tools-destroy");
     lua(&mut st, &mut game, "bp.Bread:Destroy()", 0.2);
@@ -358,7 +370,7 @@ fn btools(name: &str) -> (FakeGame, Studio) {
     lua(
         &mut st,
         &mut game,
-        "for _, b in ipairs({'Hammer', 'Clone', 'Grab'}) do
+        "for _, b in ipairs({'Hammer', 'Clone', 'Grab', 'GameTool'}) do
            local h = Instance.new('HopperBin') h.Name = b h.BinType = Enum.BinType[b] h.Parent = bp
          end
          p = Instance.new('Part') p.Name = 'Target' p.Anchored = true p.Size = Vector3.new(2, 2, 2)
@@ -456,6 +468,25 @@ fn the_clone_copies_a_part_on_top_and_a_block_onto_the_face_clicked() {
         "{:?}",
         game.moves
     );
+}
+
+#[test]
+fn the_game_tool_drags_as_the_grab() {
+    let (mut game, mut st) = btools("tools-gametool");
+    hold(&mut st, &mut game, "GameTool");
+    st.key("key.mouse.left", true);
+    run_for(&mut st, &mut game, 0.1);
+    game.camera.as_mut().unwrap().pitch = 60.0;
+    run_for(&mut st, &mut game, 0.1);
+    st.key("key.mouse.left", false);
+    run_for(&mut st, &mut game, 0.1);
+    let out = lua(
+        &mut st,
+        &mut game,
+        "print(math.floor(p.Position.Y * 10 + 0.5) / 10)",
+        0.0,
+    );
+    assert_eq!(out, ["65"]);
 }
 
 #[test]
