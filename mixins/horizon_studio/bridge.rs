@@ -2215,6 +2215,8 @@ thread_local! {
     static HIDE_TAB: Cell<bool> = const { Cell::new(false) };
     /// The player's graphics settings while scripts have them lowered.
     static GRAPHICS: RefCell<Option<Graphics>> = const { RefCell::new(None) };
+    /// The lights Roblox scripts put in the world.
+    static LIGHTS: RefCell<Vec<([f64; 3], u32, f32, f32)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The graphics settings `ClientAction::LowGraphics` lowers.
@@ -2291,10 +2293,11 @@ fn remember_server(g: &Game<'_>) {
     if g.integrated.is_none()
         && let Some(r) = g.remote.as_ref()
     {
-        let now = (r.session.address.clone(), r.session.name.clone());
+        let (address, name) = (&r.session.address, &r.session.name);
         LAST_SERVER.with(|l| {
-            if l.borrow().as_ref() != Some(&now) {
-                *l.borrow_mut() = Some(now);
+            let known = l.borrow().as_ref().is_some_and(|(a, n)| a == address && n == name);
+            if !known {
+                *l.borrow_mut() = Some((address.clone(), name.clone()));
             }
         });
     }
@@ -2390,7 +2393,30 @@ fn client_now(game: &mut Game<'_>, action: super::hstudio::ClientAction) {
             _ => {}
         },
         A::WorldRendering(on) => horizon_core::natrium::set_world_hidden(!on),
+        A::Lights(list) => LIGHTS.with(|l| *l.borrow_mut() = list),
+        A::ChatBackground(opacity) => {
+            game.settings.text_background_opacity = opacity.clamp(0.0, 1.0);
+            game.apply_settings();
+        }
     }
+}
+
+/// The world frame's lights (native_visuals): those Roblox scripts put in
+/// the world, which the game validates and limits.
+pub(super) fn visual_lights(game: &Game<'_>, lights: &mut Vec<super::native_hooks::NativeColoredLight>) {
+    if !game.native_on(ID) {
+        return;
+    }
+    LIGHTS.with(|l| {
+        lights.extend(l.borrow().iter().map(|&(at, rgb, radius, intensity)| {
+            super::native_hooks::NativeColoredLight {
+                at,
+                rgb,
+                radius,
+                intensity,
+            }
+        }));
+    });
 }
 
 /// The chat's lines over the HUD are drawn unless a Roblox script hid the

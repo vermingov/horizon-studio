@@ -458,6 +458,8 @@ fn identity(rbx: &mut Rbx, p: &PlayerInfo) {
         rbx.world.uuid = p.uuid;
         let player = rbx.local_player;
         rbx.raw_set(player, "UserId", Value::Num(user_id(p.uuid)));
+        // Whose look the character has: the player's own, as in Roblox.
+        rbx.raw_set(player, "CharacterAppearanceId", Value::Num(user_id(p.uuid)));
         set_attribute(rbx, player, "UUID", Value::str(&uuid_text(p.uuid)));
     }
 }
@@ -777,7 +779,9 @@ pub fn effect_set(rbx: &mut Rbx, id: Id, prop: &str) {
         }
         ("Lighting", "ClockTime") => {
             let h = rbx.raw_get(id, "ClockTime").to_num().unwrap_or(14.0);
-            rbx.world.effects.time = Some(Some(clock_ticks(h)));
+            // A time the script read from the world gives the time back to it.
+            let own = super::hstudio_rbx_client::clock_restored(rbx, h);
+            rbx.world.effects.time = Some((!own).then(|| clock_ticks(h)));
         }
         ("Lighting", "TimeOfDay") => {
             let text = rbx.raw_get(id, "TimeOfDay").as_text().unwrap_or_default();
@@ -1309,8 +1313,14 @@ fn add_player(rbx: &mut Rbx, e: &PlayerEntry, name: &str, shown: &str, later: bo
     rbx.inst_mut(player).name = name.to_owned();
     rbx.raw_set(player, "DisplayName", Value::str(shown));
     rbx.raw_set(player, "UserId", Value::Num(user_id(e.uuid)));
+    rbx.raw_set(player, "CharacterAppearanceId", Value::Num(user_id(e.uuid)));
     set_attribute(rbx, player, "UUID", Value::str(&uuid_text(e.uuid)));
     rbx.inst_mut(player).locked = true;
+    // Their Backpack, which replicates in Roblox (what they carry isn't known here).
+    let backpack = rbx.make("Backpack", None);
+    rbx.inst_mut(backpack).name = "Backpack".into();
+    let _ = rbx.set_parent(backpack, Some(player));
+    rbx.inst_mut(backpack).locked = true;
     rbx.world.others.push(Other {
         uuid: e.uuid,
         player,

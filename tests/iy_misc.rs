@@ -310,6 +310,7 @@ fn settings_screenshots_and_the_hud_are_the_game_s() {
         StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat, true)
         task.wait(0.2)
         game:GetService("TextChatService").ChatWindowConfiguration.Enabled = false
+        game:GetService("TextChatService").ChatWindowConfiguration.BackgroundTransparency = 0.3
         local CoreGui = game:GetService("CoreGui")
         print(CoreGui:ToggleRecording())
         local saved = CoreGui:TakeScreenshot()
@@ -328,6 +329,7 @@ fn settings_screenshots_and_the_hud_are_the_game_s() {
             ClientAction::Hud("chat".into(), false),
             ClientAction::Hud("playerlist".into(), false),
             ClientAction::Hud("chat".into(), true),
+            ClientAction::ChatBackground(0.7),
             ClientAction::Hud("chat".into(), false),
         ]
     );
@@ -432,4 +434,63 @@ fn the_developer_console_is_the_studio_s_and_roblox_only_prompts_say_so() {
             "[Roblox] Minecraft has no inspect menu to show Alex's avatar in",
         ]
     );
+}
+
+#[test]
+fn restoring_lighting_gives_the_time_back_to_the_world() {
+    let mut game = world("iym-clock");
+    let mut st = studio(&mut game);
+    // Infinite Yield keeps Lighting's values at its start, then day, night
+    // and restorelighting set them.
+    let src = r#"
+        local Lighting = game:GetService("Lighting")
+        local orig = {time = Lighting.ClockTime, fe = Lighting.FogEnd, brt = Lighting.Brightness}
+        Lighting.ClockTime = 14
+        task.wait(0.1)
+        Lighting.ClockTime = 0
+        task.wait(0.1)
+        Lighting.ClockTime = orig.time
+        Lighting.FogEnd = orig.fe
+        Lighting.Brightness = orig.brt
+    "#;
+    load(&mut game, &mut st, "t", src, 0.5);
+    let times: Vec<&String> = game.moves.iter().filter(|m| m.starts_with("time")).collect();
+    assert_eq!(times, ["time Some(8000)", "time Some(18000)", "time None"]);
+}
+
+#[test]
+fn a_light_in_the_character_lights_the_view_and_the_view_pans() {
+    let mut game = world("iym-light");
+    let mut st = studio(&mut game);
+    // Infinite Yield's light and alignmentkeys.
+    let src = r#"
+        local root = game.Players.LocalPlayer.Character.HumanoidRootPart
+        local light = Instance.new("PointLight")
+        light.Parent = root
+        light.Range = 30
+        light.Brightness = 5
+        light.Color = Color3.new(1, 0.5, 0)
+        task.wait(0.2)
+        light:Destroy()
+        task.wait(0.2)
+        workspace.CurrentCamera:PanUnits(1)
+        print(game.Players.LocalPlayer.CharacterAppearanceId == game.Players.LocalPlayer.UserId)
+    "#;
+    load(&mut game, &mut st, "t", src, 0.8);
+    let lights: Vec<&ClientAction> = game
+        .client_done
+        .iter()
+        .filter(|a| matches!(a, ClientAction::Lights(_)))
+        .collect();
+    let ClientAction::Lights(on) = lights[0] else {
+        unreachable!()
+    };
+    assert_eq!(on.len(), 1);
+    let (at, rgb, range, intensity) = on[0];
+    assert!((at[0] - 10.5).abs() < 0.01 && (at[2] + 3.25).abs() < 0.01, "{at:?}");
+    assert_eq!((rgb, range), (0xff8000, 16.0));
+    assert!(intensity > 0.99, "{intensity}");
+    assert_eq!(lights[1..], [&ClientAction::Lights(Vec::new())]);
+    assert!(game.moves.iter().any(|m| m.starts_with("turn 45")), "{:?}", game.moves);
+    assert_eq!(printed(&st, "t"), ["true"]);
 }

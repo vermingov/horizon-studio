@@ -73,7 +73,21 @@ pub struct Client {
     /// Each chatting player's TextSource, and the messages kept.
     sources: Vec<(Id, Id)>,
     messages: Vec<Id>,
+    /// Lighting.ClockTime as scripts read it while it was the world's own
+    /// time, and whether a script has set a time of its own since.
+    clock_reads: Vec<f64>,
+    clock_set: bool,
+    /// The Workspace's lights (found again every LIGHTS_EVERY), and what the
+    /// game was last told of them.
+    lights: Vec<Id>,
+    lights_at: f64,
+    lit: Vec<([f64; 3], u32, f32, f32)>,
 }
+
+/// How often the Workspace is looked through for lights.
+pub const LIGHTS_EVERY: f64 = 0.5;
+/// The most lights the game draws.
+pub const MAX_LIGHTS: usize = 8;
 
 // ---------------------------------------------------------------- the server
 
@@ -157,6 +171,7 @@ pub fn frame(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64) {
     bubbles_lapse(rbx, now);
     hud(rbx);
     listen(rbx);
+    lights(rbx, game, now);
     for a in std::mem::take(&mut rbx.client.actions) {
         if let Err(e) = game.client_do(a) {
             rbx.warnings.push(e);
@@ -450,6 +465,14 @@ pub fn extra_set(rbx: &mut Rbx, id: Id, key: &str) {
                 bubbles_lapse(rbx, f64::INFINITY);
             }
         }
+        // Infinite Yield's darkchat: the chat window's background.
+        ("ChatWindowConfiguration", "BackgroundTransparency") => {
+            if let Some(t) = v.to_num().filter(|t| t.is_finite()) {
+                rbx.client
+                    .actions
+                    .push(ClientAction::ChatBackground((1.0 - t).clamp(0.0, 1.0) as f32));
+            }
+        }
         ("UserGameSettings", "MasterVolume") => {
             let x = v.to_num().unwrap_or(1.0);
             if x.is_finite() {
@@ -516,6 +539,102 @@ fn listen(rbx: &mut Rbx) {
     }
 }
 
+/// A script read Lighting.ClockTime: while that is the world's own time,
+/// the value is one a script may set back later to give the time back.
+pub fn clock_read(rbx: &mut Rbx, v: &Value) {
+    let c = &mut rbx.client;
+    if let Some(h) = v.to_num()
+        && !c.clock_set
+        && !c.clock_reads.contains(&h)
+    {
+        if c.clock_reads.len() >= 64 {
+            c.clock_reads.remove(0);
+        }
+        c.clock_reads.push(h);
+    }
+}
+
+/// A script set Lighting.ClockTime to `hours`: whether that gives the time
+/// back to the world (a value it read while it was the world's own, as
+/// Infinite Yield's restorelighting sets the one it kept), or keeps one of
+/// its own.
+pub fn clock_restored(rbx: &mut Rbx, hours: f64) -> bool {
+    let c = &mut rbx.client;
+    c.clock_set = !c.clock_reads.contains(&hours);
+    !c.clock_set
+}
+
+/// A property of a class the layer keeps (a light's): set, or Roblox's
+/// default.
+fn api_prop(rbx: &Rbx, id: Id, key: &str) -> Value {
+    let inst = rbx.inst(id);
+    if let Some(v) = inst.extra.get(key) {
+        return v.clone();
+    }
+    match super::hstudio_rbx_api::member(inst.class.name, key) {
+        Some((_, super::hstudio_rbx_api::Member::Prop { cat, ty, default, .. })) => {
+            super::hstudio_rbx_api::default_value(cat, ty, default)
+        }
+        _ => inst.get(key),
+    }
+}
+
+/// The Workspace's PointLights, SpotLights and SurfaceLights (Infinite
+/// Yield's light) light the view around their part: the nearest
+/// MAX_LIGHTS of those enabled, with their colour, range (a stud is a
+/// block, up to 16) and brightness.
+fn lights(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64) {
+    if now >= rbx.client.lights_at {
+        rbx.client.lights_at = now + LIGHTS_EVERY;
+        let ws = rbx.workspace;
+        rbx.client.lights = rbx
+            .descendants(ws)
+            .into_iter()
+            .filter(|&d| matches!(rbx.inst(d).class.name, "PointLight" | "SpotLight" | "SurfaceLight"))
+            .collect();
+    }
+    let me = game.player().map_or([0.0; 3], |p| [p.x, p.y, p.z]);
+    let mut lit: Vec<([f64; 3], u32, f32, f32)> = Vec::new();
+    for &l in &rbx.client.lights {
+        let Some(inst) = rbx.try_inst(l).filter(|i| !i.destroyed) else {
+            continue;
+        };
+        let Some(mut part) = inst.parent else { continue };
+        if rbx.inst(part).class.name == "Attachment" {
+            match rbx.inst(part).parent {
+                Some(p) => part = p,
+                None => continue,
+            }
+        }
+        if !super::hstudio_rbx::is_a(rbx.inst(part).class, "BasePart")
+            || !rbx.is_descendant_of(l, rbx.workspace)
+            || !api_prop(rbx, l, "Enabled").truthy()
+        {
+            continue;
+        }
+        let Some(at) = as_cf(&rbx.raw_get(part, "CFrame")).map(|c| c.position()) else {
+            continue;
+        };
+        let color = super::hstudio_rbx_values::as_c3(&api_prop(rbx, l, "Color")).unwrap_or(Color3::new(1.0, 1.0, 1.0));
+        let byte = |x: f64| (x.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let rgb = (byte(color.r) << 16) | (byte(color.g) << 8) | byte(color.b);
+        let range = api_prop(rbx, l, "Range").to_num().unwrap_or(8.0);
+        let brightness = api_prop(rbx, l, "Brightness").to_num().unwrap_or(1.0);
+        if range <= 0.0 || brightness <= 0.0 {
+            continue;
+        }
+        let intensity = (1.0 - (-brightness).exp()).clamp(0.0, 1.0) as f32;
+        lit.push(([at.x, at.y, at.z], rgb, range.clamp(0.25, 16.0) as f32, intensity));
+    }
+    let far = |p: &[f64; 3]| (p[0] - me[0]).powi(2) + (p[1] - me[1]).powi(2) + (p[2] - me[2]).powi(2);
+    lit.sort_by(|a, b| far(&a.0).total_cmp(&far(&b.0)));
+    lit.truncate(MAX_LIGHTS);
+    if lit != rbx.client.lit {
+        rbx.client.lit = lit.clone();
+        rbx.client.actions.push(ClientAction::Lights(lit));
+    }
+}
+
 // ---------------------------------------------------------------- methods
 
 /// The methods this module has (`hstudio_rbx`'s METHODS lists them too).
@@ -541,6 +660,7 @@ pub fn takes(class: &str, name: &str) -> bool {
             | ("VoiceChatInternal", "SubscribePause" | "SubscribePauseAll")
             | ("SoundService", "SetListener" | "GetListener")
             | ("Player", "RequestFriendship" | "RevokeFriendship")
+            | ("Camera", "PanUnits")
     )
 }
 
@@ -698,6 +818,12 @@ pub fn method(env: &mut dyn Env, lua: &mut Lua, _id: Id, class: &str, name: &str
                 "unfriend"
             };
             note(rbx, &format!("Minecraft has no friends list to {what} {who} in"));
+            Ok(Vec::new())
+        }
+        // The view turns 45 degrees a unit, right for positive ones.
+        ("Camera", "PanUnits") => {
+            let units = arg(1).to_num().unwrap_or(0.0).trunc();
+            rbx.world.effects.turn.0 += (units * 45.0) as f32;
             Ok(Vec::new())
         }
         _ => Err(lua.rt_error(format!("{name} is not available here"))),

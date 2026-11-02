@@ -667,6 +667,13 @@ pub enum ClientAction {
     Hud(String, bool),
     /// Draws the world, or only the sky's colour under the HUD.
     WorldRendering(bool),
+    /// The lights scripts put in the world (PointLights and the like): each
+    /// one's place, colour (0xRRGGBB), range in blocks and intensity (0 to
+    /// 1), lighting the blocks and entities around it in the view alone.
+    Lights(Vec<([f64; 3], u32, f32, f32)>),
+    /// How dark the chat's background is, 0 to 1 (its text background
+    /// opacity), as TextChatService's chat window asks.
+    ChatBackground(f32),
 }
 
 /// A change to the voice chat (`voice.*`, the settings).

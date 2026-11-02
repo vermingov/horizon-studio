@@ -2665,6 +2665,7 @@ const METHODS: &[(&str, &str)] = &[
     ("GetListener", "SoundService"),
     ("RequestFriendship", "Player"),
     ("RevokeFriendship", "Player"),
+    ("PanUnits", "Camera"),
 ];
 
 const SIGNAL_METHODS: &[&str] = &["Connect", "Once", "Wait", "ConnectParallel"];
@@ -3007,6 +3008,10 @@ fn index(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Res {
         lua.charge(nodes * 16)?;
     }
     let rbx = env.rbx();
+    if k == "ClockTime" && rbx.inst(id).class.name == "Lighting" {
+        let v = rbx.inst(id).get("ClockTime");
+        super::hstudio_rbx_client::clock_read(rbx, &v);
+    }
     let inst = rbx.inst(id);
     let c = inst.class;
     if inst.unscriptable.contains(&k) {
@@ -3192,6 +3197,31 @@ impl Rbx {
             self.lock(id);
         }
         self.core_scripts.push(constants);
+        // What the developer console scripts (Infinite Yield's oldconsole)
+        // require of Roblox's own: the stats and settings modules, which
+        // have nothing of Roblox's servers to report here.
+        let folder = |rbx: &mut Rbx, name: &str| {
+            let f = rbx.make("Folder", None);
+            rbx.inst_mut(f).name = name.into();
+            let _ = rbx.set_parent(f, Some(modules));
+            rbx.lock(f);
+            f
+        };
+        let stats = folder(self, "Stats");
+        let settings = folder(self, "Settings");
+        for (name, parent, source) in [
+            ("ClientMemoryAnalyzer", stats, "return {}"),
+            ("ServerMemoryAnalyzer", stats, "return {}"),
+            ("StatsUtils", stats, "return {}"),
+            ("SettingsHub", settings, "return {SetVisibility = function() end}"),
+        ] {
+            let m = self.make("ModuleScript", None);
+            self.inst_mut(m).name = name.into();
+            self.raw_set(m, "Source", Value::str(source));
+            let _ = self.set_parent(m, Some(parent));
+            self.lock(m);
+            self.core_scripts.push(m);
+        }
     }
     /// The LocalPlayer's PlayerScripts as Roblox's client has them: the
     /// PlayerModule (its CameraModule and ControlModule), which scripts
@@ -3210,6 +3240,9 @@ impl Rbx {
         };
         let pm = module(self, "PlayerModule", ps, PLAYER_MODULE_SOURCE);
         let camera = module(self, "CameraModule", pm, "return {}");
+        // Shift lock's controller: Minecraft's view has no shift lock (its
+        // BoundKeys are kept, and change nothing).
+        module(self, "MouseLockController", camera, "return {}");
         let zoom = module(self, "ZoomController", camera, "return {}");
         module(self, "Popper", zoom, "return {}");
         module(self, "ControlModule", pm, "return {}");

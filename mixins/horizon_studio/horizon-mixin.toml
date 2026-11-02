@@ -397,6 +397,19 @@ bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
 ]
 
+# The lights Roblox scripts put in the world (a PointLight in the
+# character: Infinite Yield's light) light the view, as a native mod's
+# visual lights do.
+[[injection]]
+id = "visual-lights"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_visuals"
+helper = "visual_lights.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+  { name = "lights", ty = "&mut Vec<crate::game::native_hooks::NativeColoredLight>", value = "&mut *lights" },
+]
+
 # The Roblox Camera's FieldOfView and Lighting's FogEnd reach the view: its
 # field of view and its fog. (Lighting's brightness and ClockTime are the
 # bridge's, each frame.)
