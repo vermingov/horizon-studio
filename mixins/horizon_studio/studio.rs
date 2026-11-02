@@ -306,6 +306,43 @@ pub trait GameApi {
         let _ = feet;
         false
     }
+    /// What the server checks of the player's moves (hstudio_travel): None
+    /// where nothing does (a world of the client's own, the single-player
+    /// owner), and the player's moves go anywhere at once.
+    fn move_limits(&mut self) -> Option<MoveLimits> {
+        None
+    }
+    /// Whether the player's box (`min` to `max`, its feet's corner and its
+    /// head's) is clear of the blocks' collision shapes: None where the
+    /// world isn't loaded there. By default from `block`, a block that isn't
+    /// one of those the player walks through filling its cell.
+    fn box_clear(&mut self, min: [f64; 3], max: [f64; 3]) -> Option<bool> {
+        let cells = |lo: f64, hi: f64| lo.floor() as i32..=hi.floor() as i32;
+        let mut known = true;
+        for x in cells(min[0], max[0]) {
+            for y in cells(min[1], max[1]) {
+                for z in cells(min[2], max[2]) {
+                    match self.block(x, y, z) {
+                        Some(b) if !super::hstudio_travel::walk_through(&b) => return Some(false),
+                        Some(_) => {}
+                        None => known = false,
+                    }
+                }
+            }
+        }
+        known.then_some(true)
+    }
+    /// How long the server's packets are held back before the game takes
+    /// them, in seconds (Roblox's IncomingReplicationLag; 0 for none).
+    fn set_incoming_lag(&mut self, seconds: f64) {
+        let _ = seconds;
+    }
+    /// The player attacks the entity `id`, as a left click on it would
+    /// (the server decides whether it is in reach). Whether it was sent.
+    fn attack_entity(&mut self, id: u32) -> bool {
+        let _ = id;
+        false
+    }
     /// Sets the player's velocity, in blocks a tick (its fall cut short).
     fn set_player_velocity(&mut self, v: [f64; 3]) -> bool {
         let _ = v;
@@ -921,6 +958,17 @@ pub struct PlayerPose {
     pub camera: String,
 }
 
+/// What the server checks of the player's moves (vanilla's and Paper's
+/// handleMovePlayer): how far one move packet may take them, and whether a
+/// move through blocks is refused (no longer for creative or spectators);
+/// while they ride, their own moves don't move them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MoveLimits {
+    pub per_tick: f64,
+    pub collide: bool,
+    pub riding: bool,
+}
+
 /// An entity near the player, as the game has it this frame: another
 /// player, a mob, a dropped item or an experience orb.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -953,6 +1001,10 @@ pub struct EntityInfo {
     pub baby: bool,
     /// A dropped item's id and count; "" and its value for an orb.
     pub item: Option<(String, u32)>,
+    /// What another player or a mob holds and wears, as the server says
+    /// (SetEquipment): each slot ("MainHand", "OffHand", "Head", "Chest",
+    /// "Legs", "Feet") with something in it, its item id and count.
+    pub equipment: Vec<(String, String, u32)>,
 }
 
 /// A player in the server's player list.
@@ -1468,6 +1520,9 @@ pub struct State {
     queued_keys: Vec<(String, bool)>,
     queued_commands: Vec<String>,
     queued_chat: Vec<String>,
+    /// Players' signed messages (their UUID, what they wrote, the line),
+    /// for the Roblox layer ahead of their lines.
+    queued_said: Vec<(u128, String, String)>,
     /// Events mods sent (`emit`), for their handlers next frame.
     queued_events: Vec<(String, Vec<Value>)>,
     /// What console functions asked for, done after their call.
@@ -1679,6 +1734,7 @@ impl Studio {
                 queued_keys: Vec::new(),
                 queued_commands: Vec::new(),
                 queued_chat: Vec::new(),
+                queued_said: Vec::new(),
                 queued_events: Vec::new(),
                 requests: Vec::new(),
                 screen: None,
@@ -3294,6 +3350,9 @@ impl Studio {
         for (name, args) in std::mem::take(&mut self.s.queued_events) {
             self.dispatch(game, &name, &args, Phase::Normal);
         }
+        for (uuid, text, line) in std::mem::take(&mut self.s.queued_said) {
+            super::hstudio_rbx_client::said_by(&mut self.s.rbx, game, uuid, &text, &line);
+        }
         for line in std::mem::take(&mut self.s.queued_chat) {
             self.dispatch(game, "chat", &[Value::str(&line)], Phase::Normal);
             super::hstudio_rbx_client::chat_line(&mut self.s.rbx, game, &line);
@@ -3404,8 +3463,11 @@ impl Studio {
         self.s.rbx_screen = None;
         self.s.thread_errors.clear();
         self.s.queued_events.clear();
+        self.s.queued_said.clear();
         self.s.overlay.clear();
-        // 2. What they asked of the game, undone.
+        // 2. What they asked of the game, undone. (The moves under way,
+        // hstudio_travel, and the other players' seen tools, hstudio_rbx_gear,
+        // are the old DataModel's world's, and go with it below.)
         super::hstudio_rbx_body::session_end(&mut self.s.rbx, game);
         super::hstudio_rbx_world::session_end(&mut self.s.rbx, game);
         let carried = super::hstudio_rbx_client::session_end(&mut self.s.rbx, game);
@@ -3528,8 +3590,13 @@ impl Studio {
         // character: a teleport, the speeds a script gave the Humanoid, the
         // character's parts passing through blocks, and what moves the root
         // part (a BodyVelocity, a LinearVelocity, a BodyPosition).
-        if let Some(feet) = super::hstudio_rbx_world::take_teleport(rbx) {
-            game.move_player(feet);
+        // A long way goes in steps the server takes (hstudio_travel).
+        if let Some([x, y, z]) = super::hstudio_rbx_world::take_teleport(rbx) {
+            let to = super::hstudio_rbx_types::Vector3::new(x, y, z);
+            super::hstudio_travel::want(&mut rbx.world.travel, self.s.now, to);
+        }
+        if let Some(w) = super::hstudio_travel::step(&mut rbx.world.travel, game, self.s.now) {
+            rbx.warnings.push(w);
         }
         // The speeds (held back while the Humanoid sits or lies), a jump, a
         // push, a platform, and how the player's own model looks.
@@ -3567,9 +3634,19 @@ impl Studio {
             game.turn_player(dyaw, dpitch);
         }
         if let Some(v) = super::hstudio_rbx_world::mover_velocity(rbx) {
-            // Studs a second are blocks a second here; the game counts ticks.
-            game.set_player_velocity([v.x / 20.0, v.y / 20.0, v.z / 20.0]);
+            // Studs a second are blocks a second here; the game counts ticks,
+            // at most as far a tick as the server takes.
+            let v = v * (1.0 / 20.0);
+            let most = game.move_limits().map_or(f64::INFINITY, |l| l.per_tick);
+            let v = if v.magnitude() > most {
+                v * (most / v.magnitude())
+            } else {
+                v
+            };
+            game.set_player_velocity([v.x, v.y, v.z]);
         }
+        // What the Handle of the Tool held touched (handlekill).
+        super::hstudio_rbx_gear::attack(rbx, game);
         for cmd in std::mem::take(&mut rbx.agent) {
             let _ = game.agent(&cmd);
         }
@@ -3828,6 +3905,15 @@ impl Studio {
     pub fn chat_line(&mut self, line: &str) {
         if self.s.queued_chat.len() < 64 {
             self.s.queued_chat.push(line.to_owned());
+        }
+    }
+
+    /// A player's signed chat message as the server sent it: who sent it
+    /// (their UUID), what they wrote, and the chat line it makes (which
+    /// comes to `chat_line` too). The Roblox layer's message is theirs.
+    pub fn player_chat(&mut self, uuid: u128, text: &str, line: &str) {
+        if self.s.queued_said.len() < 64 {
+            self.s.queued_said.push((uuid, text.to_owned(), line.to_owned()));
         }
     }
 

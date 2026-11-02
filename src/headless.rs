@@ -1051,6 +1051,24 @@ fn entity_of(i: usize, e: &Json) -> EntityInfo {
         baby: e.get("baby").and_then(Json::as_bool).unwrap_or(false),
         item,
         kind,
+        // {"MainHand": "minecraft:diamond_sword", "OffHand": ["minecraft:torch", 16]}
+        equipment: e
+            .get("equipment")
+            .and_then(Json::as_object)
+            .map(|slots| {
+                slots
+                    .iter()
+                    .filter_map(|(slot, v)| {
+                        let (item, count) = match v {
+                            Json::String(s) => (s.clone(), 1),
+                            Json::Array(a) => (a.first()?.as_str()?.to_owned(), a.get(1)?.as_u64()? as u32),
+                            _ => return None,
+                        };
+                        Some((slot.clone(), item, count))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }
 

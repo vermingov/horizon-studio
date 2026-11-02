@@ -627,7 +627,30 @@ fn mob_info(m: &horizon_client::mobs::Mob, name: Option<&str>, alpha: f64) -> En
         on_ground: m.on_ground,
         baby: m.is_baby(),
         item: None,
+        equipment: equipment(m),
     }
+}
+
+/// What a mob or another player holds and wears, as the server sent it
+/// (SetEquipment): the hands, then the armour, head to feet.
+fn equipment(m: &horizon_client::mobs::Mob) -> Vec<(String, String, u32)> {
+    let e = &m.extra;
+    let count = |s: &Option<horizon_client::items::ItemStack>| s.as_ref().map_or(1, |s| s.count.max(1));
+    let mut out = Vec::new();
+    if let Some(item) = &e.main_hand {
+        let n = e.main_hand_stack().map_or(1, |s| s.count.max(1));
+        out.push(("MainHand".to_owned(), item.to_string(), n));
+    }
+    if let Some(item) = &e.off_hand {
+        out.push(("OffHand".to_owned(), item.to_string(), 1));
+    }
+    let worn = [("Head", &e.head), ("Chest", &e.chest), ("Legs", &e.legs), ("Feet", &e.feet)];
+    for (i, (slot, item)) in worn.into_iter().enumerate() {
+        if let Some(item) = item {
+            out.push((slot.to_owned(), item.to_string(), count(&e.armor[i])));
+        }
+    }
+    out
 }
 
 /// What the studio is told of a dropped item.
@@ -1614,6 +1637,53 @@ impl GameApi for Host<'_, '_> {
         p.velocity = horizon_core::geometry::Vec3::new(0.0, 0.0, 0.0);
         p.fall_distance = 0.0;
         g.previous_position = at;
+        true
+    }
+    fn move_limits(&mut self) -> Option<super::hstudio::MoveLimits> {
+        let g = self.g();
+        // A server's (not the single-player one's own player, never checked).
+        if g.remote.is_none() || g.integrated.is_some() {
+            return None;
+        }
+        let p = g.player.as_ref()?;
+        let gliding = matches!(p.pose, horizon_client::pose::Pose::FallFlying);
+        let spectator = g.mode == horizon_client::command::args::GameMode::Spectator;
+        Some(super::hstudio::MoveLimits {
+            per_tick: if gliding { MOVE_GLIDING } else { MOVE_WALKING },
+            collide: !g.creative && !spectator,
+            riding: g.riding.is_some(),
+        })
+    }
+    fn box_clear(&mut self, min: [f64; 3], max: [f64; 3]) -> Option<bool> {
+        let g = self.g();
+        let corners = [(min[0], min[2]), (min[0], max[2]), (max[0], min[2]), (max[0], max[2])];
+        if !corners.iter().all(|&(x, z)| g.world.loaded(x.floor() as i32, z.floor() as i32)) {
+            return None;
+        }
+        let v = |a: [f64; 3]| horizon_core::geometry::Vec3::new(a[0], a[1], a[2]);
+        let mut scene = horizon_client::collisions::SceneCollisions {
+            world: &g.world,
+            binding: g.collision,
+            subject: None,
+        };
+        scene.unobstructed(horizon_core::geometry::Aabb::new(v(min), v(max))).ok()
+    }
+    fn set_incoming_lag(&mut self, seconds: f64) {
+        super::hstudio_lag::set(seconds);
+    }
+    fn attack_entity(&mut self, id: u32) -> bool {
+        use horizon_protocol::packets::play::{Attack, Serverbound};
+        let Some(g) = self.g_mut() else { return false };
+        if g.remote.is_none() || g.player.is_none() || g.spectator() {
+            return false;
+        }
+        // As a left click on it: the packet, the swing, the cooldown.
+        g.send(Serverbound::Attack(Attack { id: id as i32 }));
+        g.swing_hand(
+            horizon_client::first_person::Hand::Main,
+            horizon_client::first_person::SwingAnimation::DEFAULT,
+        );
+        g.reset_attack_strength();
         true
     }
     fn set_player_velocity(&mut self, v: [f64; 3]) -> bool {
@@ -2605,6 +2675,24 @@ fn chat_commands_off(game: &mut Game<'_>) {
     });
 }
 
+/// How far one move packet may take the player for the server's
+/// moved-too-quickly check (handleMovePlayer: sqrt(100 n) blocks from where
+/// the server's tick began for n packets, 300 for an elytra's glide; Paper's
+/// 10 n): four of the client's packets in one of the server's ticks (a
+/// lagging server, the network bunching them) still pass.
+const MOVE_WALKING: f64 = 4.9;
+const MOVE_GLIDING: f64 = 8.4;
+
+/// A player's signed chat message (the chat-signed hook): who sent it and
+/// what they wrote, for the Roblox layer, ahead of its line.
+pub(super) fn player_chat(game: &Game<'_>, sender: u128, content: &str, line: &horizon_client::text::Text) {
+    if !game.native_window() {
+        return;
+    }
+    let line = line.plain();
+    with(|st| st.player_chat(sender, content, &line));
+}
+
 /// A chat line from the server, for the scripts' `chat` handlers.
 pub(super) fn chat_line(game: &Game<'_>, text: &horizon_client::text::Text, source: &horizon_client::chat::ChatSource) {
     if !game.native_window() || *source == horizon_client::chat::ChatSource::Client {
@@ -3124,6 +3212,9 @@ pub(super) fn player_list_hidden(game: &Game<'_>) -> bool {
 /// (its blocks set and entities hidden by scripts, the attribute modifiers
 /// of a player the game makes again).
 pub(super) fn session_end(g: &mut Game<'_>) {
+    // IncomingReplicationLag: none; what is held is the connection's to
+    // flush (lag-in), or to drop with it.
+    super::hstudio_lag::set(0.0);
     end_body();
     end_view(g);
     end_input(g);

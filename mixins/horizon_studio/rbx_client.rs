@@ -86,7 +86,20 @@ pub struct Client {
     lights: Vec<Id>,
     lights_at: f64,
     lit: Vec<([f64; 3], u32, f32, f32)>,
+    /// The chat lines a player's signed message came as, whose sender the
+    /// server named (`said_by`): the line itself then says nothing more.
+    said: std::collections::VecDeque<String>,
+    /// NetworkSettings.IncomingReplicationLag as scripts set it, and as the
+    /// game was last told it.
+    lag: f64,
+    lag_told: f64,
 }
+
+/// The most lines kept waiting for their chat line (Chat Delay holds them).
+const KEPT_SAID: usize = 64;
+/// The longest the server's packets are held back: past it, the server's
+/// keep-alives would time the player out.
+pub const MAX_LAG: f64 = 10.0;
 
 /// How often the Workspace is looked through for lights.
 pub const LIGHTS_EVERY: f64 = 0.5;
@@ -159,6 +172,10 @@ pub fn frame(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64) {
         rbx.client.actions.push(ClientAction::Rejoin);
     }
     bubbles_lapse(rbx, now);
+    if rbx.client.lag != rbx.client.lag_told {
+        rbx.client.lag_told = rbx.client.lag;
+        game.set_incoming_lag(rbx.client.lag);
+    }
     hud(rbx);
     listen(rbx);
     lights(rbx, game, now);
@@ -238,6 +255,12 @@ pub fn session_end(rbx: &mut Rbx, game: &mut dyn GameApi) -> Carried {
     for a in undo {
         let _ = game.client_do(a);
     }
+    // IncomingReplicationLag (backtrack) ends with the session: what is held
+    // goes to the game, or with the connection gone, nowhere (hstudio_lag).
+    if c.lag_told != 0.0 {
+        game.set_incoming_lag(0.0);
+    }
+    c.said.clear();
     Carried {
         queued: std::mem::take(&mut c.queued),
         teleport_data: plain(&std::mem::take(&mut c.teleport_data), 0),
@@ -331,36 +354,101 @@ fn bare(word: &str) -> &str {
     word.trim_matches(|c: char| !(c.is_alphanumeric() || c == '_'))
 }
 
+/// The separators servers put between a speaker and their message.
+const SEPARATORS: [&str; 10] = [
+    ": ",
+    " \u{bb} ",
+    " > ",
+    " >> ",
+    " \u{2192} ",
+    " | ",
+    " \u{27a4} ",
+    " \u{279c} ",
+    " \u{2503} ",
+    " \u{22d9} ",
+];
+/// How many words after the speaker's name a server may put before the
+/// separator (a suffix: "[VIP]", a level, a mark), and how far into the
+/// line the separator may be.
+const SUFFIX_WORDS: usize = 2;
+const HEAD_CHARS: usize = 96;
+
 /// Who said what in a chat line, if a player did: vanilla's "<Name> text",
-/// its whispers ("Name whispers to you: text"), and the servers' own forms
-/// ("[Rank] Name: text", "Name » text", "Name > text"). `names` are the
-/// players on the server; the name must be one of them. The third value
-/// says it was whispered.
+/// its whispers ("Name whispers to you: text", "You whisper to Name:
+/// text"), Essentials' ("[Name -> me] text") and Hypixel's ("From [MVP+]
+/// Name: text", "To Name: text"), and the servers' own forms, a rank, a
+/// channel or a server before the name and a suffix after it ("[Admin]
+/// Name: text", "Guild > [MVP+] Name [GM]: text", "[survival] Name \u{bb}
+/// text", "Name [VIP] > text"). `names` are the players on the server, the
+/// player playing first; the speaker must be one of them. The third value
+/// says it was whispered (the player's own whispers are theirs).
 pub fn parse_chat(line: &str, names: &[String]) -> Option<(String, String, bool)> {
     let line = unformatted(line);
     let line = line.trim();
     let known = |w: &str| names.iter().find(|n| n.eq_ignore_ascii_case(bare(w))).cloned();
+    // The speaker among the last words before a separator.
+    let speaker = |head: &str| head.split_whitespace().rev().take(SUFFIX_WORDS + 1).find_map(known);
+    let me = names.first().cloned();
     if let Some(rest) = line.strip_prefix('<')
         && let Some((inside, text)) = rest.split_once('>')
-        && let Some(name) = inside.split_whitespace().last().and_then(known)
+        && let Some(name) = speaker(inside)
     {
         return Some((name, text.trim().to_owned(), false));
     }
     if let Some((who, text)) = line.split_once(" whispers to you: ")
-        && let Some(name) = who.split_whitespace().last().and_then(known)
+        && let Some(name) = speaker(who)
     {
         return Some((name, text.trim().to_owned(), true));
     }
-    let mut best: Option<(usize, String, String)> = None;
-    for sep in [": ", " \u{bb} ", " > ", " >> ", " \u{2192} ", " | "] {
-        let Some(at) = line.find(sep) else { continue };
-        if at > 64 || best.as_ref().is_some_and(|b| b.0 <= at) {
-            continue;
+    if let Some(rest) = line.strip_prefix("You whisper to ")
+        && let Some((_, text)) = rest.split_once(": ")
+    {
+        return me.map(|me| (me, text.trim().to_owned(), true));
+    }
+    // Essentials' private messages: "[Name -> me] text", "[me -> Name] text".
+    if let Some(rest) = line.strip_prefix('[')
+        && let Some((inside, text)) = rest.split_once("] ")
+        && let Some((from, to)) = inside.split_once(" -> ").or_else(|| inside.split_once(" \u{2192} "))
+    {
+        let text = text.trim().to_owned();
+        if from.trim().eq_ignore_ascii_case("me") {
+            return me.map(|me| (me, text, true));
         }
-        let Some(name) = line[..at].split_whitespace().last().and_then(known) else {
-            continue;
-        };
-        best = Some((at, name, line[at + sep.len()..].trim().to_owned()));
+        if to.trim().eq_ignore_ascii_case("me")
+            && let Some(name) = speaker(from)
+        {
+            return Some((name, text, true));
+        }
+    }
+    // Hypixel's: "From [MVP+] Name: text", "To [VIP] Name: text".
+    for (lead, mine) in [("From ", false), ("To ", true)] {
+        if let Some(rest) = line.strip_prefix(lead)
+            && let Some((who, text)) = rest.split_once(": ")
+            && let Some(name) = speaker(who)
+        {
+            let text = text.trim().to_owned();
+            return if mine {
+                me.map(|me| (me, text, true))
+            } else {
+                Some((name, text, true))
+            };
+        }
+    }
+    // The first separator with a player's name just before it.
+    let mut best: Option<(usize, String, String)> = None;
+    for sep in SEPARATORS {
+        let mut from = 0;
+        while let Some(found) = line[from..].find(sep) {
+            let at = from + found;
+            from = at + sep.len();
+            if at > HEAD_CHARS || best.as_ref().is_some_and(|b| b.0 <= at) {
+                break;
+            }
+            if let Some(name) = speaker(&line[..at]) {
+                best = Some((at, name, line[at + sep.len()..].trim().to_owned()));
+                break;
+            }
+        }
     }
     best.map(|(_, name, text)| (name, text, false))
 }
@@ -374,13 +462,11 @@ pub fn chat_line(rbx: &mut Rbx, game: &mut dyn GameApi, line: &str) {
         return;
     }
     // The Players by name: the LocalPlayer, and the others the layer has.
-    let mut players: Vec<(Id, String)> = super::hstudio_rbx_world::players_of(rbx)
-        .into_iter()
-        .filter_map(|p| rbx.try_inst(p).map(|i| (p, i.name.clone())))
-        .collect();
-    if let Some(me) = game.player().filter(|p| !p.name.is_empty()) {
-        players[0].1 = me.name;
+    if let Some(i) = rbx.client.said.iter().position(|l| l == line) {
+        rbx.client.said.remove(i);
+        return;
     }
+    let players = speakers(rbx, game);
     let names: Vec<String> = players.iter().map(|p| p.1.clone()).collect();
     let Some((name, text, whispered)) = parse_chat(line, &names) else {
         return;
@@ -389,6 +475,60 @@ pub fn chat_line(rbx: &mut Rbx, game: &mut dyn GameApi, line: &str) {
         return;
     };
     message(rbx, player, &text, whispered);
+}
+
+/// The Players by the names chat lines may call them: the LocalPlayer
+/// first, then the others the layer has; then their display names (a
+/// nickname the server shows), where that is one word of its own.
+fn speakers(rbx: &Rbx, game: &mut dyn GameApi) -> Vec<(Id, String)> {
+    let mut players: Vec<(Id, String)> = super::hstudio_rbx_world::players_of(rbx)
+        .into_iter()
+        .filter_map(|p| rbx.try_inst(p).map(|i| (p, i.name.clone())))
+        .collect();
+    if let Some(me) = game.player().filter(|p| !p.name.is_empty()) {
+        players[0].1 = me.name;
+    }
+    let mut aliases = Vec::new();
+    for &(p, ref name) in &players {
+        let shown = rbx.raw_get(p, "DisplayName").as_text().unwrap_or_default();
+        let shown = bare(shown.trim());
+        if shown.chars().count() >= 3
+            && !shown.contains(char::is_whitespace)
+            && !shown.eq_ignore_ascii_case(name)
+            && !players.iter().any(|q| q.1.eq_ignore_ascii_case(shown))
+        {
+            aliases.push((p, shown.to_owned()));
+        }
+    }
+    players.extend(aliases);
+    players
+}
+
+/// A player's message whose sender the server named (a signed chat
+/// message: their UUID, and what they wrote): it is theirs, whatever the
+/// server's line makes of it (`line`, which `chat_line` then passes over).
+/// A sender the layer has no Player for is left to the line.
+pub fn said_by(rbx: &mut Rbx, game: &mut dyn GameApi, uuid: u128, text: &str, line: &str) {
+    if !rbx.active || text.trim().is_empty() {
+        return;
+    }
+    let me = rbx.world.uuid == uuid || game.player().is_some_and(|p| p.uuid == uuid && uuid != 0);
+    let player = if me {
+        Some(rbx.local_player)
+    } else {
+        rbx.world.others.iter().find(|o| o.uuid == uuid).map(|o| o.player)
+    };
+    let Some(player) = player else {
+        return;
+    };
+    // A whisper's line says so (vanilla's msg_command_incoming).
+    let names: Vec<String> = speakers(rbx, game).into_iter().map(|p| p.1).collect();
+    let whispered = parse_chat(line, &names).is_some_and(|(_, _, w)| w);
+    message(rbx, player, text.trim(), whispered);
+    rbx.client.said.push_back(line.to_owned());
+    if rbx.client.said.len() > KEPT_SAID {
+        rbx.client.said.pop_front();
+    }
 }
 
 fn message(rbx: &mut Rbx, player: Id, text: &str, whispered: bool) {
@@ -559,6 +699,12 @@ pub fn extra_set(rbx: &mut Rbx, id: Id, key: &str) {
     let class = inst.class.name;
     let v = inst.extra.get(key).cloned().unwrap_or_default();
     match (class, key) {
+        // Infinite Yield's replicationlag (backtrack): the server's packets
+        // reach the game that much later (at most MAX_LAG).
+        ("NetworkSettings", "IncomingReplicationLag") => {
+            let secs = v.to_num().filter(|s| s.is_finite()).unwrap_or(0.0);
+            rbx.client.lag = secs.clamp(0.0, MAX_LAG);
+        }
         ("BubbleChatConfiguration", "Enabled") | ("Chat", "BubbleChatEnabled") => {
             rbx.client.bubbles = v.truthy();
             if !rbx.client.bubbles {

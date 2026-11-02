@@ -2358,6 +2358,7 @@ impl Ctx<'_> {
                     _ => return Err(bad_arg(lua, 2, fname, "boolean or number expected")),
                 };
                 let rbx = &mut self.s.rbx;
+                super::hstudio_rbx_gear::touched(rbx, a, b, touch);
                 let ev = if touch { "Touched" } else { "TouchEnded" };
                 let (av, bv) = (rbx.value(a), rbx.value(b));
                 rbx.fire(b, ev, vec![av]);

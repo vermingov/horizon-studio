@@ -62,6 +62,8 @@ pub mod game {
     pub mod hstudio_rbx_draw;
     #[path = "../../mixins/horizon_studio/rbx_file.rs"]
     pub mod hstudio_rbx_file;
+    #[path = "../../mixins/horizon_studio/rbx_gear.rs"]
+    pub mod hstudio_rbx_gear;
     #[path = "../../mixins/horizon_studio/rbx_handles.rs"]
     pub mod hstudio_rbx_handles;
     #[path = "../../mixins/horizon_studio/rbx_image.rs"]
@@ -92,6 +94,8 @@ pub mod game {
     pub mod hstudio_sunc;
     #[path = "../../mixins/horizon_studio/theme.rs"]
     pub mod hstudio_theme;
+    #[path = "../../mixins/horizon_studio/travel.rs"]
+    pub mod hstudio_travel;
     #[path = "../../mixins/horizon_studio/ui.rs"]
     pub mod hstudio_ui;
     #[path = "../../mixins/horizon_studio/via_picker.rs"]

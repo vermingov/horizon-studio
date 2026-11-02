@@ -875,7 +875,8 @@ end)
   (`game.LocalPlayer` is Horizon's own shortcut for it). Its Character is an R6 rig that follows you (a stud is a
   block), whose Humanoid has your health, the game's WalkSpeed and JumpPower, how you move and your state (Running,
   Jumping, Freefall, Swimming...); dying and coming back gives you a new Character. Moving its HumanoidRootPart (its
-  CFrame, `PivotTo`, a tween) teleports you with `/tp`, and `Humanoid:MoveTo` walks you there (MoveToFinished
+  CFrame, `PivotTo`, a tween) moves you there, on a server in steps it takes (4.9 blocks a tick, over or round the
+  blocks in the way), so a tween or a long `goto` isn't sent back; `Humanoid:MoveTo` walks you there (MoveToFinished
   fires). `workspace.CurrentCamera` follows the camera (`WorldToViewportPoint`), Parts in the Workspace are drawn in
   the world, and `workspace:Raycast` goes through the world's blocks and the parts.
 - **The character's doings** reach the game, client-side (only your client sees your model's changes; the server
@@ -900,7 +901,8 @@ end)
   Part, each with `EntityId` and `EntityType` attributes, following the game each frame, with ChildAdded,
   Destroying, HealthChanged and Died as they come, go and get hurt. The other players on the server are in Players
   (PlayerAdded, PlayerRemoving), their Characters R6 rigs while they are near (CharacterAdded), and every character
-  has R6's Torso, arms and legs. Raycasts, `FindPartOnRay`, the Mouse's Target and `GetPartBoundsInRadius` and the
+  has R6's Torso, arms and legs; what they hold is a Tool in their Character, what they wear Accessories, and their
+  Backpack the items they were seen holding. Raycasts, `FindPartOnRay`, the Mouse's Target and `GetPartBoundsInRadius` and the
   other bounds queries find them, a mob's Head on its own, and `workspace.Terrain` reads the map (`GetBlock`,
   `ReadVoxels` with a `Region3`). A UI script that never looks costs the game nothing.
 - **Services:** Players, RunService (Heartbeat, RenderStepped, Stepped, BindToRenderStep), UserInputService,
@@ -1097,6 +1099,9 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `rbx_image.rs` (`hstudio_rbx_image`) | Roblox's images: `rbxasset://` files from the Client Tracker's mirror, thumbnails fetched, and a thumbnail's original size (its resampling's trace, and the crops and slices scripts make) so sprite sheets cut where scripts mean |
 | `rbx_world.rs` (`hstudio_rbx_world`) | The Roblox layer's world: the LocalPlayer and its character following the player, teleports, `Humanoid:MoveTo`, the entities and other players mirrored once a script looks |
 | `rbx_file.rs`, `rbx_objects.rs` (`hstudio_rbx_file`, `hstudio_rbx_objects`) | Roblox model and place files (binary and XML) read into a tree, and `game:GetObjects`: where a model comes from (a web address, the workspace, a Roblox asset kept in `.roblox-assets`) and its items as the Lua that makes them Instances |
+| `travel.rs` (`hstudio_travel`) | The player's moves scripts make, in steps a server takes: as far a tick as its moved-too-quickly check lets, round the blocks in the way, dipping on a long way through the air |
+| `rbx_gear.rs` (`hstudio_rbx_gear`) | The other players' held item as a Tool in their Character, their armour as Accessories, their Backpack what they were seen holding; a held Tool's touch attacking |
+| `lag.rs` (`hstudio_lag`) | IncomingReplicationLag: the server's packets held back that long |
 | `rbx_remote.rs` (`hstudio_rbx_remote`) | The game's packets as remotes (ReplicatedStorage.Minecraft): fields to Lua and back, the game's packets through `__namecall` hooks, FireServer, OnClientEvent, a packet's `Debug` form read as fields |
 | `rbx_query.rs` (`hstudio_rbx_query`) | What scripts ask of the world: raycasts through its blocks and parts, the Mouse's target, the bounds queries, Terrain's reads |
 | `exec.rs` (`hstudio_exec`) | The executor (sUNC) functions that need only the interpreter: hooks, newcclosure, debug, metatables, encoding, getgc |
@@ -1146,6 +1151,8 @@ particle, Video Settings, merge, pickup and swim hooks can answer in their funct
 | overlay | `game::remote::remote_hud` | the studio's screen and the scripts' screens, drawn last |
 | world | `game::end::end_geometry` | each frame in a world, with its camera: `draw.*` shapes go into the entity geometry, depth tested |
 | chat | `game::remote::signed_chat_line` | `on("chat")`: the server's lines and the players' |
+| chat-signed | `game::remote::chat_trust` | a player's signed message: its sender's UUID and what they wrote, for the Roblox layer's chat |
+| lag-in | `game::remote::poll_remote` | the connection's events held back while a script sets IncomingReplicationLag |
 | suggest | `game::remote::send_suggestion_request` | the chat's completion request: one for a script's command stays in the game and the studio answers it at the frame; any other is sent as before |
 | via-address | `horizon_protocol::servers::parse_address` | on the threads that join and ping servers, an address ViaHorizon routes parses as ViaProxy's internal host (the server and version, for ViaProxy to read from the handshake) |
 | via-resolve | `horizon_protocol::resolver::resolve` | a join to a routed host connects to the local ViaProxy and keeps that host in the login handshake (vanilla, and Horizon since 4aa6854, send the redirect target's), so ViaProxy knows the server and version |
@@ -1174,7 +1181,7 @@ particle, Video Settings, merge, pickup and swim hooks can answer in their funct
 | voice-frame, voice-key, voice-chat | `native_frame`, `native_key`, `game::remote::Game::chat_line` | the voice chat's frame (the places, its payloads out), its keys, the server's "incompatible version" line |
 | hud, key, command, zoom, list, settings, click | Horizon's [native hook points](https://github.com/horizon-rust/horizon/blob/main/crates/horizon-client/src/game/native_hooks.rs) | the HUD, keys, commands, `view.zoom`, the Options → Mods row and page |
 
-The first six, ViaHorizon's and Natrium's go beyond the stable hook points, so the bundle pins one Horizon commit (a Nightly's,
+The first eight, ViaHorizon's and Natrium's go beyond the stable hook points, so the bundle pins one Horizon commit (a Nightly's,
 `compatibility.json`): the launcher builds it on that commit. Their bodies are free of macros but the standard ones
 the launcher's horizon-mixins (`a2af5c0`) keeps under a HEAD hook (`signed_chat_line`'s `matches!`). The studio opens over the game's chat screen, which frees
 the pointer and keeps the world running while it takes the keyboard.

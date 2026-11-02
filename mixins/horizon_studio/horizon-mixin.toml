@@ -124,6 +124,12 @@ name = "hstudio_rbx_body"
 source = "rbx_body.rs"
 
 [[module]]
+id = "rbx_gear"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_gear"
+source = "rbx_gear.rs"
+
+[[module]]
 id = "rbx_client"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_rbx_client"
@@ -226,6 +232,12 @@ name = "hstudio_theme"
 source = "theme.rs"
 
 [[module]]
+id = "travel"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_travel"
+source = "travel.rs"
+
+[[module]]
 id = "skins"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_skins"
@@ -305,6 +317,13 @@ source = "bridge.rs"
 
 # saveinstance's world downloader: the client's world saved with Horizon's
 # own save code (hstudio_bridge calls it each frame).
+# Roblox's IncomingReplicationLag in the game (lag-in's queue).
+[[module]]
+id = "lag"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_lag"
+source = "lag.rs"
+
 [[module]]
 id = "world-dump"
 file = "crates/horizon-client/src/game.rs"
@@ -428,6 +447,32 @@ bindings = [
   { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
   { name = "content", ty = "&horizon_client::text::Text", value = "&content" },
   { name = "source", ty = "&horizon_client::chat::ChatSource", value = "&source" },
+]
+
+# A player's signed chat message (PlayerChat): its sender's UUID and what
+# they wrote, so the Roblox layer's message is theirs whatever the line.
+[[injection]]
+id = "chat-signed"
+kind = "HEAD"
+target = "horizon_client::game::remote::Game<'_>::chat_trust"
+helper = "chat_signed.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "sender", ty = "u128", value = "sender" },
+  { name = "content", ty = "&str", value = "content" },
+  { name = "decorated", ty = "&horizon_client::text::Text", value = "decorated" },
+]
+
+# Roblox's IncomingReplicationLag (Infinite Yield's backtrack): the
+# connection's events held back that long (hstudio_lag) before poll_remote
+# takes them.
+[[injection]]
+id = "lag-in"
+kind = "HEAD"
+target = "horizon_client::game::remote::Game<'_>::poll_remote"
+helper = "lag_in.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
 ]
 
 # The chat's completion requests, as the game sends them to the server: one

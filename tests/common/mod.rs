@@ -3,8 +3,8 @@
 #![allow(dead_code)]
 
 use horizon_studio::game::hstudio::{
-    Body, Camera, CameraView, ClientAction, ClientInfo, Corner, EntityInfo, Font, GameApi, PlayerEntry, PlayerInfo,
-    PlayerPose, Reply, ServerInfo, Studio, ViaInfo, VoiceChange, VoiceInfo,
+    Body, Camera, CameraView, ClientAction, ClientInfo, Corner, EntityInfo, Font, GameApi, MoveLimits, PlayerEntry,
+    PlayerInfo, PlayerPose, Reply, ServerInfo, Studio, ViaInfo, VoiceChange, VoiceInfo,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -93,6 +93,11 @@ pub struct FakeGame {
     pub own_volume: Option<f32>,
     /// The scoreboard team of each player by name: its name and colour.
     pub teams: HashMap<String, (String, Option<u32>)>,
+    /// What the server checks of the player's moves (None: nothing, as in
+    /// a world of the client's own), and how long the server's packets are
+    /// held back (`set_incoming_lag`).
+    pub move_limits: Option<MoveLimits>,
+    pub incoming_lag: f64,
 }
 
 /// The fake game's play packets by id (a few of the game's).
@@ -221,6 +226,8 @@ impl FakeGame {
             away: None,
             own_volume: None,
             teams: HashMap::new(),
+            move_limits: None,
+            incoming_lag: 0.0,
         }
     }
     /// The player leaves the server or world for the menus (the title
@@ -390,6 +397,16 @@ impl GameApi for FakeGame {
         if let Some(p) = self.player.as_mut() {
             (p.x, p.y, p.z) = (feet[0], feet[1], feet[2]);
         }
+        true
+    }
+    fn move_limits(&mut self) -> Option<MoveLimits> {
+        self.move_limits
+    }
+    fn set_incoming_lag(&mut self, seconds: f64) {
+        self.incoming_lag = seconds;
+    }
+    fn attack_entity(&mut self, id: u32) -> bool {
+        self.moves.push(format!("attack {id}"));
         true
     }
     fn set_player_velocity(&mut self, v: [f64; 3]) -> bool {

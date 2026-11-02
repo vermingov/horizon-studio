@@ -168,6 +168,11 @@ pub struct World {
     /// destroyed) and where an entity's feet go (a mirror's root part moved).
     pub ghosts: Vec<(i32, i32, i32)>,
     pub entity_moves: Vec<(u32, [f64; 3])>,
+    /// The player's moves under way to where scripts moved the root part,
+    /// kept to what the server takes (hstudio_travel).
+    pub travel: super::hstudio_travel::Travel,
+    /// The other players' tools and armour (hstudio_rbx_gear).
+    pub gear: super::hstudio_rbx_gear::Gears,
 }
 
 impl Default for World {
@@ -212,6 +217,8 @@ impl Default for World {
             frozen: false,
             ghosts: Vec::new(),
             entity_moves: Vec::new(),
+            travel: Default::default(),
+            gear: Default::default(),
         }
     }
 }
@@ -1199,8 +1206,10 @@ fn sync_world(rbx: &mut Rbx, game: &mut dyn GameApi, p: Option<&PlayerInfo>, loo
         rbx.world.dimension = p.dimension.clone();
     }
     sync_players(rbx, game, looking);
-    sync_entities(rbx, game);
+    let list = sync_entities(rbx, game);
     link_characters(rbx);
+    super::hstudio_rbx_gear::sync(rbx, &list);
+    super::hstudio_rbx_gear::place(rbx);
 }
 
 /// Every mirror goes, in the order of their entities' ids; and with
@@ -1222,8 +1231,8 @@ fn clear(rbx: &mut Rbx, players: bool) {
 /// The entities as the game lists them now: a mirror for each one chosen
 /// (`choose`), made for those new, brought up to the game for the rest, and
 /// gone for those no longer chosen. An id that comes back as another type of
-/// entity gets a new mirror.
-fn sync_entities(rbx: &mut Rbx, game: &mut dyn GameApi) {
+/// entity gets a new mirror. The game's list, for the players' gear.
+fn sync_entities(rbx: &mut Rbx, game: &mut dyn GameApi) -> Vec<EntityInfo> {
     // A mirror something else destroyed (nothing should: they are locked) is
     // let go as it is, and its entity gets a new one.
     let insts = &rbx.insts;
@@ -1253,6 +1262,7 @@ fn sync_entities(rbx: &mut Rbx, game: &mut dyn GameApi) {
             None => build_mirror(rbx, e),
         }
     }
+    list
 }
 
 /// Which of the game's entities (the other players first, then the nearest)
@@ -2039,7 +2049,10 @@ pub fn root_moved(rbx: &mut Rbx) {
     let look = frame.look_vector();
     let bare = (look - Vector3::new(0.0, 0.0, -1.0)).magnitude() < 1e-9
         && (frame.up_vector() - Vector3::Y_AXIS).magnitude() < 1e-9;
-    if !bare && Vector3::new(look.x, 0.0, look.z).magnitude() > 0.1 {
+    // (A bare frame after one that turned them this frame is a turn too:
+    // `CFrame.new(at, target)` that happens to face -Z, as IY's scare's.)
+    let turns = !bare || rbx.world.effects.look.is_some();
+    if turns && Vector3::new(look.x, 0.0, look.z).magnitude() > 0.1 {
         let (yaw, _) = yaw_pitch(look);
         let turn = (yaw - rbx.world.yaw + 540.0).rem_euclid(360.0) - 180.0;
         if turn.abs() > 0.5 {
