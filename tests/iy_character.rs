@@ -434,13 +434,23 @@ fn reset_and_respawn_kill_the_character_without_moving_the_player() {
 }
 
 #[test]
-fn edgejump_breakvelocity_and_tpwalk_move_the_player() {
+fn edgejump_breakvelocity_tpwalk_and_cframefly_move_the_player() {
     let (mut game, mut st) = world(
         "iyc-velocity",
         r#"
-        -- edgejump: off an edge (not jumping), back where it was and up.
+        local RunService = game:GetService("RunService")
+        -- edgejump: off an edge (Freefall, not from Jumping), back where it was and up.
         command("edgejump", function()
-            root.Velocity = Vector3.new(root.Velocity.X, hum.JumpPower, root.Velocity.Z)
+            local state, laststate, lastcf
+            RunService.RenderStepped:Connect(function()
+                laststate = state
+                state = hum:GetState()
+                if laststate ~= state and state == Enum.HumanoidStateType.Freefall and laststate ~= Enum.HumanoidStateType.Jumping then
+                    root.CFrame = lastcf
+                    root.Velocity = Vector3.new(root.Velocity.X, hum.JumpPower, root.Velocity.Z)
+                end
+                lastcf = root.CFrame
+            end)
         end)
         command("breakvelocity", function()
             for _, v in ipairs(char:GetDescendants()) do
@@ -448,20 +458,55 @@ fn edgejump_breakvelocity_and_tpwalk_move_the_player() {
             end
         end)
         command("keep", function() root.Velocity = root.Velocity end)
-        command("tpwalk", function() char:TranslateBy(Vector3.new(1, 0, 0)) end)
+        -- tpwalk: the character goes the way the keys walk it, each frame.
+        local walking
+        command("tpwalk", function()
+            walking = RunService.Heartbeat:Connect(function(dt)
+                char:TranslateBy(hum.MoveDirection * 2 * dt * 10)
+            end)
+        end)
+        command("untpwalk", function() walking:Disconnect() end)
+        -- cframefly: the anchored head moved, the character with it.
+        command("cframefly", function()
+            hum.PlatformStand = true
+            char.Head.Anchored = true
+            char.Head.CFrame = char.Head.CFrame + Vector3.new(0, 3, 0)
+        end)
+        command("uncframefly", function() hum.PlatformStand = false char.Head.Anchored = false end)
         "#,
     );
-    // JumpPower is the game's jump in blocks a second: a jump's speed.
-    assert_eq!(step(&mut st, &mut game, "edgejump", 0.1), ["velocity 0.00 0.42 0.00"]);
+    step(&mut st, &mut game, "edgejump", 0.1);
+    // Off the edge: falling, not having jumped. JumpPower is the game's jump in
+    // blocks a second: a jump's speed.
+    game.pose = pose(false);
+    game.player.as_mut().unwrap().velocity = [0.0, -1.0, 0.0];
+    let m = step(&mut st, &mut game, "", 0.15);
+    assert_eq!(m, ["move 10.500 64.000 -3.250", "velocity 0.00 0.42 0.00"]);
+    game.pose = pose(true);
     game.player.as_mut().unwrap().velocity = [4.0, 0.0, 0.0];
-    run_for(&mut st, &mut game, 0.05);
+    run_for(&mut st, &mut game, 0.1);
     assert_eq!(
         step(&mut st, &mut game, "breakvelocity", 0.1),
         ["velocity 0.00 0.00 0.00"]
     );
     // Setting it to what it is changes nothing.
     assert!(step(&mut st, &mut game, "keep", 0.1).is_empty());
-    assert_eq!(step(&mut st, &mut game, "tpwalk", 0.1), ["move 11.500 64.000 -3.250"]);
+    // Standing still, tpwalk stays; W held (facing north) takes the player north.
+    game.player.as_mut().unwrap().velocity = [0.0; 3];
+    assert!(step(&mut st, &mut game, "tpwalk", 0.1).is_empty());
+    st.key("key.keyboard.w", true);
+    let m = step(&mut st, &mut game, "", 0.2);
+    st.key("key.keyboard.w", false);
+    assert!(
+        m.len() >= 2 && m.iter().all(|l| l.starts_with("move 10.500 64.000 -")),
+        "{m:?}"
+    );
+    assert!(game.player.as_ref().unwrap().z < -4.0);
+    step(&mut st, &mut game, "untpwalk", 0.1);
+    let z = game.player.as_ref().unwrap().z;
+    let m = step(&mut st, &mut game, "cframefly", 0.1);
+    assert_eq!(m, [format!("move 10.500 67.000 {z:.3}").as_str(), "speed 0.00 0.00"]);
+    assert_eq!(step(&mut st, &mut game, "uncframefly", 0.1), ["speed 1.00 1.00"]);
 }
 
 #[test]
@@ -536,13 +581,18 @@ fn god_and_the_commands_minecraft_has_no_match_for_leave_the_player_be() {
     let (mut game, mut st) = world(
         "iyc-none",
         r#"
+        -- Infinite Yield's god: the Humanoid swapped for a copy, the Character
+        -- left nil (its `char` is an unset global).
         command("god", function()
+            local player = game.Players.LocalPlayer
             local copy = hum:Clone()
             copy.Parent = char
+            player.Character = nil
             copy:SetStateEnabled(15, false)
             copy:SetStateEnabled(1, false)
             copy:SetStateEnabled(0, false)
             hum:Destroy()
+            player.Character = nil
             copy.Health = copy.MaxHealth
             print(char:FindFirstChildOfClass("Humanoid") == copy)
         end)
@@ -561,12 +611,14 @@ fn god_and_the_commands_minecraft_has_no_match_for_leave_the_player_be() {
             track:Play()
             track:AdjustSpeed(2)
             track:Stop()
-            -- toolinvisible: off to a box far above the world.
-            char:MoveTo(Vector3.new(0, 10000.5, 0))
         end)
+        -- toolinvisible: off to a box far above the world.
+        command("tinvis", function() char:MoveTo(Vector3.new(0, 10000.5, 0)) end)
         "#,
     );
-    step(&mut st, &mut game, "god", 0.2);
+    assert!(step(&mut st, &mut game, "tinvis", 0.2).is_empty());
+    // The character left nil, the player's model stays as it was.
+    assert!(step(&mut st, &mut game, "god", 0.2).is_empty());
     let m = step(&mut st, &mut game, "rest", 0.2);
     assert!(m.is_empty(), "{m:?}");
     assert_eq!(printed(&st), ["true"]);

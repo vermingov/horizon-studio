@@ -220,8 +220,8 @@ fn moving_the_root_part_moves_the_player_in_the_client() {
             m.PrimaryPart = p
             m:PivotTo(CFrame.new(50, 50, 50))
             p.CFrame = CFrame.new(1, 2, 3)
-            char.Head.CFrame = CFrame.new(1, 2, 3)
         end)
+        command("head", function() char.Head.CFrame = CFrame.new(1, 70, 3) end)
     "#;
     load(&mut game, &mut st, "tp", src, 0.7);
     // The feet go where the root part's centre is, less the 1.05 blocks it stands above them.
@@ -254,8 +254,9 @@ fn moving_the_root_part_moves_the_player_in_the_client() {
     run_for(&mut st, &mut game, 0.05);
     assert!(moved_by(&mut st, &mut game, "where").is_empty());
     assert_eq!(moved_by(&mut st, &mut game, "stay"), ["move 1.000 79.945 1.000"]);
-    // A script's own parts, and the head, move nothing.
+    // A script's own parts move nothing; the head moves the character, the eyes there.
     assert!(moved_by(&mut st, &mut game, "others").is_empty());
+    assert_eq!(moved_by(&mut st, &mut game, "head"), ["move 1.000 68.730 3.000"]);
     assert_eq!(printed(&st, "tp"), ["80.824"]);
     // No command, no chat line: the client moves its player itself.
     assert!(game.sent.is_empty(), "{:?}", game.sent);

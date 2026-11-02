@@ -69,6 +69,8 @@ pub struct Doings {
     /// The last FallenPartsDestroyHeight a script left a number (a script
     /// sets it to NaN while it moves the character below).
     pub destroy: f64,
+    /// The player's eyes above their feet this frame.
+    pub eyes: f64,
 }
 
 impl Default for Doings {
@@ -85,6 +87,7 @@ impl Default for Doings {
             scales_sent: None,
             sent: None,
             destroy: DESTROY,
+            eyes: 1.62,
         }
     }
 }
@@ -367,6 +370,38 @@ pub fn root_moved(rbx: &mut Rbx, to: CFrame, feet: Vector3) -> bool {
     true
 }
 
+/// A script moved the local Head (a cframe fly script flies it): the whole
+/// character goes with it, as Roblox moves a part's assembly (the Neck
+/// holds it to the torso), the player's eyes where the head is.
+pub fn head_moved(rbx: &mut Rbx) {
+    if rbx.head == rbx.spare_part {
+        return;
+    }
+    let Some(to) = as_cf(&rbx.raw_get(rbx.head, "CFrame")) else {
+        return;
+    };
+    let feet = to.position() - Vector3::new(0.0, rbx.world.body.eyes, 0.0);
+    if root_moved(rbx, CFrame::from_position(feet), feet) {
+        rbx.world.teleport = Some(feet);
+    }
+}
+
+/// The way the movement keys held walk the player (W, A, S and D, as the
+/// game's own are), flat and a unit long, as Roblox's MoveDirection is: None
+/// while none is held (or a TextBox takes the keys).
+pub fn input_direction(rbx: &Rbx, yaw: f32) -> Option<Vector3> {
+    let held = |k: &str| f64::from(u8::from(rbx.pointer.held.contains(k)));
+    let (ahead, right) = (held("W") - held("S"), held("D") - held("A"));
+    if (ahead == 0.0 && right == 0.0) || rbx.pointer.focus.is_some() {
+        return None;
+    }
+    let yaw = f64::from(yaw).to_radians();
+    let forward = Vector3::new(-yaw.sin(), 0.0, yaw.cos());
+    let to_right = Vector3::new(-yaw.cos(), 0.0, -yaw.sin());
+    let way = forward * ahead + to_right * right;
+    Some(way / way.magnitude())
+}
+
 // ---------------------------------------------------------------- each frame
 
 /// Each frame, before the state: the player's velocity as the root part
@@ -489,7 +524,11 @@ fn platform(rbx: &Rbx) -> Option<f64> {
 pub fn look(rbx: &Rbx) -> Body {
     let model = rbx.character;
     let mut body = Body::default();
-    let placed = model != rbx.spare_model && live(rbx, model) && rbx.is_descendant_of(model, rbx.workspace);
+    // With no Character (a god script leaves it nil), the old one stays as it was.
+    if model == rbx.spare_model {
+        return body;
+    }
+    let placed = live(rbx, model) && rbx.is_descendant_of(model, rbx.workspace);
     if !placed {
         body.gone = true;
         return body;

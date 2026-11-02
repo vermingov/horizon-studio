@@ -3619,6 +3619,7 @@ impl Rbx {
         match (class, prop) {
             ("Sound", "Playing") if self.raw_get(id, "Playing").truthy() => self.play_sound(id),
             (_, "CFrame") if id == self.root_part => super::hstudio_rbx_world::root_moved(self),
+            (_, "CFrame") if id == self.head => super::hstudio_rbx_body::head_moved(self),
             ("Humanoid", "WalkSpeed" | "JumpPower" | "JumpHeight") if id == self.humanoid => {
                 super::hstudio_rbx_world::speeds_set(self, prop)
             }

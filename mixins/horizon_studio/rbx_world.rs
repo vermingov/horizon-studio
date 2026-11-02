@@ -405,6 +405,7 @@ fn sync_local(rbx: &mut Rbx, p: &PlayerInfo, pose: Option<&PlayerPose>) {
     let flat = Vector3::new(-yaw.sin(), 0.0, yaw.cos());
     let look = Vector3::new(-yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos());
     let (height, eyes) = body(pose);
+    rbx.world.body.eyes = eyes;
     rbx.world.root_y = TORSO_Y * height / HEIGHT;
     let root = feet + Vector3::new(0.0, rbx.world.root_y, 0.0);
     let head = feet + Vector3::new(0.0, eyes, 0.0);
@@ -517,7 +518,9 @@ fn motion(rbx: &mut Rbx, p: &PlayerInfo) -> f64 {
     rbx.quiet_set(rp, "Velocity", v3(v));
     let flat = Vector3::new(v.x, 0.0, v.z);
     let speed = flat.magnitude();
-    let way = if speed >= WALKING { flat / speed } else { Vector3::ZERO };
+    // The way the movement keys walk, as Roblox's MoveDirection is; else the way they go.
+    let walking = if speed >= WALKING { flat / speed } else { Vector3::ZERO };
+    let way = super::hstudio_rbx_body::input_direction(rbx, p.yaw).unwrap_or(walking);
     let hum = rbx.humanoid;
     rbx.raw_set(hum, "MoveDirection", v3(way));
     speed

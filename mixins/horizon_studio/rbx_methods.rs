@@ -922,9 +922,12 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
                 .get(1)
                 .and_then(as_v3)
                 .ok_or_else(|| bad_arg(lua, 1, name, "Vector3 expected"))?;
-            let rbx = env.rbx();
-            let at = pivot(rbx, id);
-            move_to(rbx, id, CFrame::from_position(by) * at);
+            // Nowhere to go (a tpwalk standing still) moves nothing.
+            if by.magnitude() > 0.0 {
+                let rbx = env.rbx();
+                let at = pivot(rbx, id);
+                move_to(rbx, id, CFrame::from_position(by) * at);
+            }
             none()
         }
         // The character's joints break: Roblox's character dies.

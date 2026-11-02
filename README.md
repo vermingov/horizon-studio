@@ -874,8 +874,9 @@ end)
   your model as a rider sits and holds you still until the jump key (turned on its side, it lies); `PlatformStand`,
   `ChangeState(FallingDown)` (it lies, then gets up), Ragdoll and Physics hold you still; a state it may not enter
   (`SetStateEnabled`) isn't entered, and with Jumping off you can't jump. WalkSpeed and JumpPower (or JumpHeight)
-  each scale the game's own. Setting the root part's `Velocity` pushes you; an anchored part a script keeps under the
-  character (a float) holds you up. The character's parts are your model's: take its arms, legs, head or torso
+  each scale the game's own. Setting the root part's `Velocity` pushes you, moving the Head moves you with it, `TranslateBy` moves
+  you, and MoveDirection follows your movement keys; an anchored part a script keeps under the character (a float)
+  holds you up. The character's parts are your model's: take its arms, legs, head or torso
   away and they go from your model (the first-person arm too), its Shirt and Pants are your skin's outer layers
   and its Hat accessory your hat layer; a part made visible is drawn as the Roblox part it is in place of your
   model's, and a character out of the Workspace (or with none of its parts) isn't drawn at all. A
