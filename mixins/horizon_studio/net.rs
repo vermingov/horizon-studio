@@ -187,8 +187,17 @@ pub fn send(req: Request, local: bool) -> Pending {
     Pending(rx)
 }
 
-/// The request, done here.
+/// The request, done here (following up to five redirects).
 pub fn fetch(req: &Request, local: bool) -> Result<Response, String> {
+    fetch_redirects(req, local, 5)
+}
+
+/// The request, done here, following at most `redirects` redirects. With
+/// `0` a redirect comes back as the 3xx response itself (its `Location`
+/// header kept), so the caller can follow it without forwarding the
+/// request's headers (an authenticated download must not leak its cookie to
+/// the CDN it is redirected to).
+pub fn fetch_redirects(req: &Request, local: bool, redirects: u32) -> Result<Response, String> {
     let method = if req.method.is_empty() {
         "GET".to_owned()
     } else {
@@ -200,7 +209,7 @@ pub fn fetch(req: &Request, local: bool) -> Result<Response, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout(TIMEOUT)
-        .redirects(5)
+        .redirects(redirects)
         .resolver(move |hp: &str| resolve(hp, local).map_err(std::io::Error::other))
         .tls_config(tls()?)
         .user_agent("Horizon Studio")

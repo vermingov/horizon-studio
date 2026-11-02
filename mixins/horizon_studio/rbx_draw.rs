@@ -3240,6 +3240,7 @@ pub fn step(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64, dt: f64, frame_no: 
     copy_starter_gui(rbx);
     step_events(rbx, now, dt, frame_no);
     super::hstudio_sunc::poll_network(rbx);
+    super::hstudio_sunc::poll_assets(rbx);
     super::hstudio_sunc::poll_dumps(rbx, game);
 }
 

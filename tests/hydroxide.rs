@@ -412,7 +412,10 @@ fn get_objects_loads_a_model_kept_in_the_workspace() {
           print("GO", base.BackgroundColor3, base.Status.Text, base.Status.TextXAlignment.Name, base.Status.TextSize,
             ui.Pointer.Value == base.Status)
           print("GO file", game:GetObjects("ui.rbxmx")[1].Name, game:GetService("InsertService"):LoadLocalAsset("ui.rbxmx").Name)
-          print("GO missing", pcall(game.GetObjects, game, "rbxassetid://5042114982"))
+          -- No account connected and not cached: the call waits for the
+          -- in-game prompt (so it must not have returned and printed).
+          game:GetObjects("rbxassetid://5042114982")
+          print("GO reached-after-missing")
         end)
         "#,
     );
@@ -423,6 +426,11 @@ fn get_objects_loads_a_model_kept_in_the_workspace() {
     );
     assert_eq!(go[1], "GO\t0.125, 0.25, 0.5\t• Status: Home\tLeft\t18\ttrue");
     assert_eq!(go[2], "GO file\tInterface\tInterface");
-    assert!(go[3].starts_with("GO missing\tfalse\t"), "{go:?}");
-    assert!(go[3].contains(".roblox-assets/5042114982.rbxm"), "{go:?}");
+    // The missing asset with no account connected yields, waiting for the
+    // prompt; it never returned, so nothing printed past it.
+    assert!(!go.iter().any(|l| l.contains("reached-after-missing")), "{go:?}");
+    assert!(
+        st.s.rbx.assets.iter().any(|a| a.id == 5042114982 && a.job.is_none()),
+        "a thread should be waiting for the Roblox-account prompt"
+    );
 }

@@ -88,6 +88,12 @@ name = "hstudio_rbx_objects"
 source = "rbx_objects.rs"
 
 [[module]]
+id = "rbx_auth"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_auth"
+source = "rbx_auth.rs"
+
+[[module]]
 id = "rbx_server"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_rbx_server"

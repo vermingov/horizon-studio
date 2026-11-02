@@ -4573,3 +4573,40 @@ fn settings_has_the_voice_chat_where_the_game_has_it() {
         ]
     );
 }
+
+#[test]
+fn settings_shows_version_and_roblox_account() {
+    let mut game = FakeGame::new("ui-roblox");
+    let mut st = studio(&mut game);
+    st.s.ui.open = true;
+    st.s.ui.look.motion = false;
+    st.s.ui.tab = Tab::Settings;
+    // The version line and the account section are at the top of the page.
+    redraw(&mut st, &mut game);
+    text_at(&game, "Roblox account");
+    text_at(&game, "Not signed in");
+    text_at(&game, "Horizon Studio 0.11.1  \u{b7}  for Horizon 26.3");
+    // Connect opens the dialog over everything.
+    let (x, y) = text_at(&game, "Connect account");
+    click(&mut st, &mut game, (x + 2.0, y + 2.0));
+    assert!(st.s.ui.roblox.open);
+    redraw(&mut st, &mut game);
+    text_at(&game, "Connect a Roblox account");
+    // Typing goes into the (masked) field, not the editor.
+    let secret = "_|WARNING:-DO-NOT-SHARE|_cookievalue1234567890abcdefghij";
+    handle(&mut st, &mut game, Input::Text(secret.into()));
+    assert_eq!(st.s.ui.roblox.field.text, secret);
+    redraw(&mut st, &mut game);
+    // Masked: the raw cookie is never drawn.
+    assert!(
+        !game.drawn.iter().any(|d| d.contains("cookievalue1234567890")),
+        "the cookie must be masked"
+    );
+    // Show reveals it.
+    let (sx, sy) = text_at(&game, "Show");
+    click(&mut st, &mut game, (sx + 2.0, sy + 2.0));
+    assert!(st.s.ui.roblox.show);
+    // Esc cancels the dialog.
+    handle(&mut st, &mut game, key(Key::Escape, NONE));
+    assert!(!st.s.ui.roblox.open);
+}

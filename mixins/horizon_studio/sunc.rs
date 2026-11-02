@@ -220,12 +220,13 @@ end
 -- game:GetObjects(url): a model file's Instances, from a Roblox asset kept
 -- in the workspace, a web address or a workspace file.
 function M.GetObjects(self, content)
-    local desc, url = models(content)
-    if url then
-        local r = http(url, "GET")
-        if not r.Success then error(`GetObjects: HTTP {r.StatusCode} ({r.StatusMessage}) from {url}`, 2) end
-        desc = models(content, r.Body)
+    local desc, kind, extra = models(content)
+    if kind == "url" then
+        local r = http(extra, "GET")
+        if not r.Success then error(`GetObjects: HTTP {r.StatusCode} ({r.StatusMessage}) from {extra}`, 2) end
+        desc, kind, extra = models(content, r.Body)
     end
+    if kind == "error" then error(extra, 2) end
     return build(desc)
 end
 function M.LoadLocalAsset(self, path)
@@ -929,6 +930,44 @@ pub fn poll_network(rbx: &mut Rbx) {
             i += 1;
         }
     }
+}
+
+/// Asset downloads game:GetObjects waits for: each thread gets the model
+/// described once its file is here (cached in the workspace), or the
+/// GetObjects error. A wait with no job yet is still asking the player to
+/// connect an account.
+pub fn poll_assets(rbx: &mut Rbx) {
+    use super::hstudio_rbx_objects as objects;
+    let ws = rbx.workspace_dir.clone();
+    let mut i = 0;
+    while i < rbx.assets.len() {
+        let Some(job) = &rbx.assets[i].job else {
+            i += 1;
+            continue;
+        };
+        let Some(result) = job.poll() else {
+            i += 1;
+            continue;
+        };
+        let w = rbx.assets.remove(i);
+        let vals = match result {
+            Ok(bytes) => {
+                let _ = objects::cache_asset(&ws, w.id, &bytes);
+                match super::hstudio_rbx_file::read(&bytes) {
+                    Ok(file) => vec![objects::describe(&file)],
+                    Err(e) => error_values(&format!("GetObjects: {}: {e}", w.content)),
+                }
+            }
+            Err(e) => error_values(&format!("GetObjects: {}: {e}", w.content)),
+        };
+        rbx.ready.push((w.owner, w.thread, vals));
+    }
+}
+
+/// The values game:GetObjects's native yields back for an error: the
+/// prelude turns `nil, "error", message` into `error(message)`.
+fn error_values(message: &str) -> Vec<Value> {
+    vec![Value::Nil, Value::str("error"), Value::str(message)]
 }
 
 /// The game's dumps saveinstance waits for: each thread gets the world's
@@ -2240,21 +2279,54 @@ impl Ctx<'_> {
                 });
                 Err(Throw::Yield(Vec::new()))
             }
-            // GetObjects(content[, body]): the model described (its
-            // body fetched, for a web address), or nil and the address
-            // to fetch.
+            // GetObjects(content[, body]): the model described (ready), or
+            // nil, "url", address for a web address the prelude fetches, or
+            // nil, "error", message. A Roblox asset not in the workspace is
+            // downloaded with the connected account (the thread waits), or,
+            // with none, the in-game prompt asks the player to connect one.
             MODELS => {
                 use super::hstudio_rbx_objects as objects;
                 let content = check_text(lua, &args, 0, "GetObjects")?;
                 let bytes = match (objects::source(&content), args.get(1).and_then(Value::as_bytes)) {
                     (objects::Source::Url(_), Some(body)) => body.to_vec(),
-                    (objects::Source::Url(url), None) => return Ok(vec![Value::Nil, Value::str(&url)]),
-                    (objects::Source::Asset(id), _) => {
+                    (objects::Source::Url(url), None) => {
+                        return Ok(vec![Value::Nil, Value::str("url"), Value::str(&url)]);
+                    }
+                    (objects::Source::Asset(_), Some(body)) => body.to_vec(),
+                    (objects::Source::Asset(id), None) => {
                         let ws = self.workspace();
-                        objects::asset_files(id)
+                        match objects::asset_files(id)
                             .iter()
                             .find_map(|f| std::fs::read(ws.join(f)).ok())
-                            .ok_or_else(|| lua.rt_error(objects::asset_missing(id)))?
+                        {
+                            Some(bytes) => bytes,
+                            None => {
+                                let cookie = super::hstudio_rbx_auth::current_cookie(&self.s.dir);
+                                if !lua.is_yieldable() {
+                                    if cookie.is_none() {
+                                        self.s.rbx.asset_prompt_wanted = true;
+                                    }
+                                    let hint = objects::asset_blocked(id, cookie.is_some());
+                                    return Ok(vec![Value::Nil, Value::str("error"), Value::str(&hint)]);
+                                }
+                                let thread = lua.current_thread();
+                                self.s.rbx.active = true;
+                                let job = cookie.map(|c| {
+                                    super::hstudio_rbx_auth::start_download(&super::hstudio_rbx_auth::hosts(), id, &c)
+                                });
+                                if job.is_none() {
+                                    self.s.rbx.asset_prompt_wanted = true;
+                                }
+                                self.s.rbx.assets.push(super::hstudio_rbx::AssetWait {
+                                    owner: self.owner,
+                                    thread,
+                                    id,
+                                    content: content.clone(),
+                                    job,
+                                });
+                                return Err(Throw::Yield(Vec::new()));
+                            }
+                        }
                     }
                     (objects::Source::File(path), _) => {
                         let p = sandboxed(lua, &self.workspace(), &path, "GetObjects")?;

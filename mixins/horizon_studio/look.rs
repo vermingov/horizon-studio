@@ -14,8 +14,8 @@ use super::hstudio_dock::{Bar, DrawnLeaf, Pane, Placed, STRIP};
 use super::hstudio_examples::EXAMPLES;
 use super::hstudio_theme::{ACCENTS, Layout, Look, Palette, THEMES};
 use super::hstudio_ui::{
-    Action, EditorView, LineEdit, Long, Spot, Tab, Tint, Ui, field, field_num, field_text, highlight, key_pane, kind,
-    slider_text, widgets,
+    Action, EditorView, LineEdit, Long, RobloxAction, Spot, Tab, Tint, Ui, field, field_num, field_text, highlight,
+    key_pane, kind, slider_text, widgets,
 };
 
 // The colours come from the theme (`hstudio_theme`), set as each frame draws.
@@ -667,6 +667,11 @@ pub fn draw(st: &mut Studio, game: &mut dyn GameApi) {
         }
         p.dy = 0.0;
         draw_menu(st, &mut p, w, h, dt);
+    }
+    if st.s.ui.roblox.open {
+        use_look(&look, true);
+        p.dy = 0.0;
+        roblox_dialog(st, &mut p, w, h, dt);
     }
     if let Some(name) = st.s.ui.naming.clone() {
         use_look(&look, true);
@@ -4472,7 +4477,12 @@ fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     // The voice chat's rows, where the game has it.
     let voice = p.g.voice();
     let voice_h = if voice.available { 30.0 + row_h * 6.0 } else { 0.0 };
-    let total = 30.0 + grid_h + 14.0 + row_h * 8.0 + voice_h;
+    // The Roblox account section (status + two rows of buttons).
+    let roblox_h = 30.0 + row_h * 2.0;
+    // The version line and the Roblox account section sit at the top; the
+    // theme grid, the rows and the voice chat follow.
+    let head_h = 22.0 + roblox_h + 14.0;
+    let total = head_h + 30.0 + grid_h + 14.0 + row_h * 8.0 + voice_h;
     let ui = &mut st.s.ui;
     ui.settings_scroll = ui.settings_scroll.clamp(0.0, (total - h).max(0.0));
     smooth(&mut ui.smooth[3], ui.settings_scroll, dt);
@@ -4483,6 +4493,24 @@ fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
         let by = y + (h - bar) * (ui.smooth[3] / (total - h)).clamp(0.0, 1.0);
         p.rect([x + cw + 8.0, by, 4.0, bar], 2.0, fade(pal().ink, 0.18));
     }
+    // The version, as a header line.
+    if shown([x, cy, cw, 16.0]) {
+        let line = format!(
+            "{} {}  \u{b7}  for Horizon 26.3",
+            super::hstudio::NAME,
+            super::hstudio::VERSION
+        );
+        p.text(&line, x, top(cy + 8.0, 12.0), 12.0, Font::Regular, pal().muted);
+    }
+    cy += 22.0;
+    roblox_settings(
+        st,
+        p,
+        [x, cy, cw, x + if cw < 460.0 { 110.0 } else { 170.0 }],
+        &shown,
+        dt,
+    );
+    cy += roblox_h + 14.0;
     if shown([x, cy, cw, 20.0]) {
         p.text("Theme", x, top(cy + 10.0, 13.0), 13.0, Font::Medium, pal().ink_soft);
     }
@@ -4615,6 +4643,112 @@ fn draw_settings(st: &mut Studio, p: &mut P, [x, y, w, h]: [f32; 4], dt: f32) {
     }
     if voice.available {
         voice_settings(st, p, &voice, [x, cy, cw, vx], &shown, dt);
+    }
+    let _ = (voice_h, roblox_h, head_h);
+}
+
+/// Settings' Roblox account section: whether an account is connected (and
+/// who), with buttons to connect/replace it, test it, or sign out. The
+/// cookie it needs is pasted or signed in for in the dialog `open_roblox`
+/// raises; it is never shown here.
+fn roblox_settings(st: &mut Studio, p: &mut P, [x, y, cw, vx]: [f32; 4], shown: &dyn Fn([f32; 4]) -> bool, dt: f32) {
+    let _ = vx;
+    let row_h = 46.0;
+    let mut cy = y;
+    let signed_in = super::hstudio_rbx_auth::signed_in(&st.s.dir);
+    let account = st.s.ui.roblox.account.clone();
+    if shown([x, cy, cw, 20.0]) {
+        p.text(
+            "Roblox account",
+            x,
+            top(cy + 10.0, 13.0),
+            13.0,
+            Font::Medium,
+            pal().ink_soft,
+        );
+        let state = match (&account, signed_in) {
+            (Some(a), _) => format!("{} (@{}, #{})", a.display_name, a.name, a.id),
+            (None, true) => "Connected".to_owned(),
+            (None, false) => "Not signed in".to_owned(),
+        };
+        let t = p.fit(&state, cw - 150.0, 12.0, Font::Regular);
+        let tw = p.measure(&t, 12.0, Font::Regular);
+        p.text(&t, x + cw - tw, top(cy + 10.0, 12.0), 12.0, Font::Regular, pal().muted);
+    }
+    cy += 30.0;
+    // What it is for, and the risk.
+    if shown([x, cy, cw, row_h]) {
+        let say = "Lets scripts load Roblox models (game:GetObjects / InsertService). A cookie gives full account access \
+                   and is kept only on this computer; prefer Quick Login.";
+        for (i, line) in p.wrap(say, cw, 12.0, Font::Regular).into_iter().take(2).enumerate() {
+            p.text(
+                &line,
+                x,
+                top(cy + 11.0 + 15.0 * i as f32, 12.0),
+                12.0,
+                Font::Regular,
+                pal().muted,
+            );
+        }
+    }
+    cy += row_h;
+    // The buttons.
+    if shown([x, cy, cw, row_h]) {
+        let mid = cy + row_h / 2.0;
+        let mut bx = x;
+        let connect = if signed_in {
+            "Replace account"
+        } else {
+            "Connect account"
+        };
+        bx += pill(
+            &mut st.s.ui,
+            p,
+            "rbx-connect",
+            connect,
+            bx,
+            mid - 14.0,
+            28.0,
+            Style::Primary,
+            Action::Roblox(RobloxAction::Open),
+            dt,
+        ) + 8.0;
+        if signed_in {
+            bx += pill(
+                &mut st.s.ui,
+                p,
+                "rbx-test",
+                "Test",
+                bx,
+                mid - 14.0,
+                28.0,
+                Style::Secondary,
+                Action::Roblox(RobloxAction::Test),
+                dt,
+            ) + 8.0;
+            bx += pill(
+                &mut st.s.ui,
+                p,
+                "rbx-signout",
+                "Sign out",
+                bx,
+                mid - 14.0,
+                28.0,
+                Style::Quiet,
+                Action::Roblox(RobloxAction::SignOut),
+                dt,
+            ) + 8.0;
+        }
+        let _ = bx;
+    }
+    // A short status line (test result, sign out), when not in the dialog.
+    if let Some((msg, err)) = st.s.ui.roblox.status.clone()
+        && !st.s.ui.roblox.open
+        && shown([x, cy + row_h, cw, 18.0])
+    {
+        let c = if err { pal().danger } else { pal().muted };
+        let t = p.fit(&msg, cw, 12.0, Font::Regular);
+        p.text(&t, x, top(cy + row_h + 9.0, 12.0), 12.0, Font::Regular, c);
     }
 }
 
@@ -4991,6 +5125,198 @@ fn naming(st: &mut Studio, p: &mut P, name: &LineEdit, w: f32, h: f32, dt: f32) 
         p.text(&line, r[0] + 22.0, y, 12.5, Font::Regular, c);
     }
     p.text(enter, r[0] + 22.0, r[1] + 160.0, 12.0, Font::Regular, pal().muted);
+    p.alpha = a;
+    p.dy = dy;
+}
+
+/// The Roblox account dialog over everything (from Settings, or raised by a
+/// script's GetObjects). A masked field for a `.ROBLOSECURITY` cookie, a
+/// Quick Login sign-in, and the account's state; a script that raised it
+/// waits while it is up.
+fn roblox_dialog(st: &mut Studio, p: &mut P, w: f32, h: f32, dt: f32) {
+    let now = st.s.now;
+    let arrive = progress(now, st.s.ui.roblox.opened_at, MOVE);
+    let (a, dy) = (p.alpha, p.dy);
+    p.alpha = a * arrive;
+    p.dy = 0.0;
+    p.rect([0.0, 0.0, w, h], 0.0, fade(pal().page, 0.55));
+    p.dy = (1.0 - arrive) * RISE;
+    let cw = 460f32.min(w - 32.0);
+    let ch = 320.0;
+    let r = [((w - cw) / 2.0).floor(), (h / 2.0 - ch / 2.0).floor(), cw, ch];
+    p.rect(r, 16.0, pal().surface);
+    p.border(r, 16.0, pal().rule);
+    let ix = r[0] + 22.0;
+    let iw = cw - 44.0;
+    let mut y = r[1] + 20.0;
+    p.text("Connect a Roblox account", ix, y, 16.0, Font::Medium, pal().ink);
+    y += 26.0;
+    // Why, and which script asked (when a script raised it).
+    let why = if st.s.ui.roblox.from_settings {
+        "A connected account lets scripts load Roblox models with game:GetObjects.".to_owned()
+    } else {
+        let who =
+            st.s.rbx
+                .assets
+                .iter()
+                .filter(|w| w.job.is_none())
+                .map(|w| format!("rbxassetid://{}", w.id))
+                .collect::<Vec<_>>();
+        let list = if who.len() > 2 {
+            format!("{}, {} and {} more", who[0], who[1], who.len() - 2)
+        } else {
+            who.join(", ")
+        };
+        format!("A script wants to load {list}, which needs a Roblox account.")
+    };
+    for line in p.wrap(&why, iw, 12.5, Font::Regular).into_iter().take(2) {
+        p.text(&line, ix, y, 12.5, Font::Regular, pal().muted);
+        y += 16.0;
+    }
+    y += 4.0;
+    // Quick Login, if it's running: the code, where to enter it, the time left.
+    if let Some(q) = &st.s.ui.roblox.quick {
+        let code = q.code.as_ref().map(|c| c.code.clone());
+        if let Some(code) = code {
+            p.text("Quick Login code", ix, y, 12.0, Font::Regular, pal().muted);
+            y += 18.0;
+            p.text(&code, ix, y, 30.0, Font::Mono, pal().ink);
+            y += 40.0;
+            p.text(
+                "Enter it at roblox.com/crossdevicelogin on a device you're signed in on.",
+                ix,
+                y,
+                12.0,
+                Font::Regular,
+                pal().muted,
+            );
+            y += 18.0;
+            let left = (super::hstudio_ui::QUICK_SECS - (now - q.started_at)).max(0.0) as u32;
+            p.text(
+                &format!("{}:{:02} left", left / 60, left % 60),
+                ix,
+                y,
+                12.0,
+                Font::Mono,
+                pal().muted,
+            );
+            y += 24.0;
+        } else {
+            p.text("Starting Quick Login…", ix, y, 13.0, Font::Regular, pal().muted);
+            y += 24.0;
+        }
+    } else {
+        // The masked paste field, with a Show toggle.
+        p.text(
+            "Paste your .ROBLOSECURITY cookie",
+            ix,
+            y,
+            12.0,
+            Font::Regular,
+            pal().muted,
+        );
+        y += 20.0;
+        let f = [ix, y, iw, 38.0];
+        p.rect(f, 10.0, pal().page);
+        p.border(f, 10.0, fade(pal().accent, 0.6));
+        let show = st.s.ui.roblox.show;
+        if show {
+            line_edit(
+                p,
+                now,
+                &st.s.ui.roblox.field,
+                f[0] + 12.0,
+                top(f[1] + 19.0, 13.0),
+                f[2] - 74.0,
+                13.0,
+                Font::Mono,
+                pal().ink,
+            );
+        } else {
+            let dots = "•".repeat(st.s.ui.roblox.field.text.chars().count().min(40));
+            p.text(&dots, f[0] + 12.0, top(f[1] + 19.0, 13.0), 13.0, Font::Mono, pal().ink);
+        }
+        let label = if show { "Hide" } else { "Show" };
+        pill(
+            &mut st.s.ui,
+            p,
+            "rbx-show",
+            label,
+            f[0] + iw - 54.0,
+            f[1] + 6.0,
+            26.0,
+            Style::Quiet,
+            Action::Roblox(RobloxAction::Show),
+            dt,
+        );
+        y += 48.0;
+    }
+    // The status line.
+    if let Some((msg, err)) = st.s.ui.roblox.status.clone() {
+        let c = if err { pal().danger } else { pal().muted };
+        for line in p.wrap(&msg, iw, 12.0, Font::Regular).into_iter().take(2) {
+            p.text(&line, ix, y, 12.0, Font::Regular, c);
+            y += 15.0;
+        }
+    }
+    // The buttons, pinned near the bottom.
+    let by = r[1] + ch - 46.0;
+    let mut bx = ix;
+    let busy = !matches!(st.s.ui.roblox.job, super::hstudio_ui::RobloxJob::Idle) || st.s.ui.roblox.quick.is_some();
+    if st.s.ui.roblox.quick.is_none() {
+        bx += pill(
+            &mut st.s.ui,
+            p,
+            "rbx-save",
+            "Save & use",
+            bx,
+            by,
+            30.0,
+            Style::Primary,
+            Action::Roblox(RobloxAction::Save),
+            dt,
+        ) + 8.0;
+        bx += pill(
+            &mut st.s.ui,
+            p,
+            "rbx-once",
+            "Use once",
+            bx,
+            by,
+            30.0,
+            Style::Secondary,
+            Action::Roblox(RobloxAction::UseOnce),
+            dt,
+        ) + 8.0;
+        if !busy {
+            bx += pill(
+                &mut st.s.ui,
+                p,
+                "rbx-quick",
+                "Quick Login",
+                bx,
+                by,
+                30.0,
+                Style::Quiet,
+                Action::Roblox(RobloxAction::QuickStart),
+                dt,
+            ) + 8.0;
+        }
+    }
+    let cancel_w = p.measure("Cancel", 13.0, Font::Medium) + 28.0;
+    pill(
+        &mut st.s.ui,
+        p,
+        "rbx-cancel",
+        "Cancel",
+        r[0] + cw - 22.0 - cancel_w,
+        by,
+        30.0,
+        Style::Quiet,
+        Action::Roblox(RobloxAction::Cancel),
+        dt,
+    );
+    let _ = (bx, busy);
     p.alpha = a;
     p.dy = dy;
 }

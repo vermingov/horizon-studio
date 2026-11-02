@@ -313,17 +313,20 @@ fn a_silent_aim_s_mouse_hooks_and_a_camera_aim() {
 }
 
 #[test]
-fn get_objects_says_why_it_can_t_load_a_roblox_asset() {
+fn get_objects_asks_for_an_account_when_none_is_connected() {
     // OwlHub's UI library is Roblox model assets, which need a Roblox
-    // account: one clear error, not a nil to index.
+    // account. With none connected the call doesn't fail with a nil to
+    // index: it raises the in-game prompt and waits for the player.
     let mut game = world("esp-objects");
     let mut st = start(&mut game);
     let p = lua(
         &mut st,
         &mut game,
-        "print(pcall(function() return game:GetObjects('rbxassetid://4743303040')[1] end))",
+        "task.spawn(function() game:GetObjects('rbxassetid://4743303040'); print('went on') end)",
     );
-    assert_eq!(p.len(), 1);
-    assert!(p[0].starts_with("false    "), "{p:?}");
-    assert!(p[0].contains("signed-in Roblox account"), "{p:?}");
+    // It is still waiting (nothing printed past the yielding call), the
+    // prompt is up, and a thread waits for an account.
+    assert!(!p.iter().any(|l| l.contains("went on")), "{p:?}");
+    assert!(st.s.ui.roblox.open, "the Roblox-account prompt opened");
+    assert!(st.s.rbx.assets.iter().any(|a| a.id == 4743303040 && a.job.is_none()));
 }

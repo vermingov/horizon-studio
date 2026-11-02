@@ -1695,6 +1695,13 @@ pub struct Rbx {
     pub hui: Id,
     /// HTTP requests on their way, with the threads that wait for them.
     pub http: Vec<HttpWait>,
+    /// Threads waiting in game:GetObjects for a Roblox asset: either for its
+    /// authenticated download, or (job None) for the player to connect an
+    /// account in the in-game prompt.
+    pub assets: Vec<AssetWait>,
+    /// A script asked for a Roblox asset with no account connected: the
+    /// studio opens the in-game prompt (cleared once it does).
+    pub asset_prompt_wanted: bool,
     /// The threads waiting in saveinstance for the game's dump to be written
     /// (and the dumps no thread waits for).
     pub dumps: Vec<DumpWait>,
@@ -1749,6 +1756,19 @@ pub struct HttpWait {
     pub owner: Owner,
     pub thread: Rc<Thread>,
     pub pending: super::hstudio_net::Pending,
+}
+
+/// A thread waiting in game:GetObjects for a Roblox asset.
+pub struct AssetWait {
+    pub owner: Owner,
+    pub thread: Rc<Thread>,
+    /// The asset id, for caching and messages.
+    pub id: u64,
+    /// What the script asked for, verbatim, for its error message.
+    pub content: String,
+    /// The running download, or None while the in-game prompt is up and the
+    /// player hasn't connected an account yet.
+    pub job: Option<super::hstudio_rbx_auth::Download>,
 }
 
 /// A thread waiting in saveinstance: the game's dump job, and the world's
@@ -1865,6 +1885,8 @@ impl Rbx {
             fps_cap: 0.0,
             hui: 0,
             http: Vec::new(),
+            assets: Vec::new(),
+            asset_prompt_wanted: false,
             dumps: Vec::new(),
             sockets: Vec::new(),
             drawings: Vec::new(),
@@ -2346,6 +2368,7 @@ impl Rbx {
         self.actions.retain(|a| a.1 != owner);
         self.render_steps.retain(|r| r.2 != owner);
         self.http.retain(|h| h.owner != owner);
+        self.assets.retain(|a| a.owner != owner);
         self.dumps.retain(|d| d.owner != owner);
         for s in self.sockets.iter().filter(|s| s.owner == owner) {
             s.socket.close();
@@ -2409,6 +2432,7 @@ impl Rbx {
         self.actions.iter_mut().for_each(|a| shift(&mut a.1));
         self.render_steps.iter_mut().for_each(|r| shift(&mut r.2));
         self.http.iter_mut().for_each(|h| shift(&mut h.owner));
+        self.assets.iter_mut().for_each(|a| shift(&mut a.owner));
         self.dumps.iter_mut().for_each(|d| shift(&mut d.owner));
         self.sockets.iter_mut().for_each(|s| shift(&mut s.owner));
         self.drawings.iter_mut().for_each(|d| shift(&mut d.owner));

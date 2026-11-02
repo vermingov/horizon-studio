@@ -456,12 +456,14 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
         }
         ("DataModel", "BindToClose") => none(),
         // Roblox's models (a hub's UI kept as a model asset) only come to a
-        // signed-in Roblox account: as Roblox's own when a load fails, an
-        // error saying so, not an empty list a script then indexes.
+        // signed-in Roblox account. The executor prelude installs the real
+        // GetObjects (hstudio_sunc) that downloads one with the connected
+        // account; this is only the fallback if that didn't load.
         ("DataModel", "GetObjects") => {
             let content = text_arg(lua, args, 1, name)?;
             Err(lua.rt_error(format!(
-                "GetObjects can't load {content}: Roblox's assets need a signed-in Roblox account, which the studio hasn't"
+                "GetObjects can't load {content}: connect a Roblox account in the studio's Settings > Roblox account, \
+                 or save the model as a workspace/.roblox-assets file"
             )))
         }
         (

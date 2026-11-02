@@ -54,6 +54,8 @@ pub mod game {
     pub mod hstudio_rbx_api;
     #[path = "../../mixins/horizon_studio/rbx_api_data.rs"]
     pub mod hstudio_rbx_api_data;
+    #[path = "../../mixins/horizon_studio/rbx_auth.rs"]
+    pub mod hstudio_rbx_auth;
     #[path = "../../mixins/horizon_studio/rbx_body.rs"]
     pub mod hstudio_rbx_body;
     #[path = "../../mixins/horizon_studio/rbx_client.rs"]

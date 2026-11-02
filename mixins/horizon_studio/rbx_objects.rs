@@ -59,13 +59,31 @@ pub fn asset_files(id: u64) -> [String; 2] {
     [format!("{ASSETS}/{id}.rbxm"), format!("{ASSETS}/{id}.rbxmx")]
 }
 
-/// Why a Roblox asset can't be had: Roblox gives models only to a
-/// signed-in account, so it has to be saved into the workspace.
-pub fn asset_missing(id: u64) -> String {
-    format!(
-        "GetObjects: rbxassetid://{id} isn't in the workspace, and Roblox gives models only to a signed-in Roblox \
-         account: save it (Roblox Studio: insert it, right-click, Save to File) as workspace/{ASSETS}/{id}.rbxm or .rbxmx"
-    )
+/// Why a Roblox asset download can't go ahead here, with the account
+/// connected (`have_account`: the call isn't in a thread that can wait) or
+/// not (connect one in Settings, or save the file by hand).
+pub fn asset_blocked(id: u64, have_account: bool) -> String {
+    if have_account {
+        format!(
+            "GetObjects: rbxassetid://{id} has to be downloaded, which this code can't wait for: run it in a thread \
+             that can wait (task.spawn), or save it as workspace/{ASSETS}/{id}.rbxm"
+        )
+    } else {
+        format!(
+            "GetObjects: rbxassetid://{id} isn't in the workspace and no Roblox account is connected: connect one in \
+             the studio's Settings > Roblox account, or save the model by hand as workspace/{ASSETS}/{id}.rbxm or \
+             .rbxmx (Roblox Studio: insert it, right-click, Save to File)"
+        )
+    }
+}
+
+/// Where a downloaded asset is cached, and the write of it.
+pub fn cache_asset(workspace: &std::path::Path, id: u64, bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    let dir = workspace.join(ASSETS);
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{id}.rbxm"));
+    std::fs::write(&path, bytes)?;
+    Ok(path)
 }
 
 /// Properties a file keeps that scripts don't set (or can't).

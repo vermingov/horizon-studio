@@ -3343,6 +3343,7 @@ impl Studio {
         let dt = if dt.is_finite() { dt.clamp(0.0, 1.0) } else { 0.0 };
         self.s.now += dt;
         super::hstudio_ui::agent_poll(self);
+        super::hstudio_ui::roblox_poll(self, self.s.now);
         // What AI agents do in the editor moves on (an edit typed in).
         super::hstudio_coach::step(self, game);
         let budget = self.s.send_tokens + dt * SEND_RATE;

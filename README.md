@@ -330,6 +330,16 @@ Settings, the last tab, chooses how the studio looks, and keeps it in `look.txt`
 - **Layout.** Reset layout puts the Editor tab's panes back where they start, and Undo reset layout takes that back.
   The panes' layout is kept in `layout.txt`, beside `look.txt`. Settings itself stays a page, as it restyles the
   whole studio, the panes included.
+- **Roblox account.** So scripts can load Roblox model assets (`game:GetObjects`, `InsertService:LoadLocalAsset` —
+  Hydroxide's and OwlHub's UIs are such models), opt in to connecting a Roblox account. **Connect account** opens a
+  dialog to paste a `.ROBLOSECURITY` cookie (masked, with Show) or sign in with Roblox's cross-device **Quick
+  Login** (a code you enter at `roblox.com/crossdevicelogin` on a device you're already signed in on — no password
+  is ever asked). **Test** downloads a sample asset to check it; **Sign out** forgets it. A cookie gives full
+  account access, so prefer Quick Login; either way the credential is stored only in the studio's own folder (not
+  the workspace, so scripts can't read it), is sent only to Roblox's own asset host (never to a script's requests,
+  never to the CDN a download is redirected to), and is used only to download models. The same dialog is what the
+  in-game prompt shows when a script needs an asset and no account is connected. The studio's version shows at the
+  foot of this page.
 
 The executor styles lay the studio out as the script executors of old Roblox days did, each always in its own
 window. Only their shape and colours are copied; the window says Horizon Studio, and RC7's letters read HS. Their
@@ -976,8 +986,11 @@ executors run as mods:
   health tags over the other players from the Camera's `WorldToViewportPoint`; the server's scoreboard teams are
   Roblox's Teams (each Player's `Team`, `TeamColor`, `Neutral`), so their team colours and team checks work.
   `mousemoverel` while playing turns the view by the angle the pixels make, so an aimbot's move to its target's
-  screen point lands on it. Roblox model assets (`game:GetObjects`, OwlHub's UI library) need a Roblox account: one
-  saved as `workspace/.roblox-assets/<id>.rbxm` loads, else an error says so.
+  screen point lands on it. Roblox model assets (`game:GetObjects`, Hydroxide's and OwlHub's UI) need a Roblox
+  account, connected in **Settings → Roblox account** (see [Themes and the window](#themes-and-the-window)); the
+  first time a script needs one with none connected, an in-game prompt (which the script can't see or draw into)
+  asks for it and the call waits. The model is then downloaded and cached under `workspace/.roblox-assets/<id>.rbxm`;
+  a file already there loads without an account.
 - **Instances and signals:** `cloneref`, `compareinstances`, `gethui`, `getinstances`, `getnilinstances`,
   `fireclickdetector`, `fireproximityprompt`, `firetouchinterest`, `getcallbackvalue`, `getconnections`,
   `firesignal`; `replicatesignal` errors (there is no server).

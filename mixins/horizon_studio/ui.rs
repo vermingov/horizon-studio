@@ -223,6 +223,24 @@ pub enum Action {
     LessonNext,
     LessonCheck,
     LessonEnd,
+    /// The Roblox account section and dialog.
+    Roblox(RobloxAction),
+}
+
+/// What a Roblox-account button does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RobloxAction {
+    /// Settings: open the connect dialog, run the Test, sign out.
+    Open,
+    Test,
+    SignOut,
+    /// The dialog: reveal the field, store-and-use, use once, cancel, start
+    /// Quick Login.
+    Show,
+    Save,
+    UseOnce,
+    Cancel,
+    QuickStart,
 }
 
 /// What a right click is on: the menu it opens is this one's. look.rs and
@@ -818,6 +836,10 @@ pub struct Ui {
     /// Docs), and the entry it went to with when (a tint a moment).
     pub(crate) docs_find: Option<String>,
     pub(crate) docs_lit: Option<(String, f64)>,
+    /// The Roblox account panel: the Settings section's connect dialog, and
+    /// the in-game prompt a script's GetObjects raises when no account is
+    /// connected. They are the same dialog.
+    pub roblox: RobloxPanel,
     /// The naming prompt (New, Save as, New file, Rename, Delete), while it is open.
     pub naming: Option<LineEdit>,
     /// What the prompt names.
@@ -974,6 +996,73 @@ impl Ui {
         }
     }
 }
+
+// ----------------------------------------------------------------- the Roblox account panel
+
+use super::hstudio_rbx_auth::{self as auth, Account, AuthError, QuickCode, QuickStatus, Task};
+
+/// The Roblox account dialog: a masked field to paste a `.ROBLOSECURITY`
+/// cookie, a Quick Login (cross-device) sign-in, and the account's state. It
+/// drives the Settings section and the in-game prompt.
+#[derive(Default)]
+pub struct RobloxPanel {
+    /// The dialog is up (over the game, as a script can't draw into it).
+    pub open: bool,
+    /// Opened from Settings (true) or by a script's GetObjects (false).
+    pub from_settings: bool,
+    /// The pasted cookie.
+    pub field: LineEdit,
+    /// Reveal the masked field.
+    pub show: bool,
+    /// A line under the field: a message and whether it is an error.
+    pub status: Option<(String, bool)>,
+    /// The signed-in account, once looked up.
+    pub account: Option<Account>,
+    /// Whether the account state has been looked up since the last change.
+    pub account_known: bool,
+    pub opened_at: f64,
+    pub job: RobloxJob,
+    /// The Quick Login flow, while it runs.
+    pub quick: Option<Quick>,
+}
+
+/// A background account call the panel waits on.
+#[derive(Default)]
+pub enum RobloxJob {
+    #[default]
+    Idle,
+    /// Checking a pasted cookie before storing it.
+    Validating {
+        task: Task<Result<Account, AuthError>>,
+        cookie: String,
+        remember: bool,
+    },
+    /// The Test button downloading asset 11389137937.
+    Testing(Task<Result<(), AuthError>>),
+    /// Refreshing who the stored cookie belongs to.
+    Status(Task<Result<Account, AuthError>>),
+}
+
+/// Roblox's cross-device Quick Login, in flight.
+pub struct Quick {
+    /// Store the cookie it yields (vs this session only).
+    pub remember: bool,
+    pub code: Option<QuickCode>,
+    pub started_at: f64,
+    pub last_poll: f64,
+    pub phase: QuickPhase,
+}
+
+pub enum QuickPhase {
+    Creating(Task<Result<QuickCode, AuthError>>),
+    /// Showing the code, polling its status.
+    Waiting,
+    Polling(Task<Result<QuickStatus, AuthError>>),
+    Completing(Task<Result<String, AuthError>>),
+}
+
+/// How long a Quick Login code is good for (Roblox: five minutes).
+pub const QUICK_SECS: f64 = 300.0;
 
 // ----------------------------------------------------------------- a line of text being typed
 
@@ -3459,6 +3548,13 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
                 let_go(st);
                 return UiResult::Used;
             }
+            if st.s.ui.roblox.open {
+                // While the dialog is up only its own buttons take clicks.
+                if let Some(action @ Action::Roblox(_)) = hit_at(&st.s.ui, st.s.ui.mouse) {
+                    return act(st, game, action);
+                }
+                return UiResult::Used;
+            }
             if st.s.ui.naming.is_some() {
                 // While the prompt is up only its own switch takes clicks:
                 // what is under it, as drawn last frame, takes none.
@@ -3655,6 +3751,12 @@ fn handle_input(st: &mut Studio, game: &mut dyn GameApi, input: Input) -> UiResu
             UiResult::Used
         }
         Input::Text(t) => {
+            if st.s.ui.roblox.open {
+                if st.s.ui.roblox.quick.is_none() {
+                    st.s.ui.roblox.field.insert(&t);
+                }
+                return UiResult::Used;
+            }
             if let Some(name) = &mut st.s.ui.naming {
                 // A delete asks; nothing is typed.
                 if !matches!(st.s.ui.naming_kind, NamingKind::Delete(_)) {
@@ -4535,6 +4637,7 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
                 st.s.log(LogKind::Info, "Stopped what the console ran");
             }
         }
+        Action::Roblox(a) => roblox_action(st, a),
         Action::Block | Action::ScrollBar | Action::Spot(_) => {}
         Action::MenuPick(i) => return menu_pick(st, game, i as usize),
         Action::ModelMenu => open_model_menu(st),
@@ -4576,6 +4679,17 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
 }
 
 fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> UiResult {
+    if st.s.ui.roblox.open {
+        match key {
+            Key::Escape => roblox_action(st, RobloxAction::Cancel),
+            Key::Enter if st.s.ui.roblox.quick.is_none() => roblox_action(st, RobloxAction::Save),
+            k if st.s.ui.roblox.quick.is_none() => {
+                st.s.ui.roblox.field.key(k, mods);
+            }
+            _ => {}
+        }
+        return UiResult::Used;
+    }
     if let Some(name) = &mut st.s.ui.naming {
         let delete = matches!(st.s.ui.naming_kind, NamingKind::Delete(_));
         match key {
@@ -5028,6 +5142,289 @@ pub fn agent_poll(st: &mut Studio) {
         pane.run = None;
         // Its edits show at once.
         st.s.ui.disk_at = 0.0;
+    }
+}
+
+// ----------------------------------------------------------------- Roblox account
+
+/// Opens the Roblox account dialog, from Settings or an in-game prompt.
+pub fn open_roblox(st: &mut Studio, from_settings: bool) {
+    let now = st.s.now;
+    let p = &mut st.s.ui.roblox;
+    p.open = true;
+    p.from_settings = from_settings;
+    p.opened_at = now;
+    p.field = LineEdit::default();
+    p.show = false;
+    p.status = None;
+    p.quick = None;
+    p.job = RobloxJob::Idle;
+    refresh_roblox_status(st);
+}
+
+/// Looks up who the stored cookie belongs to (if any), to show in the dialog
+/// and Settings.
+pub fn refresh_roblox_status(st: &mut Studio) {
+    let Some(cookie) = auth::current_cookie(&st.s.dir) else {
+        st.s.ui.roblox.account = None;
+        st.s.ui.roblox.account_known = true;
+        return;
+    };
+    st.s.ui.roblox.account_known = false;
+    let hosts = auth::hosts();
+    st.s.ui.roblox.job = RobloxJob::Status(auth::spawn(move || auth::authenticated(&hosts, &cookie)));
+}
+
+/// A Roblox-account button.
+pub fn roblox_action(st: &mut Studio, a: RobloxAction) {
+    let now = st.s.now;
+    match a {
+        RobloxAction::Open => open_roblox(st, true),
+        RobloxAction::Test => {
+            let Some(cookie) = auth::current_cookie(&st.s.dir) else {
+                st.s.ui.roblox.status = Some(("Connect an account first.".into(), true));
+                return;
+            };
+            st.s.ui.roblox.status = Some(("Testing: downloading a sample asset…".into(), false));
+            let hosts = auth::hosts();
+            st.s.ui.roblox.job = RobloxJob::Testing(auth::spawn(move || {
+                auth::download_asset(&hosts, 11389137937, &cookie).map(|_| ())
+            }));
+        }
+        RobloxAction::SignOut => {
+            auth::clear_cookie(&st.s.dir);
+            auth::set_session_cookie(None);
+            let p = &mut st.s.ui.roblox;
+            p.account = None;
+            p.account_known = true;
+            p.status = Some(("Signed out.".into(), false));
+        }
+        RobloxAction::Show => st.s.ui.roblox.show = !st.s.ui.roblox.show,
+        RobloxAction::Save => submit_roblox_cookie(st, true),
+        RobloxAction::UseOnce => submit_roblox_cookie(st, false),
+        RobloxAction::Cancel => {
+            st.s.ui.roblox.open = false;
+            st.s.ui.roblox.quick = None;
+            // A script waiting on the prompt is told it was cancelled.
+            if !st.s.ui.roblox.from_settings {
+                cancel_asset_waits(st);
+            }
+        }
+        RobloxAction::QuickStart => {
+            let remember = true;
+            let hosts = auth::hosts();
+            st.s.ui.roblox.status = Some(("Starting Quick Login…".into(), false));
+            st.s.ui.roblox.quick = Some(Quick {
+                remember,
+                code: None,
+                started_at: now,
+                last_poll: now,
+                phase: QuickPhase::Creating(auth::spawn(move || auth::quick_create(&hosts))),
+            });
+        }
+    }
+}
+
+/// Validates a pasted cookie, then (on success) stores it and goes on.
+fn submit_roblox_cookie(st: &mut Studio, remember: bool) {
+    let cookie = auth::normalize_cookie(&st.s.ui.roblox.field.text);
+    if !auth::looks_like_cookie(&cookie) {
+        st.s.ui.roblox.status = Some(("That doesn't look like a .ROBLOSECURITY cookie.".into(), true));
+        return;
+    }
+    st.s.ui.roblox.status = Some(("Checking the cookie with Roblox…".into(), false));
+    let hosts = auth::hosts();
+    let c = cookie.clone();
+    st.s.ui.roblox.job = RobloxJob::Validating {
+        task: auth::spawn(move || auth::authenticated(&hosts, &c)),
+        cookie,
+        remember,
+    };
+}
+
+/// A cookie is in force now: remember it (or keep it for the session), note
+/// the account, and start the downloads scripts are waiting on.
+fn roblox_connected(st: &mut Studio, cookie: &str, remember: bool, account: Account) {
+    if remember {
+        let _ = auth::store_cookie(&st.s.dir, cookie);
+        auth::set_session_cookie(None);
+    } else {
+        auth::set_session_cookie(Some(cookie.to_owned()));
+    }
+    let p = &mut st.s.ui.roblox;
+    p.account = Some(account.clone());
+    p.account_known = true;
+    p.status = Some((format!("Connected as {}.", account.name), false));
+    p.open = false;
+    p.quick = None;
+    start_pending_downloads(st);
+}
+
+/// Starts the download for every GetObjects thread that was waiting for an
+/// account.
+fn start_pending_downloads(st: &mut Studio) {
+    let Some(cookie) = auth::current_cookie(&st.s.dir) else {
+        return;
+    };
+    let hosts = auth::hosts();
+    for w in &mut st.s.rbx.assets {
+        if w.job.is_none() {
+            w.job = Some(auth::start_download(&hosts, w.id, &cookie));
+        }
+    }
+}
+
+/// Tells every GetObjects thread still waiting for the prompt that it was
+/// cancelled.
+fn cancel_asset_waits(st: &mut Studio) {
+    let waiting: Vec<_> =
+        st.s.rbx
+            .assets
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| w.job.is_none())
+            .map(|(i, _)| i)
+            .collect();
+    for i in waiting.into_iter().rev() {
+        let w = st.s.rbx.assets.remove(i);
+        let msg = format!(
+            "GetObjects: rbxassetid://{} cancelled (no Roblox account connected)",
+            w.id
+        );
+        st.s.rbx.ready.push((
+            w.owner,
+            w.thread,
+            vec![Value::Nil, Value::str("error"), Value::str(&msg)],
+        ));
+    }
+}
+
+/// Advances the account dialog's background work each frame, and opens the
+/// in-game prompt when a script is waiting for an account.
+pub fn roblox_poll(st: &mut Studio, now: f64) {
+    // A script asked for an asset with no account: raise the prompt (once).
+    if std::mem::take(&mut st.s.rbx.asset_prompt_wanted) && !st.s.ui.roblox.open && !auth::signed_in(&st.s.dir) {
+        open_roblox(st, false);
+    }
+    advance_roblox_job(st);
+    advance_quick_login(st, now);
+}
+
+fn advance_roblox_job(st: &mut Studio) {
+    let done = match &st.s.ui.roblox.job {
+        RobloxJob::Validating { task, .. } => task.poll().map(RobloxDone::Validated),
+        RobloxJob::Testing(task) => task.poll().map(RobloxDone::Tested),
+        RobloxJob::Status(task) => task.poll().map(RobloxDone::Status),
+        RobloxJob::Idle => None,
+    };
+    let Some(done) = done else { return };
+    match done {
+        RobloxDone::Validated(result) => {
+            let (cookie, remember) = match std::mem::take(&mut st.s.ui.roblox.job) {
+                RobloxJob::Validating { cookie, remember, .. } => (cookie, remember),
+                _ => return,
+            };
+            match result {
+                Ok(account) => roblox_connected(st, &cookie, remember, account),
+                Err(e) => st.s.ui.roblox.status = Some((e.to_string(), true)),
+            }
+        }
+        RobloxDone::Tested(result) => {
+            st.s.ui.roblox.job = RobloxJob::Idle;
+            st.s.ui.roblox.status = Some(match result {
+                Ok(()) => ("Test succeeded: the asset downloaded.".into(), false),
+                Err(e) => (format!("Test failed: {e}"), true),
+            });
+        }
+        RobloxDone::Status(result) => {
+            st.s.ui.roblox.job = RobloxJob::Idle;
+            let p = &mut st.s.ui.roblox;
+            p.account_known = true;
+            p.account = result.ok();
+        }
+    }
+}
+
+enum RobloxDone {
+    Validated(Result<Account, AuthError>),
+    Tested(Result<(), AuthError>),
+    Status(Result<Account, AuthError>),
+}
+
+fn advance_quick_login(st: &mut Studio, now: f64) {
+    let Some(quick) = &st.s.ui.roblox.quick else {
+        return;
+    };
+    // The code's life ran out.
+    if quick.code.is_some() && now - quick.started_at > QUICK_SECS {
+        st.s.ui.roblox.quick = None;
+        st.s.ui.roblox.status = Some(("The Quick Login code expired. Start again.".into(), true));
+        return;
+    }
+    let hosts = auth::hosts();
+    enum Step {
+        Code(Result<QuickCode, AuthError>),
+        Status(Result<QuickStatus, AuthError>),
+        Cookie(Result<String, AuthError>),
+        Poll,
+    }
+    let step = match &st.s.ui.roblox.quick.as_ref().unwrap().phase {
+        QuickPhase::Creating(t) => t.poll().map(Step::Code),
+        QuickPhase::Polling(t) => t.poll().map(Step::Status),
+        QuickPhase::Completing(t) => t.poll().map(Step::Cookie),
+        QuickPhase::Waiting => {
+            if now - st.s.ui.roblox.quick.as_ref().unwrap().last_poll >= 2.0 {
+                Some(Step::Poll)
+            } else {
+                None
+            }
+        }
+    };
+    let Some(step) = step else { return };
+    let quick = st.s.ui.roblox.quick.as_mut().unwrap();
+    match step {
+        Step::Code(Ok(code)) => {
+            quick.code = Some(code);
+            quick.started_at = now;
+            quick.last_poll = now;
+            quick.phase = QuickPhase::Waiting;
+            st.s.ui.roblox.status = Some(("Enter the code on a signed-in device.".into(), false));
+        }
+        Step::Code(Err(e)) => {
+            st.s.ui.roblox.quick = None;
+            st.s.ui.roblox.status = Some((format!("Quick Login couldn't start: {e}"), true));
+        }
+        Step::Poll => {
+            let code = quick.code.clone().unwrap();
+            quick.last_poll = now;
+            quick.phase = QuickPhase::Polling(auth::spawn(move || auth::quick_status(&hosts, &code)));
+        }
+        Step::Status(Ok(QuickStatus::Validated(_))) => {
+            let code = quick.code.clone().unwrap();
+            quick.phase = QuickPhase::Completing(auth::spawn(move || auth::quick_complete(&hosts, &code)));
+            st.s.ui.roblox.status = Some(("Approved, finishing sign-in…".into(), false));
+        }
+        Step::Status(Ok(QuickStatus::Cancelled)) => {
+            st.s.ui.roblox.quick = None;
+            st.s.ui.roblox.status = Some(("Quick Login was cancelled.".into(), true));
+        }
+        Step::Status(Ok(QuickStatus::Waiting)) | Step::Status(Err(_)) => {
+            quick.phase = QuickPhase::Waiting;
+        }
+        Step::Cookie(Ok(cookie)) => {
+            let remember = quick.remember;
+            match auth::authenticated(&hosts, &cookie) {
+                Ok(account) => roblox_connected(st, &cookie, remember, account),
+                Err(e) => {
+                    st.s.ui.roblox.quick = None;
+                    st.s.ui.roblox.status = Some((format!("Signed in, but the cookie didn't check out: {e}"), true));
+                }
+            }
+        }
+        Step::Cookie(Err(e)) => {
+            st.s.ui.roblox.quick = None;
+            st.s.ui.roblox.status = Some((format!("Quick Login failed: {e}"), true));
+        }
     }
 }
 
