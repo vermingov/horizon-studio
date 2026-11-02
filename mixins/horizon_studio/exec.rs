@@ -28,11 +28,12 @@ thread_local! {
 
 /// The end of a session (Studio::session_end): the executor's natives are
 /// marked again as the next session's globals are made, and its threads'
-/// identities go with them.
+/// identities go with them. (Whose call a hook is lives in the
+/// interpreter's frames, and hook errors already reported in the Rbx's
+/// remotes: both are new with the session.)
 pub fn session_end() {
     EXECUTOR_NATIVES.with(|s| s.borrow_mut().clear());
     IDENTITIES.with(|s| s.borrow_mut().clear());
-    GAME_CALLS.with(|g| g.set(false));
 }
 
 /// The identity a thread runs at unless set: an executor's, 8.

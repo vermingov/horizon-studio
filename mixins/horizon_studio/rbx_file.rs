@@ -113,6 +113,7 @@ pub enum PropValue {
     Content(Content),
 }
 
+#[allow(dead_code)]
 impl PropValue {
     /// The type's name, as the variant has it ("Vector3").
     pub fn kind(&self) -> &'static str {

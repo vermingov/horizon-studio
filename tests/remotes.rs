@@ -910,3 +910,24 @@ fn a_hook_failing_on_every_packet_is_reported_once_whichever_packet() {
     }
     assert_eq!(log(&st).iter().filter(|l| l.contains("hook failed")).count(), 3);
 }
+
+#[test]
+fn a_new_session_reports_a_hook_s_errors_afresh() {
+    // Leaving a server gives a new interpreter and Rbx: the errors reported
+    // and whose call a hook is start over with them.
+    let (mut st, mut game) = setup("remotes-session");
+    let broken = r#"hookmetamethod(game, "__namecall", function(self) error("spy broke", 0) end)"#;
+    run(&mut st, &mut game, broken);
+    for _ in 0..3 {
+        st.game_packet(&mut game, &move_pos(0.0, 64.0, 0.0));
+    }
+    st.session_end(&mut game);
+    run_for(&mut st, &mut game, 0.2);
+    run(&mut st, &mut game, broken);
+    for _ in 0..3 {
+        st.game_packet(&mut game, &move_pos(0.0, 64.0, 0.0));
+    }
+    assert_eq!(log(&st).iter().filter(|l| l.contains("hook failed")).count(), 2);
+    run(&mut st, &mut game, r#"print("CC", checkcaller())"#);
+    assert_eq!(tagged(&st, "CC"), ["CC\ttrue"]);
+}
