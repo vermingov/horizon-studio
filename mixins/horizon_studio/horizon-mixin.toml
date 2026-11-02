@@ -94,6 +94,12 @@ name = "hstudio_rbx_world"
 source = "rbx_world.rs"
 
 [[module]]
+id = "rbx_body"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_body"
+source = "rbx_body.rs"
+
+[[module]]
 id = "rbx_query"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_rbx_query"
@@ -382,6 +388,62 @@ target = "horizon_client::game::render_tick::Game<'_>::frame_fog"
 helper = "fx_fog.rs"
 bindings = [
   { name = "value", ty = "FogData", value = "$value" },
+]
+
+# The player's own model as Roblox scripts make the local character
+# (hstudio_rbx_body, hstudio_bridge::set_body): the parts they took off are
+# hidden (the poses' visibility, in the library's mobs::hstudio_body), the
+# model sits, lies, spins or keeps its limbs still (after each tick's
+# update), all of it goes with the whole character, and the first-person arm
+# with the arm.
+[[module]]
+id = "body"
+file = "crates/horizon-client/src/mobs.rs"
+name = "hstudio_body"
+source = "body.rs"
+visibility = "pub"
+
+[[injection]]
+id = "body-parts"
+kind = "RETURN"
+target = "horizon_client::mobs::anim::player_model_visibility"
+helper = "body_parts.rs"
+bindings = [
+  { name = "value", ty = "()", value = "$value" },
+  { name = "p", ty = "&mut Poses", value = "&mut *p" },
+  { name = "hidden", ty = "u8", value = "hidden" },
+]
+
+[[injection]]
+id = "body-tick"
+kind = "RETURN"
+target = "horizon_client::game::perspective::Game<'_>::tick_player_model"
+helper = "body_tick.rs"
+bindings = [
+  { name = "value", ty = "()", value = "$value" },
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+[[injection]]
+id = "body-shown"
+kind = "RETURN"
+target = "horizon_client::game::perspective::Game<'_>::player_model_shown"
+helper = "body_shown.rs"
+bindings = [
+  { name = "value", ty = "bool", value = "$value" },
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+]
+
+[[injection]]
+id = "body-hand"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_render_hand"
+helper = "body_hand.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "hand", ty = "horizon_client::first_person::Hand", value = "hand" },
+  { name = "stack", ty = "Option<&horizon_client::items::ItemStack>", value = "stack" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
 ]
 
 [[injection]]

@@ -14,6 +14,22 @@ use super::hstudio_rbx_values::{
     Data, as_cf, as_item, as_v2, as_v3, cf, coerce_enum, enum_item, enum_value, get, v2, v3, wrap,
 };
 
+/// A HumanoidStateType argument (an Enum item or its number) as its name.
+fn state_arg(lua: &Lua, args: &[Value], name: &str) -> Result<String, Throw> {
+    match args.get(1) {
+        Some(v) => match super::hstudio_rbx_values::get(v) {
+            Some(Data::Item(it)) => Ok(it.name.to_owned()),
+            _ => match v.to_num() {
+                Some(n) => Ok(super::hstudio_rbx_values::enum_def("HumanoidStateType")
+                    .and_then(|d| d.items.iter().find(|i| f64::from(i.1) == n))
+                    .map_or_else(|| n.to_string(), |i| i.0.to_owned())),
+                None => Err(bad_arg(lua, 1, name, "HumanoidStateType expected")),
+            },
+        },
+        None => Err(bad_arg(lua, 1, name, "HumanoidStateType expected")),
+    }
+}
+
 fn one(v: Value) -> Res {
     Ok(vec![v])
 }
@@ -851,21 +867,15 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             rbx.raw_set(id, "Health", Value::Num((h - n.max(0.0)).max(0.0)));
             none()
         }
-        ("Humanoid", "ChangeState") => none(),
+        // The local Humanoid jumps, sits, falls over or dies (hstudio_rbx_body).
+        ("Humanoid", "ChangeState") => {
+            let state = state_arg(lua, args, name)?;
+            super::hstudio_rbx_body::change_state(env.rbx(), id, &state);
+            none()
+        }
         // Which states the Humanoid may enter: all, until a script says.
         ("Humanoid", "SetStateEnabled" | "GetStateEnabled") => {
-            let state = match args.get(1) {
-                Some(v) => match super::hstudio_rbx_values::get(v) {
-                    Some(Data::Item(it)) => it.name.to_owned(),
-                    _ => match v.to_num() {
-                        Some(n) => super::hstudio_rbx_values::enum_def("HumanoidStateType")
-                            .and_then(|d| d.items.iter().find(|i| f64::from(i.1) == n))
-                            .map_or_else(|| n.to_string(), |i| i.0.to_owned()),
-                        None => return Err(bad_arg(lua, 1, name, "HumanoidStateType expected")),
-                    },
-                },
-                None => return Err(bad_arg(lua, 1, name, "HumanoidStateType expected")),
-            };
+            let state = state_arg(lua, args, name)?;
             let key = format!("StateEnabled:{state}");
             let rbx = env.rbx();
             if name == "GetStateEnabled" {
@@ -873,6 +883,56 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             }
             let on = args.get(2).is_some_and(Value::truthy);
             rbx.inst_mut(id).extra.insert(key, Value::Bool(on));
+            none()
+        }
+        ("Humanoid", "GetAccessories") => {
+            let rbx = env.rbx();
+            let hats = super::hstudio_rbx_body::accessories(rbx, id);
+            one(rbx.list(&hats))
+        }
+        ("Humanoid", "RemoveAccessories") => {
+            let rbx = env.rbx();
+            for hat in super::hstudio_rbx_body::accessories(rbx, id) {
+                rbx.destroy(hat);
+            }
+            none()
+        }
+        ("Humanoid", "AddAccessory") => {
+            let hat = args
+                .get(1)
+                .and_then(|v| env.rbx().id_of(v))
+                .ok_or_else(|| bad_arg(lua, 1, name, "Accessory expected"))?;
+            let rbx = env.rbx();
+            if let Some(model) = rbx.inst(id).parent {
+                rbx.set_parent(hat, Some(model)).map_err(|e| lua.rt_error(e))?;
+            }
+            none()
+        }
+        // Takes the character's hats, clothes and colours off.
+        ("Player", "ClearCharacterAppearance") => {
+            let rbx = env.rbx();
+            if let Some(model) = rbx.id_of(&rbx.raw_get(id, "Character")) {
+                super::hstudio_rbx_body::clear_appearance(rbx, model);
+            }
+            none()
+        }
+        // Moves a model by an offset (its parts, the player with the local root part).
+        ("Model", "TranslateBy") => {
+            let by = args
+                .get(1)
+                .and_then(as_v3)
+                .ok_or_else(|| bad_arg(lua, 1, name, "Vector3 expected"))?;
+            let rbx = env.rbx();
+            let at = pivot(rbx, id);
+            move_to(rbx, id, CFrame::from_position(by) * at);
+            none()
+        }
+        // The character's joints break: Roblox's character dies.
+        ("Model", "BreakJoints") => {
+            let rbx = env.rbx();
+            if id == rbx.character {
+                super::hstudio_rbx_body::kill(rbx);
+            }
             none()
         }
         // A message to the chat: the game's chat (its commands aside).

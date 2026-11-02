@@ -1383,7 +1383,7 @@ fn characters_have_r6_limbs_in_a_rest_pose() {
     let p = printed(&st, "limbs");
     assert_eq!(
         p[0],
-        "HumanoidRootPart, Head, Humanoid, Torso, Left Arm, Right Arm, Left Leg, Right Leg, Animate"
+        "HumanoidRootPart, Head, Humanoid, Torso, Left Arm, Right Arm, Left Leg, Right Leg, Animate, Shirt, Pants, Hat"
     );
     assert_eq!(p[1], "0.469 0.703 0.234    0.234 0.703 0.234    0.234 0.703 0.234");
     assert_eq!(

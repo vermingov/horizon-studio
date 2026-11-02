@@ -350,6 +350,25 @@ pub trait GameApi {
     fn turn_player(&mut self, dyaw: f32, dpitch: f32) {
         let _ = (dyaw, dpitch);
     }
+    /// The player jumps now, as the jump key makes them jump off the ground
+    /// (the jump's strength, Jump Boost, a sprint's push), wherever they
+    /// are: in the air too, as Roblox's Humanoid jumps when told to. Whether
+    /// there was a player to jump.
+    fn jump_player(&mut self) -> bool {
+        false
+    }
+    /// Sets how fast the player rises (blocks a tick, falling when
+    /// negative), its fall cut short: the way across stays as it is.
+    fn set_player_rise(&mut self, vy: f64) -> bool {
+        let _ = vy;
+        false
+    }
+    /// How the player's own model looks and moves (in third person, the
+    /// inventory, the first-person arm), as Roblox scripts make the local
+    /// character: parts taken off, a pose, a spin. Only this client sees it.
+    fn set_body(&mut self, body: &Body) {
+        let _ = body;
+    }
     /// The studio's own screens draw with Horizon's design system, in dp
     /// (the launcher's logical pixels): the screen in dp, and dp per GUI pixel.
     fn dp(&mut self) -> (f32, f32, f32);
@@ -605,6 +624,43 @@ pub struct PartFrame {
     pub up: [f64; 3],
     pub forward: [f64; 3],
 }
+
+/// The player's own model as the Roblox layer's local character has it
+/// (`GameApi::set_body`); the default is the game's own.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Body {
+    /// The model's parts not drawn, by its names, in BODY_PARTS' order.
+    pub hidden: Vec<&'static str>,
+    /// Nothing of the model drawn: no body, armour, held items or cape.
+    pub gone: bool,
+    /// "" (as the game poses it), "sitting" (as a rider sits) or "lying"
+    /// (flat on the back, as in a bed).
+    pub pose: &'static str,
+    /// How fast the body turns about its feet, in degrees a second (the
+    /// view stays where it is).
+    pub spin: f32,
+    /// The limbs keep still while the player walks (no walking animation).
+    pub still: bool,
+    /// The body doesn't turn toward where the player walks.
+    pub fixed: bool,
+}
+
+/// The parts of the player's model `Body::hidden` names: the skin's inner
+/// parts and its outer layers.
+pub const BODY_PARTS: [&str; 12] = [
+    "head",
+    "hat",
+    "body",
+    "jacket",
+    "left_arm",
+    "right_arm",
+    "left_sleeve",
+    "right_sleeve",
+    "left_leg",
+    "right_leg",
+    "left_pants",
+    "right_pants",
+];
 
 /// The player's pose, for `player.pose()`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -3059,9 +3115,9 @@ impl Studio {
         if let Some(feet) = super::hstudio_rbx_world::take_teleport(rbx) {
             game.move_player(feet);
         }
-        if let Some((walk, jump)) = rbx.world.speed_request.take() {
-            game.set_player_speed(walk, jump);
-        }
+        // The speeds (held back while the Humanoid sits or lies), a jump, a
+        // push, a platform, and how the player's own model looks.
+        super::hstudio_rbx_body::effects(rbx, game);
         let noclip = super::hstudio_rbx_world::noclip(rbx);
         if noclip != rbx.world.noclip {
             rbx.world.noclip = noclip;

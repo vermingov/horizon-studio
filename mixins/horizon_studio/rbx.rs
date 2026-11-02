@@ -1841,6 +1841,7 @@ impl Rbx {
         }
         // The character: an R6 rig that follows the player (hstudio_rbx_world).
         let rig = super::hstudio_rbx_world::build_character(self, super::hstudio_rbx_world::NO_NAME);
+        super::hstudio_rbx_body::dress(self, rig.model);
         self.character = rig.model;
         self.root_part = rig.root;
         self.head = rig.head;
@@ -2587,6 +2588,12 @@ const METHODS: &[(&str, &str)] = &[
     ("MoveTo", "Humanoid"),
     ("TakeDamage", "Humanoid"),
     ("ChangeState", "Humanoid"),
+    ("GetAccessories", "Humanoid"),
+    ("RemoveAccessories", "Humanoid"),
+    ("AddAccessory", "Humanoid"),
+    ("ClearCharacterAppearance", "Player"),
+    ("TranslateBy", "Model"),
+    ("BreakJoints", "Model"),
     ("SetStateEnabled", "Humanoid"),
     ("LoadAnimation", "Humanoid"),
     ("LoadAnimation", "Animator"),
@@ -3613,7 +3620,13 @@ impl Rbx {
             ("Sound", "Playing") if self.raw_get(id, "Playing").truthy() => self.play_sound(id),
             (_, "CFrame") if id == self.root_part => super::hstudio_rbx_world::root_moved(self),
             ("Humanoid", "WalkSpeed" | "JumpPower" | "JumpHeight") if id == self.humanoid => {
-                super::hstudio_rbx_world::speeds_set(self)
+                super::hstudio_rbx_world::speeds_set(self, prop)
+            }
+            ("Humanoid", "Jump" | "Sit" | "PlatformStand") if id == self.humanoid => {
+                super::hstudio_rbx_body::humanoid_set(self, prop)
+            }
+            (_, "Velocity" | "AssemblyLinearVelocity") if id == self.root_part => {
+                super::hstudio_rbx_body::root_velocity(self, prop)
             }
             ("Humanoid", "Health") if id == self.humanoid => super::hstudio_rbx_world::health_set(self),
             ("Player", "Character") if id == self.local_player => super::hstudio_rbx_world::resolve_character(self),

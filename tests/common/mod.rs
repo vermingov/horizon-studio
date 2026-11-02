@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use horizon_studio::game::hstudio::{
-    Camera, Corner, EntityInfo, Font, GameApi, PlayerEntry, PlayerInfo, PlayerPose, Reply, Studio, ViaInfo,
+    Body, Camera, Corner, EntityInfo, Font, GameApi, PlayerEntry, PlayerInfo, PlayerPose, Reply, Studio, ViaInfo,
     VoiceChange, VoiceInfo,
 };
 use std::collections::HashMap;
@@ -58,6 +58,8 @@ pub struct FakeGame {
     pub voice: VoiceInfo,
     pub voice_changes: Vec<VoiceChange>,
     pub voice_glue: Option<horizon_studio::game::hstudio_voicechat::Glue>,
+    /// How the player's own model looks, as the studio last set it.
+    pub body: Body,
 }
 
 /// A particle spawned: its id, place, speed and colour.
@@ -149,6 +151,7 @@ impl FakeGame {
             voice: VoiceInfo::default(),
             voice_changes: Vec::new(),
             voice_glue: None,
+            body: Body::default(),
         }
     }
     pub fn mods_dir(&self) -> PathBuf {
@@ -291,6 +294,38 @@ impl GameApi for FakeGame {
     }
     fn turn_player(&mut self, dyaw: f32, dpitch: f32) {
         self.moves.push(format!("turn {dyaw:.1} {dpitch:.1}"));
+    }
+    fn jump_player(&mut self) -> bool {
+        self.moves.push("jump".into());
+        true
+    }
+    fn set_player_rise(&mut self, vy: f64) -> bool {
+        self.moves.push(format!("rise {vy:.2}"));
+        true
+    }
+    // "body" and what differs from the game's own model.
+    fn set_body(&mut self, body: &Body) {
+        let mut line = String::from("body");
+        if !body.hidden.is_empty() {
+            line += &format!(" hidden={}", body.hidden.join(","));
+        }
+        if body.gone {
+            line += " gone";
+        }
+        if !body.pose.is_empty() {
+            line += &format!(" pose={}", body.pose);
+        }
+        if body.spin != 0.0 {
+            line += &format!(" spin={:.0}", body.spin);
+        }
+        if body.still {
+            line += " still";
+        }
+        if body.fixed {
+            line += " fixed";
+        }
+        self.moves.push(line);
+        self.body = body.clone();
     }
     fn dp(&mut self) -> (f32, f32, f32) {
         (960.0, 540.0, 1.0)

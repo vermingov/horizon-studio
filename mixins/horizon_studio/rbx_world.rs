@@ -99,6 +99,9 @@ pub struct World {
     /// What scripts asked of the game's own rendering and player, sent to
     /// the game each frame (Studio::roblox_effects).
     pub effects: Effects,
+    /// What scripts made the local Humanoid and character do
+    /// (hstudio_rbx_body): jumps, sitting, falling over, parts taken off.
+    pub body: super::hstudio_rbx_body::Doings,
     /// The game's speeds the Humanoid was last given: a script's own
     /// WalkSpeed stays until the game's changes.
     pub speed: Option<f64>,
@@ -148,6 +151,7 @@ impl Default for World {
             speed_request: None,
             noclip: false,
             effects: Effects::default(),
+            body: Default::default(),
             speed: None,
             jump: None,
             state: "Running",
@@ -426,10 +430,12 @@ fn sync_local(rbx: &mut Rbx, p: &PlayerInfo, pose: Option<&PlayerPose>) {
     speeds(rbx, p);
     let speed = motion(rbx, p);
     rbx.world.on_ground = pose.is_none_or(|q| q.on_ground);
+    super::hstudio_rbx_body::frame(rbx);
     let state = if rbx.respawn_at.is_some() {
         "Dead"
     } else {
-        next_state(rbx.world.state, p, pose)
+        let computed = next_state(rbx.world.state, p, pose);
+        super::hstudio_rbx_body::state(rbx, computed)
     };
     set_state(rbx, state, speed);
 }
@@ -550,7 +556,7 @@ fn next_state(was: &str, p: &PlayerInfo, pose: Option<&PlayerPose>) -> &'static 
 /// Jumping(true) and (false) as it enters and leaves Jumping; and Running
 /// with the speed along the ground as it changes while running, 0 when it
 /// stops.
-fn set_state(rbx: &mut Rbx, state: &'static str, speed: f64) {
+pub fn set_state(rbx: &mut Rbx, state: &'static str, speed: f64) {
     let hum = rbx.humanoid;
     let was = rbx.world.state;
     if was != state {
@@ -580,6 +586,7 @@ fn respawn(rbx: &mut Rbx) {
     rbx.respawn_at = None;
     // A new character walks and jumps as the game does.
     rbx.world.speed_request = Some((1.0, 1.0));
+    rbx.world.body.respawned();
     let player = rbx.local_player;
     // The character the LocalPlayer has goes (none when a script took it).
     let old = Some(rbx.character).filter(|&c| c != rbx.spare_model);
@@ -589,6 +596,7 @@ fn respawn(rbx: &mut Rbx) {
     }
     let name = rbx.inst(player).name.clone();
     let rig = build_character(rbx, &name);
+    super::hstudio_rbx_body::dress(rbx, rig.model);
     rbx.character = rig.model;
     rbx.root_part = rig.root;
     rbx.head = rig.head;
@@ -1679,10 +1687,12 @@ pub fn state_of(rbx: &Rbx, humanoid: Id) -> &'static str {
 /// this frame's pose has them, with a /tp at the end of the frame. A later
 /// move takes the earlier's place.
 pub fn root_moved(rbx: &mut Rbx) {
-    let at = as_cf(&rbx.raw_get(rbx.root_part, "CFrame"))
-        .unwrap_or_default()
-        .position();
-    rbx.world.teleport = Some(at - Vector3::new(0.0, rbx.world.root_y, 0.0));
+    let to = as_cf(&rbx.raw_get(rbx.root_part, "CFrame")).unwrap_or_default();
+    let feet = to.position() - Vector3::new(0.0, rbx.world.root_y, 0.0);
+    // Out of the world, or where Roblox destroys the character, it doesn't go.
+    if super::hstudio_rbx_body::root_moved(rbx, to, feet) {
+        rbx.world.teleport = Some(feet);
+    }
 }
 
 /// Where Model:MoveTo puts the player's root part, asked for `at`: Roblox
@@ -1727,12 +1737,19 @@ pub fn take_teleport(rbx: &mut Rbx) -> Option<[f64; 3]> {
     Some([to.x, to.y, to.z])
 }
 
-/// A script set the local Humanoid's WalkSpeed, JumpPower or JumpHeight:
-/// the game's walking and jumping scale to them (16, 50 and 7.2 its own).
-pub fn speeds_set(rbx: &mut Rbx) {
+/// A script set the local Humanoid's WalkSpeed, JumpPower or JumpHeight
+/// (`prop`): the game's walking or jumping scales to it (16, 50 and 7.2
+/// its own; a jump's height goes with the square of its speed), the other
+/// as it was asked last.
+pub fn speeds_set(rbx: &mut Rbx, prop: &str) {
     let hum = rbx.humanoid;
-    let walk = rbx.raw_get(hum, "WalkSpeed").to_num().unwrap_or(16.0).max(0.0) / 16.0;
-    let power = rbx.raw_get(hum, "JumpPower").to_num().unwrap_or(50.0).max(0.0) / 50.0;
+    let num = |rbx: &Rbx, k: &str, d: f64| rbx.raw_get(hum, k).to_num().unwrap_or(d).max(0.0);
+    let (mut walk, mut power) = rbx.world.speed_request.unwrap_or(rbx.world.body.scales);
+    match prop {
+        "WalkSpeed" => walk = num(rbx, "WalkSpeed", 16.0) / 16.0,
+        "JumpPower" => power = num(rbx, "JumpPower", 50.0) / 50.0,
+        _ => power = (num(rbx, "JumpHeight", 7.2) / 7.2).sqrt(),
+    }
     rbx.world.speed_request = Some((walk, power));
 }
 

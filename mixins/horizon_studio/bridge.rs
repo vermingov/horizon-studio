@@ -5,7 +5,7 @@
 // command can reach the game's own command path) do nothing.
 
 use super::hstudio::{
-    Camera, Corner, EntityInfo, Font, GameApi, ID, NAME, OPEN_KEY, PartFrame, PlayerEntry, PlayerInfo, PlayerPose,
+    BODY_PARTS, Body, Camera, Corner, EntityInfo, Font, GameApi, ID, NAME, OPEN_KEY, PartFrame, PlayerEntry, PlayerInfo, PlayerPose,
     Reply, Studio, TexRef, VERSION, ViaInfo, WorldTri,
 };
 use horizon_client::net::hstudio_via as via;
@@ -55,6 +55,78 @@ thread_local! {
     /// What Roblox scripts' Lighting, Workspace and Camera ask of the view:
     /// read by the FOV and fog hooks and each frame.
     static FX: Cell<Fx> = const { Cell::new(Fx { light: 0.0, time: None, fog: None, fov: None }) };
+    /// How the player's own model looks as Roblox scripts make the local
+    /// character (hstudio::Body), for the model's hooks; the parts hidden
+    /// are in the library's mobs::hstudio_body.
+    static BODY: Cell<BodyNow> = const { Cell::new(BodyNow { gone: false, pose: 0, spin: 0.0, still: false, fixed: false }) };
+}
+
+/// hstudio::Body as the model's hooks read it.
+#[derive(Clone, Copy, PartialEq)]
+struct BodyNow {
+    gone: bool,
+    /// 0 as the game poses it, 1 sitting, 2 lying.
+    pose: u8,
+    /// Degrees a second.
+    spin: f32,
+    still: bool,
+    fixed: bool,
+}
+
+/// After the player's model takes its tick (tick_player_model): posed as
+/// the local character is, sitting as a rider sits or lying as a sleeper
+/// lies (its head behind it), spun about its feet, its limbs still, its
+/// body not turning to the walk; and marked as the player's own, whose
+/// parts the studio hides.
+pub(super) fn body_tick(game: &mut Game<'_>) {
+    let b = BODY.with(Cell::get);
+    if !game.native_on(ID) {
+        return;
+    }
+    let yaw = game.yaw;
+    let Some(m) = game.player_model.as_mut() else { return };
+    if horizon_client::mobs::hstudio_body::mask() != 0 {
+        m.extra.hidden_model_parts |= horizon_client::mobs::hstudio_body::OWN;
+    }
+    match b.pose {
+        1 => m.extra.passenger = true,
+        2 => {
+            // A bed's facing code (villager::sleep_pose): the head toward the back.
+            let quarter = ((yaw.rem_euclid(360.0) + 45.0) / 90.0) as i32 % 4;
+            m.extra.ints[1] = [1, 4, 2, 3][quarter as usize];
+        }
+        _ => {}
+    }
+    if b.still {
+        m.limb_speed = 0.0;
+        m.previous_limb_speed = 0.0;
+    }
+    if b.spin != 0.0 {
+        m.body_yaw = m.previous_body_yaw + b.spin / 20.0;
+        m.head_yaw = m.body_yaw;
+    } else if b.fixed {
+        // Within 50 degrees of where the player looks, as the game keeps it.
+        let diff = (yaw - m.previous_body_yaw + 540.0).rem_euclid(360.0) - 180.0;
+        m.body_yaw = m.previous_body_yaw + (diff.abs() - 50.0).max(0.0) * diff.signum();
+    }
+}
+
+/// Whether the player's own model is drawn at all: not while Roblox
+/// scripts took the whole local character away.
+pub(super) fn body_whole(game: &Game<'_>) -> bool {
+    !(BODY.with(Cell::get).gone && game.native_on(ID))
+}
+
+/// Whether the first-person arm of `hand` is drawn (empty, it shows the
+/// arm): not once Roblox scripts took that arm (or the whole character) off.
+pub(super) fn arm_shown(game: &Game<'_>, hand: horizon_client::first_person::Hand) -> bool {
+    if !game.native_on(ID) {
+        return true;
+    }
+    let left = game.settings.main_hand_left != (hand == horizon_client::first_person::Hand::Off);
+    let part = if left { "left_arm" } else { "right_arm" };
+    let bit = BODY_PARTS.iter().position(|p| *p == part).unwrap_or(0);
+    !BODY.with(Cell::get).gone && horizon_client::mobs::hstudio_body::mask() & (1 << bit) == 0
 }
 
 /// The view as scripts ask for it (hstudio_rbx_world's Effects).
@@ -1199,6 +1271,51 @@ impl GameApi for Host<'_, '_> {
         p.velocity = horizon_core::geometry::Vec3::new(v[0], v[1], v[2]);
         p.fall_distance = 0.0;
         true
+    }
+    fn jump_player(&mut self) -> bool {
+        let Some(g) = self.g_mut() else { return false };
+        let Some(player) = g.player.as_mut() else { return false };
+        // The game's own jump (LivingEntity.jumpFromGround), off the ground or not.
+        horizon_client::motion::MotionWorld {
+            entities: &[],
+            player,
+            scene: &mut g.world,
+            assets: &g.pack.assets,
+            collision_binding: g.collision,
+            resources: g.motion,
+        }
+        .jump_from_ground()
+        .is_ok()
+    }
+    fn set_player_rise(&mut self, vy: f64) -> bool {
+        let Some(p) = self.g_mut().and_then(|g| g.player.as_mut()) else {
+            return false;
+        };
+        p.velocity.y = vy;
+        p.fall_distance = 0.0;
+        true
+    }
+    fn set_body(&mut self, body: &Body) {
+        let mask = BODY_PARTS
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| body.hidden.contains(p))
+            .fold(0u16, |m, (i, _)| m | (1 << i));
+        horizon_client::mobs::hstudio_body::set(mask);
+        let pose = match body.pose {
+            "sitting" => 1,
+            "lying" => 2,
+            _ => 0,
+        };
+        BODY.with(|b| {
+            b.set(BodyNow {
+                gone: body.gone,
+                pose,
+                spin: body.spin,
+                still: body.still,
+                fixed: body.fixed,
+            })
+        });
     }
     fn set_noclip(&mut self, on: bool) -> bool {
         let Some(g) = self.g_mut() else { return false };
