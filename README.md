@@ -868,6 +868,21 @@ end)
   CFrame, `PivotTo`, a tween) teleports you with `/tp`, and `Humanoid:MoveTo` walks you there (MoveToFinished
   fires). `workspace.CurrentCamera` follows the camera (`WorldToViewportPoint`), Parts in the Workspace are drawn in
   the world, and `workspace:Raycast` goes through the world's blocks and the parts.
+- **The character's doings** reach the game, client-side (only your client sees your model's changes; the server
+  sees your moves). `Humanoid:ChangeState(Jumping)` makes you jump the game's own jump, in the air too (infinite
+  jump), and `Humanoid.Jump = true` from the ground; JumpRequest fires while the jump key is held. `Sit = true` sits
+  your model as a rider sits and holds you still until the jump key (turned on its side, it lies); `PlatformStand`,
+  `ChangeState(FallingDown)` (it lies, then gets up), Ragdoll and Physics hold you still; a state it may not enter
+  (`SetStateEnabled`) isn't entered, and with Jumping off you can't jump. WalkSpeed and JumpPower (or JumpHeight)
+  each scale the game's own. Setting the root part's `Velocity` pushes you; an anchored part a script keeps under the
+  character (a float) holds you up. The character's parts are your model's: take its arms, legs, head or torso
+  away and they go from your model (the first-person arm too), its Shirt and Pants are your skin's outer layers
+  and its Hat accessory your hat layer; a part made visible is drawn as the Roblox part it is in place of your
+  model's, and a character out of the Workspace (or with none of its parts) isn't drawn at all. A
+  BodyAngularVelocity in the root part spins your model, a disabled Animate stills its limbs, `AutoRotate = false`
+  keeps it from turning to the walk. `ChangeState(Dead)`, `BreakJoints` or a move below
+  `FallenPartsDestroyHeight` kill the character (a new one comes `RespawnTime` later); the player isn't moved
+  there, nor out of the world.
 - **Entities and other players.** Once a script looks at the world (the Workspace's children or events, a raycast,
   the Mouse's Target, Players), the mobs, dropped items and experience orbs near you are in the Workspace while it
   runs: a mob is a Model with a HumanoidRootPart, a Head and a Humanoid (its health times 5), an item or an orb a
