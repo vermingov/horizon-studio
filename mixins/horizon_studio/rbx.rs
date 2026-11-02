@@ -447,7 +447,11 @@ pub static CLASSES: &[C] = &[
     // Services scripts get at their top, though they can do nothing here.
     lenient_service("TeleportService"),
     lenient_service("VirtualUser"),
-    lenient_service("VirtualInputManager"),
+    // Executors make their own (Instance.new) to send input with.
+    C {
+        creatable: true,
+        ..lenient_service("VirtualInputManager")
+    },
     lenient_service("Stats"),
     lenient_service("PathfindingService"),
     lenient_service("PhysicsService"),
@@ -1668,6 +1672,8 @@ pub struct Rbx {
     pub page_turns: Vec<super::hstudio_rbx_draw::PageTurn>,
     /// The GUIs in StarterGui already copied into the PlayerGui.
     pub starter_copied: HashSet<Id>,
+    /// What Roblox's own client does for scripts (hstudio_rbx_client).
+    pub client: super::hstudio_rbx_client::Client,
 }
 
 /// An HTTP request a thread waits for.
@@ -1789,6 +1795,7 @@ impl Rbx {
             fresh_nodes: 0,
             page_turns: Vec::new(),
             starter_copied: HashSet::new(),
+            client: Default::default(),
         };
         r.build();
         r
@@ -2636,6 +2643,28 @@ const METHODS: &[(&str, &str)] = &[
     ("JumpToIndex", "UIPageLayout"),
     ("Next", "UIPageLayout"),
     ("Previous", "UIPageLayout"),
+    // hstudio_rbx_client's.
+    ("Shutdown", "DataModel"),
+    ("Teleport", "TeleportService"),
+    ("TeleportAsync", "TeleportService"),
+    ("TeleportToPlaceInstance", "TeleportService"),
+    ("TeleportToPrivateServer", "TeleportService"),
+    ("TeleportCancel", "TeleportService"),
+    ("GetLocalPlayerTeleportData", "TeleportService"),
+    ("ClearError", "GuiService"),
+    ("GetErrorMessage", "GuiService"),
+    ("ToggleFullscreen", "GuiService"),
+    ("InspectPlayerFromUserId", "GuiService"),
+    ("CloseInspectMenu", "GuiService"),
+    ("Set3dRenderingEnabled", "RunService"),
+    ("TakeScreenshot", "CoreGui"),
+    ("ToggleRecording", "CoreGui"),
+    ("SubscribePause", "VoiceChatInternal"),
+    ("SubscribePauseAll", "VoiceChatInternal"),
+    ("SetListener", "SoundService"),
+    ("GetListener", "SoundService"),
+    ("RequestFriendship", "Player"),
+    ("RevokeFriendship", "Player"),
 ];
 
 const SIGNAL_METHODS: &[&str] = &["Connect", "Once", "Wait", "ConnectParallel"];
@@ -3121,7 +3150,10 @@ pub fn api_call(env: &mut dyn Env, lua: &mut Lua, id: u32, args: Vec<Value>) -> 
     };
     let rbx = env.rbx();
     match args.first().and_then(|v| rbx.id_of(v)) {
-        Some(i) if is_a(rbx.inst(i).class, f.class) => Ok(super::hstudio_rbx_api::returns(f)),
+        Some(i) if is_a(rbx.inst(i).class, f.class) => {
+            super::hstudio_rbx_client::called(rbx, i, f.name);
+            Ok(super::hstudio_rbx_api::returns(f))
+        }
         _ => Err(lua.rt_error(format!("Expected ':' not '.' calling member function {}", f.name))),
     }
 }
@@ -3579,13 +3611,15 @@ fn newindex(env: &mut dyn Env, lua: &mut Lua, args: &[Value]) -> Result<(), Thro
                     rbx.fire(id, "Changed", vec![Value::str(&key)]);
                     rbx.fire(id, &format!("prop:{key}"), Vec::new());
                 }
+                super::hstudio_rbx_client::extra_set(rbx, id, &key);
             } else {
                 rbx.inst_mut(id).extra.insert(key, v);
             }
             Ok(())
         }
         _ if c.lenient || rbx.inst(id).revealed.contains(&key) => {
-            rbx.inst_mut(id).extra.insert(key, v);
+            rbx.inst_mut(id).extra.insert(key.clone(), v);
+            super::hstudio_rbx_client::extra_set(rbx, id, &key);
             Ok(())
         }
         _ => Err(lua.rt_error(format!(

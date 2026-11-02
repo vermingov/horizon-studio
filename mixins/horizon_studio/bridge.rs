@@ -159,8 +159,12 @@ pub(super) fn field_of_view(value: f32, setting: f32) -> f32 {
     }
 }
 
-/// Where the fog ends when scripts bring it closer (Roblox's FogEnd, from 0).
+/// Where the fog ends when scripts bring it closer (Roblox's FogEnd, from 0;
+/// at the camera while they have 3D rendering off).
 pub(super) fn fog_end() -> Option<f32> {
+    if horizon_core::natrium::world_hidden() {
+        return Some(0.0);
+    }
     FX.with(|c| c.get().fog)
 }
 
@@ -188,6 +192,8 @@ enum Later {
     Clipboard(String),
     Sound(String, Option<[f64; 3]>, f32, f32),
     Particle(horizon_client::particles::ParticleOptions, [f64; 3], [f64; 3]),
+    /// What a Roblox script asked of the client (hstudio_rbx_client).
+    Client(super::hstudio::ClientAction),
 }
 
 /// The most kept for one frame (a screen drawn 60 times a second can't pile up).
@@ -211,6 +217,7 @@ fn catch_up(game: &mut Game<'_>) {
             Later::Clipboard(text) => game.clipboard.set(&text),
             Later::Sound(id, at, volume, pitch) => game.audio.play(&id, at, volume, pitch),
             Later::Particle(options, at, velocity) => game.particles.add(&options, at, velocity),
+            Later::Client(action) => client_now(game, action),
         }
     }
 }
@@ -960,6 +967,16 @@ impl GameApi for Host<'_, '_> {
     fn voice_set(&mut self, change: super::hstudio::VoiceChange) -> Result<(), String> {
         super::hstudio_voicechat::global(|v| v.set(change))
     }
+    fn client(&self) -> super::hstudio::ClientInfo {
+        client_info(self.g())
+    }
+    fn client_do(&mut self, action: super::hstudio::ClientAction) -> Result<(), String> {
+        client_check(self.g(), &action)?;
+        // Leaving and joining change the whole game: at the next frame's
+        // start, as the rest kept for later.
+        later(Later::Client(action));
+        Ok(())
+    }
     fn camera(&self) -> Option<Camera> {
         if let Some((_, cam)) = &self.world {
             return Some(*cam);
@@ -1423,6 +1440,7 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &dyn EventLoopCtl) {
     }
     catch_up(game);
     keep_view(game);
+    remember_server(game);
     // Once frames stop (a hidden window), the network thread answers the
     // server's pings itself: it learns here when the last frame began, and
     // which connection to answer on.
@@ -2185,4 +2203,203 @@ pub(super) fn settings_click(game: &mut Game<'_>, button: usize) {
         n if n >= VOICE_ROW => super::hstudio_voicechat::global(|v| v.settings_click(n - VOICE_ROW)),
         _ => {}
     }
+}
+
+// ----------------------------------------------------------------- the client, for Roblox scripts
+
+thread_local! {
+    /// The server joined last (address, player name), to rejoin once it is left.
+    static LAST_SERVER: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
+    /// The HUD's parts Roblox scripts hid: the chat and the player list.
+    static HIDE_CHAT: Cell<bool> = const { Cell::new(false) };
+    static HIDE_TAB: Cell<bool> = const { Cell::new(false) };
+    /// The player's graphics settings while scripts have them lowered.
+    static GRAPHICS: RefCell<Option<Graphics>> = const { RefCell::new(None) };
+}
+
+/// The graphics settings `ClientAction::LowGraphics` lowers.
+struct Graphics {
+    render_distance: i32,
+    particles: u8,
+    clouds: String,
+    entity_shadows: bool,
+    entity_distance: f32,
+    biome_blend: i32,
+    weather_radius: i32,
+}
+
+fn graphics(g: &Game<'_>) -> Graphics {
+    let s = &g.settings;
+    Graphics {
+        render_distance: s.render_distance,
+        particles: s.particles,
+        clouds: s.clouds.clone(),
+        entity_shadows: s.entity_shadows,
+        entity_distance: s.entity_distance,
+        biome_blend: s.biome_blend,
+        weather_radius: s.weather_radius,
+    }
+}
+
+fn set_graphics(g: &mut Game<'_>, v: Graphics) {
+    let s = &mut g.settings;
+    s.render_distance = v.render_distance;
+    s.particles = v.particles;
+    s.clouds = v.clouds;
+    s.entity_shadows = v.entity_shadows;
+    s.entity_distance = v.entity_distance;
+    s.biome_blend = v.biome_blend;
+    s.weather_radius = v.weather_radius;
+    g.apply_settings();
+}
+
+/// The server the player is on, how the last connection ended (the
+/// Disconnected screen's reason), and the settings Roblox scripts read.
+fn client_info(g: &Game<'_>) -> super::hstudio::ClientInfo {
+    use horizon_client::multiplayer::Screen as Multiplayer;
+    use horizon_client::title::Mode;
+    let own = g.integrated.as_ref().map(|i| i.world_name.clone());
+    let server = match (g.remote.as_ref(), own) {
+        (_, Some(world)) => Some(super::hstudio::ServerInfo {
+            address: String::new(),
+            name: world,
+            brand: g.remote.as_ref().map(|r| r.brand.clone()).unwrap_or_default(),
+            own_world: true,
+        }),
+        (Some(r), None) => Some(super::hstudio::ServerInfo {
+            address: r.session.address.clone(),
+            name: horizon_client::net::shown_address(&r.session.address),
+            brand: r.brand.clone(),
+            own_world: false,
+        }),
+        (None, None) => None,
+    };
+    let disconnected = match g.title.as_ref().map(|t| &t.mode) {
+        Some(Mode::Multiplayer(Multiplayer::Disconnected { reason, .. })) => Some(reason.clone()),
+        _ => None,
+    };
+    super::hstudio::ClientInfo {
+        server,
+        disconnected,
+        master_volume: g.settings.master_volume,
+        fullscreen: g.settings.fullscreen,
+    }
+}
+
+/// Each frame: the server the player is on, to come back to.
+fn remember_server(g: &Game<'_>) {
+    if g.integrated.is_none()
+        && let Some(r) = g.remote.as_ref()
+    {
+        let now = (r.session.address.clone(), r.session.name.clone());
+        LAST_SERVER.with(|l| {
+            if l.borrow().as_ref() != Some(&now) {
+                *l.borrow_mut() = Some(now);
+            }
+        });
+    }
+}
+
+/// Whether the client can do it now (said at once, as Roblox's would).
+fn client_check(g: &Game<'_>, action: &super::hstudio::ClientAction) -> Result<(), String> {
+    use super::hstudio::ClientAction as A;
+    match action {
+        A::Rejoin if g.integrated.is_some() => Err("a world of the player's own has no server to rejoin".into()),
+        A::Rejoin if g.remote.is_none() && LAST_SERVER.with(|l| l.borrow().is_none()) => {
+            Err("no server was joined to rejoin".into())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Does what a Roblox script asked of the client, at a frame's start.
+fn client_now(game: &mut Game<'_>, action: super::hstudio::ClientAction) {
+    use super::hstudio::ClientAction as A;
+    match action {
+        A::Leave(reason) => {
+            if game.remote.is_some() || game.integrated.is_some() {
+                if let Err(e) = game.leave_server(reason) {
+                    log::warn!("Horizon Studio: leaving the server: {e}");
+                }
+            }
+        }
+        A::Rejoin => {
+            let here = game
+                .remote
+                .as_ref()
+                .filter(|_| game.integrated.is_none())
+                .map(|r| (r.session.address.clone(), r.session.name.clone()));
+            let Some((address, name)) = here.or_else(|| LAST_SERVER.with(|l| l.borrow().clone())) else {
+                return;
+            };
+            if game.remote.is_some()
+                && let Err(e) = game.leave_server(None)
+            {
+                log::warn!("Horizon Studio: leaving the server to rejoin it: {e}");
+                return;
+            }
+            if let Err(e) = game.connect_server(&address, &name) {
+                log::warn!("Horizon Studio: rejoining {address}: {e}");
+            }
+        }
+        A::MasterVolume(v) => {
+            let v = v.clamp(0.0, 1.0);
+            game.settings.master_volume = v;
+            game.audio.master = v;
+        }
+        A::LowGraphics(true) => {
+            if GRAPHICS.with(|g| g.borrow().is_some()) {
+                return;
+            }
+            let was = graphics(game);
+            let low = Graphics {
+                render_distance: was.render_distance.min(8),
+                particles: 2,
+                clouds: "false".into(),
+                entity_shadows: false,
+                entity_distance: was.entity_distance.min(0.5),
+                biome_blend: 0,
+                weather_radius: was.weather_radius.min(3),
+            };
+            GRAPHICS.with(|g| *g.borrow_mut() = Some(was));
+            set_graphics(game, low);
+        }
+        A::LowGraphics(false) => {
+            if let Some(was) = GRAPHICS.with(|g| g.borrow_mut().take()) {
+                set_graphics(game, was);
+            }
+        }
+        A::ToggleFullscreen => game.toggle_fullscreen(),
+        // The hotbar slot held, said again: the server counts it as the
+        // player's action (its idle timer starts over), and nothing changes.
+        A::Activity => {
+            if game.remote.is_some() && game.integrated.is_none() {
+                game.send(horizon_protocol::packets::play::Serverbound::SetCarriedItem(
+                    horizon_protocol::packets::play::SetCarriedItem {
+                        slot: game.selected as i16,
+                    },
+                ));
+            }
+        }
+        A::MuteVoice(who, muted) => super::hstudio_voicechat::global(|v| v.vc.mute_voice(who, muted)),
+        A::VoiceListener(at) => super::hstudio_voicechat::global(|v| v.listener_at = at),
+        A::Hud(part, shown) => match part.as_str() {
+            "chat" => HIDE_CHAT.with(|c| c.set(!shown)),
+            "playerlist" => HIDE_TAB.with(|c| c.set(!shown)),
+            "all" => game.ui.hide_gui = !shown,
+            _ => {}
+        },
+        A::WorldRendering(on) => horizon_core::natrium::set_world_hidden(!on),
+    }
+}
+
+/// The chat's lines over the HUD are drawn unless a Roblox script hid the
+/// chat (the core GUI's Chat, TextChatService's chat window).
+pub(super) fn chat_hidden(game: &Game<'_>) -> bool {
+    game.screen != Screen::Chat && game.native_on(ID) && HIDE_CHAT.with(Cell::get)
+}
+
+/// The player list (Tab) is drawn unless a Roblox script hid it.
+pub(super) fn player_list_hidden(game: &Game<'_>) -> bool {
+    game.native_on(ID) && HIDE_TAB.with(Cell::get)
 }

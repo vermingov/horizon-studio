@@ -435,6 +435,38 @@ fn talk_and_listen(compat: i32) {
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(glue(&mut game).vc.shared().status().played, before + 1);
 
+    // A voice muted here (a Roblox script's VoiceChatInternal:SubscribePause):
+    // Alex's isn't played, another's is; with everyone's muted, none is.
+    glue(&mut game).vc.mute_voice(Some(ALEX), true);
+    assert!(glue(&mut game).vc.voice_muted(ALEX) && !glue(&mut game).vc.voice_muted(7));
+    let before = glue(&mut game).vc.shared().status().played;
+    for (channel, sender, seq) in [(6, ALEX, 1), (7, 7, 0)] {
+        server.send(&Udp::GroupSound {
+            channel,
+            sender,
+            data: buf[..n].to_vec(),
+            seq,
+            category: None,
+        });
+    }
+    until(&mut game, 3.0, "the voice not muted", |g| {
+        g.voice_glue.as_ref().unwrap().vc.shared().status().played > before
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(glue(&mut game).vc.shared().status().played, before + 1);
+    glue(&mut game).vc.mute_voice(None, true);
+    server.send(&Udp::GroupSound {
+        channel: 7,
+        sender: 7,
+        data: buf[..n].to_vec(),
+        seq: 1,
+        category: None,
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(glue(&mut game).vc.shared().status().played, before + 1);
+    glue(&mut game).vc.mute_voice(None, false);
+    assert!(!glue(&mut game).vc.voice_muted(ALEX));
+
     // Leaving stops it all.
     glue(&mut game).left();
     assert_eq!(console(&mut st, &mut game, "voice.status().state"), vec!["\"off\""]);

@@ -64,7 +64,14 @@ pub(super) fn packet(game: &mut Game<'_>, packet: &Clientbound) {
 
 /// Where the camera is and the players the voices need are.
 fn world(game: &Game<'_>, wanted: &[u128]) -> World {
+    // A Roblox script's SoundService listener, facing as the camera does.
+    let heard_at = voice::global(|g| g.listener_at);
     let listener = match game.locator_camera {
+        _ if heard_at.is_some() => Listener {
+            pos: heard_at.unwrap_or_default(),
+            yaw: game.yaw,
+            pitch: game.pitch,
+        },
         Some((pos, yaw, pitch, _)) => Listener { pos, yaw, pitch },
         None => game.native_player().map_or_else(Listener::default, |p| Listener {
             pos: [p.x, p.y + 1.62, p.z],

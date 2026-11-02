@@ -432,6 +432,16 @@ pub trait GameApi {
         let _ = change;
         Err("voice chat isn't available here".into())
     }
+    /// The server the player is on, how the last connection ended, and the
+    /// client's own settings that Roblox scripts read.
+    fn client(&self) -> ClientInfo {
+        ClientInfo::default()
+    }
+    /// Does what a Roblox script asked of the client itself.
+    fn client_do(&mut self, action: ClientAction) -> Result<(), String> {
+        let _ = action;
+        Err("the game can't do that here".into())
+    }
     /// A body part's frame this frame: of the player (`target` None) or of an
     /// entity by id. None where there is no such part, or no world.
     fn part_frame(&self, target: Option<u32>, part: &str) -> Option<PartFrame> {
@@ -590,6 +600,73 @@ impl Default for VoiceInfo {
             mic: None,
         }
     }
+}
+
+/// The server the player is on, as Roblox scripts see it (game.JobId,
+/// game.PlaceId, MarketplaceService:GetProductInfo).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ServerInfo {
+    /// Its address as the player typed it ("" in a world of their own).
+    pub address: String,
+    /// The world's name in a world of the player's own (single player, a
+    /// LAN world they host); else the address.
+    pub name: String,
+    /// What the server says it runs ("vanilla", "Paper"), if it said.
+    pub brand: String,
+    /// A world of the player's own: no server to leave for another.
+    pub own_world: bool,
+}
+
+/// The client itself as Roblox scripts see it (hstudio_rbx_client).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClientInfo {
+    /// The server the player is on, if any.
+    pub server: Option<ServerInfo>,
+    /// Why the connection ended, while the game says so (its Disconnected
+    /// screen): Roblox's error prompt.
+    pub disconnected: Option<String>,
+    /// The game's master volume, 0 to 1.
+    pub master_volume: f32,
+    pub fullscreen: bool,
+}
+
+impl Default for ClientInfo {
+    fn default() -> Self {
+        ClientInfo {
+            server: None,
+            disconnected: None,
+            master_volume: 1.0,
+            fullscreen: false,
+        }
+    }
+}
+
+/// What a Roblox script asks of the client itself, as the Roblox client
+/// does it for its own scripts: leaving and rejoining the server, the
+/// settings, the HUD's parts, other players' voices.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ClientAction {
+    /// Leaves the server: with a reason, the game says it as a kick's
+    /// (Player:Kick); without one, as its own Disconnect button.
+    Leave(Option<String>),
+    /// Joins the server joined last again (leaving it first, if still on it).
+    Rejoin,
+    /// The master volume, 0 to 1.
+    MasterVolume(f32),
+    /// The graphics lowered for speed (true), or as the player chose (false).
+    LowGraphics(bool),
+    ToggleFullscreen,
+    /// Something the server takes for the player's activity, which keeps an
+    /// idle kick away, with nothing seen in the world.
+    Activity,
+    /// Mutes (true) or unmutes the voice of a player by UUID, or of everyone.
+    MuteVoice(Option<u128>, bool),
+    /// Where voices are heard from (another player's eyes), or the camera.
+    VoiceListener(Option<[f64; 3]>),
+    /// Shows or hides a part of the HUD: "chat", "playerlist" or "all".
+    Hud(String, bool),
+    /// Draws the world, or only the sky's colour under the HUD.
+    WorldRendering(bool),
 }
 
 /// A change to the voice chat (`voice.*`, the settings).
@@ -3011,6 +3088,7 @@ impl Studio {
         }
         for line in std::mem::take(&mut self.s.queued_chat) {
             self.dispatch(game, "chat", &[Value::str(&line)], Phase::Normal);
+            super::hstudio_rbx_client::chat_line(&mut self.s.rbx, game, &line);
         }
         for line in std::mem::take(&mut self.s.queued_commands) {
             self.run_command(game, &line);
@@ -3095,6 +3173,14 @@ impl Studio {
 
     /// Sounds, chat, agent moves and warnings the Roblox layer asked for.
     fn roblox_effects(&mut self, game: &mut dyn GameApi) {
+        super::hstudio_rbx_client::frame(&mut self.s.rbx, game, self.s.now);
+        if std::mem::take(&mut self.s.rbx.client.console) {
+            self.s.ui.tab = super::hstudio_ui::Tab::Console;
+            self.s.ui.open_request = true;
+        }
+        for src in std::mem::take(&mut self.s.rbx.client.run_now) {
+            self.run_queued(game, &src);
+        }
         let rbx = &mut self.s.rbx;
         for (id, at, volume, pitch) in std::mem::take(&mut rbx.sounds) {
             if self.s.sounds < MAX_SOUNDS {
@@ -3706,6 +3792,28 @@ impl Studio {
     /// are printed. Returns the lines it logged.
     pub fn run_console(&mut self, game: &mut dyn GameApi, src: &str) -> Vec<(LogKind, String)> {
         self.run_chunk(game, src, true)
+    }
+
+    /// A script queue_on_teleport kept, now that the player is on the next
+    /// server: it runs as console code does, its source left out of the log.
+    fn run_queued(&mut self, game: &mut dyn GameApi, src: &str) {
+        self.s.log(
+            LogKind::Info,
+            "queue_on_teleport: running the script queued for this server",
+        );
+        let env = self.console_env();
+        match self.lua.load(src, "queue_on_teleport", &env) {
+            Err(e) => self.s.log(LogKind::Error, e),
+            Ok(f) => {
+                let co = self.lua.new_thread(f);
+                if let Some(Err(e)) =
+                    self.resume_in(game, Owner::Console, &co, Vec::new(), CONSOLE_STEPS, Phase::Normal)
+                {
+                    self.fail(game, Owner::Console, e.message(), e.traceback().to_owned());
+                }
+                self.pump(game);
+            }
+        }
     }
 
     /// `run_console`, kept out of the console's history with `history` false

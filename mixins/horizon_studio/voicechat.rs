@@ -68,6 +68,9 @@ pub struct Glue {
     server: Option<String>,
     keys: [String; 3],
     playing: bool,
+    /// Where voices are heard from instead of the camera (a Roblox script's
+    /// SoundService listener), while there is such a place.
+    pub listener_at: Option<[f64; 3]>,
 }
 
 impl Glue {
@@ -90,6 +93,7 @@ impl Glue {
             server: None,
             keys: KEYS.map(|(_, _, k)| k.to_owned()),
             playing: false,
+            listener_at: None,
         }
     }
 

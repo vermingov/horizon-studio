@@ -3,8 +3,8 @@
 #![allow(dead_code)]
 
 use horizon_studio::game::hstudio::{
-    Body, Camera, Corner, EntityInfo, Font, GameApi, PlayerEntry, PlayerInfo, PlayerPose, Reply, Studio, ViaInfo,
-    VoiceChange, VoiceInfo,
+    Body, Camera, ClientAction, ClientInfo, Corner, EntityInfo, Font, GameApi, PlayerEntry, PlayerInfo,
+    PlayerPose, Reply, Studio, ViaInfo, VoiceChange, VoiceInfo,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -60,6 +60,10 @@ pub struct FakeGame {
     pub voice_glue: Option<horizon_studio::game::hstudio_voicechat::Glue>,
     /// How the player's own model looks, as the studio last set it.
     pub body: Body,
+    /// The client as the game reports it (its server, a disconnect), and
+    /// what Roblox scripts asked of it (`client_do`), newest last.
+    pub client: ClientInfo,
+    pub client_done: Vec<ClientAction>,
 }
 
 /// A particle spawned: its id, place, speed and colour.
@@ -152,6 +156,8 @@ impl FakeGame {
             voice_changes: Vec::new(),
             voice_glue: None,
             body: Body::default(),
+            client: ClientInfo::default(),
+            client_done: Vec::new(),
         }
     }
     pub fn mods_dir(&self) -> PathBuf {
@@ -427,6 +433,29 @@ impl GameApi for FakeGame {
             Some(g) => g.info(std::time::Instant::now()),
             None => self.voice.clone(),
         }
+    }
+    fn client(&self) -> ClientInfo {
+        self.client.clone()
+    }
+    fn client_do(&mut self, action: ClientAction) -> Result<(), String> {
+        match &action {
+            ClientAction::MasterVolume(v) => self.client.master_volume = *v,
+            ClientAction::ToggleFullscreen => self.client.fullscreen = !self.client.fullscreen,
+            // The real voice chat's own, with one.
+            ClientAction::MuteVoice(who, on) => {
+                if let Some(g) = &mut self.voice_glue {
+                    g.vc.mute_voice(*who, *on);
+                }
+            }
+            ClientAction::VoiceListener(at) => {
+                if let Some(g) = &mut self.voice_glue {
+                    g.listener_at = *at;
+                }
+            }
+            _ => {}
+        }
+        self.client_done.push(action);
+        Ok(())
     }
     fn voice_set(&mut self, change: VoiceChange) -> Result<(), String> {
         self.voice_changes.push(change.clone());

@@ -2490,10 +2490,15 @@ impl Ctx<'_> {
                 self.s.rbx.fps_cap = if cap.is_finite() && cap > 0.0 { cap } else { 0.0 };
                 none()
             }
-            2123 | 2124 => {
-                // queue_on_teleport, setrbxclipboard: nothing to do here.
-                one(if id == 2124 { Value::Bool(true) } else { Value::Nil })
+            // queue_on_teleport: the code runs once the player is on the
+            // next server they join (a rejoin's too).
+            2123 => {
+                let code = check_text(lua, &args, 0, fname)?;
+                self.s.rbx.client.queued.push(code);
+                none()
             }
+            // setrbxclipboard: nothing to do here.
+            2124 => one(Value::Bool(true)),
             // keypress, keyrelease, keyclick: a Windows virtual-key code, as
             // the game's own key would come (UserInputService, the mouse's
             // KeyDown, ContextActionService).

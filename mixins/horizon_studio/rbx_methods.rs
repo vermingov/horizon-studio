@@ -57,6 +57,7 @@ fn bool_arg(args: &[Value], i: usize) -> bool {
 pub fn method(env: &mut dyn Env, lua: &mut Lua, name: &str, owner_class: &str, args: Vec<Value>) -> Res {
     let id = me(env, lua, &args, name)?;
     super::hstudio_rbx_world::before_call(env, id, name, &args);
+    super::hstudio_rbx_client::called(env.rbx(), id, name);
     // CollectionService:AddTag(instance, tag) is the instance's own.
     if matches!(name, "AddTag" | "RemoveTag" | "HasTag" | "GetTags")
         && env.rbx().service("CollectionService") == Some(id)
@@ -691,6 +692,10 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
                 };
                 env.rbx().warnings.push(format!("\u{1}{line}"));
             }
+            // Roblox's developer console is the studio's.
+            if what == "DevConsoleVisible" && args.get(2).is_some_and(Value::truthy) {
+                env.rbx().client.console = true;
+            }
             none()
         }
         ("StarterGui", "GetCore") => one(Value::Nil),
@@ -962,8 +967,13 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             let mut t = Table::new();
             let rbx = env.rbx();
             let place = rbx.raw_get(rbx.game, "PlaceId").to_num().unwrap_or(0.0);
-            let title = if asset == place { "Minecraft" } else { "" };
-            t.set_str("Name", Value::str(title));
+            // This place's is the server's (its address, or the world's name).
+            let title = if asset == place {
+                super::hstudio_rbx_client::place_name(rbx)
+            } else {
+                String::new()
+            };
+            t.set_str("Name", Value::str(&title));
             t.set_str("Description", Value::str(""));
             t.set_str("AssetId", Value::Num(asset));
             t.set_str("ProductId", Value::Num(asset));
@@ -1197,6 +1207,9 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             let ids = super::hstudio_rbx_draw::objects_at(rbx, x, y);
             one(rbx.list(&ids))
         }
+        _ if super::hstudio_rbx_client::takes(owner_class, name) => {
+            super::hstudio_rbx_client::method(env, lua, id, owner_class, name, args)
+        }
         _ => Err(lua.rt_error(format!("{name} is not available here"))),
     }
 }
@@ -1362,6 +1375,12 @@ pub fn creatable(class: &str) -> bool {
 /// commands (/e, /w) aren't the game's, so a line starting with / isn't sent.
 fn send_chat(env: &mut dyn Env, text: &str) {
     let text = text.trim();
+    // A whisper is Minecraft's private message.
+    if let Some(line) = super::hstudio_rbx_client::whisper(text) {
+        let line: String = line.chars().filter(|c| !c.is_control()).take(256).collect();
+        env.game().send(&line);
+        return;
+    }
     if text.is_empty() || text.starts_with('/') {
         return;
     }

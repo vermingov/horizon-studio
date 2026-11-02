@@ -1474,10 +1474,18 @@ pub fn player_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, args:
             }
         }
         "GetMouse" => one(if local { rbx.value(rbx.mouse) } else { Value::Nil }),
+        // The client leaves the server, saying why as a kick's reason does.
         "Kick" if local => {
             let why = args.get(1).and_then(Value::as_text).unwrap_or_default();
-            rbx.warnings
-                .push(format!("Player:Kick() asked to leave the game: {why}"));
+            let why = why.trim();
+            let reason = if why.is_empty() {
+                "You were kicked from this experience".to_owned()
+            } else {
+                format!("You were kicked from this experience: {why}")
+            };
+            rbx.client
+                .actions
+                .push(super::hstudio::ClientAction::Leave(Some(reason)));
             Ok(Vec::new())
         }
         "Kick" => Err(lua.rt_error("Cannot kick a non-local Player from a LocalScript")),

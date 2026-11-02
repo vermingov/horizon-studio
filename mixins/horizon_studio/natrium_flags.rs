@@ -49,6 +49,19 @@ pub fn set_fog_cut(end: Option<f32>) {
     FOG_CUT.store(end.to_bits(), Ordering::Relaxed);
 }
 
+/// The world's terrain isn't drawn at all (a Roblox script's
+/// RunService:Set3dRenderingEnabled(false), through Horizon Studio): the
+/// same culling, of every section but the camera's.
+static WORLD_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+pub fn set_world_hidden(hidden: bool) {
+    WORLD_HIDDEN.store(hidden, Ordering::Relaxed);
+}
+
+pub fn world_hidden() -> bool {
+    WORLD_HIDDEN.load(Ordering::Relaxed)
+}
+
 /// The fog end to cull sections past, when fog culling applies this frame.
 pub fn fog_cut() -> Option<f32> {
     let end = f32::from_bits(FOG_CUT.load(Ordering::Relaxed));

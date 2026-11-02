@@ -430,6 +430,30 @@ impl VoiceChat {
         }
     }
 
+    /// Mutes or unmutes a player's voice (by UUID), or everyone's (None,
+    /// which also forgets each player's own): for this player alone, the
+    /// server isn't told.
+    pub fn mute_voice(&mut self, who: Option<u128>, muted: bool) {
+        self.shared.set_controls(|c| match who {
+            Some(u) => {
+                c.muted_players.retain(|x| *x != u);
+                if muted {
+                    c.muted_players.push(u);
+                }
+            }
+            None => {
+                c.muted_players.clear();
+                c.muted_voices = muted;
+            }
+        });
+    }
+
+    /// Whether a player's voice is muted here (on its own or with everyone's).
+    pub fn voice_muted(&self, who: u128) -> bool {
+        let c = self.shared.controls();
+        c.muted_voices || c.muted_players.contains(&who)
+    }
+
     /// The push to talk key, held or not.
     pub fn set_ptt(&mut self, held: bool) {
         if self.ptt != held {

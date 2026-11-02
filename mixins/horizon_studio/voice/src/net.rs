@@ -44,6 +44,10 @@ pub struct Controls {
     pub deafened: bool,
     /// The push to talk key is held.
     pub ptt: bool,
+    /// Players this player doesn't hear (by UUID), and whether they hear
+    /// no one else at all: their own choice, the server isn't told.
+    pub muted_players: Vec<u128>,
+    pub muted_voices: bool,
 }
 
 impl Default for Controls {
@@ -56,6 +60,8 @@ impl Default for Controls {
             muted: false,
             deafened: false,
             ptt: false,
+            muted_players: Vec::new(),
+            muted_voices: false,
         }
     }
 }
@@ -563,6 +569,10 @@ fn heard(
         return;
     }
     let world = lock(&shared.world).clone();
+    let (muted_players, muted_voices) = {
+        let c = lock(&shared.controls);
+        (c.muted_players.clone(), c.muted_voices)
+    };
     let mut mixer = lock(&shared.mixer);
     for p in played {
         match p {
@@ -573,6 +583,11 @@ fn heard(
                 });
             }
             Played::Frames(frames, meta) => {
+                // A voice this player muted is dropped, as SVC drops one at volume 0.
+                let sender = meta.sender();
+                if sender != world.own && (muted_voices || muted_players.contains(&sender)) {
+                    continue;
+                }
                 let gains = match meta {
                     Heard::Player { sender, .. } if sender == world.own => Some(spatial::centre()),
                     Heard::Player { sender, distance, .. } => world

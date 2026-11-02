@@ -100,6 +100,12 @@ name = "hstudio_rbx_body"
 source = "rbx_body.rs"
 
 [[module]]
+id = "rbx_client"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_client"
+source = "rbx_client.rs"
+
+[[module]]
 id = "rbx_query"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_rbx_query"
@@ -364,6 +370,29 @@ kind = "HEAD"
 cancellable = true
 target = "horizon_client::game::remote::Game<'_>::send_suggestion_request"
 helper = "suggest.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+# A Roblox script's core GUI switches (StarterGui:SetCoreGuiEnabled, the
+# TextChatService's chat window): the chat's lines over the HUD and the
+# player list are drawn unless it hid them (hstudio_rbx_client).
+[[injection]]
+id = "chat-window"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::chat::Game<'_>::draw_chat"
+helper = "chat_window.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+]
+
+[[injection]]
+id = "player-list"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::scoreboard::Game<'_>::draw_tab_list"
+helper = "player_list.rs"
 bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
 ]
