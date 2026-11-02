@@ -3,8 +3,8 @@
 #![allow(dead_code)]
 
 use horizon_studio::game::hstudio::{
-    Body, Camera, ClientAction, ClientInfo, Corner, EntityInfo, Font, GameApi, PlayerEntry, PlayerInfo,
-    PlayerPose, Reply, Studio, ViaInfo, VoiceChange, VoiceInfo,
+    Body, Camera, ClientAction, ClientInfo, Corner, EntityInfo, Font, GameApi, PlayerEntry, PlayerInfo, PlayerPose,
+    Reply, Studio, ViaInfo, VoiceChange, VoiceInfo,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
