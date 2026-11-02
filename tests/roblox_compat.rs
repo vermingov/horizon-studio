@@ -329,7 +329,11 @@ fn a_roblox_script_s_chat_message_goes_to_the_game_s_chat() {
 }
 
 #[test]
-fn saveinstance_writes_a_model_studio_and_the_reader_open() {
+fn saveinstance_of_an_instance_writes_a_structure_never_a_roblox_file() {
+    // Dex's Save to File (saveinstance(inst, name), its names ending in
+    // .txt) and Elysian's SaveInstance: the blocks in the instance's box as
+    // a structure file in the workspace (tests/saveinstance.rs reads them
+    // back); nothing in Roblox's formats.
     let mut game = FakeGame::new("compat-save");
     let mut st = studio(&mut game);
     game.write_mod(
@@ -352,29 +356,22 @@ fn saveinstance_writes_a_model_studio_and_the_reader_open() {
         .collect();
     assert_eq!(
         p,
-        ["Player1.rbxmx\tone.rbxmx\tdex.rbxmx\ttrue", "local Character = scr"],
+        ["Player1.nbt\tone.nbt\tdex.nbt\ttrue", "local Character = scr"],
         "{:?}",
         log(&st)
     );
     let dir = st.s.rbx.workspace_dir.clone();
-    let bytes = std::fs::read(dir.join("Player1.rbxmx")).unwrap();
-    let file = horizon_studio::game::hstudio_rbx_file::read(&bytes).unwrap();
-    let names: Vec<&str> = file.roots.iter().map(|&r| file.items[r].class.as_str()).collect();
-    assert_eq!(names, ["Model"]);
-    let part = file
-        .items
-        .iter()
-        .find(|i| i.properties.iter().any(|(k, v)| k == "Name" && matches!(v, horizon_studio::game::hstudio_rbx_file::PropValue::String(s) if s == b"Saved <&> part")))
-        .expect("the part, its name escaped and read back");
-    assert_eq!(part.class, "Part");
-    assert!(
-        part.properties.iter().any(|(k, _)| k == "Size"),
-        "{:?}",
-        part.properties
-    );
-    let animate = file.items.iter().find(|i| i.class == "LocalScript").unwrap();
-    assert!(animate.properties.iter().any(|(k, v)| k == "Source"
-        && matches!(v, horizon_studio::game::hstudio_rbx_file::PropValue::String(s) if s.starts_with(b"local Character"))));
+    for name in ["Player1.nbt", "one.nbt", "dex.nbt"] {
+        let bytes = std::fs::read(dir.join(name)).unwrap();
+        assert_eq!(&bytes[..2], [0x1f, 0x8b], "{name} is gzipped NBT");
+    }
+    let roblox: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".rbx") || n.ends_with(".txt"))
+        .collect();
+    assert!(roblox.is_empty(), "{roblox:?}");
 }
 
 #[test]

@@ -460,6 +460,50 @@ pub trait GameApi {
         let _ = id;
         false
     }
+    /// The game's saves folder, the one Singleplayer lists (saveinstance's
+    /// worlds go in it). None where the game has none.
+    fn saves_dir(&self) -> Option<PathBuf> {
+        None
+    }
+    /// saveinstance: starts saving the world as the client has it (the
+    /// loaded chunks with their block entities, the entities, level.dat,
+    /// the player, the maps, the server's registries as a data pack...) into
+    /// `world`, a folder of `saves_dir` hstudio_dump::prepare made. It goes
+    /// on over the next frames and on the game's writer threads; the job's
+    /// number is for `dump_poll`.
+    fn dump_world(&mut self, world: &Path) -> Result<u64, String> {
+        let _ = world;
+        Err("there is no world here to save".into())
+    }
+    /// A dump's end: None while it is being written, then once Ok (the
+    /// world is on the disk) or why it failed.
+    fn dump_poll(&mut self, job: u64) -> Option<Result<(), String>> {
+        let _ = job;
+        Some(Err("there is no world here to save".into()))
+    }
+    /// The blocks of the box from `min` to `max` (inclusive), for a
+    /// structure file: their states and block entities. None where the
+    /// world isn't loaded. By default from `block` (no properties, no block
+    /// entities).
+    fn region_blocks(&mut self, min: [i32; 3], max: [i32; 3]) -> Option<super::hstudio_dump::Region> {
+        let mut blocks = Vec::new();
+        for y in min[1]..=max[1] {
+            for z in min[2]..=max[2] {
+                for x in min[0]..=max[0] {
+                    blocks.push(super::hstudio_dump::RegionBlock {
+                        pos: [x - min[0], y - min[1], z - min[2]],
+                        name: self.block(x, y, z)?,
+                        properties: Vec::new(),
+                        nbt: None,
+                    });
+                }
+            }
+        }
+        Some(super::hstudio_dump::Region {
+            data_version: super::hstudio_dump::DATA_VERSION,
+            blocks,
+        })
+    }
     /// The studio's own screens draw with Horizon's design system, in dp
     /// (the launcher's logical pixels): the screen in dp, and dp per GUI pixel.
     fn dp(&mut self) -> (f32, f32, f32);

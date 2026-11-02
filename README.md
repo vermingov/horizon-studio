@@ -965,6 +965,35 @@ executors run as mods:
   `identifyexecutor`. `decompile` gives the real code back: a script's source, a function's own text (every
   function compiled here keeps its source, including `loadstring`'s and `newcclosure`-wrapped ones), or the source
   `getscriptbytecode`'s bytes carry.
+- **saveinstance is a world downloader.** `saveinstance()` (or `saveinstance(game)`, `saveinstance({ FilePath = "name"
+  })`, `saveinstance(game, options)`, UniversalSynSaveInstance's option tables, its other keys ignored) saves what the
+  client has of the server as a real Minecraft world in the game's `saves` folder, which Singleplayer lists: every
+  chunk loaded in the dimension the player is in (blocks, biomes, light, heightmaps, and the block entities the
+  client knows: signs, banners, skulls, beds, and the chests and other containers the player opened, with what they
+  showed), the entities with Horizon's own entity NBT (other players aren't saved with chunks, as in vanilla),
+  `level.dat` (its name, the spawn, the time, the weather, the difficulty, the game rules the client knows, the game
+  mode, cheats on) with the player (inventory, armour, position, rotation, health, food, experience, effects, the
+  ender chest once it was opened), the maps the server sent (`data/minecraft/maps`), the scoreboard and the world
+  border, the server's registries from the configuration (biomes, dimension types, enchantments, damage types,
+  painting variants...) and its tags as the data pack `datapacks/server` (the dimension saved gets the server's
+  dimension type of it, its height), its command tree as `server_commands.json`, its icon as `icon.png`, and its
+  resource pack as the world's `resourcepacks/resources.zip`. The generator is a void flat one (air over
+  `the_void`), so nothing of a generator's own grows beside the saved area. The folder is named after the server's
+  address and the date (a world of the player's own: its name), unless `FilePath` (or `FileName`) names it; the name
+  is kept to one plain folder in `saves`, and the world gets `horizon-studio-dump.json`. Calling it again on the
+  same server adds to and updates that world (walk on and call it again to grow the download), but saveinstance
+  never writes into a folder without that file: a world of the player's own is refused, left as it is. The chunks
+  are copied a few at a time each frame and encoded and written on Horizon's region writer, the rest on a thread of
+  its own; the calling thread waits until the world is on the disk (as Roblox's saveinstance yields), then gets
+  the world's folder; a failure is an error. Single player works the same way, from the client's copy of its world.
+  What the server never sends can't be in it: its plugins and their data, its data packs' functions, loot tables,
+  advancements and recipes, other dimensions than the one the player is in, chunks the player never had loaded,
+  container contents never opened, other players' inventories, and custom biomes (the client keeps a chunk's biomes
+  as biomes it knows). Nothing of Roblox's file formats is written.
+- **saveinstance(instance)** of a part, model or folder (Dex's Save to File calls `saveinstance(inst, name)`, with
+  names ending in `.txt`, taken off; Elysian's `SaveInstance(object, file)`): the blocks in its box (a stud is a
+  block) as a vanilla structure file, `<name>.nbt` in the studio's `workspace` folder, with the block states and the
+  block entities the client knows; a structure block loads it once it is in a world's `generated/minecraft/structures`.
 
 As every script here is a mod, all code is the executor's: `checkcaller()` is true but for the game's own packets
 reaching a `__namecall` hook, and `getcallingscript()` is the calling mod's `script` (nil for the console's code and
@@ -1058,7 +1087,10 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `skins.rs` (`hstudio_skins`) | The executor styles' layouts |
 | `dock.rs` (`hstudio_dock`) | The Editor tab's panes: where they are (a tree of splits and groups of tabs), their sizes, moving them, and the layout kept (`layout.txt`) |
 | `examples.rs` (`hstudio_examples`) | The bundled examples, generated from `examples/` |
-| `bridge.rs` (`hstudio_bridge`) | The only module that knows Horizon's `Game`: the hooks and the game's side of the API |
+| `bridge.rs` (`hstudio_bridge`) | The module that knows Horizon's `Game`: the hooks and the game's side of the API |
+| `dump.rs` (`hstudio_dump`) | saveinstance's side in the studio: the dump world's folder in the saves and its marker, and the structure file (`.nbt`) of a part's blocks |
+| `world_dump.rs`, `world_files.rs` (`hstudio_world_dump`, `hstudio_world_files`) | saveinstance's world in the game, with Horizon's save code: the chunks copied each frame onto its region writer, the entities, the containers seen; level.dat, the player, the maps, the server's registries and tags as a data pack, on a thread |
+| `tags.rs` (`horizon_protocol::hstudio_tags`) | In the protocol crate: the tags the server sent in the configuration, for saveinstance's data pack |
 | `quads.rs` (`hstudio_quads`) | The HUD's quads cut, turned and coloured (a gradient in bands), for the bridge's drawing of Roblox GUIs |
 | `link.rs` (`hstudio_link`) | The AI link: the local socket the MCP server reaches the game through, polled in the frame |
 | `paint.rs` (`ui_theme::hstudio_paint`) | In the game's library: Horizon's design system's shapes and fonts, for the studio and `gfx.*` |
@@ -1107,7 +1139,8 @@ particle, Video Settings, merge, pickup and swim hooks can answer in their funct
 | natrium-video-search | `horizon_client_render::options_ui::OptionsUi::page` | the settings search's text, which the section follows |
 | natrium-merge, natrium-pickups, natrium-swim | `entities::merge_with_neighbours`, `game::villagers::Game::villager_pickups`, `mobs::path::Finder::swim_neighbors` | Natrium's versions in their place, while faster ticks are on |
 | packet-out | `game::remote::Game::send` | each serverbound play packet of the game's: while a script hooks `__namecall`, through it as `remote:FireServer` (which may stop it or send another in its place) |
-| packet-in | `game::remote::Game::handle_packet` | each clientbound play packet: its remote's `OnClientEvent`, while a script listens |
+| packet-in | `game::remote::Game::handle_packet` | each clientbound play packet: its remote's `OnClientEvent`, while a script listens; the command tree, icon and tags the game keeps no copy of, for saveinstance |
+| tags-in | `horizon_protocol::registry::Dynamic::add_tags` | the tags the server sends in the configuration (the game keeps the dialogs' only), for saveinstance's data pack |
 | voice-packet | `game::remote::Game::handle_packet` | the server's `voicechat:*` payloads (which the game drops) and the Login that starts the voice chat |
 | voice-frame, voice-key, voice-chat | `native_frame`, `native_key`, `game::remote::Game::chat_line` | the voice chat's frame (the places, its payloads out), its keys, the server's "incompatible version" line |
 | hud, key, command, zoom, list, settings, click | Horizon's [native hook points](https://github.com/horizon-rust/horizon/blob/main/crates/horizon-client/src/game/native_hooks.rs) | the HUD, keys, commands, `view.zoom`, the Options → Mods row and page |
@@ -1122,7 +1155,11 @@ Moving to a new Nightly: change `horizon_revision` in `horizon-mixin.toml` and `
 
 ## Develop
 
-Everything but `bridge.rs`, `voice_game.rs` and `via_auth.rs` builds and tests without the game: `src/lib.rs` mounts
+`python3 tools/dump_e2e.py` (after `tools/studio.py check`) builds `tools/dump_probe.rs` inside the staged game: it
+writes a world with Horizon's save code and `world_files.rs` as saveinstance does, and reads it back as Singleplayer
+would (the world list, `level.dat`, the region file, the chunk and its chest, the entities, the data pack).
+
+Everything but `bridge.rs`, `world_dump.rs`, `world_files.rs`, `tags.rs`, `voice_game.rs` and `via_auth.rs` builds and tests without the game: `src/lib.rs` mounts
 the modules at the paths they have in the game (`tests/shim/horizon-protocol` stands in for the protocol crate
 ViaHorizon adds to). The voice crate is a member of this workspace; the tests build it without its `audio` feature
 (cpal, which needs ALSA's headers) and drive its mixer and microphone by hand, against a fake SVC server

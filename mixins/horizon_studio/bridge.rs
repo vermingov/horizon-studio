@@ -894,6 +894,19 @@ impl GameApi for Host<'_, '_> {
         let state = g.world.block(x, y, z);
         Some(g.res.facts().get(state).name.to_string())
     }
+    fn saves_dir(&self) -> Option<PathBuf> {
+        // Where the title screen's world list reads (`Title::new`).
+        std::env::current_dir().ok().map(|d| d.join("saves"))
+    }
+    fn dump_world(&mut self, world: &std::path::Path) -> Result<u64, String> {
+        super::hstudio_world_dump::start(self.g(), world)
+    }
+    fn dump_poll(&mut self, job: u64) -> Option<Result<(), String>> {
+        super::hstudio_world_dump::poll(job)
+    }
+    fn region_blocks(&mut self, min: [i32; 3], max: [i32; 3]) -> Option<super::hstudio_dump::Region> {
+        super::hstudio_world_dump::region(self.g(), min, max)
+    }
     fn clock(&self) -> Option<(i64, i64)> {
         let g = self.g();
         g.player.as_ref()?;
@@ -1855,6 +1868,11 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &dyn EventLoopCtl) {
         return;
     }
     catch_up(game);
+    // saveinstance's dumps: their copies of this frame's world, and the
+    // container the player has open, remembered for them.
+    if game.native_on(ID) {
+        super::hstudio_world_dump::frame(game);
+    }
     keep_view(game);
     remember_server(game);
     keep_still(game);
@@ -3509,6 +3527,9 @@ fn send_now(game: &Game<'_>, s: S) -> Result<(), String> {
 /// scripts' `__namecall` hook while there is one. True: the hook stopped
 /// it (or sent another in its place).
 pub(super) fn packet_out(game: &Game<'_>, packet: &S) -> bool {
+    if game.native_window() && game.native_on(ID) {
+        super::hstudio_world_dump::sent(packet);
+    }
     if QUIET.with(Cell::get) || !game.native_window() || !game.native_on(ID) {
         return false;
     }
@@ -3551,6 +3572,7 @@ pub(super) fn packet_in(game: &Game<'_>, packet: &C) {
     if !game.native_window() || !game.native_on(ID) {
         return;
     }
+    super::hstudio_world_dump::heard(packet);
     let names = horizon_protocol::ids::play::clientbound::NAMES;
     let Some(name) = names.get(packet.id() as usize) else {
         return;

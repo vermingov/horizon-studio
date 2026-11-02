@@ -76,6 +76,14 @@ pub struct FakeGame {
     /// one answers with an error instead (as the game refuses a bad one).
     pub packets: Vec<horizon_studio::game::hstudio_rbx_remote::Packet>,
     pub packet_error: Option<String>,
+    /// The game's saves folder (`saves_dir`), the worlds saveinstance asked
+    /// to be dumped there (`dump_world`), how many polls each dump takes
+    /// before it is written, how many polls it had so far, and what it ends with.
+    pub saves: Option<PathBuf>,
+    pub dumps: Vec<PathBuf>,
+    pub dump_polls: usize,
+    pub dump_polled: Vec<usize>,
+    pub dump_result: Result<(), String>,
 }
 
 /// The fake game's play packets by id (a few of the game's).
@@ -195,6 +203,11 @@ impl FakeGame {
             third_person: true,
             packets: Vec::new(),
             packet_error: None,
+            saves: None,
+            dumps: Vec::new(),
+            dump_polls: 3,
+            dump_polled: Vec::new(),
+            dump_result: Ok(()),
         }
     }
     /// An inventory of 36 slots with these stacks in them (slot, item, count).
@@ -247,6 +260,25 @@ impl GameApi for FakeGame {
                 .cloned()
                 .unwrap_or_else(|| "minecraft:air".into()),
         )
+    }
+    fn saves_dir(&self) -> Option<PathBuf> {
+        self.saves.clone()
+    }
+    fn dump_world(&mut self, world: &std::path::Path) -> Result<u64, String> {
+        self.dumps.push(world.to_path_buf());
+        self.dump_polled.push(0);
+        Ok(self.dumps.len() as u64 - 1)
+    }
+    fn dump_poll(&mut self, job: u64) -> Option<Result<(), String>> {
+        let polled = self.dump_polled.get_mut(job as usize)?;
+        *polled += 1;
+        (*polled > self.dump_polls).then(|| {
+            if self.dump_result.is_ok() {
+                // The world the game would write: its level.dat.
+                let _ = std::fs::write(self.dumps[job as usize].join("level.dat"), b"fake");
+            }
+            self.dump_result.clone()
+        })
     }
     fn clock(&self) -> Option<(i64, i64)> {
         self.clock

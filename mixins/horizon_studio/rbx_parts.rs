@@ -395,6 +395,24 @@ fn touches(rbx: &mut Rbx) {
 
 // ---------------------------------------------------------------- models
 
+/// The box an Instance fills in the world, along the world's axes: a
+/// part's own, with every part in it (a Model's or a Folder's parts). None
+/// when there is no part in it.
+pub fn box_of(rbx: &Rbx, id: Id) -> Option<(Vector3, Vector3)> {
+    let mut lo = Vector3::new(f64::MAX, f64::MAX, f64::MAX);
+    let mut hi = Vector3::new(f64::MIN, f64::MIN, f64::MIN);
+    for d in std::iter::once(id).chain(rbx.descendants(id)) {
+        if !alive(rbx, d) || !is_a(rbx.inst(d).class, "BasePart") {
+            continue;
+        }
+        if let Some((a, b)) = bounds(rbx, d) {
+            lo = Vector3::new(lo.x.min(a.x), lo.y.min(a.y), lo.z.min(a.z));
+            hi = Vector3::new(hi.x.max(b.x), hi.y.max(b.y), hi.z.max(b.z));
+        }
+    }
+    (lo.x <= hi.x).then_some((lo, hi))
+}
+
 /// A model's box: GetBoundingBox (its CFrame and size), the older
 /// GetModelCFrame and GetModelSize, and GetExtentsSize. The box is the one
 /// its parts fill, along the world's axes, at their middle.

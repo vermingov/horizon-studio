@@ -8043,16 +8043,40 @@ local r = NumberRange.new(1, 5)
         "saveinstance",
         "executor",
         r##"
-`saveinstance([object | file, object | options])`
+`saveinstance([game | object | file, options])`
 
-Saves an Instance and everything in it as a Roblox XML model (`.rbxmx`)
-in the workspace folder, or the whole place (`.rbxlx`: its services with
-what is in them) when given none or `game`, and returns the file's name.
-Studio opens both. Options: `FileName`, `Object`.
+A world downloader: saves what the client has received from the server as
+a real Minecraft world in the game's `saves` folder, which Singleplayer
+lists, and returns the world's folder. The calling thread waits until the
+world is written (run it in a thread that can wait: a mod's top level,
+`task.spawn`); a failure is an error.
+
+The world holds every chunk loaded in the player's dimension (blocks,
+biomes, light, heightmaps, the block entities the client knows, and the
+containers the player opened with what they showed), the entities,
+`level.dat` (spawn, time, weather, difficulty, game rules, game mode,
+cheats on) with the player (inventory, position, rotation, the ender chest
+once opened), the maps, the scoreboard, the server's registries and tags
+as the data pack `datapacks/server`, its command tree
+(`server_commands.json`), its icon and its resource pack. The generator is
+a void flat one. The folder is the server's address and the date unless
+`FilePath` or `FileName` names it (UniversalSynSaveInstance's options; the
+others are ignored). Calling it again adds to the same world; a folder
+saveinstance didn't make (no `horizon-studio-dump.json`) is refused.
+Plugins, data pack functions and chunks never loaded aren't sent to the
+client, so they can't be saved.
+
+Given a part, model or folder instead (Dex's `saveinstance(inst, name)`):
+the blocks in its box as a vanilla structure file, `<name>.nbt` in the
+workspace folder (a `.txt` on the name is taken off), returned at once.
 
 ```lua
-saveinstance(workspace.Model)                 -- Model.rbxmx
-saveinstance({ FileName = "my place" })       -- my place.rbxlx
+task.spawn(function()
+    local world = saveinstance()                      -- saves/<server> <date>
+    print("saved to", world)
+    saveinstance({ FilePath = "spawn town" })        -- saves/spawn town
+    print(saveinstance(workspace.House, "house"))   -- house.nbt
+end)
 ```
 "##
     ),
@@ -8062,11 +8086,15 @@ saveinstance({ FileName = "my place" })       -- my place.rbxlx
         r##"
 `SaveInstance(object, file)`
 
-Elysian's name for `saveinstance(file, object)`: the object as an XML
-model in the workspace folder.
+Elysian's name for `saveinstance`: `game` (or none) saves the world into
+the saves folder, a part or model its blocks as `<file>.nbt` in the
+workspace folder.
 
 ```lua
-SaveInstance(workspace.Model, "model")       -- model.rbxmx
+task.spawn(function()
+    print(SaveInstance(game, "my dump"))       -- saves/my dump
+    print(SaveInstance(workspace.Model, "m"))  -- m.nbt
+end)
 ```
 "##
     ),

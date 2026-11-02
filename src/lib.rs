@@ -22,6 +22,8 @@ pub mod game {
     pub mod hstudio_crypt;
     #[path = "../../mixins/horizon_studio/dock.rs"]
     pub mod hstudio_dock;
+    #[path = "../../mixins/horizon_studio/dump.rs"]
+    pub mod hstudio_dump;
     #[path = "../../mixins/horizon_studio/examples.rs"]
     pub mod hstudio_examples;
     #[path = "../../mixins/horizon_studio/exec.rs"]
@@ -74,8 +76,6 @@ pub mod game {
     pub mod hstudio_rbx_query;
     #[path = "../../mixins/horizon_studio/rbx_remote.rs"]
     pub mod hstudio_rbx_remote;
-    #[path = "../../mixins/horizon_studio/rbx_save.rs"]
-    pub mod hstudio_rbx_save;
     #[path = "../../mixins/horizon_studio/rbx_tools.rs"]
     pub mod hstudio_rbx_tools;
     #[path = "../../mixins/horizon_studio/rbx_types.rs"]

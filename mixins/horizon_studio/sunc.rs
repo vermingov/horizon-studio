@@ -187,7 +187,7 @@ const BLOCKED: &[&str] = &[
 
 /// The Lua that turns the host's answers into Roblox's methods and errors.
 const PRELUDE: &str = r#"
-local request, ws_open = ...
+local request, ws_open, save = ...
 local function http(url, method, body, content_type, headers)
     local h = {}
     if type(headers) == "table" then
@@ -228,7 +228,14 @@ local function connect(url)
     if not ws then error(err, 2) end
     return ws
 end
-return M, connect
+-- saveinstance waits for the game to write the world, then gives its
+-- folder; what went wrong is an error, as Roblox's saveinstance raises one.
+local function saveinstance(...)
+    local path, err = save(...)
+    if path == nil then error(err, 0) end
+    return path
+end
+return M, connect, saveinstance
 "#;
 
 // ---------------------------------------------------------------- environments
@@ -273,11 +280,26 @@ pub fn executor_globals(lua: &mut Lua, genv: &TableRef, rbx: &mut Rbx) {
     g.set_str("cache", Value::table(cache));
     // The prelude: HttpGet and friends, and WebSocket.connect.
     let ws_open = Native::host("connect", WS_OPEN);
+    let save = g.get_str("saveinstance");
     drop(g);
     let f = lua.load(PRELUDE, "=[executor]", genv).expect("the prelude compiles");
     let r = lua
-        .call(&mut super::hstudio_lua::NoHost::default(), &f, vec![request, ws_open])
+        .call(
+            &mut super::hstudio_lua::NoHost::default(),
+            &f,
+            vec![request, ws_open, save],
+        )
         .unwrap_or_default();
+    // saveinstance and SaveInstance: the prelude's, a C closure as the
+    // executor's own are.
+    if let Some(f @ Value::Func(_)) = r.get(2) {
+        let mut g = genv.borrow_mut();
+        for name in ["saveinstance", "SaveInstance"] {
+            let w = Native::of(name, super::hstudio_lua::NativeKind::Wrap(f.clone()), Vec::new());
+            super::hstudio_exec::mark(&w);
+            g.set_str(name, w);
+        }
+    }
     if let (Some(Value::Table(m)), Some(connect)) = (r.first(), r.get(1)) {
         for (class, name) in [
             ("DataModel", "HttpGet"),
@@ -886,6 +908,25 @@ pub fn poll_network(rbx: &mut Rbx) {
             rbx.sockets.remove(i);
         } else {
             i += 1;
+        }
+    }
+}
+
+/// The game's dumps saveinstance waits for: each thread gets the world's
+/// folder once it is written, or why it couldn't be.
+pub fn poll_dumps(rbx: &mut Rbx, game: &mut dyn GameApi) {
+    let mut i = 0;
+    while i < rbx.dumps.len() {
+        match game.dump_poll(rbx.dumps[i].job) {
+            Some(done) => {
+                let w = rbx.dumps.remove(i);
+                let back = match done {
+                    Ok(()) => vec![Value::str(&w.world.to_string_lossy())],
+                    Err(why) => vec![Value::Nil, Value::str(&format!("saveinstance: {why}"))],
+                };
+                rbx.ready.push((w.owner, w.thread, back));
+            }
+            None => i += 1,
         }
     }
 }
@@ -1869,6 +1910,60 @@ impl Ctx<'_> {
         self.s.dir.join("workspace")
     }
 
+    /// saveinstance(part): the blocks in the box of `object` (a part, or
+    /// the parts in a model or folder) as a vanilla structure file
+    /// (`<name>.nbt`, what a structure block loads) in the workspace
+    /// folder; its name there, or why there is none.
+    fn save_structure(
+        &mut self,
+        lua: &mut Lua,
+        object: Id,
+        file: Option<String>,
+        fname: &str,
+    ) -> Result<Result<String, String>, Throw> {
+        let rbx = &self.s.rbx;
+        let class = rbx.inst(object).class.name;
+        let Some((lo, hi)) = super::hstudio_rbx_parts::box_of(rbx, object) else {
+            return Ok(Err(format!(
+                "{} ({class}) has no parts, so no blocks to save (saveinstance() saves the world)",
+                rbx.inst(object).name
+            )));
+        };
+        let (min, max) = super::hstudio_dump::block_box([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
+        let size = [max[0] - min[0] + 1, max[1] - min[1] + 1, max[2] - min[2] + 1];
+        let volume = size.iter().map(|&s| i64::from(s)).product::<i64>();
+        if volume > super::hstudio_dump::MAX_STRUCTURE {
+            return Ok(Err(format!(
+                "{} is {}x{}x{} blocks: a structure holds at most {} blocks",
+                rbx.inst(object).name,
+                size[0],
+                size[1],
+                size[2],
+                super::hstudio_dump::MAX_STRUCTURE
+            )));
+        }
+        let mut name = file.unwrap_or_else(|| rbx.inst(object).name.clone());
+        // Dex's save prompt ends its names in .txt; a Roblox model's name
+        // gets the structure instead.
+        for ext in [".txt", ".rbxmx", ".rbxm", ".nbt"] {
+            if name.len() > ext.len() && name.to_ascii_lowercase().ends_with(ext) {
+                name.truncate(name.len() - ext.len());
+            }
+        }
+        let name = format!("{}.nbt", super::hstudio_dump::sanitize(&name));
+        let Some(region) = self.game.region_blocks(min, max) else {
+            return Ok(Err("the blocks there aren't loaded".into()));
+        };
+        let bytes = super::hstudio_dump::gzip(&super::hstudio_dump::structure_nbt(size, &region));
+        lua.charge(bytes.len() / 64)?;
+        let p = sandboxed(lua, &self.workspace(), &name, fname)?;
+        if let Some(dir) = p.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| io_err(lua, fname, e))?;
+        }
+        std::fs::write(&p, &bytes).map_err(|e| io_err(lua, fname, e))?;
+        Ok(Ok(name))
+    }
+
     /// A script that runs, as the mod it is in and the function it runs:
     /// a running mod's `script` (its main file), or the ModuleScript of a
     /// file of a running module that `require` has run (the file).
@@ -2340,8 +2435,12 @@ impl Ctx<'_> {
             }
             2067 => one(Value::Nil),
             // saveinstance([object | path, object | options]) and Elysian's
-            // SaveInstance(object, file): an XML model (or the place) in the
-            // workspace folder.
+            // SaveInstance(object, file), as a world downloader: the game
+            // (or none) saves the world the client has as a Minecraft world
+            // in the game's saves, which Singleplayer lists; a part, model or
+            // folder saves the blocks in its box as a structure file in the
+            // workspace folder. Nothing of Roblox's formats is written. The
+            // prelude's saveinstance makes `nil, why` an error.
             2069 | 2074 => {
                 let rbx = &self.s.rbx;
                 let mut object = None;
@@ -2352,8 +2451,10 @@ impl Ctx<'_> {
                     } else if let Some(t) = a.as_text().filter(|_| matches!(a, Value::Str(_))) {
                         file.get_or_insert(t);
                     } else if let Value::Table(t) = a {
+                        // UniversalSynSaveInstance's options: the file's name;
+                        // the rest (Decompile, NilInstances...) are Roblox's.
                         let t = t.borrow();
-                        for k in ["FileName", "FilePath", "filename", "Path"] {
+                        for k in ["FilePath", "FileName", "filepath", "filename", "Path"] {
                             if let Some(f) = t.get_str(k).as_text() {
                                 file.get_or_insert(f);
                             }
@@ -2365,56 +2466,57 @@ impl Ctx<'_> {
                         }
                     }
                 }
-                let object = object.unwrap_or(rbx.game);
-                let place = object == rbx.game;
-                let roots: Vec<Id> = if place {
-                    // The place's services with what is in them (not the
-                    // players or Roblox's own GUI), as Studio saves a place.
-                    rbx.inst(rbx.game)
-                        .children
-                        .iter()
-                        .copied()
-                        .filter(|&c| {
-                            !matches!(rbx.inst(c).class.name, "Players" | "CoreGui") && !rbx.inst(c).children.is_empty()
-                        })
-                        .collect()
-                } else {
-                    vec![object]
-                };
-                let ext = if place { "rbxlx" } else { "rbxmx" };
-                let mut name = file.unwrap_or_else(|| {
-                    let place_id = rbx.raw_get(rbx.game, "PlaceId").to_num().unwrap_or(0.0);
-                    if place {
-                        format!("place_{place_id}")
-                    } else {
-                        rbx.inst(object).name.clone()
+                let fail = |why: String| Ok(vec![Value::Nil, Value::str(&format!("saveinstance: {why}"))]);
+                match object.filter(|&o| o != rbx.game) {
+                    Some(o) => match self.save_structure(lua, o, file, fname)? {
+                        Ok(name) => one(Value::str(&name)),
+                        Err(why) => fail(why),
+                    },
+                    None => {
+                        if !lua.is_yieldable() {
+                            return fail(
+                                "it waits for the world to be written, and this code can't wait \
+                                 (run it with task.spawn)"
+                                    .into(),
+                            );
+                        }
+                        let Some(saves) = self.game.saves_dir() else {
+                            return fail("the game has no saves folder here".into());
+                        };
+                        let client = self.game.client();
+                        let folder =
+                            super::hstudio_dump::folder_name(file.as_deref(), &client, &super::hstudio_dump::today());
+                        let source = client
+                            .server
+                            .as_ref()
+                            .map(|s| {
+                                if s.address.is_empty() {
+                                    s.name.clone()
+                                } else {
+                                    s.address.clone()
+                                }
+                            })
+                            .unwrap_or_default();
+                        let world = match super::hstudio_dump::prepare(&saves, &folder, &source) {
+                            Ok(w) => w,
+                            Err(why) => return fail(why),
+                        };
+                        let job = match self.game.dump_world(&world) {
+                            Ok(job) => job,
+                            Err(why) => return fail(why),
+                        };
+                        let owner = self.owner;
+                        let rbx = &mut self.s.rbx;
+                        rbx.active = true;
+                        rbx.dumps.push(super::hstudio_rbx::DumpWait {
+                            owner,
+                            thread: lua.current_thread(),
+                            job,
+                            world,
+                        });
+                        Err(Throw::Yield(Vec::new()))
                     }
-                });
-                // A plain-text name (Dex's save prompt ends its names in
-                // .txt) is the model's file, not a text file beside it.
-                if let Some(stem) = name.strip_suffix(".txt") {
-                    name = stem.to_string();
                 }
-                if !name.ends_with(".rbxlx")
-                    && !name.ends_with(".rbxmx")
-                    && !name.ends_with(".rbxm")
-                    && !name.ends_with(".rbxl")
-                {
-                    name = format!("{name}.{ext}");
-                }
-                // A binary name gets the XML it holds.
-                if let Some(stem) = name.strip_suffix(".rbxm").or_else(|| name.strip_suffix(".rbxl")) {
-                    name = format!("{stem}.{ext}");
-                }
-                let xml = super::hstudio_rbx_save::rbxmx(rbx, &roots);
-                lua.charge(xml.len() / 64)?;
-                let p = sandboxed(lua, &self.workspace(), &name, fname)?;
-                writable(lua, &p, fname)?;
-                if let Some(dir) = p.parent() {
-                    std::fs::create_dir_all(dir).map_err(|e| io_err(lua, fname, e))?;
-                }
-                std::fs::write(&p, xml.as_bytes()).map_err(|e| io_err(lua, fname, e))?;
-                one(Value::str(&name))
             }
             // decompile: the script's own source, which is at hand here
             // (its Source, or the mod's file it runs); a function's own text

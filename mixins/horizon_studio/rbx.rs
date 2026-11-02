@@ -1682,6 +1682,8 @@ pub struct Rbx {
     pub hui: Id,
     /// HTTP requests on their way, with the threads that wait for them.
     pub http: Vec<HttpWait>,
+    /// The threads waiting in saveinstance for the game's dump to be written.
+    pub dumps: Vec<DumpWait>,
     /// Open WebSockets.
     pub sockets: Vec<SocketEntry>,
     /// Drawing objects (Drawing.new).
@@ -1730,6 +1732,15 @@ pub struct HttpWait {
     pub owner: Owner,
     pub thread: Rc<Thread>,
     pub pending: super::hstudio_net::Pending,
+}
+
+/// A thread waiting in saveinstance: the game's dump job, and the world's
+/// folder it gets back when the job is done.
+pub struct DumpWait {
+    pub owner: Owner,
+    pub thread: Rc<Thread>,
+    pub job: u64,
+    pub world: std::path::PathBuf,
 }
 
 /// A WebSocket: its Instance, the socket, and the thread waiting for it to open.
@@ -1834,6 +1845,7 @@ impl Rbx {
             fps_cap: 0.0,
             hui: 0,
             http: Vec::new(),
+            dumps: Vec::new(),
             sockets: Vec::new(),
             drawings: Vec::new(),
             next_drawing: 1,
@@ -2313,6 +2325,7 @@ impl Rbx {
         self.actions.retain(|a| a.1 != owner);
         self.render_steps.retain(|r| r.2 != owner);
         self.http.retain(|h| h.owner != owner);
+        self.dumps.retain(|d| d.owner != owner);
         for s in self.sockets.iter().filter(|s| s.owner == owner) {
             s.socket.close();
         }
@@ -2375,6 +2388,7 @@ impl Rbx {
         self.actions.iter_mut().for_each(|a| shift(&mut a.1));
         self.render_steps.iter_mut().for_each(|r| shift(&mut r.2));
         self.http.iter_mut().for_each(|h| shift(&mut h.owner));
+        self.dumps.iter_mut().for_each(|d| shift(&mut d.owner));
         self.sockets.iter_mut().for_each(|s| shift(&mut s.owner));
         self.drawings.iter_mut().for_each(|d| shift(&mut d.owner));
         self.world.lookers.iter_mut().for_each(shift);

@@ -82,10 +82,10 @@ name = "hstudio_rbx_remote"
 source = "rbx_remote.rs"
 
 [[module]]
-id = "rbx_save"
+id = "dump"
 file = "crates/horizon-client/src/game.rs"
-name = "hstudio_rbx_save"
-source = "rbx_save.rs"
+name = "hstudio_dump"
+source = "dump.rs"
 
 [[module]]
 id = "rbx_image"
@@ -291,6 +291,20 @@ file = "crates/horizon-client/src/game.rs"
 name = "hstudio_bridge"
 source = "bridge.rs"
 
+# saveinstance's world downloader: the client's world saved with Horizon's
+# own save code (hstudio_bridge calls it each frame).
+[[module]]
+id = "world-dump"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_world_dump"
+source = "world_dump.rs"
+
+[[module]]
+id = "world-files"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_world_files"
+source = "world_files.rs"
+
 # In the game's library, inside its design-system toolkit (ui_theme), whose
 # font cache and shapes it reuses; public, for the studio in the game.
 [[module]]
@@ -428,6 +442,25 @@ helper = "packet_in.rs"
 bindings = [
   { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
   { name = "packet", ty = "&horizon_protocol::packets::play::Clientbound", value = "&packet" },
+]
+
+# The tags the server sends in the configuration, which the game keeps no
+# copy of (but the dialogs'): saveinstance writes them into its world's data
+# pack. Kept in the protocol crate (hstudio_tags), where they arrive.
+[[module]]
+id = "tags"
+file = "crates/horizon-protocol/src/lib.rs"
+name = "hstudio_tags"
+source = "tags.rs"
+visibility = "pub"
+
+[[injection]]
+id = "tags-in"
+kind = "HEAD"
+target = "horizon_protocol::registry::Dynamic::add_tags"
+helper = "tags_in.rs"
+bindings = [
+  { name = "packet", ty = "&crate::packets::configuration::UpdateTags", value = "packet" },
 ]
 
 # The chat's completion requests, as the game sends them to the server: one
