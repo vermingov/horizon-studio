@@ -2279,6 +2279,11 @@ impl Ctx<'_> {
                         rbx.inst(object).name.clone()
                     }
                 });
+                // A plain-text name (Dex's save prompt ends its names in
+                // .txt) is the model's file, not a text file beside it.
+                if let Some(stem) = name.strip_suffix(".txt") {
+                    name = stem.to_string();
+                }
                 if !name.ends_with(".rbxlx")
                     && !name.ends_with(".rbxmx")
                     && !name.ends_with(".rbxm")

@@ -341,7 +341,7 @@ fn saveinstance_writes_a_model_studio_and_the_reader_open() {
         part.Size = Vector3.new(2, 3, 4)
         part.Color = Color3.fromRGB(255, 0, 0)
         part.Parent = char
-        print(saveinstance(char), SaveInstance(part, "one"), ypcall == pcall)
+        print(saveinstance(char), SaveInstance(part, "one"), saveinstance(part, "dex.txt"), ypcall == pcall)
         print(decompile(char.Animate):sub(1, 21))
         "#,
     );
@@ -352,7 +352,7 @@ fn saveinstance_writes_a_model_studio_and_the_reader_open() {
         .collect();
     assert_eq!(
         p,
-        ["Player1.rbxmx\tone.rbxmx\ttrue", "local Character = scr"],
+        ["Player1.rbxmx\tone.rbxmx\tdex.rbxmx\ttrue", "local Character = scr"],
         "{:?}",
         log(&st)
     );
