@@ -4,7 +4,7 @@
 // UserInputService:IsKeyDown, workspace:Raycast, Camera:WorldToViewportPoint,
 // HttpService:JSONEncode...), for hstudio_rbx's dispatch.
 
-use super::hstudio::{json_to_lua, lua_to_json};
+use super::hstudio::json_to_lua;
 use super::hstudio_lua::{Host, Lua, Res, Table, Throw, Value, bad_arg, check_num, check_text, opt_num};
 use super::hstudio_rbx::{
     Env, Id, Rbx, Tween, Wait, Waiter, class_def, is_a, legacy_info, lerp_value, tween_goal, tween_info_arg, udim2_arg,
@@ -572,7 +572,8 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
         }
         ("HttpService", "JSONEncode") => {
             let v = args.get(1).cloned().unwrap_or_default();
-            let j = lua_to_json(&v, 0).map_err(|e| lua.rt_error(format!("Can't convert to JSON: {e}")))?;
+            let j = super::hstudio::lua_to_json_roblox(&v)
+                .map_err(|e| lua.rt_error(format!("Can't convert to JSON: {e}")))?;
             one(Value::str(&j.to_string()))
         }
         ("HttpService", "JSONDecode") => {

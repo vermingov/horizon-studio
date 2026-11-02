@@ -10747,4 +10747,596 @@ print(setthreadcontext ~= nil)
 ```
 "##
     ),
+    e!(
+        "version",
+        "roblox",
+        r##"
+`version()`
+
+The Roblox client's version, as `"0.697.0.6970574"`.
+
+```lua
+print(version())
+```
+"##
+    ),
+    e!(
+        "Version",
+        "roblox",
+        r##"
+`Version()`
+
+Roblox's older name for `version`.
+
+```lua
+print(Version())
+```
+"##
+    ),
+    e!(
+        "Wait",
+        "roblox",
+        r##"
+`Wait([seconds])`
+
+Roblox's older name for `wait`.
+
+```lua
+Wait(0.1)
+```
+"##
+    ),
+    e!(
+        "Spawn",
+        "roblox",
+        r##"
+`Spawn(f)`
+
+Roblox's older name for `spawn`.
+
+```lua
+Spawn(function() print("later") end)
+```
+"##
+    ),
+    e!(
+        "Delay",
+        "roblox",
+        r##"
+`Delay(seconds, f)`
+
+Roblox's older name for `delay`.
+
+```lua
+Delay(1, function() print("a second later") end)
+```
+"##
+    ),
+    e!(
+        "elapsedTime",
+        "roblox",
+        r##"
+`elapsedTime()`
+
+Seconds since the studio's Roblox layer started.
+
+```lua
+print(elapsedTime())
+```
+"##
+    ),
+    e!(
+        "ElapsedTime",
+        "roblox",
+        r##"
+`ElapsedTime()`
+
+Roblox's older name for `elapsedTime`.
+
+```lua
+print(ElapsedTime())
+```
+"##
+    ),
+    e!(
+        "stats",
+        "roblox",
+        r##"
+`stats()`
+
+The Stats service, as `game:GetService("Stats")`.
+
+```lua
+print(stats())
+```
+"##
+    ),
+    e!(
+        "Stats",
+        "roblox",
+        r##"
+`Stats()`
+
+Roblox's older name for `stats`.
+
+```lua
+print(Stats())
+```
+"##
+    ),
+    e!(
+        "printidentity",
+        "roblox",
+        r##"
+`printidentity([prefix])`
+
+Prints the thread's identity (8, an executor's): `Current identity is 8`.
+
+```lua
+printidentity()
+```
+"##
+    ),
+    e!(
+        "Game.run",
+        "roblox",
+        r##"
+`Game.run(command)`
+
+`Game` is Roblox's older name for `game`: `Game.run` is `game.run`.
+
+```lua
+Game.run("time set day")
+```
+"##
+    ),
+    e!(
+        "Game.fps",
+        "roblox",
+        r##"
+`Game.fps()`
+
+`game.fps`, by Roblox's older name `Game`.
+
+```lua
+print(Game.fps())
+```
+"##
+    ),
+    e!(
+        "Game.screen",
+        "roblox",
+        r##"
+`Game.screen()`
+
+`game.screen`, by Roblox's older name `Game`.
+
+```lua
+print(Game.screen())
+```
+"##
+    ),
+    e!(
+        "Game.ticks",
+        "roblox",
+        r##"
+`Game.ticks()`
+
+`game.ticks`, by Roblox's older name `Game`.
+
+```lua
+print(Game.ticks())
+```
+"##
+    ),
+    e!(
+        "Game.time",
+        "roblox",
+        r##"
+`Game.time()`
+
+`game.time`, by Roblox's older name `Game`.
+
+```lua
+print(Game.time())
+```
+"##
+    ),
+    e!(
+        "Vector3int16.new",
+        "roblox",
+        r##"
+`Vector3int16.new([x, y, z])`
+
+A Vector3int16: X, Y and Z as 16-bit integers (fractions cut, values wrapping as Roblox's do), with `+`, `-`, `*`, `/` and `==`.
+
+```lua
+print(Vector3int16.new(1, 2, 3) + Vector3int16.new(1, 1, 1))
+```
+"##
+    ),
+    e!(
+        "Vector2int16.new",
+        "roblox",
+        r##"
+`Vector2int16.new([x, y])`
+
+A Vector2int16: X and Y as 16-bit integers, with `+`, `-`, `*`, `/` and `==`.
+
+```lua
+print(Vector2int16.new(3, 4) * 2)
+```
+"##
+    ),
+    e!(
+        "Region3int16.new",
+        "roblox",
+        r##"
+`Region3int16.new([min, max])`
+
+A Region3int16 from two Vector3int16s, its `Min` and `Max`.
+
+```lua
+print(Region3int16.new(Vector3int16.new(0, 0, 0), Vector3int16.new(4, 4, 4)).Max)
+```
+"##
+    ),
+    e!(
+        "Faces.new",
+        "roblox",
+        r##"
+`Faces.new(...)`
+
+Faces from NormalIds: `Top`, `Bottom`, `Left`, `Right`, `Back` and `Front` are true or false.
+
+```lua
+print(Faces.new(Enum.NormalId.Top).Top)
+```
+"##
+    ),
+    e!(
+        "Axes.new",
+        "roblox",
+        r##"
+`Axes.new(...)`
+
+Axes from Axis items or NormalIds: `X`, `Y` and `Z` (and the faces on them) are true or false.
+
+```lua
+print(Axes.new(Enum.Axis.X).X)
+```
+"##
+    ),
+    e!(
+        "PathWaypoint.new",
+        "roblox",
+        r##"
+`PathWaypoint.new([position, action, label])`
+
+A PathWaypoint: its `Position`, `Action` (Walk unless given) and `Label`.
+
+```lua
+print(PathWaypoint.new(Vector3.new(1, 2, 3)).Position)
+```
+"##
+    ),
+    e!(
+        "DateTime.now",
+        "roblox",
+        r##"
+`DateTime.now()`
+
+The DateTime now: `UnixTimestamp`, `UnixTimestampMillis`, and `ToUniversalTime()`, `ToLocalTime()`, `ToIsoDate()`, `FormatUniversalTime(format)` and `FormatLocalTime(format)` (Roblox's tokens: YYYY, MMMM, MM, D, dddd, HH, h, mm, ss, A...). Local time is UTC.
+
+```lua
+print(DateTime.now():ToIsoDate())
+```
+"##
+    ),
+    e!(
+        "DateTime.fromUnixTimestamp",
+        "roblox",
+        r##"
+`DateTime.fromUnixTimestamp(seconds)`
+
+The DateTime that many seconds after 1970 began (UTC).
+
+```lua
+print(DateTime.fromUnixTimestamp(0))
+```
+"##
+    ),
+    e!(
+        "DateTime.fromUnixTimestampMillis",
+        "roblox",
+        r##"
+`DateTime.fromUnixTimestampMillis(ms)`
+
+The DateTime that many milliseconds after 1970 began (UTC).
+
+```lua
+print(DateTime.fromUnixTimestampMillis(1500))
+```
+"##
+    ),
+    e!(
+        "DateTime.fromUniversalTime",
+        "roblox",
+        r##"
+`DateTime.fromUniversalTime([year, month, day, hour, minute, second, millisecond])`
+
+The DateTime at that UTC date and time.
+
+```lua
+print(DateTime.fromUniversalTime(2024, 2, 29, 13, 5):FormatUniversalTime("dddd, MMMM D YYYY"))
+```
+"##
+    ),
+    e!(
+        "DateTime.fromLocalTime",
+        "roblox",
+        r##"
+`DateTime.fromLocalTime([year, month, day, hour, minute, second, millisecond])`
+
+As `fromUniversalTime`: local time is UTC here.
+
+```lua
+print(DateTime.fromLocalTime(2024, 1, 1))
+```
+"##
+    ),
+    e!(
+        "DateTime.fromIsoDate",
+        "roblox",
+        r##"
+`DateTime.fromIsoDate(text)`
+
+The DateTime an ISO 8601 date names (`2024-02-29T13:05:09.250Z`), or nil.
+
+```lua
+print(DateTime.fromIsoDate("2024-02-29T13:05:09Z").UnixTimestamp)
+```
+"##
+    ),
+    e!(
+        "SharedTable.new",
+        "roblox",
+        r##"
+`SharedTable.new([table])`
+
+A SharedTable: indexed, set and iterated as a table (`for k, v in st do`).
+
+```lua
+local st = SharedTable.new({ a = 1 })
+st.b = 2
+print(st.a, st.b)
+```
+"##
+    ),
+    e!(
+        "SharedTable.clear",
+        "roblox",
+        r##"
+`SharedTable.clear(st)`
+
+Empties a SharedTable.
+
+```lua
+local st = SharedTable.new({ a = 1 })
+SharedTable.clear(st)
+```
+"##
+    ),
+    e!(
+        "SharedTable.clone",
+        "roblox",
+        r##"
+`SharedTable.clone(st)`
+
+A copy of a SharedTable.
+
+```lua
+print(SharedTable.clone(SharedTable.new({ a = 1 })).a)
+```
+"##
+    ),
+    e!(
+        "SharedTable.cloneAndFreeze",
+        "roblox",
+        r##"
+`SharedTable.cloneAndFreeze(st)`
+
+A frozen copy of a SharedTable: setting it errors.
+
+```lua
+print(SharedTable.isFrozen(SharedTable.cloneAndFreeze(SharedTable.new())))
+```
+"##
+    ),
+    e!(
+        "SharedTable.increment",
+        "roblox",
+        r##"
+`SharedTable.increment(st, key[, by])`
+
+Adds `by` (1) to a number in a SharedTable and returns what it was.
+
+```lua
+local st = SharedTable.new({ n = 1 })
+print(SharedTable.increment(st, "n"), st.n)
+```
+"##
+    ),
+    e!(
+        "SharedTable.isFrozen",
+        "roblox",
+        r##"
+`SharedTable.isFrozen(st)`
+
+Whether a SharedTable is frozen.
+
+```lua
+print(SharedTable.isFrozen(SharedTable.new()))
+```
+"##
+    ),
+    e!(
+        "SharedTable.size",
+        "roblox",
+        r##"
+`SharedTable.size(st)`
+
+How many keys a SharedTable has.
+
+```lua
+print(SharedTable.size(SharedTable.new({ a = 1, b = 2 })))
+```
+"##
+    ),
+    e!(
+        "SharedTable.update",
+        "roblox",
+        r##"
+`SharedTable.update(st, key, f)`
+
+Sets a key of a SharedTable to `f(old value)`.
+
+```lua
+local st = SharedTable.new({ n = 1 })
+SharedTable.update(st, "n", function(n) return n * 10 end)
+print(st.n)
+```
+"##
+    ),
+    e!(
+        "CatalogSearchParams.new",
+        "roblox",
+        r##"
+`CatalogSearchParams.new()`
+
+A CatalogSearchParams with Roblox's defaults, its fields set as in Roblox (searches find nothing here).
+
+```lua
+local p = CatalogSearchParams.new()
+p.SearchKeyword = "hat"
+```
+"##
+    ),
+    e!(
+        "DockWidgetPluginGuiInfo.new",
+        "roblox",
+        r##"
+`DockWidgetPluginGuiInfo.new([state, enabled, override, floatX, floatY, minWidth, minHeight])`
+
+A DockWidgetPluginGuiInfo holding what it is given (no plugins here).
+
+```lua
+print(DockWidgetPluginGuiInfo.new().MinWidth)
+```
+"##
+    ),
+    e!(
+        "Content.fromUri",
+        "roblox",
+        r##"
+`Content.fromUri(uri)`
+
+A Content naming an asset: `SourceType` Uri, `Uri`.
+
+```lua
+print(Content.fromUri("rbxassetid://1").Uri)
+```
+"##
+    ),
+    e!(
+        "Content.fromObject",
+        "roblox",
+        r##"
+`Content.fromObject(object)`
+
+A Content holding an object: `SourceType` Object, `Object`.
+
+```lua
+print(typeof(Content.fromObject(workspace)))
+```
+"##
+    ),
+    e!(
+        "SecurityCapabilities.new",
+        "roblox",
+        r##"
+`SecurityCapabilities.new(...)`
+
+A set of SecurityCapability items: `Contains`, `Add` and `Remove`.
+
+```lua
+print(SecurityCapabilities.new())
+```
+"##
+    ),
+    e!(
+        "SecurityCapabilities.fromCurrent",
+        "roblox",
+        r##"
+`SecurityCapabilities.fromCurrent()`
+
+The running script's capabilities: none are kept here.
+
+```lua
+print(SecurityCapabilities.fromCurrent())
+```
+"##
+    ),
+    e!(
+        "FloatCurveKey.new",
+        "roblox",
+        r##"
+`FloatCurveKey.new(time, value[, interpolation])`
+
+A FloatCurveKey: `Time`, `Value`, `Interpolation`, and `LeftTangent` and `RightTangent` to set.
+
+```lua
+print(FloatCurveKey.new(0, 1).Value)
+```
+"##
+    ),
+    e!(
+        "ValueCurveKey.new",
+        "roblox",
+        r##"
+`ValueCurveKey.new(time, value[, interpolation])`
+
+A ValueCurveKey, as FloatCurveKey with any value.
+
+```lua
+print(ValueCurveKey.new(0, Vector3.new()).Time)
+```
+"##
+    ),
+    e!(
+        "RotationCurveKey.new",
+        "roblox",
+        r##"
+`RotationCurveKey.new(time, cframe[, interpolation])`
+
+A RotationCurveKey, as FloatCurveKey with a CFrame.
+
+```lua
+print(RotationCurveKey.new(0, CFrame.new()).Time)
+```
+"##
+    ),
+    e!(
+        "Path2DControlPoint.new",
+        "roblox",
+        r##"
+`Path2DControlPoint.new([position, leftTangent, rightTangent])`
+
+A Path2DControlPoint of UDim2s: `Position`, `LeftTangent` and `RightTangent`.
+
+```lua
+print(Path2DControlPoint.new(UDim2.fromOffset(4, 4)).Position)
+```
+"##
+    ),
 ];

@@ -307,6 +307,348 @@ pub fn vector_lib(lua: &mut Lua, renv: &TableRef) {
     }
 }
 
+/// The rest of Roblox's globals, in its environment `renv`: the older
+/// names (Version, Wait, Spawn, Delay, Game, ElapsedTime, Stats,
+/// printidentity) and the data types scripts make little use of
+/// (DateTime, Vector3int16, Vector2int16, Region3int16, Faces, Axes,
+/// PathWaypoint, SharedTable, Content, the curve keys and the like).
+pub fn more_globals(lua: &mut Lua, renv: &TableRef, genv: &TableRef) {
+    let newproxy = genv.borrow().get_str("newproxy");
+    if let Ok(f) = lua.load(MORE, "=[roblox]", renv) {
+        let _ = lua.call(&mut super::hstudio_lua::NoHost::default(), &f, vec![newproxy]);
+    }
+}
+
+const MORE: &str = r#"
+local newproxy = ...
+local started = os.clock()
+-- An enum item, or nil when this list of Roblox's enums lacks it.
+local function enum(e, item)
+    local ok, v = pcall(function() return Enum[e][item] end)
+    return ok and v or nil
+end
+version = function() return "0.697.0.6970574" end
+Version = version
+Wait, Spawn, Delay, Game = wait, spawn, delay, game
+elapsedTime = function() return os.clock() - started end
+ElapsedTime = elapsedTime
+stats = function() return game:GetService("Stats") end
+Stats = stats
+printidentity = function(prefix)
+    print((prefix or "Current identity is") .. " 8")
+end
+
+-- A data type: a locked userdata with its fields, methods, tostring and ==.
+local fields = setmetatable({}, { __mode = "k" })
+local function datatype(name, def)
+    local methods = def.methods or {}
+    local function make(f)
+        local u = newproxy(true)
+        local mt = getmetatable(u)
+        fields[u] = f
+        mt.__type = name
+        mt.__metatable = "The metatable is locked"
+        mt.__index = function(self, k)
+            local v = fields[self][k]
+            if v ~= nil then return v end
+            local m = methods[k]
+            if m ~= nil then return m end
+            if def.get then
+                local got = def.get(fields[self], k)
+                if got ~= nil then return got end
+            end
+            error(tostring(k) .. " is not a valid member of " .. name, 2)
+        end
+        mt.__newindex = function(self, k, v)
+            if def.set then return def.set(fields[self], k, v) end
+            error(tostring(k) .. " cannot be assigned to", 2)
+        end
+        mt.__tostring = function(self) return def.str and def.str(fields[self]) or name end
+        mt.__eq = function(a, b)
+            local fa, fb = fields[a], fields[b]
+            if not fa or not fb then return false end
+            for k, v in pairs(fa) do if fb[k] ~= v then return false end end
+            for k, v in pairs(fb) do if fa[k] ~= v then return false end end
+            return true
+        end
+        for op, f2 in pairs(def.ops or {}) do mt[op] = f2 end
+        return u
+    end
+    return make, fields
+end
+
+local function int16(n)
+    n = tonumber(n) or 0
+    n = n < 0 and math.ceil(n) or math.floor(n)
+    return ((n + 32768) % 65536) - 32768
+end
+
+-- Vector3int16 and Vector2int16
+local v3i, v3f
+local function v3i_new(x, y, z) return v3i({ X = int16(x), Y = int16(y), Z = int16(z) }) end
+local function v3i_op(f) return function(a, b)
+    local fa = v3f[a] or { X = a, Y = a, Z = a }
+    local fb = v3f[b] or { X = b, Y = b, Z = b }
+    return v3i_new(f(fa.X, fb.X), f(fa.Y, fb.Y), f(fa.Z, fb.Z))
+end end
+v3i, v3f = datatype("Vector3int16", {
+    str = function(f) return f.X .. ", " .. f.Y .. ", " .. f.Z end,
+    ops = {
+        __add = v3i_op(function(a, b) return a + b end),
+        __sub = v3i_op(function(a, b) return a - b end),
+        __mul = v3i_op(function(a, b) return a * b end),
+        __div = v3i_op(function(a, b) return a / b end),
+        __unm = function(a) local f = v3f[a] return v3i_new(-f.X, -f.Y, -f.Z) end,
+    },
+})
+Vector3int16 = table.freeze({ new = function(x, y, z) return v3i_new(x, y, z) end })
+
+local v2i, v2f
+local function v2i_new(x, y) return v2i({ X = int16(x), Y = int16(y) }) end
+local function v2i_op(f) return function(a, b)
+    local fa = v2f[a] or { X = a, Y = a }
+    local fb = v2f[b] or { X = b, Y = b }
+    return v2i_new(f(fa.X, fb.X), f(fa.Y, fb.Y))
+end end
+v2i, v2f = datatype("Vector2int16", {
+    str = function(f) return f.X .. ", " .. f.Y end,
+    ops = {
+        __add = v2i_op(function(a, b) return a + b end),
+        __sub = v2i_op(function(a, b) return a - b end),
+        __mul = v2i_op(function(a, b) return a * b end),
+        __div = v2i_op(function(a, b) return a / b end),
+        __unm = function(a) local f = v2f[a] return v2i_new(-f.X, -f.Y) end,
+    },
+})
+Vector2int16 = table.freeze({ new = function(x, y) return v2i_new(x, y) end })
+
+local r3i = datatype("Region3int16", {
+    str = function(f) return tostring(f.Min) .. "; " .. tostring(f.Max) end,
+})
+Region3int16 = table.freeze({ new = function(min, max)
+    return r3i({ Min = min or v3i_new(0, 0, 0), Max = max or v3i_new(0, 0, 0) })
+end })
+
+-- Faces and Axes, from NormalIds (and Axis)
+local faceNames = { "Right", "Top", "Back", "Left", "Bottom", "Front" }
+local function faceSet(...)
+    local set = {}
+    for _, v in ipairs({ ... }) do
+        local n = typeof(v) == "EnumItem" and v.Name or tostring(v)
+        set[n] = true
+    end
+    return set
+end
+local function listed(f, names)
+    local out = {}
+    for _, n in ipairs(names) do if f[n] then table.insert(out, n) end end
+    return table.concat(out, ", ")
+end
+local faces = datatype("Faces", { str = function(f) return listed(f, faceNames) end })
+Faces = table.freeze({ new = function(...)
+    local set = faceSet(...)
+    local f = {}
+    for _, n in ipairs(faceNames) do f[n] = set[n] == true end
+    return faces(f)
+end })
+local axes = datatype("Axes", { str = function(f) return listed(f, { "X", "Y", "Z" }) end })
+Axes = table.freeze({ new = function(...)
+    local set = faceSet(...)
+    local x = set.X or set.Right or set.Left or false
+    local y = set.Y or set.Top or set.Bottom or false
+    local z = set.Z or set.Back or set.Front or false
+    return axes({ X = x, Y = y, Z = z, Right = x, Left = x, Top = y, Bottom = y, Back = z, Front = z })
+end })
+
+local waypoint = datatype("PathWaypoint", { str = function(f) return "{" .. tostring(f.Position) .. "}, " .. tostring(f.Action) end })
+PathWaypoint = table.freeze({ new = function(pos, action, label)
+    return waypoint({ Position = pos or Vector3.new(), Action = action or enum("PathWaypointAction", "Walk"), Label = label or "" })
+end })
+
+-- DateTime
+local function civil(days)
+    days = days + 719468
+    local era = math.floor(days / 146097)
+    local doe = days - era * 146097
+    local yoe = math.floor((doe - math.floor(doe / 1460) + math.floor(doe / 36524) - math.floor(doe / 146096)) / 365)
+    local y = yoe + era * 400
+    local doy = doe - (365 * yoe + math.floor(yoe / 4) - math.floor(yoe / 100))
+    local mp = math.floor((5 * doy + 2) / 153)
+    local d = doy - math.floor((153 * mp + 2) / 5) + 1
+    local m = mp < 10 and mp + 3 or mp - 9
+    if m <= 2 then y = y + 1 end
+    return y, m, d
+end
+local function daysFrom(y, m, d)
+    if m <= 2 then y = y - 1 end
+    local era = math.floor(y / 400)
+    local yoe = y - era * 400
+    local mp = m > 2 and m - 3 or m + 9
+    local doy = math.floor((153 * mp + 2) / 5) + d - 1
+    local doe = yoe * 365 + math.floor(yoe / 4) - math.floor(yoe / 100) + doy
+    return era * 146097 + doe - 719468
+end
+local function parts(ms)
+    local s = math.floor(ms / 1000)
+    local days = math.floor(s / 86400)
+    local rest = s - days * 86400
+    local y, m, d = civil(days)
+    return { Year = y, Month = m, Day = d, Hour = math.floor(rest / 3600), Minute = math.floor(rest % 3600 / 60),
+        Second = rest % 60, Millisecond = ms - s * 1000 }
+end
+local function iso(ms)
+    local t = parts(ms)
+    local s = string.format("%04d-%02d-%02dT%02d:%02d:%02d", t.Year, t.Month, t.Day, t.Hour, t.Minute, t.Second)
+    if t.Millisecond ~= 0 then s = s .. string.format(".%03d", t.Millisecond) end
+    return s .. "Z"
+end
+local months = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" }
+local weekdays = { "Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday" }
+local function format(ms, fmt)
+    local t = parts(ms)
+    local wd = weekdays[math.floor(ms / 86400000) % 7 + 1]
+    local h12 = (t.Hour % 12 == 0) and 12 or t.Hour % 12
+    local map = {
+        YYYY = string.format("%04d", t.Year), YY = string.format("%02d", t.Year % 100),
+        MMMM = months[t.Month], MMM = months[t.Month]:sub(1, 3), MM = string.format("%02d", t.Month), M = tostring(t.Month),
+        DD = string.format("%02d", t.Day), D = tostring(t.Day), dddd = wd, ddd = wd:sub(1, 3),
+        HH = string.format("%02d", t.Hour), H = tostring(t.Hour), hh = string.format("%02d", h12), h = tostring(h12),
+        mm = string.format("%02d", t.Minute), m = tostring(t.Minute), ss = string.format("%02d", t.Second), s = tostring(t.Second),
+        A = t.Hour < 12 and "AM" or "PM", a = t.Hour < 12 and "am" or "pm", SSS = string.format("%03d", t.Millisecond),
+    }
+    local out, i = {}, 1
+    local keys = { "YYYY", "MMMM", "dddd", "SSS", "MMM", "ddd", "YY", "MM", "DD", "HH", "hh", "mm", "ss", "M", "D", "H", "h", "m", "s", "A", "a" }
+    while i <= #fmt do
+        local hit
+        for _, k in ipairs(keys) do
+            if fmt:sub(i, i + #k - 1) == k then hit = k break end
+        end
+        if hit then table.insert(out, map[hit]) i = i + #hit
+        else table.insert(out, fmt:sub(i, i)) i = i + 1 end
+    end
+    return table.concat(out)
+end
+local dt
+dt = datatype("DateTime", {
+    str = function(f) return iso(f.UnixTimestampMillis) end,
+    methods = {
+        ToUniversalTime = function(self) return parts(self.UnixTimestampMillis) end,
+        ToLocalTime = function(self) return parts(self.UnixTimestampMillis) end,
+        ToIsoDate = function(self) return iso(self.UnixTimestampMillis) end,
+        FormatUniversalTime = function(self, fmt) return format(self.UnixTimestampMillis, fmt) end,
+        FormatLocalTime = function(self, fmt) return format(self.UnixTimestampMillis, fmt) end,
+    },
+})
+local function fromMs(ms)
+    ms = math.floor(ms)
+    return dt({ UnixTimestampMillis = ms, UnixTimestamp = math.floor(ms / 1000) })
+end
+local function fromParts(y, mo, d, h, mi, s, ms)
+    local days = daysFrom(y or 1970, mo or 1, d or 1)
+    return fromMs((((days * 24 + (h or 0)) * 60 + (mi or 0)) * 60 + (s or 0)) * 1000 + (ms or 0))
+end
+DateTime = table.freeze({
+    now = function() return fromMs(tick() * 1000) end,
+    fromUnixTimestamp = function(s) return fromMs((s or 0) * 1000) end,
+    fromUnixTimestampMillis = function(ms) return fromMs(ms or 0) end,
+    fromUniversalTime = fromParts,
+    fromLocalTime = fromParts,
+    fromIsoDate = function(text)
+        local y, mo, d, h, mi, s = tostring(text):match("^(%d+)%-(%d+)%-(%d+)T?(%d*):?(%d*):?(%d*)")
+        if not y then return nil end
+        local frac = tostring(text):match("%.(%d+)")
+        return fromParts(tonumber(y), tonumber(mo), tonumber(d), tonumber(h) or 0, tonumber(mi) or 0, tonumber(s) or 0,
+            frac and math.floor(tonumber("0." .. frac) * 1000) or 0)
+    end,
+})
+
+-- SharedTable: a table scripts index and iterate
+local st, stf
+st, stf = datatype("SharedTable", {
+    str = function() return "SharedTable" end,
+    get = function(f, k) return f.__items[k] end,
+    set = function(f, k, v) if f.__frozen then error("SharedTable is frozen", 3) end f.__items[k] = v end,
+    ops = {
+        __iter = function(self) return next, stf[self].__items end,
+        __len = function(self) return #stf[self].__items end,
+    },
+})
+local function st_new(t)
+    local items = {}
+    for k, v in pairs(t or {}) do items[k] = v end
+    return st({ __items = items, __frozen = false })
+end
+SharedTable = table.freeze({
+    new = st_new,
+    clear = function(t) table.clear(stf[t].__items) end,
+    clone = function(t) return st_new(stf[t].__items) end,
+    cloneAndFreeze = function(t) local c = st_new(stf[t].__items) stf[c].__frozen = true return c end,
+    increment = function(t, k, by) local f = stf[t].__items local old = f[k] or 0 f[k] = old + (by or 1) return old end,
+    isFrozen = function(t) return stf[t].__frozen end,
+    size = function(t) local n = 0 for _ in pairs(stf[t].__items) do n = n + 1 end return n end,
+    update = function(t, k, f) local items = stf[t].__items items[k] = f(items[k]) end,
+})
+
+-- Settings-like records scripts make and set
+local function record(name, defaults)
+    local make = datatype(name, { set = function(f, k, v) f[k] = v end })
+    return function(init)
+        local f = {}
+        for k, v in pairs(defaults) do f[k] = v end
+        for k, v in pairs(init or {}) do f[k] = v end
+        return make(f)
+    end
+end
+local catalog = record("CatalogSearchParams", { SearchKeyword = "", MinPrice = 0, MaxPrice = 0, SortType = enum("CatalogSortType", "Relevance"),
+    CategoryFilter = enum("CatalogCategoryFilter", "None"), BundleTypes = {}, AssetTypes = {}, IncludeOffSale = false, CreatorName = "", Limit = 30 })
+CatalogSearchParams = table.freeze({ new = function() return catalog() end })
+local dock = record("DockWidgetPluginGuiInfo", {})
+DockWidgetPluginGuiInfo = table.freeze({ new = function(state, enabled, override, fx, fy, mw, mh)
+    return dock({ InitialDockState = state or enum("InitialDockState", "Right"), InitialEnabled = enabled or false,
+        InitialEnabledShouldOverrideRestore = override or false, FloatingXSize = fx or 0, FloatingYSize = fy or 0,
+        MinWidth = mw or 0, MinHeight = mh or 0 })
+end })
+
+local content = datatype("Content", { str = function(f) return f.Uri or "" end })
+Content = table.freeze({
+    none = content({ SourceType = enum("ContentSourceType", "None") }),
+    fromUri = function(uri) return content({ SourceType = enum("ContentSourceType", "Uri"), Uri = tostring(uri) }) end,
+    fromObject = function(obj) return content({ SourceType = enum("ContentSourceType", "Object"), Object = obj }) end,
+})
+
+local caps, capsf
+caps, capsf = datatype("SecurityCapabilities", {
+    str = function(f) local out = {} for n in pairs(f.__set) do table.insert(out, n) end table.sort(out) return table.concat(out, ", ") end,
+    methods = {
+        Contains = function(self, ...) for _, c in ipairs({ ... }) do if not capsf[self].__set[c.Name] then return false end end return true end,
+        Add = function(self, ...) local s = table.clone(capsf[self].__set) for _, c in ipairs({ ... }) do s[c.Name] = true end return caps({ __set = s }) end,
+        Remove = function(self, ...) local s = table.clone(capsf[self].__set) for _, c in ipairs({ ... }) do s[c.Name] = nil end return caps({ __set = s }) end,
+    },
+})
+SecurityCapabilities = table.freeze({
+    new = function(...) local s = {} for _, c in ipairs({ ... }) do s[c.Name] = true end return caps({ __set = s }) end,
+    fromCurrent = function() return caps({ __set = {} }) end,
+})
+
+local function curveKey(name)
+    local make = datatype(name, {
+        str = function(f) return tostring(f.Time) .. ", " .. tostring(f.Value) end,
+        set = function(f, k, v) if k == "LeftTangent" or k == "RightTangent" then f[k] = v else error(k .. " cannot be assigned to", 3) end end,
+    })
+    return table.freeze({ new = function(time, value, interp)
+        return make({ Time = time or 0, Value = value, Interpolation = interp or enum("KeyInterpolationMode", "Linear"), LeftTangent = 0, RightTangent = 0 })
+    end })
+end
+FloatCurveKey = curveKey("FloatCurveKey")
+ValueCurveKey = curveKey("ValueCurveKey")
+RotationCurveKey = curveKey("RotationCurveKey")
+
+local cp = datatype("Path2DControlPoint", { str = function(f) return tostring(f.Position) end })
+Path2DControlPoint = table.freeze({ new = function(pos, left, right)
+    return cp({ Position = pos or UDim2.new(), LeftTangent = left or UDim2.new(), RightTangent = right or UDim2.new() })
+end })
+"#;
+
 /// Luau's vector library over Roblox's Vector3.
 const VECTOR: &str = r#"
 local V3 = Vector3

@@ -462,3 +462,55 @@ fn a_highlight_is_drawn_over_its_part() {
         .count();
     assert!(red >= 1 && green >= 4, "{:?}", game.drawn);
 }
+
+#[test]
+fn roblox_s_older_globals_and_rarer_data_types_are_there() {
+    let p = run(
+        "compat-types",
+        r#"
+        print(version(), Version == version, Wait == wait, Spawn == spawn, Delay == delay, Game == game)
+        print(typeof(ElapsedTime()), stats() == game:GetService("Stats"))
+        local v = Vector3int16.new(1.7, -2.9, 40000)
+        print(typeof(v), v, v + Vector3int16.new(1, 1, 1), v == Vector3int16.new(1, -2, -25536))
+        print(Vector2int16.new(3, 4) * 2, typeof(Region3int16.new()))
+        print(Faces.new(Enum.NormalId.Top, Enum.NormalId.Front), Faces.new(Enum.NormalId.Top).Top, Axes.new(Enum.Axis.X, Enum.NormalId.Top))
+        local d = DateTime.fromUniversalTime(2024, 2, 29, 13, 5, 9, 250)
+        print(typeof(d), d, d.UnixTimestamp, d:FormatUniversalTime("dddd, MMMM D YYYY h:mm A"))
+        print(DateTime.fromIsoDate("2024-02-29T13:05:09.250Z") == d, d:ToUniversalTime().Month, DateTime.now().UnixTimestamp > 1.7e9)
+        local s = SharedTable.new({ a = 1 }) s.b = 2
+        print(typeof(s), s.a, s.b, SharedTable.size(s))
+        print(typeof(Content.fromUri("rbxassetid://1")), typeof(PathWaypoint.new(Vector3.new())), typeof(FloatCurveKey.new(0, 1)))
+        print(pcall(function() return v.W end))
+        "#,
+        0.6,
+    );
+    assert_eq!(
+        p,
+        [
+            "0.697.0.6970574\ttrue\ttrue\ttrue\ttrue\ttrue",
+            "number\ttrue",
+            "Vector3int16\t1, -2, -25536\t2, -1, -25535\ttrue",
+            "6, 8\tRegion3int16",
+            "Top, Front\ttrue\tX, Y",
+            "DateTime\t2024-02-29T13:05:09.250Z\t1709211909\tThursday, February 29 2024 1:05 PM",
+            "true\t2\ttrue",
+            "SharedTable\t1\t2\t2",
+            "Content\tPathWaypoint\tFloatCurveKey",
+            "false\tt.lua:14: W is not a valid member of Vector3int16",
+        ]
+    );
+}
+
+#[test]
+fn json_encode_writes_null_for_what_json_cannot_hold_and_methods_take_lowercase_names() {
+    let p = run(
+        "compat-json",
+        r#"
+        local HttpService = game:GetService("HttpService")
+        print(HttpService:JSONEncode({ v = Vector3.new(1, 2, 3) }), HttpService:JSONEncode({ print, 1, workspace }))
+        print(Color3.new(0, 0, 0):lerp(Color3.new(1, 1, 1), 0.5).R, CFrame.new(1, 2, 3):inverse().X)
+        "#,
+        0.6,
+    );
+    assert_eq!(p, ["{\"v\":null}\t[null,1,null]", "0.5\t-1"]);
+}

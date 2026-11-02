@@ -1060,6 +1060,14 @@ fn index(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
     if let Some(m) = method(d.type_name(), &k) {
         return Ok(vec![m]);
     }
+    // Roblox takes the older lowercase names of the methods too
+    // (`lerp`, `inverse`, `toObjectSpace`).
+    if let Some(first) = k.chars().next().filter(char::is_ascii_lowercase) {
+        let upper = format!("{}{}", first.to_ascii_uppercase(), &k[1..]);
+        if let Some(m) = method(d.type_name(), &upper) {
+            return Ok(vec![m]);
+        }
+    }
     if let Data::EnumType(e) = d {
         return Err(lua.rt_error(format!("{k} is not a valid member of \"Enum.{e}\"")));
     }

@@ -2663,6 +2663,7 @@ impl Studio {
         self.roblox_globals(&renv);
         super::hstudio_sunc::vector_lib(&mut self.lua, &renv);
         super::hstudio_sunc::executor_globals(&mut self.lua, &genv, &mut self.s.rbx);
+        super::hstudio_sunc::more_globals(&mut self.lua, &renv, &genv);
         let mut meta = Table::new();
         meta.set_str("__index", Value::Table(renv.clone()));
         genv.borrow_mut().meta = Some(Rc::new(std::cell::RefCell::new(meta)));
@@ -4232,6 +4233,16 @@ pub fn static_imports(src: &str) -> Vec<String> {
 
 /// A value as JSON: tables with keys 1..n are arrays, others objects.
 pub fn lua_to_json(v: &Value, depth: usize) -> Result<serde_json::Value, String> {
+    json_of(v, depth, false)
+}
+
+/// As HttpService:JSONEncode has it: what has no JSON form (a function, an
+/// Instance, a Vector3...) is null, as in Roblox.
+pub fn lua_to_json_roblox(v: &Value) -> Result<serde_json::Value, String> {
+    json_of(v, 0, true)
+}
+
+fn json_of(v: &Value, depth: usize, lenient: bool) -> Result<serde_json::Value, String> {
     if depth > 64 {
         return Err("tables nested too deep for JSON (or a cycle)".into());
     }
@@ -4249,17 +4260,18 @@ pub fn lua_to_json(v: &Value, depth: usize) -> Result<serde_json::Value, String>
                 serde_json::Value::Array(
                     t.list()
                         .iter()
-                        .map(|x| lua_to_json(x, depth + 1))
+                        .map(|x| json_of(x, depth + 1, lenient))
                         .collect::<Result<_, _>>()?,
                 )
             } else {
                 let mut map = serde_json::Map::new();
                 for (k, val) in entries {
-                    map.insert(k.plain_text(), lua_to_json(&val, depth + 1)?);
+                    map.insert(k.plain_text(), json_of(&val, depth + 1, lenient)?);
                 }
                 serde_json::Value::Object(map)
             }
         }
+        Value::Func(_) | Value::Native(_) | Value::Thread(_) | Value::Userdata(_) if lenient => serde_json::Value::Null,
         Value::Func(_) | Value::Native(_) => return Err("functions have no JSON form".into()),
         Value::Thread(_) | Value::Userdata(_) => return Err(format!("a {} has no JSON form", v.type_name())),
     })
