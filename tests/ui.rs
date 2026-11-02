@@ -4585,7 +4585,13 @@ fn settings_shows_version_and_roblox_account() {
     redraw(&mut st, &mut game);
     text_at(&game, "Roblox account");
     text_at(&game, "Not signed in");
-    text_at(&game, "Horizon Studio 0.11.1  \u{b7}  for Horizon 26.3");
+    text_at(
+        &game,
+        &format!(
+            "Horizon Studio {}  \u{b7}  for Horizon 26.3",
+            horizon_studio::game::hstudio::VERSION
+        ),
+    );
     // Connect opens the dialog over everything.
     let (x, y) = text_at(&game, "Connect account");
     click(&mut st, &mut game, (x + 2.0, y + 2.0));
