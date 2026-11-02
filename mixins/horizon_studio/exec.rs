@@ -76,6 +76,7 @@ pub fn globals() -> Vec<(&'static str, Value)> {
         ("setreadonly", setreadonly),
         ("isreadonly", isreadonly),
         ("getnamecallmethod", getnamecallmethod),
+        ("setnamecallmethod", setnamecallmethod),
         ("base64encode", base64encode),
         ("base64decode", base64decode),
         ("lz4compress", lz4compress),
@@ -160,9 +161,29 @@ fn func_arg(lua: &Lua, args: &[Value], i: usize, fname: &str) -> Result<Value, T
     }
 }
 
-/// Every call made from a script mod is the executor's own.
+thread_local! {
+    /// While the game's own packet goes through the scripts' hooks.
+    static GAME_CALLS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` as the game's call (its packets reaching a `__namecall` hook):
+/// checkcaller is false inside.
+pub fn as_game<R>(f: impl FnOnce() -> R) -> R {
+    let before = GAME_CALLS.with(|g| g.replace(true));
+    let r = f();
+    GAME_CALLS.with(|g| g.set(before));
+    r
+}
+
+/// Whether the game's own packet is in the scripts' hooks now (`as_game`).
+pub fn game_calls() -> bool {
+    GAME_CALLS.with(std::cell::Cell::get)
+}
+
+/// Every call made from a script mod is the executor's own; the game's
+/// packets, reaching a hook, are not.
 fn checkcaller(_: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {
-    one(Value::Bool(true))
+    one(Value::Bool(!GAME_CALLS.with(std::cell::Cell::get)))
 }
 
 /// A new function that runs as `f` does now, unaffected by later hooks of `f`.
@@ -216,10 +237,14 @@ fn redirect_of(f: &Value) -> Option<Value> {
 /// hookfunction: calls of `target` run `hook` from now on; the function as
 /// it was comes back.
 pub fn hook(lua: &Lua, target: &Value, hook: Value) -> Result<Value, Throw> {
-    if target.raw_eq(&hook) {
-        return Err(lua.rt_error("hookfunction: a function can't hook itself"));
-    }
+    let _ = lua;
     let original = clone_fn(target);
+    if target.raw_eq(&hook) {
+        // Hooked to itself, a function runs as itself: SimpleSpy's shutdown
+        // restores FireServer with the very function it never hooked.
+        set_redirect(target, None);
+        return Ok(original);
+    }
     set_redirect(target, Some(hook));
     Ok(original)
 }
@@ -404,9 +429,11 @@ fn info_of(lua: &Lua, args: &[Value], fname: &str) -> Result<Option<Info>, Throw
     let (closure, line, func) = match args.first() {
         Some(Value::Num(n)) => {
             let level = *n as usize;
-            match lua.frame_info(level) {
-                Some(f) => (f.closure.clone(), f64::from(f.line), Value::Func(f.closure)),
-                None => return Ok(None),
+            match (lua.frame_info(level), lua.native_at(level)) {
+                (Some(f), _) => (f.closure.clone(), f64::from(f.line), Value::Func(f.closure)),
+                // A newcclosure a Lua function was called through.
+                (None, Some(n)) => return info_of(lua, &[Value::Native(n)], fname),
+                (None, None) => return Ok(None),
             }
         }
         Some(Value::Func(c)) => (c.clone(), f64::from(c.proto().line.max(1)), Value::Func(c.clone())),
@@ -682,6 +709,12 @@ fn isreadonly(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> 
 
 fn getnamecallmethod(lua: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {
     one(lua.namecall_method().map_or(Value::Nil, Value::Str))
+}
+
+fn setnamecallmethod(lua: &mut Lua, _: &mut dyn Host, _: &Native, args: Vec<Value>) -> Res {
+    let name = check_str(lua, &args, 0, "setnamecallmethod")?;
+    lua.set_namecall_method(Some(name));
+    none()
 }
 
 // ---------------------------------------------------------------- encoding

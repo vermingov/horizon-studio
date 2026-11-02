@@ -76,6 +76,12 @@ name = "hstudio_rbx_api_data"
 source = "rbx_api_data.rs"
 
 [[module]]
+id = "rbx_remote"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_remote"
+source = "rbx_remote.rs"
+
+[[module]]
 id = "rbx_save"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_rbx_save"
@@ -396,6 +402,32 @@ bindings = [
   { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
   { name = "content", ty = "&horizon_client::text::Text", value = "&content" },
   { name = "source", ty = "&horizon_client::chat::ChatSource", value = "&source" },
+]
+
+# The chat's completion requests, as the game sends them to the server: one
+# The game's packets as the Roblox layer's remotes (ReplicatedStorage.Minecraft):
+# each serverbound one the game sends goes through the scripts' __namecall hook
+# while there is one (which may stop it), and each clientbound one fires its
+# remote's OnClientEvent while a script listens.
+[[injection]]
+id = "packet-out"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::remote::Game<'_>::send"
+helper = "packet_out.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "packet", ty = "&horizon_protocol::packets::play::Serverbound", value = "&packet" },
+]
+
+[[injection]]
+id = "packet-in"
+kind = "HEAD"
+target = "horizon_client::game::remote::Game<'_>::handle_packet"
+helper = "packet_in.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "packet", ty = "&horizon_protocol::packets::play::Clientbound", value = "&packet" },
 ]
 
 # The chat's completion requests, as the game sends them to the server: one

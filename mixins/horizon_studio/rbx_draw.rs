@@ -898,15 +898,19 @@ pub fn fresh_output(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id, key: &str) ->
 
 /// The instances from the ScreenGui that draws `id` down to it, if one does.
 fn drawn_path(rbx: &Rbx, id: Id) -> Option<Vec<Id>> {
-    let drawn = [rbx.player_gui, rbx.core_gui, rbx.hui];
     let mut path = vec![id];
     let mut at = id;
     loop {
         let inst = rbx.try_inst(at)?;
+        // A ScreenGui is laid out on the screen wherever it is, as Roblox
+        // works out the sizes of one not shown yet (SimpleSpy sizes its
+        // window before it parents it).
+        if inst.class.name == "ScreenGui" {
+            path.reverse();
+            return Some(path);
+        }
         let parent = inst.parent?;
-        if inst.class.name == "ScreenGui" && drawn.contains(&parent)
-            || inst.class.name == "BillboardGui" && board_root(rbx, at)
-        {
+        if inst.class.name == "BillboardGui" && board_root(rbx, at) {
             path.reverse();
             return Some(path);
         }

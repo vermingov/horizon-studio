@@ -72,7 +72,31 @@ pub struct FakeGame {
     /// and whether the player's own body is drawn (third person).
     pub mouse: [f64; 2],
     pub third_person: bool,
+    /// The serverbound packets scripts sent (FireServer), and what sending
+    /// one answers with an error instead (as the game refuses a bad one).
+    pub packets: Vec<horizon_studio::game::hstudio_rbx_remote::Packet>,
+    pub packet_error: Option<String>,
 }
+
+/// The fake game's play packets by id (a few of the game's).
+pub const SERVERBOUND: &[&str] = &[
+    "accept_teleportation",
+    "chat",
+    "chat_command",
+    "command_suggestion",
+    "custom_payload",
+    "keep_alive",
+    "move_player_pos",
+    "move_player_pos_rot",
+    "use_item_on",
+];
+pub const CLIENTBOUND: &[&str] = &[
+    "command_suggestions",
+    "custom_payload",
+    "keep_alive",
+    "system_chat",
+    "set_time",
+];
 
 /// A particle spawned: its id, place, speed and colour.
 pub type Particle = (String, [f64; 3], [f64; 3], Option<[f32; 4]>);
@@ -169,6 +193,8 @@ impl FakeGame {
             inventory: None,
             mouse: [0.0; 2],
             third_person: true,
+            packets: Vec::new(),
+            packet_error: None,
         }
     }
     /// An inventory of 36 slots with these stacks in them (slot, item, count).
@@ -579,6 +605,16 @@ impl GameApi for FakeGame {
         self.moves.push(format!("hide {id}"));
         self.entities.retain(|e| e.id != id);
         true
+    }
+    fn packet_names(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        (SERVERBOUND, CLIENTBOUND)
+    }
+    fn send_packet(&mut self, packet: &horizon_studio::game::hstudio_rbx_remote::Packet) -> Result<(), String> {
+        if let Some(e) = &self.packet_error {
+            return Err(e.clone());
+        }
+        self.packets.push(packet.clone());
+        Ok(())
     }
     fn voice(&self) -> VoiceInfo {
         match &self.voice_glue {

@@ -410,7 +410,14 @@ fn later(call: Later) {
 
 /// Does what was kept for this frame.
 fn catch_up(game: &mut Game<'_>) {
-    for call in LATER.with(|l| std::mem::take(&mut *l.borrow_mut())) {
+    let calls = LATER.with(|l| std::mem::take(&mut *l.borrow_mut()));
+    if calls.is_empty() {
+        return;
+    }
+    // The scripts' own sends: past the scripts' packet hooks (a hook that
+    // changed a chat line isn't shown it again).
+    QUIET.with(|q| q.set(true));
+    for call in calls {
         match call {
             Later::Chat(text) => game.native_chat(&text),
             Later::Send(line) => game.send_chat(&line),
@@ -420,6 +427,7 @@ fn catch_up(game: &mut Game<'_>) {
             Later::Client(action) => client_now(game, action),
         }
     }
+    QUIET.with(|q| q.set(false));
 }
 
 /// Runs `f` with the studio, unless it is busy (a hook reached from a script).
@@ -712,6 +720,16 @@ impl GameApi for Host<'_, '_> {
             Some(g) => g.send_chat(line),
             None => later(Later::Send(line.to_owned())),
         }
+    }
+    fn packet_names(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        (
+            horizon_protocol::ids::play::serverbound::NAMES,
+            horizon_protocol::ids::play::clientbound::NAMES,
+        )
+    }
+    fn send_packet(&mut self, packet: &Packet) -> Result<(), String> {
+        let s = build(packet)?;
+        send_now(self.g(), s)
     }
     fn player(&mut self) -> Option<PlayerInfo> {
         let base = self.g().native_player()?;
@@ -2882,4 +2900,664 @@ pub(super) fn chat_hidden(game: &Game<'_>) -> bool {
 /// The player list (Tab) is drawn unless a Roblox script hid it.
 pub(super) fn player_list_hidden(game: &Game<'_>) -> bool {
     game.native_on(ID) && HIDE_TAB.with(Cell::get)
+}
+
+// ----------------------------------------------------------------- packets
+//
+// The game's play packets for the Roblox layer's remotes
+// (hstudio_rbx_remote): each packet Horizon models with plain fields maps
+// to a table of them and back (`mapped!`); any other is read from its
+// `Debug` form, to look at, and sent from its payload. What a script sends
+// is checked as the server will read it: it decodes as the packet, whole,
+// and its positions, angles and enums are ones vanilla takes.
+
+use super::hstudio_rbx_remote::{self as remote, Field, Packet, Verdict};
+use horizon_protocol::packets::play::{Clientbound as C, Serverbound as S};
+use horizon_protocol::packets::{Empty, configuration as cfg, play as pp, recipes, status};
+
+thread_local! {
+    /// While the bridge sends what the scripts asked for at the last frame:
+    /// those packets are the scripts' own, not the game's.
+    static QUIET: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A field's value from the packet's and back.
+trait PField: Sized {
+    fn to_field(&self) -> Field;
+    fn from_field(f: &Field) -> Result<Self, String>;
+}
+
+fn whole(f: &Field, min: i128, max: i128) -> Result<i128, String> {
+    let n = match f {
+        Field::Int(n) => *n,
+        Field::Num(n) if n.fract() == 0.0 && n.is_finite() => *n as i128,
+        Field::Str(s) => std::str::from_utf8(s)
+            .ok()
+            .and_then(|t| t.trim().parse::<i128>().ok())
+            .ok_or("expected a whole number")?,
+        Field::Nil => return Err("missing".into()),
+        _ => return Err("expected a whole number".into()),
+    };
+    if n < min || n > max {
+        return Err(format!("{n} is out of range ({min} to {max})"));
+    }
+    Ok(n)
+}
+
+macro_rules! whole_field {
+    ($($t:ty),*) => {$(
+        impl PField for $t {
+            fn to_field(&self) -> Field {
+                Field::Int(i128::from(*self))
+            }
+            fn from_field(f: &Field) -> Result<Self, String> {
+                Ok(whole(f, i128::from(<$t>::MIN), i128::from(<$t>::MAX))? as $t)
+            }
+        }
+    )*};
+}
+whole_field!(i8, u8, i16, i32, i64);
+
+fn number(f: &Field) -> Result<f64, String> {
+    match f {
+        Field::Num(n) => Ok(*n),
+        Field::Int(n) => Ok(*n as f64),
+        Field::Nil => Err("missing".into()),
+        _ => Err("expected a number".into()),
+    }
+}
+
+impl PField for f64 {
+    fn to_field(&self) -> Field {
+        Field::Num(*self)
+    }
+    fn from_field(f: &Field) -> Result<Self, String> {
+        number(f)
+    }
+}
+
+impl PField for f32 {
+    fn to_field(&self) -> Field {
+        Field::Num(f64::from(*self))
+    }
+    fn from_field(f: &Field) -> Result<Self, String> {
+        let n = number(f)?;
+        if n.is_finite() && n.abs() > f64::from(f32::MAX) {
+            return Err(format!("{n} is out of range for a float"));
+        }
+        Ok(n as f32)
+    }
+}
+
+impl PField for bool {
+    fn to_field(&self) -> Field {
+        Field::Bool(*self)
+    }
+    fn from_field(f: &Field) -> Result<Self, String> {
+        match f {
+            Field::Bool(b) => Ok(*b),
+            Field::Nil => Err("missing".into()),
+            _ => Err("expected a boolean".into()),
+        }
+    }
+}
+
+impl PField for String {
+    fn to_field(&self) -> Field {
+        Field::text(self)
+    }
+    fn from_field(f: &Field) -> Result<Self, String> {
+        match f {
+            Field::Str(s) => String::from_utf8(s.clone()).map_err(|_| "expected text (UTF-8)".into()),
+            Field::Nil => Err("missing".into()),
+            _ => Err("expected a string".into()),
+        }
+    }
+}
+
+impl PField for Vec<u8> {
+    fn to_field(&self) -> Field {
+        Field::Str(self.clone())
+    }
+    fn from_field(f: &Field) -> Result<Self, String> {
+        match f {
+            Field::Str(s) => Ok(s.clone()),
+            Field::Nil => Err("missing".into()),
+            _ => Err("expected bytes (a string or buffer)".into()),
+        }
+    }
+}
+
+/// A UUID: its usual text (with or without dashes).
+impl PField for u128 {
+    fn to_field(&self) -> Field {
+        let h = format!("{self:032x}");
+        Field::text(&format!(
+            "{}-{}-{}-{}-{}",
+            &h[..8],
+            &h[8..12],
+            &h[12..16],
+            &h[16..20],
+            &h[20..]
+        ))
+    }
+    fn from_field(f: &Field) -> Result<Self, String> {
+        let Field::Str(s) = f else {
+            return Err(if *f == Field::Nil {
+                "missing"
+            } else {
+                "expected a UUID string"
+            }
+            .into());
+        };
+        let hex: String = String::from_utf8_lossy(s).chars().filter(|c| *c != '-').collect();
+        if hex.len() != 32 {
+            return Err("expected a UUID (32 hex digits)".into());
+        }
+        u128::from_str_radix(&hex, 16).map_err(|_| "expected a UUID (32 hex digits)".into())
+    }
+}
+
+fn three(f: &Field) -> Result<[f64; 3], String> {
+    match f {
+        Field::Vec3(v) => Ok(*v),
+        Field::List(l) if l.len() == 3 => Ok([number(&l[0])?, number(&l[1])?, number(&l[2])?]),
+        Field::Nil => Err("missing".into()),
+        _ => Err("expected a Vector3".into()),
+    }
+}
+
+impl PField for [f64; 3] {
+    fn to_field(&self) -> Field {
+        Field::Vec3(*self)
+    }
+    fn from_field(f: &Field) -> Result<Self, String> {
+        three(f)
+    }
+}
+
+impl PField for [f32; 3] {
+    fn to_field(&self) -> Field {
+        Field::Vec3(self.map(f64::from))
+    }
+    fn from_field(f: &Field) -> Result<Self, String> {
+        let v = three(f)?;
+        Ok(v.map(|x| x as f32))
+    }
+}
+
+/// A block position: a Vector3 of whole numbers.
+impl PField for [i32; 3] {
+    fn to_field(&self) -> Field {
+        Field::Vec3(self.map(f64::from))
+    }
+    fn from_field(f: &Field) -> Result<Self, String> {
+        let v = three(f)?;
+        let mut out = [0; 3];
+        for (o, x) in out.iter_mut().zip(v) {
+            if x.fract() != 0.0 || !(-33_554_432.0..=33_554_431.0).contains(&x) {
+                return Err("expected a block position (whole numbers, within the world)".into());
+            }
+            *o = x as i32;
+        }
+        Ok(out)
+    }
+}
+
+impl<T: PField> PField for Option<T> {
+    fn to_field(&self) -> Field {
+        self.as_ref().map_or(Field::Nil, PField::to_field)
+    }
+    fn from_field(f: &Field) -> Result<Self, String> {
+        match f {
+            Field::Nil => Ok(None),
+            other => T::from_field(other).map(Some),
+        }
+    }
+}
+
+impl PField for Vec<String> {
+    fn to_field(&self) -> Field {
+        Field::List(self.iter().map(PField::to_field).collect())
+    }
+    fn from_field(f: &Field) -> Result<Self, String> {
+        match f {
+            Field::List(l) => l.iter().map(String::from_field).collect(),
+            Field::Map(m) if m.is_empty() => Ok(Vec::new()),
+            Field::Nil => Err("missing".into()),
+            _ => Err("expected a list of strings".into()),
+        }
+    }
+}
+
+impl PField for [String; 4] {
+    fn to_field(&self) -> Field {
+        Field::List(self.iter().map(PField::to_field).collect())
+    }
+    fn from_field(f: &Field) -> Result<Self, String> {
+        let list = Vec::<String>::from_field(f)?;
+        <[String; 4]>::try_from(list).map_err(|_| "expected four lines".into())
+    }
+}
+
+/// Field `name` of a script's fields, read as the packet's.
+fn take<T: PField>(fields: &[(String, Field)], name: &str) -> Result<T, String> {
+    let f = fields.iter().find(|(k, _)| k == name).map_or(&Field::Nil, |(_, v)| v);
+    T::from_field(f).map_err(|e| format!("{name}: {e}"))
+}
+
+/// The packets with plain fields: Variant(Type) = ID { fields }.
+macro_rules! mapped {
+    ($($variant:ident($($ty:ident)::+) = $id:ident { $($f:ident),* $(,)? }),* $(,)?) => {
+        fn mapped_fields(p: &S) -> Option<Vec<(String, Field)>> {
+            match p {
+                $(S::$variant(_v) => Some(vec![$((stringify!($f).to_owned(), PField::to_field(&_v.$f))),*]),)*
+                _ => None,
+            }
+        }
+        fn field_names(id: i32) -> Option<&'static [&'static str]> {
+            use horizon_protocol::ids::play::serverbound as ids;
+            $(if id == ids::$id {
+                return Some(&[$(stringify!($f)),*]);
+            })*
+            None
+        }
+        #[allow(clippy::redundant_closure_call)]
+        fn from_mapped(id: i32, _fields: &[(String, Field)]) -> Option<Result<S, String>> {
+            use horizon_protocol::ids::play::serverbound as ids;
+            $(if id == ids::$id {
+                return Some((|| -> Result<S, String> {
+                    Ok(S::$variant($($ty)::+ { $($f: take(_fields, stringify!($f))?),* }))
+                })());
+            })*
+            None
+        }
+    };
+}
+
+mapped! {
+    AcceptTeleportation(pp::AcceptTeleportation) = ACCEPT_TELEPORTATION { id, x, y, z, yaw, pitch },
+    Attack(pp::Attack) = ATTACK { id },
+    BlockEntityTagQuery(pp::BlockEntityTagQuery) = BLOCK_ENTITY_TAG_QUERY { transaction, pos },
+    ChangeDifficulty(pp::ChangeDifficultyRequest) = CHANGE_DIFFICULTY { difficulty },
+    LockDifficulty(pp::LockDifficulty) = LOCK_DIFFICULTY { locked },
+    ChangeGameMode(pp::ChangeGameMode) = CHANGE_GAME_MODE { mode },
+    ChatAck(pp::ChatAck) = CHAT_ACK { offset },
+    ChatCommand(pp::ChatCommand) = CHAT_COMMAND { command },
+    ChatSessionUpdate(pp::ChatSessionUpdate) = CHAT_SESSION_UPDATE { session, expires_at, key, key_signature },
+    ChunkBatchReceived(pp::ChunkBatchReceived) = CHUNK_BATCH_RECEIVED { chunks_per_tick },
+    ClientCommand(pp::ClientCommand) = CLIENT_COMMAND { action },
+    ClientTickEnd(Empty) = CLIENT_TICK_END {},
+    ConfigurationAcknowledged(Empty) = CONFIGURATION_ACKNOWLEDGED {},
+    ContainerButtonClick(pp::ContainerButtonClick) = CONTAINER_BUTTON_CLICK { container, button },
+    ContainerClose(pp::ContainerClose) = CONTAINER_CLOSE { container },
+    CookieResponse(cfg::CookieResponse) = COOKIE_RESPONSE { key, payload },
+    CustomPayload(cfg::CustomPayload) = CUSTOM_PAYLOAD { channel, data },
+    EditBook(pp::EditBook) = EDIT_BOOK { slot, pages, title },
+    EntityTagQuery(pp::EntityTagQuery) = ENTITY_TAG_QUERY { transaction, entity },
+    Interact(pp::Interact) = INTERACT { id, hand, location, secondary },
+    JigsawGenerate(pp::JigsawGenerate) = JIGSAW_GENERATE { pos, levels, keep_jigsaws },
+    KeepAlive(cfg::KeepAlive) = KEEP_ALIVE { id },
+    MovePlayerPos(pp::MovePlayerPos) = MOVE_PLAYER_POS { x, y, z, flags },
+    MovePlayerPosRot(pp::MovePlayerPosRot) = MOVE_PLAYER_POS_ROT { x, y, z, yaw, pitch, flags },
+    MovePlayerRot(pp::MovePlayerRot) = MOVE_PLAYER_ROT { yaw, pitch, flags },
+    MovePlayerStatus(pp::MovePlayerStatus) = MOVE_PLAYER_STATUS_ONLY { flags },
+    MoveVehicle(pp::MoveVehicleRequest) = MOVE_VEHICLE { position, yaw, pitch, on_ground },
+    PaddleBoat(pp::PaddleBoat) = PADDLE_BOAT { left, right },
+    PickItemFromBlock(pp::PickItemFromBlock) = PICK_ITEM_FROM_BLOCK { pos, include_data },
+    PickItemFromEntity(pp::PickItemFromEntity) = PICK_ITEM_FROM_ENTITY { id, include_data },
+    PingRequest(status::Ping) = PING_REQUEST { time },
+    PlayerAbilities(pp::PlayerAbilitiesRequest) = PLAYER_ABILITIES { flags },
+    PlayerAction(pp::PlayerAction) = PLAYER_ACTION { action, pos, direction, sequence },
+    PlayerCommand(pp::PlayerCommand) = PLAYER_COMMAND { id, action, data },
+    PlayerInput(pp::PlayerInput) = PLAYER_INPUT { flags },
+    PlayerLoaded(Empty) = PLAYER_LOADED {},
+    Pong(cfg::Ping) = PONG { id },
+    RenameItem(pp::RenameItem) = RENAME_ITEM { name },
+    ContainerSlotStateChanged(pp::ContainerSlotStateChanged) = CONTAINER_SLOT_STATE_CHANGED { slot, container, enabled },
+    Punch(Empty) = PUNCH {},
+    ResourcePack(cfg::ResourcePackResponse) = RESOURCE_PACK { id, action },
+    SelectBundleItem(pp::SelectBundleItem) = BUNDLE_ITEM_SELECTED { slot, index },
+    SelectTrade(pp::SelectTrade) = SELECT_TRADE { item },
+    SetBeacon(pp::SetBeacon) = SET_BEACON { primary, secondary },
+    SetCarriedItem(pp::SetCarriedItem) = SET_CARRIED_ITEM { slot },
+    SetCommandBlock(pp::SetCommandBlock) = SET_COMMAND_BLOCK { pos, command, mode, flags },
+    SetCommandMinecart(pp::SetCommandMinecart) = SET_COMMAND_MINECART { entity, command, track_output },
+    SetJigsawBlock(pp::SetJigsawBlock) = SET_JIGSAW_BLOCK {
+        pos, name, target, pool, final_state, joint, selection_priority, placement_priority
+    },
+    SetTestBlock(pp::SetTestBlock) = SET_TEST_BLOCK { pos, mode, message },
+    SignUpdate(pp::SignUpdate) = SIGN_UPDATE { pos, lines, front },
+    SpectatorAction(pp::SpectatorAction) = SPECTATOR_ACTION { target },
+    TeleportToEntity(pp::TeleportToEntity) = TELEPORT_TO_ENTITY { uuid },
+    UseItem(pp::UseItem) = USE_ITEM { hand, sequence, yaw, pitch },
+    UseItemOn(pp::UseItemOn) = USE_ITEM_ON { hand, pos, face, cursor, inside, world_border, sequence },
+    PlaceRecipe(recipes::PlaceRecipe) = PLACE_RECIPE { container, recipe, use_max },
+    RecipeBookChangeSettings(recipes::RecipeBookChangeSettings) = RECIPE_BOOK_CHANGE_SETTINGS { book_type, open, filtering },
+}
+
+/// Packets only the game sends: one wrong (a keep-alive's id, a chat
+/// session's key, the chat's acknowledgements, the state's switch)
+/// disconnects the player.
+const GAME_ONLY: &[i32] = &[
+    horizon_protocol::ids::play::serverbound::KEEP_ALIVE,
+    horizon_protocol::ids::play::serverbound::CONFIGURATION_ACKNOWLEDGED,
+    horizon_protocol::ids::play::serverbound::CHAT_SESSION_UPDATE,
+    horizon_protocol::ids::play::serverbound::CHAT_ACK,
+];
+
+/// A packet's payload: its body after the id.
+fn payload(body: &[u8]) -> &[u8] {
+    let mut r = horizon_protocol::buf::Reader::new(body);
+    let _ = r.varint();
+    r.rest()
+}
+
+/// `{:?}`, if it is at most `max` bytes (a chunk's is far longer).
+fn debug_text(v: &dyn std::fmt::Debug, max: usize) -> Option<String> {
+    struct Capped(String, usize);
+    impl std::fmt::Write for Capped {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            if self.0.len() + s.len() > self.1 {
+                return Err(std::fmt::Error);
+            }
+            self.0.push_str(s);
+            Ok(())
+        }
+    }
+    let mut c = Capped(String::new(), max);
+    std::fmt::write(&mut c, format_args!("{v:?}")).ok()?;
+    Some(c.0)
+}
+
+/// The most of a packet's `Debug` form read as its fields.
+const MAX_DEBUG: usize = 64 * 1024;
+
+/// ServerboundCommandSuggestionPacket, which Horizon sends as bytes: its
+/// id and the command typed.
+fn suggestion_fields(data: &[u8]) -> Option<Vec<(String, Field)>> {
+    let mut r = horizon_protocol::buf::Reader::new(data);
+    let id = r.varint().ok()?;
+    let command = r.string(32500).ok()?;
+    (r.remaining() == 0).then(|| {
+        vec![
+            ("id".into(), Field::Int(id.into())),
+            ("command".into(), Field::text(&command)),
+        ]
+    })
+}
+
+/// ClientboundCommandSuggestionsPacket (bytes to Horizon too): the id, the
+/// range replaced and each suggestion's text and tooltip.
+fn suggestions_fields(data: &[u8]) -> Option<Vec<(String, Field)>> {
+    let mut r = horizon_protocol::buf::Reader::new(data);
+    let id = r.varint().ok()?;
+    let start = r.varint().ok()?;
+    let length = r.varint().ok()?;
+    let n = r.count(4096).ok()?;
+    let mut list = Vec::with_capacity(n);
+    for _ in 0..n {
+        let text = r.string(32767).ok()?;
+        let mut entry = vec![("text".to_owned(), Field::text(&text))];
+        if r.bool().ok()? {
+            let tag = r.nbt().ok()?;
+            if let Some(f) = debug_text(&tag, MAX_DEBUG).and_then(|t| remote::debug_value(&t)) {
+                entry.push(("tooltip".into(), f));
+            }
+        }
+        list.push(Field::Map(entry));
+    }
+    (r.remaining() == 0).then(|| {
+        vec![
+            ("id".into(), Field::Int(id.into())),
+            ("start".into(), Field::Int(start.into())),
+            ("length".into(), Field::Int(length.into())),
+            ("suggestions".into(), Field::List(list)),
+        ]
+    })
+}
+
+/// One of the game's serverbound packets for the scripts.
+fn serverbound_packet(p: &S) -> Packet {
+    use horizon_protocol::ids::play::serverbound as ids;
+    let id = p.id();
+    let name = ids::NAMES.get(id as usize).copied().unwrap_or("unknown").to_owned();
+    if let Some(fields) = mapped_fields(p) {
+        return Packet {
+            id,
+            name,
+            fields,
+            mapped: true,
+            raw: None,
+        };
+    }
+    if let S::Unknown(ids::COMMAND_SUGGESTION, data) = p
+        && let Some(fields) = suggestion_fields(data)
+    {
+        return Packet {
+            id,
+            name,
+            fields,
+            mapped: true,
+            raw: None,
+        };
+    }
+    let body = p.encode();
+    Packet {
+        id,
+        name,
+        fields: debug_text(p, MAX_DEBUG)
+            .and_then(|t| remote::debug_fields(&t))
+            .unwrap_or_default(),
+        mapped: false,
+        raw: Some(payload(&body).to_vec()),
+    }
+}
+
+/// One of the server's packets for the scripts.
+fn clientbound_packet(p: &C) -> Packet {
+    use horizon_protocol::ids::play::clientbound as ids;
+    let id = p.id();
+    let name = ids::NAMES.get(id as usize).copied().unwrap_or("unknown").to_owned();
+    let body = p.encode();
+    let raw = payload(&body).to_vec();
+    let fields = match p {
+        C::Unknown(ids::COMMAND_SUGGESTIONS, data) => suggestions_fields(data),
+        _ => debug_text(p, MAX_DEBUG).and_then(|t| remote::debug_fields(&t)),
+    };
+    Packet {
+        id,
+        name,
+        fields: fields.unwrap_or_default(),
+        mapped: false,
+        raw: Some(raw),
+    }
+}
+
+fn finite(what: &str, v: &[f64]) -> Result<(), String> {
+    if v.iter().all(|x| x.is_finite()) {
+        Ok(())
+    } else {
+        Err(format!("{what} must be finite numbers"))
+    }
+}
+
+/// A place the server takes a player to: inside the world's bounds.
+fn place(x: f64, y: f64, z: f64) -> Result<(), String> {
+    finite("the position", &[x, y, z])?;
+    if x.abs() > 3.0e7 || z.abs() > 3.0e7 || y.abs() > 2.0e7 {
+        return Err("the position is outside the world (the server disconnects for it)".into());
+    }
+    Ok(())
+}
+
+fn one_of(what: &str, v: i32, range: std::ops::RangeInclusive<i32>) -> Result<(), String> {
+    if range.contains(&v) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what} {v} isn't one the server knows ({} to {})",
+            range.start(),
+            range.end()
+        ))
+    }
+}
+
+/// What vanilla would disconnect the player for, though it decodes.
+fn sane(p: &S) -> Result<(), String> {
+    match p {
+        S::MovePlayerPos(m) => place(m.x, m.y, m.z),
+        S::MovePlayerPosRot(m) => {
+            place(m.x, m.y, m.z)?;
+            finite("yaw and pitch", &[f64::from(m.yaw), f64::from(m.pitch)])
+        }
+        S::MovePlayerRot(m) => finite("yaw and pitch", &[f64::from(m.yaw), f64::from(m.pitch)]),
+        S::MoveVehicle(m) => {
+            place(m.position[0], m.position[1], m.position[2])?;
+            finite("yaw and pitch", &[f64::from(m.yaw), f64::from(m.pitch)])
+        }
+        S::AcceptTeleportation(m) => place(m.x, m.y, m.z),
+        S::Interact(m) => {
+            one_of("hand", m.hand, 0..=1)?;
+            finite("location", &m.location)
+        }
+        S::UseItem(m) => {
+            one_of("hand", m.hand, 0..=1)?;
+            one_of("sequence", m.sequence, 0..=i32::MAX)?;
+            finite("yaw and pitch", &[f64::from(m.yaw), f64::from(m.pitch)])
+        }
+        S::UseItemOn(m) => {
+            one_of("hand", m.hand, 0..=1)?;
+            one_of("face", m.face, 0..=5)?;
+            one_of("sequence", m.sequence, 0..=i32::MAX)?;
+            finite("cursor", &m.cursor.map(f64::from))
+        }
+        S::PlayerAction(m) => {
+            one_of("action", m.action, 0..=8)?;
+            one_of("direction", i32::from(m.direction), 0..=5)?;
+            one_of("sequence", m.sequence, 0..=i32::MAX)
+        }
+        S::PlayerCommand(m) => one_of("action", m.action, 0..=6),
+        S::ClientCommand(m) => one_of("action", m.action, 0..=2),
+        S::ChangeGameMode(m) => one_of("mode", m.mode, 0..=3),
+        S::ChangeDifficulty(m) => one_of("difficulty", m.difficulty, 0..=3),
+        S::SetCarriedItem(m) => one_of("slot", i32::from(m.slot), 0..=8),
+        _ => Ok(()),
+    }
+}
+
+/// A script's packet as the game's: from its fields or its payload, checked.
+fn build(p: &Packet) -> Result<S, String> {
+    use horizon_protocol::ids::play::serverbound as ids;
+    if GAME_ONLY.contains(&p.id) {
+        return Err("only the game sends it: a wrong one disconnects the player".into());
+    }
+    let s = match &p.raw {
+        Some(raw) => S::decode(p.id, raw).map_err(|e| format!("its payload doesn't read as the packet: {e}"))?,
+        None => {
+            if let Some(names) = field_names(p.id)
+                && let Some((k, _)) = p.fields.iter().find(|(k, _)| !names.contains(&k.as_str()))
+            {
+                return Err(format!("it has no field {k} (its fields: {})", names.join(", ")));
+            }
+            match from_mapped(p.id, &p.fields) {
+                Some(r) => r?,
+                None if p.id == ids::COMMAND_SUGGESTION => {
+                    let id: i32 = take(&p.fields, "id")?;
+                    let command: String = take(&p.fields, "command")?;
+                    let mut w = horizon_protocol::buf::Writer::new();
+                    w.varint(id);
+                    w.string(&command);
+                    S::Unknown(ids::COMMAND_SUGGESTION, w.data)
+                }
+                None => {
+                    return Err(
+                        "its fields don't map to the packet: give its payload (FireServer(fields, payload))".into(),
+                    );
+                }
+            }
+        }
+    };
+    if let S::Unknown(id, data) = &s
+        && (*id != ids::COMMAND_SUGGESTION || suggestion_fields(data).is_none())
+    {
+        return Err("Horizon doesn't model this packet, so it can't check it, and doesn't send it".into());
+    }
+    // As the server reads it: the whole of it, as this packet.
+    let body = s.encode();
+    match S::decode(p.id, payload(&body)) {
+        Ok(back) if back == s => {}
+        Ok(_) => return Err("the server would read it as another packet".into()),
+        Err(e) => return Err(format!("the server couldn't read it: {e}")),
+    }
+    sane(&s)?;
+    Ok(s)
+}
+
+/// Sends a packet straight to the server, past the scripts' hooks.
+fn send_now(game: &Game<'_>, s: S) -> Result<(), String> {
+    match &game.remote {
+        Some(r) => {
+            r.session.send(s);
+            Ok(())
+        }
+        None => Err("not connected to a server".into()),
+    }
+}
+
+/// Game::send (every serverbound play packet of the game's): through the
+/// scripts' `__namecall` hook while there is one. True: the hook stopped
+/// it (or sent another in its place).
+pub(super) fn packet_out(game: &Game<'_>, packet: &S) -> bool {
+    if QUIET.with(Cell::get) || !game.native_window() || !game.native_on(ID) {
+        return false;
+    }
+    with(|st| {
+        if !st.packets_spied() {
+            return false;
+        }
+        let p = serverbound_packet(packet);
+        let mut host = Host {
+            game: GameRef::Shared(game),
+            event_loop: None,
+            batch: None,
+            corners: None,
+            world: None,
+        };
+        match st.game_packet(&mut host, &p) {
+            Verdict::Send => false,
+            Verdict::Block => true,
+            Verdict::Replace(np) => match build(&np).and_then(|s| send_now(game, s)) {
+                Ok(()) => true,
+                Err(e) => {
+                    st.s.log(
+                        super::hstudio::LogKind::Error,
+                        format!(
+                            "{} as the hook changed it: {e}; the game's was sent",
+                            remote::remote_name(&p.name)
+                        ),
+                    );
+                    false
+                }
+            },
+        }
+    })
+    .unwrap_or(false)
+}
+
+/// handle_packet (every clientbound play packet): to its remote's
+/// OnClientEvent, while a script listens.
+pub(super) fn packet_in(game: &Game<'_>, packet: &C) {
+    if !game.native_window() || !game.native_on(ID) {
+        return;
+    }
+    let names = horizon_protocol::ids::play::clientbound::NAMES;
+    let Some(name) = names.get(packet.id() as usize) else {
+        return;
+    };
+    with(|st| {
+        if st.packet_heard(name) {
+            st.server_packet(&clientbound_packet(packet));
+        }
+    });
 }

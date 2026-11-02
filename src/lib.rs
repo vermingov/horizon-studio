@@ -72,6 +72,8 @@ pub mod game {
     pub mod hstudio_rbx_parts;
     #[path = "../../mixins/horizon_studio/rbx_query.rs"]
     pub mod hstudio_rbx_query;
+    #[path = "../../mixins/horizon_studio/rbx_remote.rs"]
+    pub mod hstudio_rbx_remote;
     #[path = "../../mixins/horizon_studio/rbx_save.rs"]
     pub mod hstudio_rbx_save;
     #[path = "../../mixins/horizon_studio/rbx_tools.rs"]

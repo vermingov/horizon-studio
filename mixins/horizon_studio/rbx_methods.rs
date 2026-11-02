@@ -965,6 +965,14 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
             send_chat(env, &text);
             none()
         }
+        ("RemoteEvent", "FireServer") if env.rbx().remotes.is_remote(id) => {
+            super::hstudio_rbx_remote::fire_server(env, lua, id, &args[1..])
+        }
+        ("RemoteFunction", "InvokeServer") if env.rbx().remotes.is_remote(id) => {
+            super::hstudio_rbx_remote::invoke_server(env, lua, id, &args[1..])
+        }
+        // Any other remote: no server answers here.
+        ("RemoteFunction", "InvokeServer") => none(),
         ("RemoteEvent", "FireServer") => {
             let rbx = env.rbx();
             let say = rbx.inst(id).name == "SayMessageRequest"

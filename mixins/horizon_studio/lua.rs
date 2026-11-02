@@ -4358,6 +4358,9 @@ struct Frame {
     cells: usize,
     line: u32,
     ret: Ret,
+    /// The newcclosure it was called through: a C level of its own above
+    /// it, as Luau's debug.info counts the wrapper.
+    wrapper: Option<Rc<Native>>,
 }
 
 /// A pcall or xpcall in progress (`catches`), or an xpcall handler running
@@ -4517,6 +4520,8 @@ pub struct Lua {
     stack_base: usize,
     /// The method name of the running `obj:Name()` call on a userdata.
     namecall: Option<Str>,
+    /// The newcclosure the next frame entered is called through.
+    via_wrapper: Option<Rc<Native>>,
     registry: Option<Registry>,
     events: Rc<[Key]>,
     nil_cell: Cell,
@@ -4549,6 +4554,7 @@ impl Lua {
             ccalls: 0,
             stack_base: 0,
             namecall: None,
+            via_wrapper: None,
             registry: None,
             events: EVENTS.with(Rc::clone),
             nil_cell: Rc::new(RefCell::new(Value::Nil)),
@@ -4704,6 +4710,7 @@ impl Lua {
                     match &n.kind {
                         NativeKind::Wrap(inner) => {
                             f = inner.clone();
+                            self.via_wrapper = Some(n.clone());
                             continue;
                         }
                         NativeKind::Namecall => {
@@ -4712,6 +4719,7 @@ impl Lua {
                         }
                         _ => {}
                     }
+                    self.via_wrapper = None;
                     self.step()?;
                     return self.call_native(h, &n, args);
                 }
@@ -4762,6 +4770,15 @@ impl Lua {
             return Err(self.rt_error("__namecall called without a method call"));
         };
         let f = self.index_raw_meta(h, &obj, &Value::Str(name.clone()))?;
+        // As Roblox's `__namecall` calls the method itself, a hookfunction
+        // of the host method (`remote.FireServer`) doesn't see method calls:
+        // remote spies hook both and log each call once.
+        if let Value::Native(n) = &f
+            && matches!(n.kind, NativeKind::Host(_))
+            && n.redirect().is_some()
+        {
+            return Ok(Native::of(&n.name, n.kind.clone(), n.state.borrow().clone()));
+        }
         if !f.is_callable() && self.meta(&f, Ev::Call).is_none() {
             return Err(self.rt_error(format!(
                 "attempt to call a {} value (method '{}')",
@@ -4857,6 +4874,7 @@ impl Lua {
             cells,
             line,
             ret,
+            wrapper: self.via_wrapper.take(),
         });
     }
 
@@ -5531,6 +5549,7 @@ impl Lua {
                     match &nat.kind {
                         NativeKind::Wrap(inner) => {
                             self.cur.stack[func] = inner.clone();
+                            self.via_wrapper = Some(nat.clone());
                             continue;
                         }
                         NativeKind::Namecall => {
@@ -5541,6 +5560,7 @@ impl Lua {
                         }
                         _ => {}
                     }
+                    self.via_wrapper = None;
                     self.step()?;
                     if let NativeKind::Pcall(handler) = nat.kind {
                         return self.op_pcall(h, func, n, nres, handler, ret);
@@ -5876,17 +5896,35 @@ impl Lua {
             )));
         }
         // A userdata's `__namecall` takes every method call on it (and a
-        // table's, as executors' hookmetamethod needs).
+        // table's, as executors' hookmetamethod needs). An unhooked one
+        // (the layer's own, which looks the method up) is done here at once.
+        let mut plain_namecall = false;
         if matches!(obj, Value::Userdata(_) | Value::Table(_))
             && obj.metatable().is_some()
             && let Some(nc) = self.meta(&obj, Ev::Namecall)
             && nc.is_callable()
         {
-            self.cur.stack[base + a + 1] = obj;
-            self.cur.stack[base + a] = nc;
-            return Ok(());
+            match &nc {
+                Value::Native(n) if matches!(n.kind, NativeKind::Namecall) && n.redirect().is_none() => {
+                    plain_namecall = true;
+                }
+                _ => {
+                    self.cur.stack[base + a + 1] = obj;
+                    self.cur.stack[base + a] = nc;
+                    return Ok(());
+                }
+            }
         }
-        let f = self.index_key(h, &obj, name, made)?;
+        let mut f = self.index_key(h, &obj, name, made)?;
+        // As namecall_target: the host method itself, not a hookfunction of it.
+        if plain_namecall
+            && let Value::Native(n) = &f
+            && matches!(n.kind, NativeKind::Host(_))
+            && n.redirect().is_some()
+        {
+            let copy = Native::of(&n.name, n.kind.clone(), n.state.borrow().clone());
+            f = copy;
+        }
         if !f.is_callable() && self.meta(&f, Ev::Call).is_none() {
             return Err(self.rt_error(format!(
                 "attempt to call a {} value (method '{}')",
@@ -6497,12 +6535,40 @@ impl Lua {
     pub fn namecall_method(&self) -> Option<Str> {
         self.namecall.clone()
     }
-    fn frame_at(&self, level: usize) -> Option<&Frame> {
-        let i = self.cur.frames.len().checked_sub(level)?;
-        if level == 0 {
-            return None;
+    /// Sets the method name `__namecall` sees (`setnamecallmethod`, and the
+    /// game's packets, which reach remote spies as `remote:FireServer`);
+    /// the name before.
+    pub fn set_namecall_method(&mut self, name: Option<Str>) -> Option<Str> {
+        std::mem::replace(&mut self.namecall, name)
+    }
+    /// What is `level` levels up (1: the one running): a Lua frame (its
+    /// index), or the newcclosure a frame below was called through.
+    fn level_at(&self, level: usize) -> Option<Result<usize, Rc<Native>>> {
+        let mut l = 1;
+        for i in (0..self.cur.frames.len()).rev() {
+            if l == level {
+                return Some(Ok(i));
+            }
+            l += 1;
+            if let Some(w) = &self.cur.frames[i].wrapper {
+                if l == level {
+                    return Some(Err(w.clone()));
+                }
+                l += 1;
+            }
         }
-        self.cur.frames.get(i)
+        None
+    }
+    fn frame_at(&self, level: usize) -> Option<&Frame> {
+        match self.level_at(level)? {
+            Ok(i) => self.cur.frames.get(i),
+            Err(_) => None,
+        }
+    }
+    /// The C function `level` levels up, if that level is one (a
+    /// newcclosure a Lua function was called through).
+    pub fn native_at(&self, level: usize) -> Option<Rc<Native>> {
+        self.level_at(level)?.err()
     }
     /// The Lua function `level` frames up (1: the one running).
     pub fn frame_info(&self, level: usize) -> Option<FrameInfo> {

@@ -2227,7 +2227,29 @@ impl Ctx<'_> {
                 one(rbx.list(&ids))
             }
             // Every thread here is the executor's: no game script calls.
-            2063 | 2067 => one(Value::Nil),
+            // getcallingscript: the script of the code that called (a mod's
+            // LocalScript or ModuleScript, its `script`); none for the
+            // console's code, or for the game's own packets in a hook.
+            2063 => {
+                if super::hstudio_exec::game_calls() {
+                    return one(Value::Nil);
+                }
+                let mut level = 2;
+                while let Some(f) = lua
+                    .frame_info(level)
+                    .map(Some)
+                    .or_else(|| lua.native_at(level).map(|_| None))
+                {
+                    level += 1;
+                    let Some(f) = f else { continue };
+                    let s = f.closure.env().borrow().get_str("script");
+                    if self.s.rbx.id_of(&s).is_some() {
+                        return one(s);
+                    }
+                }
+                one(Value::Nil)
+            }
+            2067 => one(Value::Nil),
             // saveinstance([object | path, object | options]) and Elysian's
             // SaveInstance(object, file): an XML model (or the place) in the
             // workspace folder.

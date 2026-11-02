@@ -1651,6 +1651,8 @@ pub struct Rbx {
     pub debris: Vec<(Id, f64)>,
     /// ContextActionService's bindings: name, owner, function, inputs.
     pub actions: Vec<(String, Owner, Value, Vec<EnumItem>)>,
+    /// The game's packets as remotes (ReplicatedStorage.Minecraft).
+    pub remotes: super::hstudio_rbx_remote::Remotes,
     /// RunService:BindToRenderStep's: name, priority, owner, function.
     pub render_steps: Vec<(String, f64, Owner, Value)>,
     /// StarterGui:SetCoreGuiEnabled's choices.
@@ -1769,6 +1771,11 @@ impl Rbx {
                 ("__tostring", INST_TOSTRING),
             ],
         );
+        // Method calls, as Roblox's: a `__namecall` that looks the method up
+        // (remote spies check for it, then hook it).
+        let namecall =
+            super::hstudio_lua::Native::of("__namecall", super::hstudio_lua::NativeKind::Namecall, Vec::new());
+        let _ = inst_meta.borrow_mut().set(Value::str("__namecall"), namecall);
         let signal_meta = host_meta(
             "RBXScriptSignal",
             &[("__index", SIGNAL_INDEX), ("__tostring", SIGNAL_TOSTRING)],
@@ -1811,6 +1818,7 @@ impl Rbx {
             tweens: Vec::new(),
             debris: Vec::new(),
             actions: Vec::new(),
+            remotes: Default::default(),
             render_steps: Vec::new(),
             core_gui_off: HashSet::new(),
             pointer: Pointer::default(),
@@ -2477,6 +2485,29 @@ impl Rbx {
     fn native(&mut self, id: u32, name: &str) -> Value {
         self.natives.entry(id).or_insert_with(|| Native::host(name, id)).clone()
     }
+
+    /// The metatable every Instance shares (`getrawmetatable(game)`).
+    pub fn inst_meta(&self) -> &TableRef {
+        &self.inst_meta
+    }
+
+    /// An Instance method's value as scripts have it (`remote.FireServer`),
+    /// once a script read it.
+    pub fn method_value(&self, name: &str) -> Option<Value> {
+        let m = METHODS.iter().position(|(n, _)| *n == name)?;
+        self.natives.get(&(METHOD_BASE + m as u32)).cloned()
+    }
+
+    /// Whether `event` of `id` has a handler or a thread waiting on it.
+    pub fn listens(&self, id: Id, event: &str) -> bool {
+        self.insts
+            .get(&id)
+            .is_some_and(|i| i.conns.iter().any(|c| c.enabled && &*c.event == event))
+            || self
+                .waiters
+                .iter()
+                .any(|w| matches!(&w.what, Wait::Signal(i, e) if *i == id && &**e == event))
+    }
 }
 
 impl Inst {
@@ -2677,6 +2708,7 @@ const METHODS: &[(&str, &str)] = &[
     ("GetStateEnabled", "Humanoid"),
     ("SendAsync", "TextChannel"),
     ("FireServer", "RemoteEvent"),
+    ("InvokeServer", "RemoteFunction"),
     ("GetProductInfo", "MarketplaceService"),
     ("GetService", "GlobalSettings"),
     ("GetService", "UserSettings"),

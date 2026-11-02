@@ -902,8 +902,35 @@ end)
 - **Data types and `Enum`:** Vector2, Vector3, CFrame, Color3, UDim, UDim2, Rect, NumberRange, NumberSequence,
   ColorSequence, TweenInfo, BrickColor, Font, Random, Ray, Region3, RaycastParams, with their constructors,
   properties, methods and operators, and the Enum tree (`Enum.KeyCode.E`).
+- **Remotes are Minecraft's packets.** `ReplicatedStorage.Minecraft` has a RemoteEvent for each play packet, named
+  after vanilla's name for it (`move_player_pos` is `MovePlayerPos`, `custom_payload` `CustomPayload`), and a
+  RemoteFunction for a request the server answers (`CommandSuggestion`, `PingRequest`, `BlockEntityTagQuery`,
+  `EntityTagQuery`). A packet's fields are one table: `{ x = 10.5, y = 64, z = -3.25, flags = 1 }`, a block position
+  or a vector a Vector3, bytes a string, a whole number past 2^53 its digits. Packets whose fields Horizon has as
+  plain values (movement, interact, use, actions, the hotbar, custom payloads, commands, signs, books...) map both
+  ways; any other is read from the game's own form of it (nested values are tables naming their `type`) and comes
+  with its payload, a string, after the table.
+  - **The game's packets go through `__namecall`.** While a script has hooked `__namecall` (`hookmetamethod`, or a
+    function set in `getrawmetatable(game)`) or hooked `FireServer` with `hookfunction`, every packet the game sends
+    reaches it as `remote:FireServer(fields)` (`InvokeServer` for a RemoteFunction's), with `checkcaller()` false: a
+    remote spy logs the client's real traffic, a hook that returns without calling the original stops the packet,
+    and one that calls it with other arguments sends those (a chat message changed is sent again through the chat,
+    which signs it). Without a hook the packets cost nothing. A hook that fails lets them through, and it can't stop
+    or change what only the game may send (`KeepAlive`, `ChatAck`, `ChatSessionUpdate`,
+    `ConfigurationAcknowledged`: the server disconnects without them).
+  - **`FireServer` sends one.** `Minecraft.MovePlayerPos:FireServer({ x = 0, y = 70, z = 0, flags = 1 })`, or a
+    payload as a string or buffer (`CustomPayload:FireServer({}, buffer.fromstring(bytes))`). It is checked as the
+    server reads it (it must decode as that packet, whole; positions inside the world, finite angles, hands, faces
+    and actions vanilla knows): a bad one is an error and nothing is sent, never a kick. `Chat` and `ChatCommand`
+    go through the game's chat, which signs them. At most 256 a frame. `InvokeServer` waits for the answer and
+    returns its fields (`CommandSuggestion:InvokeServer({ id = 7, command = "/gamem" }).suggestions`).
+  - **`OnClientEvent` fires for the server's packets**, with their fields and payload, while a script listens to
+    that remote (only then does the game read them).
 
-Not there: a server (RemoteEvents go nowhere), physics, animations, Roblox's assets (images, meshes and sounds by id),
+  [SimpleSpy](https://github.com/exxtremestuffs/SimpleSpySource) runs as it is and logs both the game's packets and
+  scripts' calls, with the code to fire them again.
+
+Not there: a Roblox server (a script's own RemoteEvents go nowhere), physics, animations, Roblox's assets (images, meshes and sounds by id),
 SurfaceGuis, dragging by UIDragDetectors, and what ViewportFrames and VideoFrames show. The MCP's `roblox` topic
 (`docs`) lists every class, member and difference.
 
@@ -917,7 +944,8 @@ executors run as mods:
   `isexecutorclosure`, `checkcaller`, `loadstring`.
 - **Debug:** Luau's `debug.info` and `debug.traceback`, and `debug.getconstant(s)`, `setconstant`, `getproto(s)`,
   `getstack`, `setstack`, `getupvalue(s)`, `setupvalue`.
-- **Metatables:** `getrawmetatable`, `setrawmetatable`, `setreadonly`, `isreadonly`, `getnamecallmethod`.
+- **Metatables:** `getrawmetatable` (Instances' has Roblox's `__namecall`), `setrawmetatable`, `setreadonly`,
+  `isreadonly`, `getnamecallmethod`, `setnamecallmethod`.
 - **Environments and the collector:** `getgenv` (shared by every mod; each mod's globals fall back to it),
   `getrenv` (Roblox's globals), `getfenv`, `setfenv`, `getgc`, `filtergc`, `getreg`.
 - **Encoding:** `base64encode`, `base64decode`, `lz4compress`, `lz4decompress`.
@@ -936,8 +964,11 @@ executors run as mods:
   `sethiddenproperty`, `isscriptable`, `setscriptable`, `getthreadidentity`, `setthreadidentity`,
   `identifyexecutor`.
 
-As every script here is a mod, all code is the executor's: `checkcaller()` is always true and
-`getcallingscript()` nil. `getgc` and `filtergc` see what was made once the studio started tracking objects (from the
+As every script here is a mod, all code is the executor's: `checkcaller()` is true but for the game's own packets
+reaching a `__namecall` hook, and `getcallingscript()` is the calling mod's `script` (nil for the console's code and
+the game's packets). As in Roblox, a method call is `__namecall`'s alone: `hookfunction` of `remote.FireServer` sees
+`remote.FireServer(remote)` calls, not `remote:FireServer()`, and a `newcclosure` is a C level of its own to
+`debug.info`. `getgc` and `filtergc` see what was made once the studio started tracking objects (from the
 first mod that names them). The MCP's `executor` topic (`docs`) has each function's details.
 
 ### Examples
@@ -1008,6 +1039,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `rbx_draw.rs` (`hstudio_rbx_draw`) | The Roblox layer on the game: ScreenGuis drawn and clicked, input, Parts in the world, raycasts, each frame's step |
 | `rbx_image.rs` (`hstudio_rbx_image`) | Roblox's images: `rbxasset://` files from the Client Tracker's mirror, thumbnails fetched, and a thumbnail's original size (its resampling's trace, and the crops and slices scripts make) so sprite sheets cut where scripts mean |
 | `rbx_world.rs` (`hstudio_rbx_world`) | The Roblox layer's world: the LocalPlayer and its character following the player, teleports, `Humanoid:MoveTo`, the entities and other players mirrored once a script looks |
+| `rbx_remote.rs` (`hstudio_rbx_remote`) | The game's packets as remotes (ReplicatedStorage.Minecraft): fields to Lua and back, the game's packets through `__namecall` hooks, FireServer, OnClientEvent, a packet's `Debug` form read as fields |
 | `rbx_query.rs` (`hstudio_rbx_query`) | What scripts ask of the world: raycasts through its blocks and parts, the Mouse's target, the bounds queries, Terrain's reads |
 | `exec.rs` (`hstudio_exec`) | The executor (sUNC) functions that need only the interpreter: hooks, newcclosure, debug, metatables, encoding, getgc |
 | `sunc.rs` (`hstudio_sunc`) | The executor functions on the studio: environments, files, HTTP, WebSockets, Drawing, Instances, signals, scripts |
@@ -1042,7 +1074,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `voicechat.rs` (`hstudio_voicechat`) | The voice chat with the player's settings, keys, Options → Mods rows and HUD, without the game |
 | `voice_game.rs` (`hstudio_voice_game`) | The voice chat's side of Horizon: the server's packets, the camera and the players' places, the keys |
 
-The hooks, HEAD hooks but where it says otherwise (suggest, via-address, via-srv, via-recv, via-ping, via-pong and Natrium's
+The hooks, HEAD hooks but where it says otherwise (suggest, packet-out, via-address, via-srv, via-recv, via-ping, via-pong and Natrium's
 particle, Video Settings, merge, pickup and swim hooks can answer in their function's place):
 
 | Hook | Target | For |
@@ -1072,6 +1104,8 @@ particle, Video Settings, merge, pickup and swim hooks can answer in their funct
 | natrium-video-rows | `horizon_client_render::options_ui::pairs` | after Video Settings' Preferences, Natrium's section |
 | natrium-video-search | `horizon_client_render::options_ui::OptionsUi::page` | the settings search's text, which the section follows |
 | natrium-merge, natrium-pickups, natrium-swim | `entities::merge_with_neighbours`, `game::villagers::Game::villager_pickups`, `mobs::path::Finder::swim_neighbors` | Natrium's versions in their place, while faster ticks are on |
+| packet-out | `game::remote::Game::send` | each serverbound play packet of the game's: while a script hooks `__namecall`, through it as `remote:FireServer` (which may stop it or send another in its place) |
+| packet-in | `game::remote::Game::handle_packet` | each clientbound play packet: its remote's `OnClientEvent`, while a script listens |
 | voice-packet | `game::remote::Game::handle_packet` | the server's `voicechat:*` payloads (which the game drops) and the Login that starts the voice chat |
 | voice-frame, voice-key, voice-chat | `native_frame`, `native_key`, `game::remote::Game::chat_line` | the voice chat's frame (the places, its payloads out), its keys, the server's "incompatible version" line |
 | hud, key, command, zoom, list, settings, click | Horizon's [native hook points](https://github.com/horizon-rust/horizon/blob/main/crates/horizon-client/src/game/native_hooks.rs) | the HUD, keys, commands, `view.zoom`, the Options → Mods row and page |

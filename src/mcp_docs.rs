@@ -2076,7 +2076,32 @@ print(lib.greet("you"))
 -- return { greet = function(name) return shared.greeting .. ", " .. name end }
 ```
 
-**Not here:** a server (RemoteEvents go nowhere), physics, animations, Roblox assets (images, meshes, sounds by id), SurfaceGuis, dragging by UIDragDetectors, and what ViewportFrames and VideoFrames show.
+**Remotes are Minecraft's packets.** `ReplicatedStorage.Minecraft` holds a RemoteEvent for each play packet, named after vanilla's name for it in PascalCase (`move_player_pos` is `MovePlayerPos`, `custom_payload` `CustomPayload`, `use_item_on` `UseItemOn`; a name both directions use is one remote), and a RemoteFunction for each request the server answers (`CommandSuggestion`, `PingRequest`, `BlockEntityTagQuery`, `EntityTagQuery`).
+
+- **Fields.** A packet is one table of its fields, by the names Horizon gives them: `MovePlayerPos` is `{ x = 10.5, y = 64, z = -3.25, flags = 1 }` (flags: 1 on the ground, 2 against a wall). A block position (`pos`) or a vector is a Vector3, text and bytes are strings (a buffer is taken too), a UUID is its text, a whole number past 2^53 its digits as a string, an absent optional field nil. The packets whose fields are plain values map both ways: movement (`MovePlayerPos`, `MovePlayerPosRot`, `MovePlayerRot`, `MovePlayerStatusOnly`, `MoveVehicle`, `AcceptTeleportation`), `Interact`, `Attack`, `UseItem`, `UseItemOn`, `PlayerAction`, `PlayerCommand`, `PlayerInput`, `SetCarriedItem`, `CustomPayload`, `ChatCommand`, `CommandSuggestion`, `ClientCommand`, containers' clicks on buttons and closes, `SignUpdate`, `EditBook`, `RenameItem`, `SelectTrade`, `SetBeacon`, `PickItemFromBlock`/`Entity`, `PaddleBoat`, `ClientTickEnd` and the like. Any other (the signed `Chat`, `ContainerClick`, `SetCreativeModeSlot`, every clientbound packet) is read from the game's own form of it, to look at (a nested value is a table naming its `type`; an enum's unit value is its name), and comes with its payload (the bytes after the id) as a string after the table.
+- **The game's packets reach `__namecall` hooks.** While a script has hooked `__namecall` (with `hookmetamethod`, or by setting it in `getrawmetatable(game)`), or hooked `FireServer` with `hookfunction`, each packet the game sends goes through it as `remote:FireServer(fields[, payload])` (`InvokeServer` for a RemoteFunction's), with `checkcaller()` false and `getcallingscript()` nil, so a remote spy shows the client's real traffic. A hook that returns without calling the original stops the packet; one that calls it with other arguments sends those instead (a chat message changed goes out again through the chat, which signs it). A hook that errors lets the packet through (the error is printed once). The packets only the game may send go through as they were whatever the hook does: `KeepAlive`, `ChatAck`, `ChatSessionUpdate` and `ConfigurationAcknowledged` (the server disconnects without them). Without a hook the packets don't touch Lua at all; a hook restored with `hookmetamethod(game, "__namecall", old)` costs nothing again.
+- **`FireServer` sends one**: its fields, or the payload as a string or buffer (`FireServer(payload)` or `FireServer(fields, payload)`). It is checked as the server will read it: it must decode as that packet, whole; positions must be finite and inside the world, angles finite, hands, faces, directions and actions ones vanilla knows. A bad one is an error naming the field, and nothing is sent: a script can't get the player kicked by a malformed packet. `Chat` (`{ message = "hi" }`) and `ChatCommand` (`{ command = "say hi" }`) go through the game's chat, which signs them; the packets only the game sends can't be fired, and a packet Horizon doesn't model is never sent from bytes it can't check. At most 256 a frame. Moving with `MovePlayerPos` tells the server where you are, as the client would; your own player stays where it is (the server may pull you back).
+- **`InvokeServer`** sends the request and waits for the server's answer, returning its fields: `CommandSuggestion:InvokeServer({ id = 7, command = "/gamem" })` returns `{ id = 7, start = 1, length = 5, suggestions = { { text = "gamemode" } } }`. The answer is matched by its id (`transaction` for the tag queries, `time` for a ping).
+- **`OnClientEvent`** fires for each clientbound packet with its fields and payload, deferred like every signal, while a script listens to that remote (`Connect`, `Once` or `Wait`): only then does the game read them.
+
+```lua
+local mc = game:GetService("ReplicatedStorage").Minecraft
+local old
+old = hookmetamethod(game, "__namecall", function(self, ...)
+  local method = getnamecallmethod()
+  if method == "FireServer" and self.Parent == mc and not checkcaller() then
+    local fields = ...
+    if self.Name == "UseItemOn" then print("used on", fields.pos) end
+  end
+  return old(self, ...)
+end)
+mc.SystemChat.OnClientEvent:Connect(function(fields) print("server says", fields.overlay) end)
+mc.CustomPayload:FireServer({ channel = "minecraft:brand", data = "\7vanilla" })
+```
+
+[SimpleSpy](https://github.com/exxtremestuffs/SimpleSpySource) runs as it is: its window shows the game's packets and scripts' calls, the code to fire each again, its calling function and script.
+
+**Not here:** a Roblox server (a script's own RemoteEvents go nowhere), physics, animations, Roblox assets (images, meshes, sounds by id), SurfaceGuis, dragging by UIDragDetectors, and what ViewportFrames and VideoFrames show.
 "##;
 
 const EXECUTOR: &str = r##"
@@ -2103,10 +2128,11 @@ box.Visible = true
 
 **What is different from a Roblox executor**, because the scripts are mods and the game is Minecraft:
 
-- Every Lua function and thread is the executor's: there are no game scripts. `checkcaller()` is always true, `getcallingscript()` and `getscriptfromthread()` are nil, and `filtergc`'s `IgnoreExecutor` (true by default) skips every Lua function: pass `IgnoreExecutor = false`.
+- Every Lua function and thread is the executor's: there are no game scripts. `checkcaller()` is true but while the game's own packets go through a `__namecall` hook (see `roblox`: remotes are Minecraft's packets), `getcallingscript()` is the calling mod's `script` (nil for the console and the game's packets), `getscriptfromthread()` is nil, and `filtergc`'s `IgnoreExecutor` (true by default) skips every Lua function: pass `IgnoreExecutor = false`.
 - `getgc`, `filtergc`, `getreg` and live protos see what was made after the studio began tracking objects: from the load of the first mod whose source names one of them (or their first call), as tracking costs a little on every function and table made.
 - Hooks are global: `hookfunction(print, ...)` changes `print` for every mod. They stay until `restorefunction` (or the game restarts), even after the mod that made them stops.
 - `getscriptbytecode` is the studio's own dump of a mod's compiled main file, not Luau bytecode; `getscripthash` hashes that. A ModuleScript runs under `require` from its hidden `Source` (set with `sethiddenproperty`). A module's files are ModuleScripts too (see `roblox`), but their `Source` is nil: `require` runs the file itself, and `getloadedmodules` lists them once required. Once `require` has run one (from its top level on), it is a running script: `getrunningscripts` lists it, `getsenv` gives the file's own environment (`getfenv()` in the file: its `script` is that ModuleScript, everything else the mod's globals), and `getscriptclosure`, `getscriptbytecode` and `getscripthash` give the file's code. Before that, or when its top level failed, `getsenv` errors and the others give nil.
+- As in Roblox, a method call goes to `__namecall` alone: `hookfunction(remote.FireServer, ...)` sees `remote.FireServer(remote, ...)` calls, not `remote:FireServer(...)` (remote spies hook both). A method call inside a `__namecall` hook names its own method, so read `getnamecallmethod()` first (or `setnamecallmethod` it back) before calling the original. A `newcclosure` is a C level of its own to `debug.info` and `debug.getinfo`, as in Luau.
 - `replicatesignal` errors: there is no server. `fireclickdetector`, `fireproximityprompt` and `firetouchinterest` fire the events here, deferred like every signal.
 - Files live in the studio's `workspace` folder (`horizon-mods/.horizon-mod-data/horizon_studio/workspace/`), which scripts can't leave. `request`, `game:HttpGet` and WebSockets reach the internet only, never this computer or its network.
 - Drawings are in dp, Horizon's logical pixels (the Camera's ViewportSize), over the HUD and the mods' GUIs. Images (Drawing's `Data` and ImageLabels with a `getcustomasset` id) are PNGs, drawn as the GUI's images are.
@@ -8522,7 +8548,7 @@ restorefunction(f)
         r##"
 `hookmetamethod(object, name, hook)`
 
-Hooks the metamethod `name` (`"__index"`, `"__namecall"`, `"__newindex"`...) of the object's raw metatable and returns the original. Instances and `game` share one metatable, as in Roblox, so hooking `game`'s hooks every Instance's. A `__namecall` hook gets every method call; `getnamecallmethod()` names the method.
+Hooks the metamethod `name` (`"__index"`, `"__namecall"`, `"__newindex"`...) of the object's raw metatable and returns the original. Instances and `game` share one metatable, as in Roblox, so hooking `game`'s hooks every Instance's. A `__namecall` hook gets every method call, and every packet the game sends as `remote:FireServer(fields)` on its remote in `ReplicatedStorage.Minecraft` (see `roblox`); `getnamecallmethod()` names the method.
 
 ```lua
 local old
@@ -8579,7 +8605,7 @@ print(getfunctionhash(function() end))
         r##"
 `checkcaller()`
 
-Whether the code calling is the executor's: always `true` here, since every script is a mod (there are no game scripts).
+Whether the code calling is the executor's: `true`, since every script is a mod, but inside a `__namecall` hook that the game's own packet reached (`remote:FireServer` from the game, see `roblox`).
 
 ```lua
 print(checkcaller())
@@ -9000,6 +9026,25 @@ The method name of the `obj:Method(...)` call in progress, inside a `__namecall`
 
 ```lua
 print(getnamecallmethod())
+```
+"##
+    ),
+    e!(
+        "setnamecallmethod",
+        "executor",
+        r##"
+`setnamecallmethod(name)`
+
+Sets the method name `getnamecallmethod` gives and the original `__namecall` calls: a method call inside a hook names its own method, so a hook sets it back before calling the original.
+
+```lua
+local old
+old = hookmetamethod(game, "__namecall", function(self, ...)
+  local method = getnamecallmethod()
+  local name = self:GetFullName() -- another method call
+  setnamecallmethod(method)
+  return old(self, ...)
+end)
 ```
 "##
     ),
@@ -9754,7 +9799,7 @@ print(#getloadedmodules())
         r##"
 `getcallingscript()`
 
-nil: the code calling is always the executor's here (every script is a mod).
+The script of the code that called the running function: a mod's LocalScript (or a module file's ModuleScript), its `script`. nil for the console's code, and inside a `__namecall` hook for the game's own packets.
 
 ```lua
 print(getcallingscript())

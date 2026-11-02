@@ -23,6 +23,7 @@ use super::hstudio_lualib::{inspect, new_env, quote, text_of};
 use super::hstudio_modfiles::{
     TEMPLATE, file_name, find_mod, find_mods, id_taken, lua_files, path_in, prune_empty, rel_in, require_path, to_trash,
 };
+use super::hstudio_rbx_remote as remote;
 use super::hstudio_ui::{Editor, Input, ScriptScreen, Ui};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -531,6 +532,20 @@ pub trait GameApi {
     fn client_do(&mut self, action: ClientAction) -> Result<(), String> {
         let _ = action;
         Err("the game can't do that here".into())
+    }
+    /// The play state's packets, by id, as vanilla names them
+    /// ("move_player_pos"): serverbound, then clientbound. The Roblox layer
+    /// makes a remote of each (ReplicatedStorage.Minecraft).
+    fn packet_names(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        (&[], &[])
+    }
+    /// Sends a serverbound play packet a script fired: from its fields where
+    /// the game maps them (`mapped`), else from its payload (`raw`), which
+    /// must decode as the packet. A packet that doesn't is an error, never
+    /// sent.
+    fn send_packet(&mut self, packet: &super::hstudio_rbx_remote::Packet) -> Result<(), String> {
+        let _ = packet;
+        Err("not connected to a server".into())
     }
     /// A body part's frame this frame: of the player (`target` None) or of an
     /// entity by id. None where there is no such part, or no world.
@@ -3232,6 +3247,7 @@ impl Studio {
     /// whether its GUI takes the pointer.
     fn roblox_frame(&mut self, game: &mut dyn GameApi, dt: f64) {
         let (now, frame) = (self.s.now, self.s.frame_no);
+        remote::ensure(&mut self.s.rbx, game.packet_names());
         super::hstudio_rbx_draw::step(&mut self.s.rbx, game, now, dt, frame);
         // The Backpack follows the inventory, and the tools act.
         if self.s.rbx.active {
@@ -3620,6 +3636,115 @@ impl Studio {
         if self.s.queued_chat.len() < 64 {
             self.s.queued_chat.push(line.to_owned());
         }
+    }
+
+    // ------------------------------------------------------------- packets
+
+    /// Whether the game's serverbound packets go through Lua now: a script
+    /// hooked `__namecall` (or FireServer). Without, they cost nothing.
+    pub fn packets_spied(&self) -> bool {
+        self.s.started && self.s.rbx.remotes.folder.is_some() && remote::hook_entry(&self.s.rbx).is_some()
+    }
+
+    /// One of the game's own serverbound packets, as it sends it: through
+    /// the scripts' hook as `remote:FireServer(fields)` (InvokeServer for a
+    /// RemoteFunction's). The hook calling the original sends it (changed,
+    /// if it changed the arguments); returning without, it isn't sent. A
+    /// hook that fails lets it through.
+    pub fn game_packet(&mut self, game: &mut dyn GameApi, p: &remote::Packet) -> remote::Verdict {
+        use remote::Verdict;
+        if !self.s.started {
+            return Verdict::Send;
+        }
+        remote::ensure(&mut self.s.rbx, game.packet_names());
+        let (Some(id), Some(hook)) = (self.s.rbx.remotes.remote(&p.name), remote::hook_entry(&self.s.rbx)) else {
+            return Verdict::Send;
+        };
+        let args = remote::packet_args(p);
+        // What the hook gets, as FireServer would read it back unchanged.
+        let Ok(before) = remote::args_packet(&self.s.rbx, id, &args) else {
+            return Verdict::Send;
+        };
+        let method = if self.s.rbx.inst(id).class.name == "RemoteFunction" {
+            "InvokeServer"
+        } else {
+            "FireServer"
+        };
+        let outer = self.s.rbx.remotes.pending.replace(remote::Pending {
+            remote: id,
+            passed: None,
+        });
+        let named = self.lua.set_namecall_method(Some(Rc::from(method.as_bytes())));
+        let mut call_args = vec![self.s.rbx.value(id)];
+        call_args.extend(args);
+        let r = super::hstudio_exec::as_game(|| self.call(game, Owner::Console, &hook, call_args, EVENT_STEPS));
+        self.lua.set_namecall_method(named);
+        let pending = std::mem::replace(&mut self.s.rbx.remotes.pending, outer);
+        let passed = pending.and_then(|p| p.passed);
+        if remote::GAME_ONLY.contains(&p.name.as_str()) && passed.as_ref() != Some(&before) {
+            self.s.log(
+                LogKind::Error,
+                format!(
+                    "{} can't be stopped or changed (the server disconnects without it): it was sent as it was",
+                    self.s.rbx.inst(id).name
+                ),
+            );
+            return Verdict::Send;
+        }
+        if let Err(e) = r
+            && passed.is_none()
+        {
+            let msg = format!(
+                "a __namecall hook failed on {} (the game's packets go through as they were): {}",
+                self.s.rbx.inst(id).name,
+                e.message()
+            );
+            if self.s.rbx.remotes.last_error.as_deref() != Some(msg.as_str()) {
+                self.s.log(LogKind::Error, msg.clone());
+                self.s.rbx.remotes.last_error = Some(msg);
+            }
+            return Verdict::Send;
+        }
+        match passed {
+            None => Verdict::Block,
+            Some(after) if after == before => Verdict::Send,
+            Some(after) => match remote::chat_line(&after) {
+                // A chat line changed is sent again, signed: the game's chat sends it.
+                Ok(Some(line)) => {
+                    game.send(&line);
+                    Verdict::Block
+                }
+                Ok(None) => Verdict::Replace(after),
+                Err(e) => {
+                    self.s.log(LogKind::Error, format!("{}: {e}", self.s.rbx.inst(id).name));
+                    Verdict::Block
+                }
+            },
+        }
+    }
+
+    /// Whether scripts listen to a clientbound packet (its remote's
+    /// OnClientEvent, or an InvokeServer waiting for it): the game reads
+    /// its fields only then.
+    pub fn packet_heard(&self, name: &str) -> bool {
+        self.s.started && remote::heard(&self.s.rbx, name)
+    }
+
+    /// A clientbound packet from the server: its remote's OnClientEvent
+    /// fires with its fields (and its payload, unless the fields are the
+    /// whole packet), and an InvokeServer it answers gets its fields.
+    pub fn server_packet(&mut self, p: &remote::Packet) {
+        if !self.s.started {
+            return;
+        }
+        let Some(id) = self.s.rbx.remotes.remote(&p.name) else {
+            return;
+        };
+        let args = remote::packet_args(p);
+        for (owner, thread) in remote::take_answers(&mut self.s.rbx, p) {
+            self.s.rbx.ready.push((owner, thread, vec![args[0].clone()]));
+        }
+        self.s.rbx.fire(id, "OnClientEvent", args);
     }
 
     /// A command typed in chat (no slash): whether the studio takes it. It
