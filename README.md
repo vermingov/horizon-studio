@@ -971,8 +971,8 @@ executors run as mods:
   health tags over the other players from the Camera's `WorldToViewportPoint`; the server's scoreboard teams are
   Roblox's Teams (each Player's `Team`, `TeamColor`, `Neutral`), so their team colours and team checks work.
   `mousemoverel` while playing turns the view by the angle the pixels make, so an aimbot's move to its target's
-  screen point lands on it. Roblox model assets (`game:GetObjects`, OwlHub's UI library) need a Roblox account: an
-  error says so.
+  screen point lands on it. Roblox model assets (`game:GetObjects`, OwlHub's UI library) need a Roblox account: one
+  saved as `workspace/.roblox-assets/<id>.rbxm` loads, else an error says so.
 - **Instances and signals:** `cloneref`, `compareinstances`, `gethui`, `getinstances`, `getnilinstances`,
   `fireclickdetector`, `fireproximityprompt`, `firetouchinterest`, `getcallbackvalue`, `getconnections`,
   `firesignal`; `replicatesignal` errors (there is no server).

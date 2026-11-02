@@ -63,8 +63,8 @@ pub fn asset_files(id: u64) -> [String; 2] {
 /// signed-in account, so it has to be saved into the workspace.
 pub fn asset_missing(id: u64) -> String {
     format!(
-        "GetObjects: rbxassetid://{id} isn't in the workspace: Roblox gives models only to a signed-in account, so save \
-         it (Roblox Studio: insert it, right-click, Save to File) as workspace/{ASSETS}/{id}.rbxm or .rbxmx"
+        "GetObjects: rbxassetid://{id} isn't in the workspace, and Roblox gives models only to a signed-in Roblox \
+         account: save it (Roblox Studio: insert it, right-click, Save to File) as workspace/{ASSETS}/{id}.rbxm or .rbxmx"
     )
 }
 
