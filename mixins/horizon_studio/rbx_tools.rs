@@ -80,6 +80,37 @@ pub struct Tools {
     /// Where the camera was and looked at the last step: as it turns with
     /// a script's tool in hand, the Mouse moves (its Move fires).
     pub view: Option<(Vector3, Vector3)>,
+    /// The right button's presses since the last step (ClickDetectors'
+    /// RightMouseClick).
+    pub rights: Vec<bool>,
+    /// The ClickDetectors, ProximityPrompts and body movers put in the
+    /// place (hstudio_rbx_parts).
+    pub watched: Vec<Id>,
+    /// The ProximityPrompt shown, and its key's hold.
+    pub prompt: super::hstudio_rbx_parts::Prompt,
+    /// When the step last ran, for the body movers.
+    pub last_step: Option<f64>,
+    /// The parts with a TouchInterest the character is in.
+    pub touching: Vec<Id>,
+}
+
+/// The classes `watched` keeps.
+const WATCHED: &[&str] = &[
+    "ClickDetector",
+    "ProximityPrompt",
+    "BodyPosition",
+    "BodyGyro",
+    "BodyVelocity",
+    "TouchTransmitter",
+];
+
+/// An instance put somewhere (Rbx::set_parent): a ClickDetector, a
+/// ProximityPrompt or a body mover is watched from then on.
+pub fn watch(rbx: &mut Rbx, id: Id) {
+    let class = rbx.inst(id).class.name;
+    if WATCHED.contains(&class) && !rbx.tools.watched.contains(&id) {
+        rbx.tools.watched.push(id);
+    }
 }
 
 /// A press on a Handles' face (`Handles`, its NormalId) or an ArcHandles'
@@ -412,8 +443,15 @@ pub fn input(rbx: &mut Rbx, key: &str, down: bool, processed: bool) {
     if !rbx.active || (processed && down) {
         return;
     }
+    if super::hstudio_rbx_parts::prompt_key(rbx).as_deref() == Some(key) {
+        super::hstudio_rbx_parts::prompt_input(rbx, down);
+        return;
+    }
     match key {
         "key.mouse.right" => {
+            if down && rbx.tools.rights.len() < 16 {
+                rbx.tools.rights.push(true);
+            }
             if rbx.tools.held != Held::Slot {
                 return;
             }
@@ -546,6 +584,7 @@ pub fn step(env: &mut dyn Env) {
     place_handles(rbx);
     mouse_moves(rbx);
     bins(env);
+    super::hstudio_rbx_parts::step(env);
 }
 
 /// With a script's tool in hand, the Mouse is the crosshair: as the camera
@@ -756,8 +795,14 @@ fn bins(env: &mut dyn Env) {
             super::hstudio_rbx_handles::release(env.rbx())
         };
         if !theirs {
+            if down {
+                super::hstudio_rbx_parts::click(env, false);
+            }
             clicks.push(down);
         }
+    }
+    for _ in std::mem::take(&mut env.rbx().tools.rights) {
+        super::hstudio_rbx_parts::click(env, true);
     }
     super::hstudio_rbx_handles::drag(env);
     let rbx = env.rbx();
@@ -786,7 +831,7 @@ fn bins(env: &mut dyn Env) {
 
 /// Where the Mouse points (the pointer, or the crosshair while the game has
 /// it), leaving out `ignore` and the Mouse's TargetFilter.
-fn aim(env: &mut dyn Env, ignore: &[Id]) -> Option<super::hstudio_rbx_query::Hit> {
+pub fn aim(env: &mut dyn Env, ignore: &[Id]) -> Option<super::hstudio_rbx_query::Hit> {
     super::hstudio_rbx_world::look(env);
     let (free, x, y) = {
         let p = &env.rbx().pointer;
@@ -826,7 +871,7 @@ fn beside(c: [i32; 3], n: Vector3) -> [i32; 3] {
 }
 
 /// The entity whose mirror `part` is in, by its id.
-fn entity_of(rbx: &Rbx, part: Id) -> Option<u32> {
+pub fn entity_of(rbx: &Rbx, part: Id) -> Option<u32> {
     rbx.world
         .mirrors
         .iter()
@@ -962,6 +1007,7 @@ fn put_back_grab(rbx: &mut Rbx) {
 /// framed in white with its name above.
 pub fn draw(rbx: &Rbx, game: &mut dyn GameApi) {
     super::hstudio_rbx_handles::draw(rbx, game);
+    super::hstudio_rbx_parts::draw(rbx, game);
     if !rbx.active || game.screen() != "playing" {
         return;
     }

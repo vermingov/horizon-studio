@@ -599,3 +599,177 @@ fn a_dragger_puts_the_parts_on_what_the_ray_meets() {
     );
     assert_eq!(out, ["13.5, 65, -11    15.5, 65, -11", "14    -13"]);
 }
+
+#[test]
+fn a_click_on_a_part_fires_its_click_detector_within_reach() {
+    let (mut game, mut st) = stocked("parts-click");
+    part_at(&mut st, &mut game, [10.5, 65.62, -8.0]);
+    lua(
+        &mut st,
+        &mut game,
+        "local cd = Instance.new('ClickDetector', p)
+         cd.MouseClick:Connect(function(who) print('click', who.Name) end)
+         cd.RightMouseClick:Connect(function(who) print('right', who.Name) end)",
+        0.1,
+    );
+    click(&mut st, &mut game);
+    st.key("key.mouse.right", true);
+    st.key("key.mouse.right", false);
+    run_for(&mut st, &mut game, 0.1);
+    let all = log(&st);
+    assert!(all.contains(&"click    Player1".to_owned()), "{all:?}");
+    assert!(all.contains(&"right    Player1".to_owned()), "{all:?}");
+    // Out of its reach, nothing.
+    lua(&mut st, &mut game, "p.ClickDetector.MaxActivationDistance = 2", 0.1);
+    let before = log(&st).iter().filter(|l| l.starts_with("click")).count();
+    click(&mut st, &mut game);
+    assert_eq!(log(&st).iter().filter(|l| l.starts_with("click")).count(), before);
+}
+
+#[test]
+fn a_proximity_prompt_in_reach_is_shown_and_its_key_triggers_it() {
+    let (mut game, mut st) = stocked("parts-prompt");
+    lua(
+        &mut st,
+        &mut game,
+        "pps = game:GetService('ProximityPromptService')",
+        0.0,
+    );
+    part_at(&mut st, &mut game, [12.0, 64.0, -6.0]);
+    lua(
+        &mut st,
+        &mut game,
+        "local pp = Instance.new('ProximityPrompt') pp.ActionText = 'Open' pp.ObjectText = 'Door' pp.HoldDuration = 0.3 pp.Parent = p
+         pp.PromptShown:Connect(function() print('shown') end)
+         pp.PromptButtonHoldBegan:Connect(function(who) print('hold', who.Name) end)
+         pp.Triggered:Connect(function(who) print('triggered', who.Name) end)
+         pps.PromptTriggered:Connect(function(prompt, who) print('service', prompt.ActionText) end)
+         pp.PromptHidden:Connect(function() print('hidden') end)",
+        0.5,
+    );
+    game.drawn.clear();
+    st.hud(&mut game);
+    assert!(
+        game.drawn.iter().any(|d| d.starts_with("text [E] Open Door ")),
+        "{:?}",
+        game.drawn
+    );
+    assert_eq!(
+        horizon_studio::game::hstudio_rbx_parts::prompt_key(&st.s.rbx).as_deref(),
+        Some("key.keyboard.e")
+    );
+    st.key("key.keyboard.e", true);
+    run_for(&mut st, &mut game, 0.5);
+    st.key("key.keyboard.e", false);
+    run_for(&mut st, &mut game, 0.1);
+    // Walking away hides it.
+    game.player.as_mut().unwrap().z = 30.0;
+    run_for(&mut st, &mut game, 0.5);
+    let all = log(&st);
+    let seen: Vec<&String> = all
+        .iter()
+        .filter(|l| {
+            ["shown", "hold", "triggered", "service", "hidden"]
+                .iter()
+                .any(|w| l.starts_with(w))
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            "shown",
+            "hold    Player1",
+            "triggered    Player1",
+            "service    Open",
+            "hidden"
+        ]
+    );
+}
+
+#[test]
+fn the_characters_touches_reach_a_parts_touched_and_its_touch_interest() {
+    let (mut game, mut st) = stocked("parts-touch");
+    part_at(&mut st, &mut game, [10.5, 64.5, -3.25]);
+    let out = lua(
+        &mut st,
+        &mut game,
+        "p.Touched:Connect(function(hit) print('touched', hit.Name) end)
+         p.TouchEnded:Connect(function(hit) print('ended', hit.Name) end)
+         print(p.TouchInterest.ClassName)",
+        0.3,
+    );
+    assert_eq!(out[0], "TouchTransmitter");
+    game.player.as_mut().unwrap().x = 20.0;
+    run_for(&mut st, &mut game, 0.2);
+    let all = log(&st);
+    assert!(all.contains(&"touched    HumanoidRootPart".to_owned()), "{all:?}");
+    assert!(all.contains(&"ended    HumanoidRootPart".to_owned()), "{all:?}");
+}
+
+#[test]
+fn body_movers_move_a_scripts_unanchored_parts() {
+    let (mut game, mut st) = stocked("parts-movers");
+    part_at(&mut st, &mut game, [0.0, 70.0, 0.0]);
+    let out = lua(
+        &mut st,
+        &mut game,
+        "p.Anchored = false
+         local bp = Instance.new('BodyPosition') bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+         bp.Position = Vector3.new(10, 70, 0) bp.Parent = p
+         task.wait(1.5)
+         print(math.floor(p.Position.X + 0.5))
+         bp:Destroy()
+         local anchored = Instance.new('Part') anchored.Anchored = true anchored.Parent = workspace
+         local bv = Instance.new('BodyVelocity') bv.Velocity = Vector3.new(0, 10, 0) bv.Parent = anchored
+         task.wait(0.5)
+         print(anchored.Position.Y)",
+        2.5,
+    );
+    assert_eq!(out, ["10", "0"]);
+}
+
+#[test]
+fn a_models_box_and_a_mirrors_destroy_and_another_players_backpack() {
+    let (mut game, mut st) = stocked("parts-model");
+    game.entities = vec![EntityInfo {
+        id: 77,
+        kind: "minecraft:zombie".into(),
+        pos: [13.0, 64.0, -12.0],
+        width: 0.6,
+        height: 1.95,
+        eye: 1.74,
+        health: 20.0,
+        max_health: 20.0,
+        on_ground: true,
+        ..EntityInfo::default()
+    }];
+    game.players = Some(vec![
+        horizon_studio::game::hstudio::PlayerEntry {
+            uuid: 1,
+            name: "Steve".into(),
+            local: true,
+            ..Default::default()
+        },
+        horizon_studio::game::hstudio::PlayerEntry {
+            uuid: 2,
+            name: "Alex".into(),
+            ..Default::default()
+        },
+    ]);
+    let out = lua(
+        &mut st,
+        &mut game,
+        "local m = Instance.new('Model', workspace)
+         local a = Instance.new('Part', m) a.Size = Vector3.new(2, 2, 2) a.CFrame = CFrame.new(0, 0, 0)
+         local b = Instance.new('Part', m) b.Size = Vector3.new(2, 2, 2) b.CFrame = CFrame.new(4, 0, 0)
+         local cf, size = m:GetBoundingBox()
+         print(cf.Position, size, m:GetModelCFrame().Position, m:GetExtentsSize())
+         print(#game.Players.Alex.Backpack:GetChildren())
+         workspace.Zombie.Head:Destroy()",
+        0.3,
+    );
+    assert_eq!(out, ["2, 0, 0    6, 2, 2    2, 0, 0    6, 2, 2", "0"]);
+    assert!(acts(&game).contains(&"hide 77".to_owned()), "{:?}", game.moves);
+    let out = lua(&mut st, &mut game, "print(workspace:FindFirstChild('Zombie'))", 0.1);
+    assert_eq!(out, ["nil"]);
+}

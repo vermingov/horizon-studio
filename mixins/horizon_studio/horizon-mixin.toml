@@ -118,6 +118,12 @@ name = "hstudio_rbx_handles"
 source = "rbx_handles.rs"
 
 [[module]]
+id = "rbx_parts"
+file = "crates/horizon-client/src/game.rs"
+name = "hstudio_rbx_parts"
+source = "rbx_parts.rs"
+
+[[module]]
 id = "rbx_tools"
 file = "crates/horizon-client/src/game.rs"
 name = "hstudio_rbx_tools"

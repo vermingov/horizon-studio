@@ -785,7 +785,6 @@ fn mirrors_are_locked_but_take_children() {
         r#"
         local z = workspace:WaitForChild("Zombie")
         local root = z.HumanoidRootPart
-        print(pcall(function() z:Destroy() end))
         print(pcall(function() z.Parent = nil end))
         print(pcall(function() root.Parent = workspace end))
         local tag = Instance.new("Folder", z)
@@ -802,14 +801,33 @@ fn mirrors_are_locked_but_take_children() {
     assert!(st.command("check"));
     run_for(&mut st, &mut game, 0.05);
     let p = printed(&st, "locked");
-    for line in &p[0..3] {
+    for line in &p[0..2] {
         assert!(line.starts_with("false") && line.contains("locked"), "{line}");
     }
-    assert_eq!(p[3], "true    0.000 100.000 0.000");
+    assert_eq!(p[2], "true    0.000 100.000 0.000");
     // The game's place again on the next frame.
-    assert_eq!(p[4], "12.500 64.745 -3.250    Zombie");
+    assert_eq!(p[3], "12.500 64.745 -3.250    Zombie");
     // The script's folder went with the zombie.
-    assert_eq!(p[5], "12.500 64.745 -3.250    nil");
+    assert_eq!(p[4], "12.500 64.745 -3.250    nil");
+}
+
+#[test]
+fn destroying_a_mirror_takes_its_entity_out_of_the_clients_view() {
+    let mut game = FakeGame::new("rbxw-hide");
+    game.entities = vec![zombie(5, 12.5, -3.25)];
+    let mut st = studio(&mut game);
+    let src = format!(
+        "{FMT}{}",
+        r#"
+        local z = workspace:WaitForChild("Zombie")
+        print(pcall(function() z.Head:Destroy() end))
+        task.wait(0.2)
+        print(workspace:FindFirstChild("Zombie"))
+    "#
+    );
+    load(&mut game, &mut st, "hide", &src, 0.8);
+    assert_eq!(printed(&st, "hide"), ["true", "nil"]);
+    assert!(game.moves.contains(&"hide 5".to_owned()), "{:?}", game.moves);
 }
 
 #[test]

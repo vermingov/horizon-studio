@@ -64,6 +64,9 @@ thread_local! {
     /// and the presses it took, whose releases are its too.
     static TOOL_CLICKS: Cell<bool> = const { Cell::new(false) };
     static TOOL_HELD: Cell<[bool; 2]> = const { Cell::new([false; 2]) };
+    /// A Roblox ProximityPrompt is shown while the player plays: its key
+    /// (`key.keyboard.e`) is the prompt's, not the game's (hstudio_rbx_parts).
+    static PROMPT_KEY: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// hstudio::Body as the model's hooks read it.
@@ -1644,6 +1647,9 @@ pub(super) fn frame(game: &mut Game<'_>, event_loop: &dyn EventLoopCtl) {
         OPEN.with(|o| o.set(st.overlay_open()));
         let tool = super::hstudio_rbx_tools::takes_clicks(&st.s.rbx);
         TOOL_CLICKS.with(|c| c.set(tool && game.screen == Screen::Playing && !st.overlay_open()));
+        let prompt = super::hstudio_rbx_parts::prompt_key(&st.s.rbx)
+            .filter(|_| game.screen == Screen::Playing && !st.overlay_open());
+        PROMPT_KEY.with(|k| *k.borrow_mut() = prompt);
         let chat_free = game.screen == Screen::Chat && !st.overlay_open();
         CHAT_FREE.with(|c| c.set(chat_free));
         st.set_chat_open(chat_free);
@@ -1804,6 +1810,19 @@ pub(super) fn window_input(event: &mut WindowEvent) {
             && is_open_key(code)
         {
             TOGGLE.with(|t| t.set(true));
+        }
+        // A ProximityPrompt shown: its key is the prompt's, for the frame hook.
+        if let WindowEvent::KeyboardInput { event: k, .. } = &*event
+            && let PhysicalKey::Code(code) = k.physical_key
+            && let Some(name) = horizon_client::keybinds::key_name(code)
+            && PROMPT_KEY.with(|p| p.borrow().as_deref() == Some(name))
+        {
+            if !k.repeat {
+                let down = k.state == ElementState::Pressed;
+                with(|st| st.key(name, down));
+            }
+            *event = WindowEvent::HoveredFileCancelled;
+            return;
         }
         // A script's tool in hand: the buttons are its, for the frame hook.
         if let WindowEvent::MouseInput { state, button, .. } = &*event

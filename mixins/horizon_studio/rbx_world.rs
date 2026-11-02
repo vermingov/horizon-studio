@@ -974,7 +974,8 @@ fn choose<'a>(mirrors: &BTreeMap<u32, Mirror>, list: &'a [EntityInfo]) -> Vec<&'
 /// after the item with ItemId and Count attributes, and an orb a Part
 /// "Experience Orb" with its Value. Each has EntityId and EntityType
 /// attributes. Like the character, a mirror is the studio's own and locked:
-/// scripts can put things in it, but not take it out of the Workspace.
+/// scripts can put things in it, but not take it out of the Workspace (its
+/// Destroy takes the entity out of the client's view: hstudio_rbx_tools).
 fn build_mirror(rbx: &mut Rbx, e: &EntityInfo) {
     let name = mirror_name(rbx, e);
     let mut limbs = None;

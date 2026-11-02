@@ -2220,6 +2220,9 @@ impl Rbx {
         // equipped or unequipped, and may change the player's hotbar.
         if super::hstudio_rbx_tools::is_tool(self, id) {
             super::hstudio_rbx_tools::moved(self, id, old, parent);
+        } else if parent.is_some() {
+            // ClickDetectors, ProximityPrompts and body movers come to life.
+            super::hstudio_rbx_tools::watch(self, id);
         }
         Ok(())
     }
@@ -2433,6 +2436,7 @@ impl Rbx {
         let cid = self.next_conn;
         self.next_conn += 1;
         self.conn_count += 1;
+        let touch = matches!(&*event, "Touched" | "TouchEnded");
         self.inst_mut(id).conns.push(Conn {
             id: cid,
             event,
@@ -2442,6 +2446,11 @@ impl Rbx {
             enabled: true,
             thread,
         });
+        // A part a script listens to for touches has a TouchInterest, as in
+        // Roblox, and the character's touches reach it (hstudio_rbx_parts).
+        if touch {
+            super::hstudio_rbx_parts::touch_interest(self, id);
+        }
         Ok(cid)
     }
 
@@ -2675,6 +2684,10 @@ const METHODS: &[(&str, &str)] = &[
     ("MouseMove", "Dragger"),
     ("MouseUp", "Dragger"),
     ("AxisRotate", "Dragger"),
+    ("GetBoundingBox", "Model"),
+    ("GetModelCFrame", "Model"),
+    ("GetModelSize", "Model"),
+    ("GetExtentsSize", "Model"),
     ("GetPlayingAnimationTracks", "Humanoid"),
     ("Fire", "BindableEvent"),
     ("Invoke", "BindableFunction"),

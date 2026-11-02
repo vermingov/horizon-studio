@@ -194,6 +194,14 @@ fn instance_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, args: &
         "Destroy" | "Remove" => {
             // Locked (a service, the mouse, settings()): never, parent or not.
             let parentless_ok = rbx.inst(id).parent.is_none() && !rbx.unparented_locked(id);
+            // An entity's mirror: the client deletes the entity from its own
+            // view of the world, as a Roblox client deletes another's part.
+            if rbx.inst(id).locked
+                && let Some(e) = super::hstudio_rbx_tools::entity_of(rbx, id)
+            {
+                env.game().hide_entity(e);
+                return none();
+            }
             if rbx.inst(id).locked && !parentless_ok && !rbx.inst(id).destroyed {
                 return Err(lua.rt_error(format!("The Parent property of {} is locked", rbx.inst(id).name)));
             }
@@ -1018,6 +1026,9 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
         | ("Tool", "Activate" | "Deactivate")
         | ("HopperBin", "ToggleSelect" | "Disable") => super::hstudio_rbx_tools::method(env, lua, id, name, args),
         ("Dragger", _) => super::hstudio_rbx_handles::dragger(env, lua, id, name, args),
+        ("Model", "GetBoundingBox" | "GetModelCFrame" | "GetModelSize" | "GetExtentsSize") => {
+            Ok(super::hstudio_rbx_parts::model_box(env.rbx(), id, name))
+        }
         ("Humanoid" | "Animator", "GetPlayingAnimationTracks") => {
             let rbx = env.rbx();
             // A Humanoid's tracks and its Animator's are the same tracks.
