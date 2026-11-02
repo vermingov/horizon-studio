@@ -1796,9 +1796,11 @@ impl Rbx {
             ],
         );
         // Method calls, as Roblox's: a `__namecall` that looks the method up
-        // (remote spies check for it, then hook it).
+        // (remote spies check for it, then hook it) with Instances' own
+        // `__index`, whatever a script hooks it to.
+        let own_index = inst_meta.borrow().get_str("__index");
         let namecall =
-            super::hstudio_lua::Native::of("__namecall", super::hstudio_lua::NativeKind::Namecall, Vec::new());
+            super::hstudio_lua::Native::of("__namecall", super::hstudio_lua::NativeKind::Namecall, vec![own_index]);
         let _ = inst_meta.borrow_mut().set(Value::str("__namecall"), namecall);
         let signal_meta = host_meta(
             "RBXScriptSignal",

@@ -4413,6 +4413,25 @@ struct Frame {
     /// The newcclosure it was called through: a C level of its own above
     /// it, as Luau's debug.info counts the wrapper.
     wrapper: Option<Rc<Native>>,
+    /// How it was entered: as a hook (and whose call it is), or plainly.
+    entry: Entry,
+}
+
+/// How a frame was entered: plainly, or as a hook (a hookfunction or
+/// hookmetamethod, or a script's `__namecall`), by the game's own call or
+/// a script's. A method call's frame keeps its method's name, so a method
+/// called inside the hook doesn't change what the hook's call is.
+#[derive(Clone, Default, PartialEq)]
+pub enum Entry {
+    #[default]
+    Plain,
+    /// A hook a script's code reached (checkcaller is true there).
+    Hook,
+    /// A script's method call reaching a `__namecall` hook, and its method.
+    Namecall(Option<Str>),
+    /// The game's own call reaching a hook (checkcaller is false there),
+    /// and the method it is.
+    Game(Option<Str>),
 }
 
 /// A pcall or xpcall in progress (`catches`), or an xpcall handler running
@@ -4574,6 +4593,8 @@ pub struct Lua {
     namecall: Option<Str>,
     /// The newcclosure the next frame entered is called through.
     via_wrapper: Option<Rc<Native>>,
+    /// How the next frame entered is entered (a hook's call).
+    pending_entry: Entry,
     registry: Option<Registry>,
     events: Rc<[Key]>,
     nil_cell: Cell,
@@ -4607,6 +4628,7 @@ impl Lua {
             stack_base: 0,
             namecall: None,
             via_wrapper: None,
+            pending_entry: Entry::Plain,
             registry: None,
             events: EVENTS.with(Rc::clone),
             nil_cell: Rc::new(RefCell::new(Value::Nil)),
@@ -4750,14 +4772,23 @@ impl Lua {
     }
     fn call_value(&mut self, h: &mut dyn Host, f: &Value, mut args: Vec<Value>) -> Res {
         let mut f = f.clone();
+        // Only the game's call is marked before it starts (an entry left
+        // by a call that failed before its frame is gone).
+        if !matches!(self.pending_entry, Entry::Game(_)) {
+            self.pending_entry = Entry::Plain;
+        }
         for _ in 0..64 {
             match f {
                 Value::Func(c) => match c.redirect() {
-                    Some(to) => f = to,
+                    Some(to) => {
+                        self.entering_hook();
+                        f = to;
+                    }
                     None => return self.call_lua(h, c, args),
                 },
                 Value::Native(n) => {
                     if let Some(to) = n.redirect() {
+                        self.entering_hook();
                         f = to;
                         continue;
                     }
@@ -4768,12 +4799,13 @@ impl Lua {
                             continue;
                         }
                         NativeKind::Namecall => {
-                            f = self.namecall_target(h, args.first().cloned().unwrap_or_default())?;
+                            f = self.namecall_target(h, &n, args.first().cloned().unwrap_or_default())?;
                             continue;
                         }
                         _ => {}
                     }
                     self.via_wrapper = None;
+                    self.pending_entry = Entry::Plain;
                     self.step()?;
                     return self.call_native(h, &n, args);
                 }
@@ -4818,12 +4850,13 @@ impl Lua {
             NativeKind::Wrap(_) | NativeKind::Namecall => self.call_value(h, &Value::Native(n.clone()), args),
         }
     }
-    /// The method `obj:Name(...)` calls, for `__namecall` without a hook.
-    fn namecall_target(&mut self, h: &mut dyn Host, obj: Value) -> Result<Value, Throw> {
-        let Some(name) = self.namecall.clone() else {
+    /// The method `obj:Name(...)` calls, for `__namecall` without a hook
+    /// (`nc`, the layer's own or a copy of it).
+    fn namecall_target(&mut self, h: &mut dyn Host, nc: &Native, obj: Value) -> Result<Value, Throw> {
+        let Some(name) = self.namecall_method() else {
             return Err(self.rt_error("__namecall called without a method call"));
         };
-        let f = self.index_raw_meta(h, &obj, &Value::Str(name.clone()))?;
+        let f = self.method_lookup(h, nc, &obj, &Value::Str(name.clone()))?;
         // As Roblox's `__namecall` calls the method itself, a hookfunction
         // of the host method (`remote.FireServer`) doesn't see method calls:
         // remote spies hook both and log each call once.
@@ -4842,9 +4875,37 @@ impl Lua {
         }
         Ok(f)
     }
-    /// `obj[key]` through `__index`, never `__namecall`.
-    fn index_raw_meta(&mut self, h: &mut dyn Host, obj: &Value, key: &Value) -> Result<Value, Throw> {
-        self.index(h, obj, key)
+    /// The method `obj:key()` finds, as Roblox's `__namecall` looks it up:
+    /// with the layer's own `__index` (`nc` keeps it), never a script's hook
+    /// of `__index`, so a hook calling methods can't call itself through it.
+    fn method_lookup(&mut self, h: &mut dyn Host, nc: &Native, obj: &Value, key: &Value) -> Result<Value, Throw> {
+        let own = nc.state.borrow().first().cloned();
+        match own {
+            Some(Value::Native(ix)) if matches!(obj, Value::Userdata(_)) => {
+                let r = self.call_native(h, &ix, vec![obj.clone(), key.clone()])?;
+                Ok(r.into_iter().next().unwrap_or_default())
+            }
+            _ => self.index(h, obj, key),
+        }
+    }
+    /// Whether the call at `func` is a method call reaching a script's
+    /// `__namecall` (`obj:Name()` with a hooked one).
+    fn is_namecall_hook(&self, func: usize) -> bool {
+        let Some(obj @ Value::Userdata(_)) = self.cur.stack.get(func + 1) else {
+            return false;
+        };
+        let Some(nc) = self.meta(obj, Ev::Namecall) else {
+            return false;
+        };
+        let plain = matches!(&nc, Value::Native(n) if matches!(n.kind, NativeKind::Namecall) && n.redirect().is_none());
+        !plain && nc.raw_eq(&self.cur.stack[func])
+    }
+    /// A call going through a hook: the frame it enters is a hook's, a
+    /// script's call unless the game's call is entering it.
+    fn entering_hook(&mut self) {
+        if self.pending_entry == Entry::Plain {
+            self.pending_entry = Entry::Hook;
+        }
     }
     /// pcall and xpcall called from Rust (not from Lua code, where the VM
     /// runs them): protected calls of their own.
@@ -4929,6 +4990,7 @@ impl Lua {
             line,
             ret,
             wrapper: self.via_wrapper.take(),
+            entry: std::mem::take(&mut self.pending_entry),
         });
     }
 
@@ -5580,11 +5642,17 @@ impl Lua {
         ret: Ret,
     ) -> Result<bool, Throw> {
         let mut first = true;
+        self.pending_entry = if n > 0 && self.namecall.is_some() && self.is_namecall_hook(func) {
+            Entry::Namecall(self.namecall.clone())
+        } else {
+            Entry::Plain
+        };
         for _ in 0..64 {
             let f = self.cur.stack[func].clone();
             match f {
                 Value::Func(c) => {
                     if let Some(to) = c.redirect() {
+                        self.entering_hook();
                         self.cur.stack[func] = to;
                         continue;
                     }
@@ -5597,6 +5665,7 @@ impl Lua {
                 }
                 Value::Native(nat) => {
                     if let Some(to) = nat.redirect() {
+                        self.entering_hook();
                         self.cur.stack[func] = to;
                         continue;
                     }
@@ -5607,14 +5676,18 @@ impl Lua {
                             continue;
                         }
                         NativeKind::Namecall => {
-                            let target =
-                                self.namecall_target(h, self.cur.stack.get(func + 1).cloned().unwrap_or_default())?;
+                            let target = self.namecall_target(
+                                h,
+                                &nat,
+                                self.cur.stack.get(func + 1).cloned().unwrap_or_default(),
+                            )?;
                             self.cur.stack[func] = target;
                             continue;
                         }
                         _ => {}
                     }
                     self.via_wrapper = None;
+                    self.pending_entry = Entry::Plain;
                     self.step()?;
                     if let NativeKind::Pcall(handler) = nat.kind {
                         return self.op_pcall(h, func, n, nres, handler, ret);
@@ -5952,7 +6025,7 @@ impl Lua {
         // A userdata's `__namecall` takes every method call on it (and a
         // table's, as executors' hookmetamethod needs). An unhooked one
         // (the layer's own, which looks the method up) is done here at once.
-        let mut plain_namecall = false;
+        let mut plain_namecall = None;
         if matches!(obj, Value::Userdata(_) | Value::Table(_))
             && obj.metatable().is_some()
             && let Some(nc) = self.meta(&obj, Ev::Namecall)
@@ -5960,7 +6033,7 @@ impl Lua {
         {
             match &nc {
                 Value::Native(n) if matches!(n.kind, NativeKind::Namecall) && n.redirect().is_none() => {
-                    plain_namecall = true;
+                    plain_namecall = Some(n.clone());
                 }
                 _ => {
                     self.cur.stack[base + a + 1] = obj;
@@ -5969,9 +6042,12 @@ impl Lua {
                 }
             }
         }
-        let mut f = self.index_key(h, &obj, name, made)?;
+        let mut f = match &plain_namecall {
+            Some(nc) => self.method_lookup(h, nc, &obj, name)?,
+            None => self.index_key(h, &obj, name, made)?,
+        };
         // As namecall_target: the host method itself, not a hookfunction of it.
-        if plain_namecall
+        if plain_namecall.is_some()
             && let Value::Native(n) = &f
             && matches!(n.kind, NativeKind::Host(_))
             && n.redirect().is_some()
@@ -6586,14 +6662,52 @@ impl Lua {
 impl Lua {
     /// The method name of the running `obj:Name(...)` call on a userdata
     /// (`getnamecallmethod`).
+    /// Inside a `__namecall` hook it is the hook's own call's, whatever
+    /// methods the hook called since.
     pub fn namecall_method(&self) -> Option<Str> {
+        for f in self.cur.frames.iter().rev() {
+            if let Entry::Namecall(m) | Entry::Game(m) = &f.entry {
+                return m.clone();
+            }
+        }
         self.namecall.clone()
     }
-    /// Sets the method name `__namecall` sees (`setnamecallmethod`, and the
-    /// game's packets, which reach remote spies as `remote:FireServer`);
-    /// the name before.
+    /// Sets the method name `__namecall` sees (`setnamecallmethod`: the
+    /// running hook's call's too); the name before.
     pub fn set_namecall_method(&mut self, name: Option<Str>) -> Option<Str> {
+        for f in self.cur.frames.iter_mut().rev() {
+            if let Entry::Namecall(m) | Entry::Game(m) = &mut f.entry {
+                *m = name.clone();
+                break;
+            }
+        }
         std::mem::replace(&mut self.namecall, name)
+    }
+    /// The method name of the next method call: the game's packets reach
+    /// remote spies as `remote:FireServer`. The name before.
+    pub fn set_next_namecall(&mut self, name: Option<Str>) -> Option<Str> {
+        std::mem::replace(&mut self.namecall, name)
+    }
+    /// The next call is the game's own reaching a hook (its method's name):
+    /// checkcaller is false in the hook it enters.
+    pub fn enter_as_game(&mut self) {
+        self.pending_entry = Entry::Game(self.namecall.clone());
+    }
+    /// After the game's call: nothing is entered as the game's any more.
+    pub fn end_game_call(&mut self) {
+        self.pending_entry = Entry::Plain;
+    }
+    /// Whether the running code is in a hook the game's own call entered
+    /// (checkcaller is false there), not in one a script's call reached.
+    pub fn in_game_call(&self) -> bool {
+        for f in self.cur.frames.iter().rev() {
+            match &f.entry {
+                Entry::Plain => {}
+                Entry::Game(_) => return true,
+                _ => return false,
+            }
+        }
+        false
     }
     /// What is `level` levels up (1: the one running): a Lua frame (its
     /// index), or the newcclosure a frame below was called through.

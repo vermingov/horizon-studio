@@ -3866,11 +3866,13 @@ impl Studio {
             remote: id,
             passed: None,
         });
-        let named = self.lua.set_namecall_method(Some(Rc::from(method.as_bytes())));
+        let named = self.lua.set_next_namecall(Some(Rc::from(method.as_bytes())));
         let mut call_args = vec![self.s.rbx.value(id)];
         call_args.extend(args);
-        let r = super::hstudio_exec::as_game(|| self.call(game, Owner::Console, &hook, call_args, EVENT_STEPS));
-        self.lua.set_namecall_method(named);
+        self.lua.enter_as_game();
+        let r = self.call(game, Owner::Console, &hook, call_args, EVENT_STEPS);
+        self.lua.end_game_call();
+        self.lua.set_next_namecall(named);
         let pending = std::mem::replace(&mut self.s.rbx.remotes.pending, outer);
         let passed = pending.and_then(|p| p.passed);
         if remote::GAME_ONLY.contains(&p.name.as_str()) && passed.as_ref() != Some(&before) {
@@ -3886,14 +3888,17 @@ impl Studio {
         if let Err(e) = r
             && passed.is_none()
         {
-            let msg = format!(
-                "a __namecall hook failed on {} (the game's packets go through as they were): {}",
-                self.s.rbx.inst(id).name,
-                e.message()
-            );
-            if self.s.rbx.remotes.last_error.as_deref() != Some(msg.as_str()) {
-                self.s.log(LogKind::Error, msg.clone());
-                self.s.rbx.remotes.last_error = Some(msg);
+            // Once per hook and error, whichever packet it failed on.
+            let key = (remote::hook_key(&hook), e.message());
+            let reported = &self.s.rbx.remotes.reported;
+            if !reported.contains(&key) && reported.len() < remote::MAX_REPORTED {
+                let msg = format!(
+                    "a __namecall hook failed on {} (the game's packets go through as they were; this error is shown once): {}",
+                    self.s.rbx.inst(id).name,
+                    key.1
+                );
+                self.s.rbx.remotes.reported.push(key);
+                self.s.log(LogKind::Error, msg);
             }
             return Verdict::Send;
         }

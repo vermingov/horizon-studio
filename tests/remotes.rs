@@ -107,8 +107,7 @@ fn a_namecall_hook_sees_the_game_s_own_packets_as_fire_server() {
           local method = getnamecallmethod()
           if method == "FireServer" or method == "InvokeServer" then
             local a = ...
-            -- A method call in the hook names its own method, as in Roblox:
-            -- the original is told again which one this call is.
+            -- Telling the original again which method this is changes nothing.
             print("SPY", method, self:GetFullName(), a.x, a.y, a.flags, checkcaller(), select('#', ...))
             setnamecallmethod(method)
           end
@@ -659,7 +658,7 @@ fn hooks_and_debug_info_as_remote_spies_use_them() {
           if getnamecallmethod() == "FireServer" and self.Name == "Probe" then
             local s = getcallingscript()
             print("CS", s and s:GetFullName(), debug.getinfo(3).short_src)
-            -- Another method call names its own method: tell the original again.
+            -- Another method call in the hook doesn't change this call's method.
             local _ = self:GetFullName()
             setnamecallmethod("FireServer")
           end
@@ -714,4 +713,200 @@ fn a_screen_gui_not_shown_yet_is_laid_out_on_the_screen() {
         "#,
     );
     assert_eq!(tagged(&st, "A"), ["A\t500, 200\t450, 268"]);
+}
+
+// --------------------------------------- hooks calling into the game again
+
+/// A packet of the game's that isn't MovePlayerPos (as ClientTickEnd is).
+fn move_rot() -> Packet {
+    Packet {
+        id: 7,
+        name: "move_player_pos_rot".into(),
+        fields: vec![("x".into(), Field::Num(0.0)), ("flags".into(), Field::Int(0))],
+        mapped: true,
+        raw: None,
+    }
+}
+
+#[test]
+fn a_hook_calling_methods_on_the_game_s_packets_doesn_t_call_itself_forever() {
+    // The user's report: "a __namecall hook failed on ClientTickEnd ...:
+    // stack overflow" each tick. A hook that calls methods when checkcaller()
+    // is false went through itself again with checkcaller still false. Its
+    // own calls are the executor's: they go through the hook once, with
+    // checkcaller true, and its own call keeps its method.
+    let (mut st, mut game) = setup("remotes-reenter");
+    run(
+        &mut st,
+        &mut game,
+        r#"
+        local old
+        old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+          local method = getnamecallmethod()
+          if not checkcaller() then
+            -- Methods, properties, tostring and typeof inside the hook.
+            local isRemote = self:IsA("RemoteEvent")
+            local full = self:GetFullName()
+            print("GAME", method, getnamecallmethod(), isRemote, full, self.Name, tostring(self), typeof(self))
+          elseif method == "IsA" or method == "GetFullName" then
+            print("OWN", method, checkcaller())
+          end
+          return old(self, ...)
+        end))
+        "#,
+    );
+    for _ in 0..3 {
+        assert_eq!(st.game_packet(&mut game, &move_pos(1.0, 64.0, 2.0)), Verdict::Send);
+        assert_eq!(st.game_packet(&mut game, &move_rot()), Verdict::Send);
+    }
+    assert!(!log(&st).iter().any(|l| l.contains("hook failed")), "{:?}", log(&st));
+    assert_eq!(
+        tagged(&st, "GAME")[0],
+        "GAME\tFireServer\tFireServer\ttrue\tReplicatedStorage.Minecraft.MovePlayerPos\tMovePlayerPos\tMovePlayerPos\tInstance"
+    );
+    assert_eq!(tagged(&st, "GAME").len(), 6);
+    // Each of the hook's own calls went through it once.
+    assert_eq!(tagged(&st, "OWN").len(), 12);
+    assert!(tagged(&st, "OWN").iter().all(|l| l.ends_with("\ttrue")));
+}
+
+#[test]
+fn a_method_call_inside_a_hook_doesn_t_change_what_the_original_calls() {
+    // Without setnamecallmethod: the original still fires the packet (it
+    // used to call GetFullName, and the player's movement was dropped).
+    let (mut st, mut game) = setup("remotes-own-method");
+    run(
+        &mut st,
+        &mut game,
+        r#"
+        local mt = getrawmetatable(game)
+        setreadonly(mt, false)
+        local old = mt.__namecall
+        mt.__namecall = function(self, ...)
+          if getnamecallmethod() == "FireServer" then print("SEEN", self:GetFullName()) end
+          return old(self, ...)
+        end
+        game.ReplicatedStorage.Minecraft.MovePlayerPos:FireServer({x = 1, y = 64, z = 0, flags = 0})
+        "#,
+    );
+    assert_eq!(st.game_packet(&mut game, &move_pos(0.0, 64.0, 0.0)), Verdict::Send);
+    assert_eq!(tagged(&st, "SEEN").len(), 2);
+    assert_eq!(game.packets.len(), 1);
+}
+
+#[test]
+fn hooks_chained_by_a_script_run_twice_each_see_a_packet_once() {
+    let (mut st, mut game) = setup("remotes-chained");
+    let spy = r#"
+        getgenv().runs = (getgenv().runs or 0) + 1
+        local run = getgenv().runs
+        local old
+        old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+          if getnamecallmethod() == "FireServer" and self:IsA("RemoteEvent") then print("HM", run, self.Name) end
+          return old(self, ...)
+        end))
+        local mt = getrawmetatable(game)
+        setreadonly(mt, false)
+        local older = mt.__namecall
+        mt.__namecall = newcclosure(function(self, ...)
+          if getnamecallmethod() == "FireServer" then print("MT", run, tostring(self)) end
+          return older(self, ...)
+        end)
+        setreadonly(mt, true)
+        local fire
+        fire = hookfunction(Instance.new("RemoteEvent").FireServer, newcclosure(function(self, ...)
+          print("HF", run)
+          return fire(self, ...)
+        end))
+    "#;
+    run(&mut st, &mut game, spy);
+    run(&mut st, &mut game, spy);
+    assert_eq!(st.game_packet(&mut game, &move_pos(0.0, 64.0, 0.0)), Verdict::Send);
+    let mut seen = tagged(&st, "HM");
+    seen.extend(tagged(&st, "MT"));
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            "HM\t1\tMovePlayerPos",
+            "HM\t2\tMovePlayerPos",
+            "MT\t1\tMovePlayerPos",
+            "MT\t2\tMovePlayerPos"
+        ]
+    );
+    // A method call doesn't reach the hookfunction of FireServer; a call of
+    // the function does, through both runs' hooks.
+    run(
+        &mut st,
+        &mut game,
+        r#"
+        local r = game.ReplicatedStorage.Minecraft.MovePlayerPos
+        r:FireServer({x = 1, y = 64, z = 0, flags = 0})
+        r.FireServer(r, {x = 2, y = 64, z = 0, flags = 0})
+        "#,
+    );
+    assert_eq!(tagged(&st, "HF").len(), 2);
+    assert_eq!(game.packets.len(), 2);
+    assert!(!log(&st).iter().any(|l| l.contains("overflow")), "{:?}", log(&st));
+}
+
+#[test]
+fn a_namecall_hook_with_an_index_hook_that_calls_methods_doesn_t_loop() {
+    // Roblox's __namecall finds the method itself, never through __index:
+    // an __index hook calling methods can't call itself through it.
+    for how in ["hookmetamethod", "metatable"] {
+        let (mut st, mut game) = setup("remotes-index-hook");
+        let index = if how == "hookmetamethod" {
+            r#"local oi; oi = hookmetamethod(game, "__index", newcclosure(function(self, k)
+                 if not checkcaller() and self:IsA("Humanoid") and k == "WalkSpeed" then return 16 end
+                 return oi(self, k)
+               end))"#
+        } else {
+            r#"local mt = getrawmetatable(game) setreadonly(mt, false) local oi = mt.__index
+               mt.__index = newcclosure(function(self, k)
+                 if self:IsA("Humanoid") and k == "WalkSpeed" then return 16 end
+                 return oi(self, k)
+               end)"#
+        };
+        run(
+            &mut st,
+            &mut game,
+            &format!(
+                r#"{index}
+                local old
+                old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+                  if getnamecallmethod() == "FireServer" then print("IX", self.Name, self.ClassName) end
+                  return old(self, ...)
+                end))
+                print("IX", workspace:FindFirstChild("Terrain") ~= nil)"#
+            ),
+        );
+        assert_eq!(st.game_packet(&mut game, &move_pos(0.0, 64.0, 0.0)), Verdict::Send);
+        assert_eq!(
+            tagged(&st, "IX"),
+            ["IX\ttrue", "IX\tMovePlayerPos\tRemoteEvent"],
+            "{how}"
+        );
+        assert!(!log(&st).iter().any(|l| l.contains("failed")), "{how}: {:?}", log(&st));
+    }
+}
+
+#[test]
+fn a_hook_failing_on_every_packet_is_reported_once_whichever_packet() {
+    let (mut st, mut game) = setup("remotes-once-each");
+    let broken = r#"hookmetamethod(game, "__namecall", function(self) error("spy broke on " .. self.Name, 0) end)"#;
+    run(&mut st, &mut game, broken);
+    for _ in 0..10 {
+        assert_eq!(st.game_packet(&mut game, &move_pos(0.0, 64.0, 0.0)), Verdict::Send);
+        assert_eq!(st.game_packet(&mut game, &move_rot()), Verdict::Send);
+    }
+    let failed: Vec<_> = log(&st).into_iter().filter(|l| l.contains("hook failed")).collect();
+    // One for each error it has, never one a tick.
+    assert_eq!(failed.len(), 2, "{failed:?}");
+    // Another hook's error is its own.
+    run(&mut st, &mut game, broken);
+    for _ in 0..3 {
+        st.game_packet(&mut game, &move_pos(0.0, 64.0, 0.0));
+    }
+    assert_eq!(log(&st).iter().filter(|l| l.contains("hook failed")).count(), 3);
 }

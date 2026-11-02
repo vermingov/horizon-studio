@@ -2433,7 +2433,7 @@ impl Ctx<'_> {
             // LocalScript or ModuleScript, its `script`); none for the
             // console's code, or for the game's own packets in a hook.
             2063 => {
-                if super::hstudio_exec::game_calls() {
+                if lua.in_game_call() {
                     return one(Value::Nil);
                 }
                 let mut level = 2;

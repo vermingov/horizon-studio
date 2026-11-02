@@ -925,8 +925,8 @@ end)
     reaches it as `remote:FireServer(fields)` (`InvokeServer` for a RemoteFunction's), with `checkcaller()` false: a
     remote spy logs the client's real traffic, a hook that returns without calling the original stops the packet,
     and one that calls it with other arguments sends those (a chat message changed is sent again through the chat,
-    which signs it). Without a hook the packets cost nothing. A hook that fails lets them through, and it can't stop
-    or change what only the game may send (`KeepAlive`, `ChatAck`, `ChatSessionUpdate`,
+    which signs it). Without a hook the packets cost nothing. A hook that fails lets them through (its error is shown
+    once, whichever packet it failed on), and it can't stop or change what only the game may send (`KeepAlive`, `ChatAck`, `ChatSessionUpdate`,
     `ConfigurationAcknowledged`: the server disconnects without them).
   - **`FireServer` sends one.** `Minecraft.MovePlayerPos:FireServer({ x = 0, y = 70, z = 0, flags = 1 })`, or a
     payload as a string or buffer (`CustomPayload:FireServer({}, buffer.fromstring(bytes))`). It is checked as the
@@ -1014,9 +1014,12 @@ executors run as mods:
 
 As every script here is a mod, all code is the executor's: `checkcaller()` is true but for the game's own packets
 reaching a `__namecall` hook, and `getcallingscript()` is the calling mod's `script` (nil for the console's code and
-the game's packets). As in Roblox, a method call is `__namecall`'s alone: `hookfunction` of `remote.FireServer` sees
-`remote.FireServer(remote)` calls, not `remote:FireServer()`, and a `newcclosure` is a C level of its own to
-`debug.info`. `getgc` and `filtergc` see what was made once the studio started tracking objects (from the
+the game's packets). The hook's own calls are the executor's again: a method it calls goes through the hook once
+more, with `checkcaller()` true, so `if not checkcaller() then self:IsA(...) end` can't call itself forever. As in
+Roblox, a method call is `__namecall`'s alone: `hookfunction` of `remote.FireServer` sees `remote.FireServer(remote)`
+calls, not `remote:FireServer()`; the original `__namecall` finds the method without `__index` (an `__index` hook
+isn't called for it), and keeps the hook's own method whatever methods the hook called first. A `newcclosure` is a C
+level of its own to `debug.info`. `getgc` and `filtergc` see what was made once the studio started tracking objects (from the
 first mod that names them). The MCP's `executor` topic (`docs`) has each function's details.
 
 ### Examples

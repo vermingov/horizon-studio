@@ -170,29 +170,12 @@ fn func_arg(lua: &Lua, args: &[Value], i: usize, fname: &str) -> Result<Value, T
     }
 }
 
-thread_local! {
-    /// While the game's own packet goes through the scripts' hooks.
-    static GAME_CALLS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Runs `f` as the game's call (its packets reaching a `__namecall` hook):
-/// checkcaller is false inside.
-pub fn as_game<R>(f: impl FnOnce() -> R) -> R {
-    let before = GAME_CALLS.with(|g| g.replace(true));
-    let r = f();
-    GAME_CALLS.with(|g| g.set(before));
-    r
-}
-
-/// Whether the game's own packet is in the scripts' hooks now (`as_game`).
-pub fn game_calls() -> bool {
-    GAME_CALLS.with(std::cell::Cell::get)
-}
-
 /// Every call made from a script mod is the executor's own; the game's
-/// packets, reaching a hook, are not.
-fn checkcaller(_: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {
-    one(Value::Bool(!GAME_CALLS.with(std::cell::Cell::get)))
+/// packets, reaching a hook, are not. A hook's own calls are the
+/// executor's again: a method it calls goes through the hook once more
+/// with checkcaller true, so `if not checkcaller()` can't loop.
+fn checkcaller(lua: &mut Lua, _: &mut dyn Host, _: &Native, _: Vec<Value>) -> Res {
+    one(Value::Bool(!lua.in_game_call()))
 }
 
 /// A new function that runs as `f` does now, unaffected by later hooks of `f`.

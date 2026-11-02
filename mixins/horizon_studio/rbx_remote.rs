@@ -136,9 +136,22 @@ pub struct Remotes {
     /// Sent this frame (at `frame_at`, the layer's clock).
     pub sent: u32,
     pub frame_at: f64,
-    /// The last error a hook of the game's packets had, printed once (a
-    /// broken hook fails on every packet).
-    pub last_error: Option<String>,
+    /// The errors hooks of the game's packets had, each printed once per
+    /// hook (a broken hook fails on every packet, each tick).
+    pub reported: Vec<(String, String)>,
+}
+
+/// The most hook errors reported; later ones are quiet.
+pub const MAX_REPORTED: usize = 64;
+
+/// Which hook a `__namecall` (or FireServer) runs, to tell hooks apart.
+pub fn hook_key(v: &Value) -> String {
+    let to = match v {
+        Value::Native(n) => n.redirect(),
+        Value::Func(c) => c.redirect(),
+        _ => None,
+    };
+    to.unwrap_or_else(|| v.clone()).plain_text()
 }
 
 impl Remotes {
