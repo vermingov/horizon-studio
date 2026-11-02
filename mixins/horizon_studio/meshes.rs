@@ -89,13 +89,32 @@ fn check_size(w: u32, h: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// A PNG file's pixels.
+/// A PNG file's pixels, as a texture (at most MAX_SIDE a side).
 pub fn decode_png(bytes: &[u8]) -> Result<Texture, String> {
+    decode_png_within(bytes, check_size)
+}
+
+/// A PNG file's pixels, at most `most` pixels a side and `texels` in all:
+/// GUI images (a sprite sheet, a strip of icons), which the image cache
+/// scales down for the game's atlas itself.
+pub fn decode_png_up_to(bytes: &[u8], most: u32, texels: usize) -> Result<Texture, String> {
+    decode_png_within(bytes, |w, h| {
+        if w == 0 || h == 0 || w > most || h > most || (w as usize) * (h as usize) > texels {
+            return Err(format!(
+                "an image is 1 to {most} pixels a side and {texels} in all (this one {w}x{h})"
+            ));
+        }
+        Ok(())
+    })
+}
+
+/// A PNG file's pixels, if `check` takes its size.
+fn decode_png_within(bytes: &[u8], check: impl Fn(u32, u32) -> Result<(), String>) -> Result<Texture, String> {
     let mut d = png::Decoder::new(std::io::Cursor::new(bytes));
     d.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = d.read_info().map_err(|e| format!("not a PNG image ({e})"))?;
     let (w, h) = (reader.info().width, reader.info().height);
-    check_size(w, h)?;
+    check(w, h)?;
     let mut buf = vec![0; reader.output_buffer_size().ok_or("PNG image too large")?];
     let out = reader
         .next_frame(&mut buf)

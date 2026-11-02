@@ -345,6 +345,7 @@ pub static CLASSES: &[C] = &[
         &[
             ro("LocalPlayer", Obj, D::Nil),
             ro("MaxPlayers", Int, N(1.0)),
+            ro("NumPlayers", Int, N(1.0)),
             p("RespawnTime", Num, N(5.0)),
         ],
         &["PlayerAdded", "PlayerRemoving"],
@@ -2870,8 +2871,11 @@ fn coerce(rbx: &Rbx, k: K, v: &Value) -> Option<Value> {
     })
 }
 
+/// Radians as degrees, a part's Rotation and Orientation: an unturned part
+/// reads 0, 0, 0 as in Roblox, not -0.
 fn deg(v: Vector3) -> Vector3 {
-    Vector3::new(v.x.to_degrees(), v.y.to_degrees(), v.z.to_degrees())
+    let d = |a: f64| a.to_degrees() + 0.0;
+    Vector3::new(d(v.x), d(v.y), d(v.z))
 }
 
 /// The instance argument `i` (the `self` of a method is 0).
@@ -3527,18 +3531,23 @@ impl Rbx {
         }
     }
 
-    /// An image object's IsLoaded: whether its Image draws, which only a
-    /// workspace file (getcustomasset's) that is a PNG does. None for an
+    /// An image object's IsLoaded: whether its Image draws: a workspace
+    /// file (getcustomasset's) that is a PNG, or a Roblox image fetched
+    /// (once drawn) into the workspace's `.roblox-assets`. None for an
     /// instance without an Image.
     pub fn image_loaded(&mut self, id: Id) -> Option<bool> {
         let inst = self.insts.get(&id)?;
         find_prop(inst.class, "Image")?;
         let image = inst.get("Image").as_text().unwrap_or_default();
-        let Some(file) = image.strip_prefix("rbxasset://horizon-studio/") else {
-            return Some(false);
+        let file = match image.strip_prefix("rbxasset://horizon-studio/") {
+            Some(f) => f.to_owned(),
+            None => match super::hstudio_sunc::roblox_image(&image) {
+                Some((_, rel)) => rel,
+                None => return Some(false),
+            },
         };
         let dir = self.workspace_dir.clone();
-        Some(self.screen_images.loads(&dir, file))
+        Some(self.screen_images.loads(&dir, &file))
     }
 }
 

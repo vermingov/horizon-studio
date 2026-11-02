@@ -62,6 +62,8 @@ pub mod game {
     pub mod hstudio_rbx_file;
     #[path = "../../mixins/horizon_studio/rbx_handles.rs"]
     pub mod hstudio_rbx_handles;
+    #[path = "../../mixins/horizon_studio/rbx_image.rs"]
+    pub mod hstudio_rbx_image;
     #[path = "../../mixins/horizon_studio/rbx_layout.rs"]
     pub mod hstudio_rbx_layout;
     #[path = "../../mixins/horizon_studio/rbx_methods.rs"]

@@ -799,6 +799,17 @@ pub fn fresh_layout(rbx: &mut Rbx, game: &mut dyn GameApi, id: Id) -> usize {
         return 0;
     }
     let Some(path) = drawn_path(rbx, id) else {
+        // A ScreenGui covers the screen wherever it is, shown or not (Dex
+        // sizes its menus by its hidden menu's ScreenGui).
+        if rbx.inst(id).class.name == "ScreenGui" {
+            let mut writes = Vec::new();
+            let p = layout::Placed {
+                size: Vector2::new(f64::from(w), f64::from(h)),
+                ..Default::default()
+            };
+            place_outputs(rbx, &p, id, Vector2::ZERO, &mut writes);
+            write_outputs(rbx, writes);
+        }
         return 0;
     };
     // A BillboardGui is laid out in the box the camera gives it, if it has one.
@@ -1333,13 +1344,22 @@ pub fn draw(
             let ia = (1.0 - inst.get("ImageTransparency").to_num().unwrap_or(0.0)) * ga;
             // getcustomasset's images draw, and Roblox's image ids (their
             // thumbnails, fetched once and kept in the workspace).
+            let thumb = !img.starts_with("rbxasset://horizon-studio/");
             let file = match img.strip_prefix("rbxasset://horizon-studio/") {
                 Some(p) => images.file_image(workspace, p),
                 None => super::hstudio_sunc::roblox_image(&img).map(|_| images.roblox(workspace, &img)),
             };
             match file {
                 Some(Some(t)) if ia > 0.0 => {
-                    draw_image(inst, p, game, images, &t, gc, ia, mark.is_none().then_some(vis))
+                    // The size the object's pixels (its crop, its slice)
+                    // are in: a thumbnail's original's.
+                    let size = if thumb {
+                        images.roblox_size(workspace, &img, &t, pixel_uses(inst))
+                    } else {
+                        (f64::from(t.w), f64::from(t.h))
+                    };
+                    let clip = mark.is_none().then_some(vis);
+                    draw_image(inst, p, game, images, &t, size, gc, ia, clip)
                 }
                 Some(_) => {}
                 None if !img.is_empty() && ia > 0.0 => {
@@ -1651,10 +1671,27 @@ fn draw_bars(rbx: &Rbx, game: &mut dyn GameApi, frame: &Frame, bars: Option<(Id,
     }
 }
 
+/// How an image object uses its image in pixels: its crop
+/// (ImageRectOffset and ImageRectSize) and, sliced, its SliceCenter.
+fn pixel_uses(inst: &super::hstudio_rbx::Inst) -> super::hstudio_rbx_image::Uses {
+    let mut uses = super::hstudio_rbx_image::Uses::default();
+    let offset = as_v2(&inst.get("ImageRectOffset")).unwrap_or_default();
+    let size = as_v2(&inst.get("ImageRectSize")).unwrap_or_default();
+    uses.crop([offset.x, offset.y], [size.x, size.y]);
+    if enum_name(&inst.get("ScaleType")) == "Slice"
+        && let Some(Data::Rect(r)) = get(&inst.get("SliceCenter"))
+    {
+        uses.slice([r.min.x, r.min.y], [r.max.x, r.max.y]);
+    }
+    uses
+}
+
 /// An image object's image, placed in its box as its ScaleType,
 /// ImageRectOffset and ImageRectSize, TileSize, SliceCenter and SliceScale
 /// say, tinted by its ImageColor3 (and `gc`, the groups it is in), `alpha`
-/// opaque; cut to `clip` where the game can't cut it once drawn.
+/// opaque; cut to `clip` where the game can't cut it once drawn. `size` is
+/// the image's in the pixels the object names (a thumbnail's original's),
+/// which `t` holds scaled.
 #[allow(clippy::too_many_arguments)]
 fn draw_image(
     inst: &super::hstudio_rbx::Inst,
@@ -1662,11 +1699,11 @@ fn draw_image(
     game: &mut dyn GameApi,
     images: &mut super::hstudio_sunc::ImageCache,
     t: &Rc<super::hstudio_meshes::Texture>,
+    (w, h): (f64, f64),
     gc: Color3,
     alpha: f64,
     clip: Option<Rect>,
 ) {
-    let (w, h) = (t.w, t.h);
     let fit = layout::ImageFit {
         scale_type: match enum_name(&inst.get("ScaleType")) {
             "Slice" => layout::ScaleType::Slice,
@@ -1685,8 +1722,14 @@ fn draw_image(
         slice_scale: inst.get("SliceScale").to_num().unwrap_or(1.0),
     };
     let rgb = argb(times(color(inst, "ImageColor3"), gc), 1.0) & 0xFF_FFFF;
-    let size = Vector2::new(f64::from(w), f64::from(h));
+    let size = Vector2::new(w.max(1.0), h.max(1.0));
+    // The pieces' parts, in `t`'s pixels.
+    let (kx, ky) = (f64::from(t.w) / size.x, f64::from(t.h) / size.y);
     for (place, part) in layout::image_pieces(size, p.rect(), p.scale, &fit, clip) {
+        let part = Rect::new(
+            Vector2::new(part.min.x * kx, part.min.y * ky),
+            Vector2::new(part.max.x * kx, part.max.y * ky),
+        );
         images.draw_part(game, t, rect4(place), rect4(part), rgb, alpha);
     }
 }

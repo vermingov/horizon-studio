@@ -1157,6 +1157,10 @@ pub fn draw_drawings(rbx: &Rbx, game: &mut dyn GameApi, textures: &mut ImageCach
 /// clock) it was last drawn in, the least recently drawn first (`keep`).
 type Kept<T> = Vec<(f64, T)>;
 
+/// A part of an image taken out for the atlas (`part_of`): the image's key
+/// and the part's pixels (x0, y0, x1, y1).
+type PartId = (u32, [u32; 4]);
+
 /// Decoded images for Drawing's Image and the GUI's images (getcustomasset's
 /// files), shared by the HUD and the GUI's screen: drawn as textures where
 /// the game draws images, else as blocks of colour.
@@ -1174,6 +1178,9 @@ pub struct ImageCache {
     /// which a copy takes (the image itself never goes there): made again,
     /// it is found where the last was put.
     small: Kept<(u32, Rc<super::hstudio_meshes::Texture>)>,
+    /// Small parts of large images (their key and the part's pixels) taken
+    /// out for the atlas whole (`part_of`).
+    parts: Kept<(PartId, Rc<super::hstudio_meshes::Texture>)>,
     /// This frame (the studio's clock), and the images it put in the
     /// game's atlas (by key) with their pixels in all.
     frame: f64,
@@ -1187,6 +1194,12 @@ pub struct ImageCache {
     /// `.roblox-assets`), and those that couldn't be.
     fetching: std::collections::HashMap<String, std::sync::mpsc::Receiver<bool>>,
     failed: std::collections::HashSet<String>,
+    /// For thumbnails (by file): how scripts use them in pixels, their
+    /// resolution once known (`hstudio_rbx_image::effective_size`), and
+    /// those being worked out.
+    uses: std::collections::HashMap<String, super::hstudio_rbx_image::Uses>,
+    resolution: std::collections::HashMap<String, Option<u32>>,
+    resolving: std::collections::HashMap<String, std::sync::mpsc::Receiver<Option<Option<u32>>>>,
 }
 
 /// Where a Roblox image's thumbnail is asked for, for an image id
@@ -1242,49 +1255,15 @@ pub fn roblox_image(content: &str) -> Option<(String, String)> {
     if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
         return asset(digits(s)?);
     }
-    None
+    // Roblox's own files (its content folder), from a mirror of it.
+    super::hstudio_rbx_image::rbxasset_source(s)
 }
 
-/// Fetches a Roblox image's thumbnail (the thumbnails API's answer names
-/// where its PNG is) into `path`: whether it is there.
-fn fetch_roblox_image(api: &str, path: &Path) -> bool {
-    let get = |url: &str| {
-        super::hstudio_net::fetch(
-            &super::hstudio_net::Request {
-                url: url.to_owned(),
-                method: "GET".into(),
-                headers: Vec::new(),
-                body: Vec::new(),
-            },
-            false,
-        )
-        .ok()
-        .filter(super::hstudio_net::Response::success)
-    };
-    // A thumbnail not made yet is Pending a moment.
-    for attempt in 0..4 {
-        if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        }
-        let Some(answer) = get(api) else { continue };
-        let Ok(j) = serde_json::from_slice::<serde_json::Value>(&answer.body) else {
-            return false;
-        };
-        let item = &j["data"][0];
-        match (item["state"].as_str(), item["imageUrl"].as_str()) {
-            (Some("Completed"), Some(url)) => {
-                let Some(png) = get(url) else { return false };
-                let tmp = path.with_extension("part");
-                let _ = std::fs::create_dir_all(path.parent().unwrap_or(path));
-                return std::fs::write(&tmp, &png.body).is_ok() && std::fs::rename(&tmp, path).is_ok();
-            }
-            (Some("Pending"), _) => continue,
-            _ => return false,
-        }
-    }
-    false
-}
-
+/// The largest image the GUI draws: as long a side as a strip of icons
+/// has (Roblox's ClassImages.PNG is 2352 x 16), and as many pixels as a
+/// 2048 x 2048 (Roblox's thumbnails are at most 700 a side).
+const IMAGE_SIDE: u32 = 8192;
+const IMAGE_TEXELS: usize = 1 << 22;
 /// Image cells a side at most: an image draws as up to 48 x 48 blocks.
 const CELLS: u32 = 48;
 /// A block is at least this many dp a side, so a small or tiled image
@@ -1398,10 +1377,71 @@ impl ImageCache {
         let (tx, rx) = std::sync::mpsc::channel();
         let path = workspace.join(&rel);
         let _ = std::thread::Builder::new().name("roblox-image".into()).spawn(move || {
-            let _ = tx.send(fetch_roblox_image(&api, &path));
+            let _ = tx.send(super::hstudio_rbx_image::fetch(&api, &path));
         });
         self.fetching.insert(rel, rx);
         None
+    }
+
+    /// The size (pixels) scripts measure the Roblox image `content`, drawn
+    /// as `t`, in, with this use of it in pixels (`use_`: a crop or a
+    /// slice) counted among its uses: a thumbnail's original size
+    /// (`hstudio_rbx_image::native_size`; its resolution worked out once
+    /// in the background, while a script uses it in pixels, and kept
+    /// beside it), else the image's own.
+    pub fn roblox_size(
+        &mut self,
+        workspace: &Path,
+        content: &str,
+        t: &super::hstudio_meshes::Texture,
+        use_: super::hstudio_rbx_image::Uses,
+    ) -> (f64, f64) {
+        let own = (f64::from(t.w), f64::from(t.h));
+        let Some((api, rel)) = roblox_image(content) else {
+            return own;
+        };
+        if !super::hstudio_rbx_image::is_thumbnail(&api) || !api.contains("/v1/assets?") {
+            return own;
+        }
+        let uses = self.uses.entry(rel.clone()).or_default();
+        uses.merge(&use_);
+        let uses = *uses;
+        if !uses.cropped && uses.slice.is_none() {
+            return own;
+        }
+        if let Some(rx) = self.resolving.get(&rel) {
+            match rx.try_recv() {
+                Ok(Some(n)) => {
+                    self.resolving.remove(&rel);
+                    self.resolution.insert(rel.clone(), n);
+                }
+                Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.resolving.remove(&rel);
+                    self.resolution.insert(rel.clone(), None);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        let path = workspace.join(&rel);
+        if uses.cropped && !self.resolution.contains_key(&rel) && !self.resolving.contains_key(&rel) {
+            match super::hstudio_rbx_image::kept_resolution(&path) {
+                Some(n) => {
+                    self.resolution.insert(rel.clone(), n);
+                }
+                None if self.resolving.len() < 4 => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let _ = std::thread::Builder::new()
+                        .name("roblox-image-size".into())
+                        .spawn(move || {
+                            let _ = tx.send(super::hstudio_rbx_image::find_resolution(&api, &path));
+                        });
+                    self.resolving.insert(rel.clone(), rx);
+                }
+                None => {}
+            }
+        }
+        let n = self.resolution.get(&rel).copied().flatten();
+        super::hstudio_rbx_image::native_size((t.w, t.h), n, &uses)
     }
 
     /// Whether a workspace file is an image that draws (a PNG it can decode).
@@ -1428,7 +1468,7 @@ impl ImageCache {
             return Some(touch(&mut self.items, i, self.frame).1.clone());
         }
         self.decoded += 1;
-        let mut t = super::hstudio_meshes::decode_png(bytes).ok()?;
+        let mut t = super::hstudio_meshes::decode_png_up_to(bytes, IMAGE_SIDE, IMAGE_TEXELS).ok()?;
         if self.places.len() >= PLACES && !self.places.contains_key(&key) {
             self.places.clear();
         }
@@ -1485,6 +1525,52 @@ impl ImageCache {
         Some(s)
     }
 
+    /// A small part `src` (pixels) of an image larger than the atlas takes
+    /// (an icon of a sprite sheet) as an image of its own, at the image's
+    /// resolution, with the part in its pixels: rather than the whole image
+    /// scaled down to ATLAS_SIDE, which leaves an icon a few pixels (and a
+    /// strip of icons, as ClassImages.PNG, none). None for a part that is
+    /// a quarter of the image or more, or of an image the atlas takes whole.
+    fn part_of(
+        &mut self,
+        t: &Rc<super::hstudio_meshes::Texture>,
+        src: [f32; 4],
+    ) -> Option<(Rc<super::hstudio_meshes::Texture>, [f32; 4])> {
+        if atlas_size(t.w, t.h) == (t.w, t.h) {
+            return None;
+        }
+        let x0 = (src[0].floor().max(0.0) as u32).min(t.w);
+        let y0 = (src[1].floor().max(0.0) as u32).min(t.h);
+        let x1 = ((src[0] + src[2]).ceil().max(0.0) as u32).min(t.w);
+        let y1 = ((src[1] + src[3]).ceil().max(0.0) as u32).min(t.h);
+        let (w, h) = (x1.checked_sub(x0)?, y1.checked_sub(y0)?);
+        if w == 0 || h == 0 || u64::from(w * h) * 4 > u64::from(t.w) * u64::from(t.h) {
+            return None;
+        }
+        let within = [src[0] - x0 as f32, src[1] - y0 as f32, src[2], src[3]];
+        let id = (t.key, [x0, y0, x1, y1]);
+        if let Some(i) = self.parts.iter().position(|(_, (k, _))| *k == id) {
+            return Some((touch(&mut self.parts, i, self.frame).1.clone(), within));
+        }
+        let mut part = super::hstudio_meshes::Texture::new(w, h, 0).ok()?;
+        for y in 0..h {
+            let from = (((y0 + y) * t.w + x0) * 4) as usize;
+            let to = (y * w * 4) as usize;
+            part.rgba[to..to + (w * 4) as usize].copy_from_slice(&t.rgba[from..from + (w * 4) as usize]);
+        }
+        // Made again, it goes where it was in the atlas.
+        let place =
+            u64::from(t.key) << 32 | u64::from(x0 ^ y0.rotate_left(8) ^ x1.rotate_left(16) ^ y1.rotate_left(24));
+        if self.places.len() >= PLACES && !self.places.contains_key(&place) {
+            self.places.clear();
+        }
+        part.key = *self.places.entry(place).or_insert(part.key);
+        let part = Rc::new(part);
+        self.parts.push((self.frame, (id, part.clone())));
+        keep(&mut self.parts, self.frame, SMALL_TEXELS, |(_, p)| p.texels());
+        Some((part, within))
+    }
+
     /// Draws the part `src` (x, y, width and height in pixels) of an image
     /// into `r` (dp), its pixels multiplied by `rgb` (0xRRGGBB) and `alpha`:
     /// as a texture where the game draws images and the frame's share of
@@ -1502,6 +1588,8 @@ impl ImageCache {
             return;
         }
         let a = (alpha.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let (t, src) = self.part_of(t, src).unwrap_or_else(|| (t.clone(), src));
+        let t = &t;
         if let Some(at) = self.for_atlas(t) {
             // The part, in the pixels of what went in the atlas.
             let (kx, ky) = (at.w as f32 / t.w as f32, at.h as f32 / t.h as f32);

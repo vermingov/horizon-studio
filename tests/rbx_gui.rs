@@ -2976,3 +2976,21 @@ fn italic_text_leans() {
     let up = index_of(&drawn, "text up  @");
     assert!(!drawn[up + 1].starts_with("slant"), "upright text stays upright");
 }
+
+#[test]
+fn a_screen_gui_covers_the_screen_shown_or_not() {
+    // Dex++ sizes its right-click menu by its ScreenGui's AbsoluteSize,
+    // read while the menu is hidden (the ScreenGui out of the PlayerGui).
+    let mut game = FakeGame::new("rbx-cover");
+    let mut st = studio(&mut game);
+    let src = r#"
+        local gui = Instance.new("ScreenGui")
+        print(gui.AbsoluteSize, gui.AbsolutePosition)
+        gui.Parent = game.Players.LocalPlayer.PlayerGui
+        print(gui.AbsoluteSize)
+        gui.Parent = nil
+        print(gui.AbsoluteSize)
+    "#;
+    load(&mut game, &mut st, "cover", src, 0.6);
+    assert_eq!(printed(&st, "cover"), ["960, 540    0, 0", "960, 540", "960, 540"]);
+}

@@ -1006,6 +1006,7 @@ ViaHorizon's to its network code, and one small helper per hook.
 | `rbx_values.rs` (`hstudio_rbx_values`) | Roblox's data types and `Enum` for scripts |
 | `rbx.rs`, `rbx_methods.rs` (`hstudio_rbx`, `hstudio_rbx_methods`) | The Roblox layer: the DataModel, Instances, their properties, events and methods, services, signals, tweens |
 | `rbx_draw.rs` (`hstudio_rbx_draw`) | The Roblox layer on the game: ScreenGuis drawn and clicked, input, Parts in the world, raycasts, each frame's step |
+| `rbx_image.rs` (`hstudio_rbx_image`) | Roblox's images: `rbxasset://` files from the Client Tracker's mirror, thumbnails fetched, and a thumbnail's original size (its resampling's trace, and the crops and slices scripts make) so sprite sheets cut where scripts mean |
 | `rbx_world.rs` (`hstudio_rbx_world`) | The Roblox layer's world: the LocalPlayer and its character following the player, teleports, `Humanoid:MoveTo`, the entities and other players mirrored once a script looks |
 | `rbx_query.rs` (`hstudio_rbx_query`) | What scripts ask of the world: raycasts through its blocks and parts, the Mouse's target, the bounds queries, Terrain's reads |
 | `exec.rs` (`hstudio_exec`) | The executor (sUNC) functions that need only the interpreter: hooks, newcclosure, debug, metatables, encoding, getgc |

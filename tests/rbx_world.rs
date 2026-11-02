@@ -1072,7 +1072,7 @@ fn players_join_leave_and_show_their_characters() {
         print(pcall(function() return Players:GetUserIdFromNameAsync("Notch") end))
         local h = alex.Character.Humanoid
         print(alex:GetNetworkPing(), Players.LocalPlayer:GetNetworkPing(), Players.MaxPlayers, h.Health, string.format("%.4f %.4f", h.JumpPower, h.JumpHeight))
-        command("log", function() print(table.concat(log, ", "), "|", names(Players:GetPlayers()), Players.MaxPlayers) end)
+        command("log", function() print(table.concat(log, ", "), "|", names(Players:GetPlayers()), Players.MaxPlayers, Players.NumPlayers) end)
     "#;
     load(&mut game, &mut st, "players", src, 0.6);
     // Kim joins far away, comes near, goes out of range again, and leaves.
@@ -1110,14 +1110,14 @@ fn players_join_leave_and_show_their_characters() {
     assert_eq!(p[4], "0.12    0.03    2    100    8.4000 1.2522");
     assert_eq!(
         p[5],
-        "joined Kim, Kim near true, Kim away Kim nil, left Kim, joined Bo, Bo near true    |    Steve Alex Bo    3"
+        "joined Kim, Kim near true, Kim away Kim nil, left Kim, joined Bo, Bo near true    |    Steve Alex Bo    3    3"
     );
     assert!(
         p[6].starts_with("joined Kim, Kim near true, Kim away Kim nil, left Kim, joined Bo, Bo near true, Bo away Bo nil, left Alex, left Bo"),
         "{}",
         p[6]
     );
-    assert!(p[6].ends_with("|    Steve    1"), "{}", p[6]);
+    assert!(p[6].ends_with("|    Steve    1    1"), "{}", p[6]);
 }
 
 #[test]

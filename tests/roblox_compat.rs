@@ -131,7 +131,8 @@ fn roblox_image_ids_ask_the_thumbnails_api() {
         ))
     );
     assert_eq!(roblox_image("rbxthumb://type=Asset&id=9&w=420&h=420"), asset("9"));
-    assert_eq!(roblox_image("rbxasset://textures/ui/x.png"), None);
+    // Roblox's own files aren't asset ids (tests/rbx_images.rs has them).
+    assert!(roblox_image("rbxasset://textures/ui/x.png").is_some_and(|(url, _)| !url.contains("thumbnails")));
     assert_eq!(roblox_image(""), None);
 }
 
@@ -569,4 +570,20 @@ fn esp_in_a_folder_in_core_gui_draws_its_boxes_and_name_tags() {
         1,
         "adornments are Visible"
     );
+}
+
+#[test]
+fn an_unturned_part_reads_no_negative_zero() {
+    // Dex++'s Properties shows Rotation as Roblox gives it: 0, 0, 0.
+    let p = run(
+        "compat-zero",
+        r#"
+        local part = Instance.new("Part")
+        print(part.Rotation, part.Orientation)
+        part.CFrame = CFrame.Angles(0, math.rad(90), 0)
+        print(math.round(part.Orientation.Y))
+        "#,
+        0.6,
+    );
+    assert_eq!(p, ["0, 0, 0\t0, 0, 0", "90"]);
 }

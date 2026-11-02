@@ -1656,11 +1656,13 @@ fn local_ping(rbx: &mut Rbx, game: &mut dyn GameApi) {
     }
 }
 
-/// Players.MaxPlayers: at least as many as are on the server.
+/// Players.NumPlayers, the players on the server, and MaxPlayers: at least
+/// as many.
 fn count_players(rbx: &mut Rbx) {
     let n = 1 + rbx.world.others.len();
     let players = rbx.players;
     rbx.raw_set(players, "MaxPlayers", Value::Num(n as f64));
+    rbx.raw_set(players, "NumPlayers", Value::Num(n as f64));
 }
 
 /// Each other player's Character is the mirror of their entity while the
