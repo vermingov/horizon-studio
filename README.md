@@ -373,6 +373,9 @@ the server its version).
 - **Online-mode servers** sign in with the account you play with: ViaProxy asks the game (with the
   [OpenAuthMod](https://github.com/ViaVersionAddons/ViaProxyOpenAuthMod) protocol) and the game joins the server's
   session itself, as for any server. Your account's token never leaves the game, and nothing is set up in ViaProxy.
+  The game answers no sooner than a quarter of a second after it is asked: the plugin starts waiting for the answer
+  only after it has sent the question, and kicks with "Authentication cancelled! You need to install the OpenAuthMod
+  client mod" when the answer came first.
 - **The first time**, ViaHorizon downloads ViaProxy 3.4.14 (49 MB, from ViaVersion's Maven repository) and its
   OpenAuthMod plugin (from GitHub), both checked against pinned SHA-256 checksums. ViaProxy needs Java 17 or newer:
   ViaHorizon uses `JAVA_HOME`, the `java` on your PATH, the runtime the Minecraft launcher installed, or a JDK in the

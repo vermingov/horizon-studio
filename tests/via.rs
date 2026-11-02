@@ -72,9 +72,12 @@ fn routing_redirects_and_signing_in() {
         Ok(())
     });
     let request = wire::join_request(7, "-1f2e3d");
+    let asked = std::time::Instant::now();
     let answer = wire::oam(wire::CUSTOM_QUERY, &request).unwrap().unwrap();
     assert_eq!(answer, vec![wire::CUSTOM_QUERY_ANSWER as u8, 7, 1, 1]);
     assert_eq!(*hashes.lock().unwrap(), vec!["-1f2e3d".to_owned()]);
+    // Not before ViaProxy's plugin waits for it, however soon the join is done.
+    assert!(asked.elapsed() >= wire::ANSWER_AFTER);
     // Other packets and other channels pass.
     assert!(wire::oam(wire::CUSTOM_QUERY - 1, &request).is_none());
     let mut other = Vec::new();

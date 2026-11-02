@@ -120,14 +120,27 @@ pub fn proxy_port(wait: Duration) -> Result<u16, String> {
     }
 }
 
+/// How soon after OpenAuthMod's sign-in request its answer goes out, at the
+/// soonest. ViaProxy's OpenAuthMod plugin (1.0.2, and its source since)
+/// writes the request first and only then, on its own thread, notes that it
+/// waits for the answer. An answer that reaches ViaProxy before that is
+/// passed on as some other packet, the plugin waits its 6 seconds for one
+/// and kicks the player: "Authentication cancelled! You need to install the
+/// OpenAuthMod client mod". A join on Mojang's session server mostly takes
+/// longer than this anyway; one that returns sooner (or a ViaProxy kept
+/// from the CPU, as one that has just started is, by its own loading) waits
+/// the rest.
+pub const ANSWER_AFTER: Duration = Duration::from_millis(250);
+
 /// The answer to a login packet when it is OpenAuthMod's sign-in request:
 /// joins the session server, then the body of the custom query answer to
-/// send (`Err`: why the player can't be signed in). `None` for every other
-/// packet.
+/// send, no sooner than [`ANSWER_AFTER`] after the request (`Err`: why the
+/// player can't be signed in). `None` for every other packet.
 pub fn oam(id: i32, payload: &[u8]) -> Option<Result<Vec<u8>, String>> {
     if id != CUSTOM_QUERY {
         return None;
     }
+    let asked = Instant::now();
     let mut r = Reader { data: payload, at: 0 };
     let transaction = r.varint()?;
     if r.string()? != JOIN_CHANNEL {
@@ -139,6 +152,9 @@ pub fn oam(id: i32, payload: &[u8]) -> Option<Result<Vec<u8>, String>> {
         Some(f) => f(&hash),
         None => Err("You are not signed in".into()),
     };
+    if joined.is_ok() {
+        std::thread::sleep(ANSWER_AFTER.saturating_sub(asked.elapsed()));
+    }
     Some(joined.map(|()| answer(transaction, true)))
 }
 

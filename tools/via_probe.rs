@@ -104,7 +104,11 @@ fn main() {
                         println!("JOINED online {name}");
                         joined = true;
                     }
-                    Event::Disconnected { reason, .. } => fail(format!("online join: {reason}")),
+                    // Whether the game answered: a kick after an answer is ViaProxy's.
+                    Event::Disconnected { reason, .. } => fail(format!(
+                        "online join: {reason} (sign-in requests answered: {:?})",
+                        hashes.lock().unwrap()
+                    )),
                     _ => {}
                 }
             }
