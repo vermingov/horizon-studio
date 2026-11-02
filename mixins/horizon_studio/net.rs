@@ -229,11 +229,22 @@ pub fn fetch_redirects(req: &Request, local: bool, redirects: u32) -> Result<Res
     };
     let status = resp.status();
     let status_message = resp.status_text().to_owned();
-    let headers = resp
-        .headers_names()
-        .into_iter()
-        .filter_map(|n| resp.header(&n).map(|v| (n.clone(), v.to_owned())))
-        .collect();
+    // Every value of every header, in order: a header sent more than once
+    // (Set-Cookie above all: Roblox's sign-in sends several, the session
+    // cookie not first) keeps each of its values, not only the first.
+    let mut names = resp.headers_names();
+    names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    let mut seen: Vec<String> = Vec::new();
+    let mut headers = Vec::new();
+    for n in names {
+        if seen.iter().any(|s| s.eq_ignore_ascii_case(&n)) {
+            continue;
+        }
+        for v in resp.all(&n) {
+            headers.push((n.clone(), v.to_owned()));
+        }
+        seen.push(n);
+    }
     let mut body = Vec::new();
     resp.into_reader()
         .take(MAX_BODY + 1)

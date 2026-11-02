@@ -464,7 +464,21 @@ pub fn quick_complete(hosts: &Hosts, code: &QuickCode) -> Result<String, AuthErr
         let msg = String::from_utf8_lossy(&resp.body);
         return Err(AuthError::of_status(resp.status, msg.trim()));
     }
-    cookie_from_set_cookie(&resp).ok_or_else(|| AuthError::Parse("Roblox signed in but sent no session cookie".into()))
+    cookie_from_set_cookie(&resp).ok_or_else(|| {
+        // Which cookies did come (their names only, never values), to tell
+        // what Roblox did instead.
+        let names: Vec<&str> = resp
+            .headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie"))
+            .filter_map(|(_, v)| v.split('=').next())
+            .map(str::trim)
+            .collect();
+        let got = if names.is_empty() { "none".to_owned() } else { names.join(", ") };
+        AuthError::Parse(format!(
+            "Roblox signed in but sent no session cookie (cookies sent: {got}). Paste your .ROBLOSECURITY cookie instead."
+        ))
+    })
 }
 
 /// The `.ROBLOSECURITY` value out of a response's `Set-Cookie` headers.
@@ -473,13 +487,13 @@ pub fn cookie_from_set_cookie(resp: &Response) -> Option<String> {
         if !k.eq_ignore_ascii_case("set-cookie") {
             continue;
         }
-        for part in v.split(',') {
-            if let Some(at) = part.to_ascii_lowercase().find(".roblosecurity=") {
-                let rest = &part[at + ".roblosecurity=".len()..];
-                let val = rest.split(';').next().unwrap_or(rest).trim();
-                if !val.is_empty() {
-                    return Some(val.to_owned());
-                }
+        // Each Set-Cookie arrives on its own; its attributes (an Expires date
+        // has a comma in it) follow the first ';'.
+        if let Some(at) = v.to_ascii_lowercase().find(".roblosecurity=") {
+            let rest = &v[at + ".roblosecurity=".len()..];
+            let val = rest.split(';').next().unwrap_or(rest).trim();
+            if !val.is_empty() {
+                return Some(val.to_owned());
             }
         }
     }

@@ -237,6 +237,8 @@ pub enum RobloxAction {
     /// The dialog: reveal the field, store-and-use, use once, cancel, start
     /// Quick Login.
     Show,
+    /// Puts the clipboard in the field (the cookie, copied from the browser).
+    Paste,
     Save,
     UseOnce,
     Cancel,
@@ -4637,6 +4639,10 @@ pub(crate) fn act(st: &mut Studio, game: &mut dyn GameApi, action: Action) -> Ui
                 st.s.log(LogKind::Info, "Stopped what the console ran");
             }
         }
+        Action::Roblox(RobloxAction::Paste) => {
+            let clip = game.clipboard();
+            paste_cookie(st, &clip);
+        }
         Action::Roblox(a) => roblox_action(st, a),
         Action::Block | Action::ScrollBar | Action::Spot(_) => {}
         Action::MenuPick(i) => return menu_pick(st, game, i as usize),
@@ -4683,6 +4689,11 @@ fn key_down(st: &mut Studio, game: &mut dyn GameApi, key: Key, mods: Mods) -> Ui
         match key {
             Key::Escape => roblox_action(st, RobloxAction::Cancel),
             Key::Enter if st.s.ui.roblox.quick.is_none() => roblox_action(st, RobloxAction::Save),
+            // Paste (Ctrl+V; Cmd+V on macOS).
+            Key::Char('v' | 'V') if mods.ctrl && st.s.ui.roblox.quick.is_none() => {
+                let clip = game.clipboard();
+                paste_cookie(st, &clip);
+            }
             k if st.s.ui.roblox.quick.is_none() => {
                 st.s.ui.roblox.field.key(k, mods);
             }
@@ -5176,6 +5187,18 @@ pub fn refresh_roblox_status(st: &mut Studio) {
 }
 
 /// A Roblox-account button.
+/// The clipboard into the cookie field: a cookie is one line, so the line
+/// breaks and spaces a copy can bring along go.
+fn paste_cookie(st: &mut Studio, clip: &str) {
+    let text: String = clip.chars().filter(|c| !c.is_whitespace()).collect();
+    if text.is_empty() {
+        st.s.ui.roblox.status = Some(("The clipboard is empty.".into(), true));
+        return;
+    }
+    st.s.ui.roblox.field.insert(&text);
+    st.s.ui.roblox.status = None;
+}
+
 pub fn roblox_action(st: &mut Studio, a: RobloxAction) {
     let now = st.s.now;
     match a {
@@ -5200,6 +5223,8 @@ pub fn roblox_action(st: &mut Studio, a: RobloxAction) {
             p.status = Some(("Signed out.".into(), false));
         }
         RobloxAction::Show => st.s.ui.roblox.show = !st.s.ui.roblox.show,
+        // Needs the game's clipboard: handled where actions are run.
+        RobloxAction::Paste => {}
         RobloxAction::Save => submit_roblox_cookie(st, true),
         RobloxAction::UseOnce => submit_roblox_cookie(st, false),
         RobloxAction::Cancel => {

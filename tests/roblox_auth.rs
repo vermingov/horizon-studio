@@ -169,7 +169,13 @@ fn handle(stream: std::net::TcpStream, base: &str, seen: &Mutex<Seen>) {
             );
             return;
         }
-        let set = format!("Set-Cookie: .ROBLOSECURITY={GOOD_COOKIE}; Domain=.roblox.com; HttpOnly\r\n");
+        // As Roblox answers: several cookies, the session one not first, with
+        // Expires dates (which have commas in them).
+        let set = format!(
+            "Set-Cookie: RBXEventTrackerV2=CreateDate=11/2/2026; expires=Fri, 19-Mar-2027 20:00:00 GMT; domain=roblox.com; path=/\r\n\
+             Set-Cookie: GuestData=UserID=-1; expires=Fri, 19-Mar-2027 20:00:00 GMT; domain=roblox.com; path=/\r\n\
+             Set-Cookie: .ROBLOSECURITY={GOOD_COOKIE}; domain=.roblox.com; expires=Tue, 02-Nov-2027 20:00:00 GMT; path=/; secure; HttpOnly\r\n"
+        );
         send(&mut stream, "200 OK", &set, br#"{"user":{"id":12345}}"#);
         return;
     }

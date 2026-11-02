@@ -4612,6 +4612,18 @@ fn settings_shows_version_and_roblox_account() {
     let (sx, sy) = text_at(&game, "Show");
     click(&mut st, &mut game, (sx + 2.0, sy + 2.0));
     assert!(st.s.ui.roblox.show);
+    // Paste: Ctrl+V puts the clipboard in the field, without the line breaks
+    // and spaces a copy from the browser brings along.
+    st.s.ui.roblox.field.set("");
+    game.clipboard = " _|WARNING|_pasted\n".into();
+    handle(&mut st, &mut game, key(Key::Char('v'), CTRL));
+    assert_eq!(st.s.ui.roblox.field.text, "_|WARNING|_pasted");
+    // And the Paste button does the same.
+    st.s.ui.roblox.field.set("");
+    redraw(&mut st, &mut game);
+    let (px, py) = text_at(&game, "Paste");
+    click(&mut st, &mut game, (px + 2.0, py + 2.0));
+    assert_eq!(st.s.ui.roblox.field.text, "_|WARNING|_pasted");
     // Esc cancels the dialog.
     handle(&mut st, &mut game, key(Key::Escape, NONE));
     assert!(!st.s.ui.roblox.open);

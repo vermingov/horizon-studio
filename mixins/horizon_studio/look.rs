@@ -5227,15 +5227,29 @@ fn roblox_dialog(st: &mut Studio, p: &mut P, w: f32, h: f32, dt: f32) {
                 &st.s.ui.roblox.field,
                 f[0] + 12.0,
                 top(f[1] + 19.0, 13.0),
-                f[2] - 74.0,
+                f[2] - 130.0,
                 13.0,
                 Font::Mono,
                 pal().ink,
             );
         } else {
-            let dots = "•".repeat(st.s.ui.roblox.field.text.chars().count().min(40));
+            // As many dots as fit before the Paste and Show buttons.
+            let room = ((f[2] - 130.0) / p.measure("•", 13.0, Font::Mono).max(1.0)).max(4.0) as usize;
+            let dots = "•".repeat(st.s.ui.roblox.field.text.chars().count().min(40).min(room));
             p.text(&dots, f[0] + 12.0, top(f[1] + 19.0, 13.0), 13.0, Font::Mono, pal().ink);
         }
+        pill(
+            &mut st.s.ui,
+            p,
+            "rbx-paste",
+            "Paste",
+            f[0] + iw - 112.0,
+            f[1] + 6.0,
+            26.0,
+            Style::Quiet,
+            Action::Roblox(RobloxAction::Paste),
+            dt,
+        );
         let label = if show { "Hide" } else { "Show" };
         pill(
             &mut st.s.ui,
