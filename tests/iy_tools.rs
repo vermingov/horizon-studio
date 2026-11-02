@@ -492,3 +492,110 @@ fn the_grab_drags_a_part_and_moves_a_block() {
     let put = game.moves.iter().rev().find(|m| m.starts_with("block ")).unwrap();
     assert!(put.ends_with("minecraft:stone") && put.contains(" 64 "), "{put}");
 }
+
+/// A part 2 studs wide whose centre is at `at`, and the console's `p`.
+fn part_at(st: &mut Studio, game: &mut FakeGame, at: [f64; 3]) {
+    lua(
+        st,
+        game,
+        &format!(
+            "p = Instance.new('Part') p.Anchored = true p.Size = Vector3.new(2, 2, 2)
+             p.CFrame = CFrame.new({}, {}, {}) p.Parent = workspace",
+            at[0], at[1], at[2]
+        ),
+        0.1,
+    );
+}
+
+#[test]
+fn handles_are_drawn_and_dragged_along_a_face() {
+    let (mut game, mut st) = stocked("tools-handles");
+    // The Top knob (a stud above the top face) is on the crosshair.
+    part_at(&mut st, &mut game, [10.5, 63.62, -8.0]);
+    lua(
+        &mut st,
+        &mut game,
+        "h = Instance.new('Handles') h.Adornee = p h.Color = BrickColor.new('Deep orange') h.Parent = lp.PlayerGui
+         h.MouseButton1Down:Connect(function(f) print('down', f) end)
+         h.MouseDrag:Connect(function(f, d) print('drag', f, math.floor(d * 100 + 0.5) / 100) end)
+         h.MouseButton1Up:Connect(function(f) print('up', f) end)",
+        0.1,
+    );
+    game.drawn.clear();
+    st.hud(&mut game);
+    let knobs = game
+        .drawn
+        .iter()
+        .filter(|d| d.starts_with("rect ") && d.contains(" r5 "))
+        .count();
+    assert_eq!(knobs, 6, "{:?}", game.drawn);
+    st.key("key.mouse.left", true);
+    run_for(&mut st, &mut game, 0.1);
+    // The view goes up 10 degrees: the ray meets the knob's line 0.84 higher.
+    game.camera.as_mut().unwrap().pitch = -10.0;
+    run_for(&mut st, &mut game, 0.1);
+    st.key("key.mouse.left", false);
+    run_for(&mut st, &mut game, 0.1);
+    let all = log(&st);
+    let fired: Vec<&String> = all.iter().filter(|l| l.contains("Enum.NormalId")).collect();
+    assert_eq!(
+        fired,
+        [
+            "down    Enum.NormalId.Top",
+            "drag    Enum.NormalId.Top    0.84",
+            "up    Enum.NormalId.Top"
+        ]
+    );
+}
+
+#[test]
+fn arc_handles_turn_about_an_axis() {
+    let (mut game, mut st) = stocked("tools-arcs");
+    // The Z ring's upper knob (its radius above the centre) is on the crosshair.
+    let r = 3f64.sqrt() + 0.5;
+    part_at(&mut st, &mut game, [10.5, 65.62 - r, -8.0]);
+    lua(
+        &mut st,
+        &mut game,
+        "h = Instance.new('ArcHandles') h.Adornee = p h.Parent = lp.PlayerGui
+         h.MouseButton1Down:Connect(function(a) print('down', a) end)
+         h.MouseDrag:Connect(function(a, angle, dr)
+           print('drag', a, math.floor(angle * 1000 + 0.5) / 1000, math.floor(dr * 1000 + 0.5) / 1000)
+         end)",
+        0.1,
+    );
+    st.key("key.mouse.left", true);
+    run_for(&mut st, &mut game, 0.1);
+    game.camera.as_mut().unwrap().yaw = 185.0;
+    run_for(&mut st, &mut game, 0.1);
+    st.key("key.mouse.left", false);
+    run_for(&mut st, &mut game, 0.1);
+    let all = log(&st);
+    let fired: Vec<&String> = all.iter().filter(|l| l.contains("Enum.Axis")).collect();
+    assert_eq!(fired, ["down    Enum.Axis.Z", "drag    Enum.Axis.Z    -0.184    0.038"]);
+}
+
+#[test]
+fn a_dragger_puts_the_parts_on_what_the_ray_meets() {
+    let (mut game, mut st) = stocked("tools-dragger");
+    for x in 0..20 {
+        for z in -20..10 {
+            game.blocks.insert((x, 63, z), "minecraft:stone".into());
+        }
+    }
+    part_at(&mut st, &mut game, [10.5, 70.0, -8.0]);
+    let out = lua(
+        &mut st,
+        &mut game,
+        "local q = p:Clone() q.CFrame = p.CFrame * CFrame.new(2, 0, 0) q.Parent = workspace
+         local d = Instance.new('Dragger')
+         d:MouseDown(p, Vector3.new(0, 0, 0), {p, q})
+         d:MouseMove(Ray.new(Vector3.new(13.2, 80, -10.7), Vector3.new(0, -1, 0)))
+         print(p.Position, q.Position)
+         d:AxisRotate(Enum.Axis.Y)
+         print(math.floor(q.Position.X + 0.5), math.floor(q.Position.Z + 0.5))
+         d:MouseUp()",
+        0.1,
+    );
+    assert_eq!(out, ["13.5, 65, -11    15.5, 65, -11", "14    -13"]);
+}

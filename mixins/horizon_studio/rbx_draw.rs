@@ -2243,6 +2243,9 @@ fn key_input(rbx: &mut Rbx, k: &'static str, down: bool, processed: bool) {
 }
 
 fn mouse_input(rbx: &mut Rbx, kind: &'static str, down: bool, processed: bool) {
+    if kind == "MouseButton1" {
+        super::hstudio_rbx_tools::button1(rbx, down, processed);
+    }
     let state = if down { "Begin" } else { "End" };
     let input = input_object(rbx, None, kind, state, None);
     let uis = rbx.service("UserInputService").unwrap_or(rbx.game);
@@ -3478,7 +3481,7 @@ const ADORNMENTS: &[&str] = &[
 ];
 
 /// A property of a kept class: what a script set, else Roblox's default.
-fn adorn_prop(rbx: &Rbx, id: Id, name: &str) -> Value {
+pub fn adorn_prop(rbx: &Rbx, id: Id, name: &str) -> Value {
     let inst = rbx.inst(id);
     // An adornment's older Color (a BrickColor) is its Color3 when that
     // isn't set itself, as in Roblox, where setting one sets the other.

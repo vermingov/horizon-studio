@@ -1017,6 +1017,7 @@ fn service_method(env: &mut dyn Env, lua: &mut Lua, id: Id, name: &str, owner_cl
         ("Humanoid", "UnequipTools" | "EquipTool")
         | ("Tool", "Activate" | "Deactivate")
         | ("HopperBin", "ToggleSelect" | "Disable") => super::hstudio_rbx_tools::method(env, lua, id, name, args),
+        ("Dragger", _) => super::hstudio_rbx_handles::dragger(env, lua, id, name, args),
         ("Humanoid" | "Animator", "GetPlayingAnimationTracks") => {
             let rbx = env.rbx();
             // A Humanoid's tracks and its Animator's are the same tracks.

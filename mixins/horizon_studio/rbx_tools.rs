@@ -69,10 +69,46 @@ pub struct Tools {
     pub quiet: bool,
     /// The scripts' own tools, in the order they came: their slots.
     pub order: Vec<Id>,
-    /// The left button's presses and releases while a HopperBin is held,
-    /// for its tool (`step`).
-    pub clicks: Vec<bool>,
+    /// The left button's presses and releases since the last step: for the
+    /// Handles they are on, else the HopperBin held.
+    pub presses: Vec<bool>,
     pub grab: Option<Grab>,
+    /// Handles or ArcHandles being dragged.
+    pub handle: Option<HandleDrag>,
+    /// Draggers between MouseDown and MouseUp, and what they drag.
+    pub draggers: Vec<(Id, Drag)>,
+    /// Where the camera was and looked at the last step: as it turns with
+    /// a script's tool in hand, the Mouse moves (its Move fires).
+    pub view: Option<(Vector3, Vector3)>,
+}
+
+/// A press on a Handles' face (`Handles`, its NormalId) or an ArcHandles'
+/// ring (its Axis): where the pointer was along it as it went down, and
+/// what MouseDrag last said.
+#[derive(Clone, Debug)]
+pub struct HandleDrag {
+    pub handles: Id,
+    pub arc: bool,
+    /// The NormalId or the Axis.
+    pub which: &'static str,
+    /// The adornee's centre and the direction (the face's normal, the
+    /// ring's axis), in the world.
+    pub centre: Vector3,
+    pub dir: Vector3,
+    /// Along the face's line: where it was grabbed. On the ring: the
+    /// vector from the centre to where it was grabbed.
+    pub start: f64,
+    pub from: Vector3,
+    pub last: (f64, f64),
+}
+
+/// What a Dragger drags: the parts, the part held and the point on it held
+/// (in its own space).
+#[derive(Clone, Debug)]
+pub struct Drag {
+    pub parts: Vec<Id>,
+    pub part: Id,
+    pub point: Vector3,
 }
 
 /// A stack and the Tool that is it.
@@ -345,30 +381,38 @@ pub fn wheel(rbx: &mut Rbx, steps: f64, slot: usize) -> Option<Option<usize>> {
     Some(Some(to))
 }
 
+/// The left button, as the Mouse has it (the crosshair's, or the free
+/// pointer's; `processed`: over the GUI, or the game's own): a press is
+/// for the Handles it is on, else the HopperBin held (`step` sees to both);
+/// a script's Tool held is Activated, and Deactivated as it comes up.
+pub fn button1(rbx: &mut Rbx, down: bool, processed: bool) {
+    if !rbx.active || (processed && down) {
+        return;
+    }
+    if rbx.tools.presses.len() < 16 {
+        rbx.tools.presses.push(down);
+    }
+    let Held::Script(t) = rbx.tools.held else { return };
+    if !in_character(rbx, t) || rbx.inst(t).class.name != "Tool" {
+        return;
+    }
+    if !down {
+        rbx.fire(t, "Deactivated", Vec::new());
+    } else if rbx.raw_get(t, "Enabled").truthy() && !rbx.raw_get(t, "ManualActivationOnly").truthy() {
+        rbx.fire(t, "Activated", Vec::new());
+    }
+}
+
 /// A key or button as the game reports it while playing (`processed`: the
 /// game or the studio had it). The right button is the stack's use: its
-/// Activated as it goes down, Deactivated as it comes up. The left button
-/// is a script's tool's (the game never saw it): Activated and Deactivated,
-/// and a HopperBin's click. 0 equips the scripts' tools in turn; 1 to 9,
-/// the game's own slots, give the hotbar back.
+/// Activated as it goes down, Deactivated as it comes up. 0 equips the
+/// scripts' tools in turn; 1 to 9, the game's own slots, give the hotbar
+/// back.
 pub fn input(rbx: &mut Rbx, key: &str, down: bool, processed: bool) {
     if !rbx.active || (processed && down) {
         return;
     }
     match key {
-        "key.mouse.left" => {
-            let Held::Script(t) = rbx.tools.held else { return };
-            if !in_character(rbx, t) {
-                return;
-            }
-            if rbx.inst(t).class.name == "HopperBin" {
-                rbx.tools.clicks.push(down);
-            } else if !down {
-                rbx.fire(t, "Deactivated", Vec::new());
-            } else if rbx.raw_get(t, "Enabled").truthy() && !rbx.raw_get(t, "ManualActivationOnly").truthy() {
-                rbx.fire(t, "Activated", Vec::new());
-            }
-        }
         "key.mouse.right" => {
             if rbx.tools.held != Held::Slot {
                 return;
@@ -500,7 +544,24 @@ pub fn step(env: &mut dyn Env) {
         rbx.tools.held = Held::Nothing;
     }
     place_handles(rbx);
+    mouse_moves(rbx);
     bins(env);
+}
+
+/// With a script's tool in hand, the Mouse is the crosshair: as the camera
+/// turns or moves, what it points at changes, and its Move fires (Roblox's
+/// does as a locked mouse turns the camera).
+fn mouse_moves(rbx: &mut Rbx) {
+    let cam = as_cf(&rbx.raw_get(rbx.camera, "CFrame")).unwrap_or_default();
+    let view = (cam.position(), cam.look_vector());
+    let before = rbx.tools.view.replace(view);
+    let turned =
+        before.is_some_and(|(at, look)| (at - view.0).magnitude() > 1e-4 || (look - view.1).magnitude() > 1e-5);
+    // Handles being dragged have the mouse: they fire MouseDrag instead.
+    if turned && takes_clicks(rbx) && !rbx.pointer.free && rbx.tools.handle.is_none() {
+        let mouse = rbx.mouse;
+        rbx.fire(mouse, "Move", Vec::new());
+    }
 }
 
 /// The Backpack's stacks as the inventory has them: a Tool for each new
@@ -681,10 +742,24 @@ fn place_handles(rbx: &mut Rbx) {
 
 // ---------------------------------------------------------------- BTools' bins
 
-/// The held HopperBin's tool, for the clicks it had: the Hammer, the Clone
-/// and the Grab (a held Grab drags its part each frame).
+/// The left button's presses since the last step: one on Handles is
+/// theirs (and so is its release); the others are the held HopperBin's
+/// clicks: the Hammer, the Clone and the Grab (a held Grab drags its part
+/// each frame).
 fn bins(env: &mut dyn Env) {
-    let clicks = std::mem::take(&mut env.rbx().tools.clicks);
+    let presses = std::mem::take(&mut env.rbx().tools.presses);
+    let mut clicks = Vec::new();
+    for down in presses {
+        let theirs = if down {
+            super::hstudio_rbx_handles::press(env)
+        } else {
+            super::hstudio_rbx_handles::release(env.rbx())
+        };
+        if !theirs {
+            clicks.push(down);
+        }
+    }
+    super::hstudio_rbx_handles::drag(env);
     let rbx = env.rbx();
     let bin = match rbx.tools.held {
         Held::Script(t) if in_character(rbx, t) && rbx.inst(t).class.name == "HopperBin" => {
@@ -886,6 +961,7 @@ fn put_back_grab(rbx: &mut Rbx) {
 /// with its name's first letters (a HopperBin's BinType), the one held
 /// framed in white with its name above.
 pub fn draw(rbx: &Rbx, game: &mut dyn GameApi) {
+    super::hstudio_rbx_handles::draw(rbx, game);
     if !rbx.active || game.screen() != "playing" {
         return;
     }
