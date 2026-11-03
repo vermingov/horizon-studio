@@ -2305,7 +2305,7 @@ pub fn game_input(rbx: &mut Rbx, key: &str, down: bool, processed: bool) {
             "middle" => ("MouseButton3", 2),
             _ => return,
         };
-        rbx.pointer.buttons[i] = down;
+        set_button(rbx, i, down);
         mouse_input(rbx, kind, down, processed);
         return;
     }
@@ -2348,11 +2348,48 @@ fn key_char(k: &str) -> Option<String> {
     Some(digit.to_string())
 }
 
-fn key_input(rbx: &mut Rbx, k: &'static str, down: bool, processed: bool) {
+/// A mouse button goes down or up for IsMouseButtonPressed: a release in
+/// the frame of its press is held back (see `Pointer::steps`).
+fn set_button(rbx: &mut Rbx, i: usize, down: bool) {
+    let p = &mut rbx.pointer;
+    p.late_buttons.retain(|(b, _)| *b != i);
     if down {
-        rbx.pointer.held.insert(k);
+        p.buttons[i] = true;
+        p.press_step[i] = p.steps;
+    } else if p.buttons[i] && p.press_step[i] == p.steps {
+        p.late_buttons.push((i, p.steps + 2));
     } else {
-        rbx.pointer.held.remove(k);
+        p.buttons[i] = false;
+    }
+}
+
+/// The releases held back, let go once their press's frame is over.
+fn late_releases(rbx: &mut Rbx) {
+    let p = &mut rbx.pointer;
+    p.steps += 1;
+    let now = p.steps;
+    let (due, keep): (Vec<_>, Vec<_>) = p.late_buttons.drain(..).partition(|(_, at)| *at <= now);
+    p.late_buttons = keep;
+    for (i, _) in due {
+        p.buttons[i] = false;
+    }
+    let (due, keep): (Vec<_>, Vec<_>) = p.late_keys.drain(..).partition(|(_, at)| *at <= now);
+    p.late_keys = keep;
+    for (k, _) in due {
+        p.held.remove(k);
+    }
+}
+
+fn key_input(rbx: &mut Rbx, k: &'static str, down: bool, processed: bool) {
+    let p = &mut rbx.pointer;
+    p.late_keys.retain(|(h, _)| *h != k);
+    if down {
+        p.held.insert(k);
+        p.key_press_step.insert(k, p.steps);
+    } else if p.held.contains(k) && p.key_press_step.get(k) == Some(&p.steps) {
+        p.late_keys.push((k, p.steps + 2));
+    } else {
+        p.held.remove(k);
     }
     let state = if down { "Begin" } else { "End" };
     let input = input_object(rbx, Some(k), "Keyboard", state, None);
@@ -2743,7 +2780,7 @@ fn hits(rbx: &Rbx) -> (Option<Id>, Option<Id>) {
 /// object under the pointer and of UserInputService, as MouseButton3
 /// (Roblox's buttons have no click of their own for it).
 pub fn middle_button(rbx: &mut Rbx, down: bool) {
-    rbx.pointer.buttons[2] = down;
+    set_button(rbx, 2, down);
     let (top, _) = hits(rbx);
     let state = if down { "Begin" } else { "End" };
     let input = input_object(rbx, None, "MouseButton3", state, None);
@@ -2756,7 +2793,7 @@ pub fn middle_button(rbx: &mut Rbx, down: bool) {
 pub fn pointer_button(rbx: &mut Rbx, left: bool, down: bool) {
     let before = gui_states(rbx);
     let kind = if left { "MouseButton1" } else { "MouseButton2" };
-    rbx.pointer.buttons[usize::from(!left)] = down;
+    set_button(rbx, usize::from(!left), down);
     // A press on a ScrollingFrame's bar takes hold of it, and is the GUI's.
     if left && !down {
         rbx.pointer.bar = None;
@@ -3231,6 +3268,7 @@ fn copy_starter_gui(rbx: &mut Rbx) {
 /// and the frame's events: RunService's, tweens, Debris, timeouts.
 pub fn step(rbx: &mut Rbx, game: &mut dyn GameApi, now: f64, dt: f64, frame_no: u64) {
     rbx.now = now;
+    late_releases(rbx);
     if !rbx.active {
         return;
     }

@@ -434,3 +434,27 @@ fn get_objects_loads_a_model_kept_in_the_workspace() {
         "a thread should be waiting for the Roblox-account prompt"
     );
 }
+
+#[test]
+fn a_gzipped_model_from_roblox_s_cdn_loads() {
+    // Roblox's asset CDN sends models gzip-compressed (asked for it or not),
+    // and that is what the download keeps: the reader unpacks it.
+    use std::io::Write;
+    let (mut st, mut game) = setup("hx-gzip");
+    let assets = st.s.dir.join("workspace").join(".roblox-assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    let mut z = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    z.write_all(MODEL.as_bytes()).unwrap();
+    std::fs::write(assets.join("4743303040.rbxm"), z.finish().unwrap()).unwrap();
+    run(
+        &mut st,
+        &mut game,
+        r#"
+        task.spawn(function()
+          local ok, objects = pcall(game.GetObjects, game, "rbxassetid://4743303040")
+          print("GZ", ok, ok and objects[1].ClassName or objects, ok and objects[1].Base.ClassName)
+        end)
+        "#,
+    );
+    assert_eq!(tagged(&st, "GZ"), ["GZ\ttrue\tScreenGui\tFrame"]);
+}

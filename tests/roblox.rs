@@ -653,8 +653,11 @@ fn the_middle_button_is_mouse_button_3_on_a_gui() {
     handle_screen(&mut st, &mut game, Input::Middle { down: true });
     assert!(st.s.rbx.pointer.buttons[2]);
     handle_screen(&mut st, &mut game, Input::Middle { down: false });
-    assert!(!st.s.rbx.pointer.buttons[2]);
+    // Released in the frame it was pressed: still pressed while the press's
+    // handlers run, let go a couple of frames on.
+    assert!(st.s.rbx.pointer.buttons[2]);
     run_for(&mut st, &mut game, 0.1);
+    assert!(!st.s.rbx.pointer.buttons[2]);
     let lines = printed(&st, "shop");
     assert!(lines.contains(&"began MouseButton3".to_owned()), "{lines:?}");
     assert!(lines.contains(&"ended MouseButton3".to_owned()), "{lines:?}");

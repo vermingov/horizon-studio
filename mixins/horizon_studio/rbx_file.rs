@@ -335,7 +335,24 @@ pub fn read(bytes: &[u8]) -> Result<RbxFile, String> {
 }
 
 /// A binary or XML model or place file: binary when it starts `<roblox!`.
+/// A gzip-compressed one (Roblox's asset CDN sends models gzipped, asked
+/// for it or not) is read inside its gzip.
 pub fn read_with(bytes: &[u8], limits: Limits) -> Result<RbxFile, String> {
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        use std::io::Read;
+        let mut out = Vec::new();
+        flate2::read::GzDecoder::new(bytes)
+            .take(limits.data as u64 + 1)
+            .read_to_end(&mut out)
+            .map_err(|e| format!("the file is gzip-compressed and doesn't unpack: {e}"))?;
+        if out.len() > limits.data {
+            return Err("the file is too big once unpacked".into());
+        }
+        if out.starts_with(&[0x1f, 0x8b]) {
+            return Err("the file is gzip-compressed twice".into());
+        }
+        return read_with(&out, limits);
+    }
     if bytes.starts_with(MAGIC) {
         read_binary(bytes, limits)
     } else {

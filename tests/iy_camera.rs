@@ -477,3 +477,51 @@ fn hitboxes_shows_the_game_s_entity_hitboxes() {
     assert_eq!(lua(&mut st, &mut game, &format!("{rs} = true")).0, ["hitboxes true"]);
     assert_eq!(lua(&mut st, &mut game, &format!("{rs} = false")).0, ["hitboxes false"]);
 }
+
+#[test]
+fn a_quick_click_is_still_pressed_when_button1down_runs() {
+    // A press and its release in one frame (a quick click): Infinite Yield's
+    // click-teleport bind checks IsMouseButtonPressed(MouseButton1) in
+    // Button1Down, and found it released, falling through to
+    // Enum.KeyCode[""] and an error. The same for a quick key tap.
+    let mut game = world("iyc-quick");
+    let mut st = start(&mut game);
+    lua(
+        &mut st,
+        &mut game,
+        r#"
+        local UIS = game:GetService("UserInputService")
+        local mouse = game.Players.LocalPlayer:GetMouse()
+        mouse.Button1Down:Connect(function()
+            print("QC down", UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1))
+        end)
+        UIS.InputBegan:Connect(function(input)
+            if input.KeyCode == Enum.KeyCode.E then
+                print("QC key", UIS:IsKeyDown(Enum.KeyCode.E))
+            end
+        end)
+        "#,
+    );
+    st.key("key.mouse.left", true);
+    st.key("key.mouse.left", false);
+    st.key("key.keyboard.e", true);
+    st.key("key.keyboard.e", false);
+    run_for(&mut st, &mut game, 0.2);
+    let got: Vec<String> = log(&st).iter().filter(|l| l.contains("QC")).cloned().collect();
+    assert!(got.iter().any(|l| l.ends_with("QC down    true")), "{got:?}");
+    assert!(got.iter().any(|l| l.ends_with("QC key    true")), "{got:?}");
+    // And afterwards both are up.
+    lua(
+        &mut st,
+        &mut game,
+        r#"
+        local UIS = game:GetService("UserInputService")
+        print("QC after", UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1), UIS:IsKeyDown(Enum.KeyCode.E))
+        "#,
+    );
+    assert!(
+        log(&st).iter().any(|l| l.ends_with("QC after    false    false")),
+        "{:?}",
+        log(&st)
+    );
+}

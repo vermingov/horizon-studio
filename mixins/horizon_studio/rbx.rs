@@ -1611,6 +1611,17 @@ pub struct Pointer {
     pub bar: Option<(Id, bool, f64)>,
     pub held: HashSet<&'static str>,
     pub buttons: [bool; 3],
+    /// Frame steps begun, and the step each button and key was pressed in:
+    /// a release in the same frame as its press (a quick click or tap) is
+    /// held back two steps, so the press's handlers (Button1Down,
+    /// InputBegan, which run later in the frame) still find it pressed, as
+    /// Roblox's do (Infinite Yield's click-teleport bind checks
+    /// IsMouseButtonPressed in Button1Down).
+    pub steps: u64,
+    pub press_step: [u64; 3],
+    pub key_press_step: HashMap<&'static str, u64>,
+    pub late_buttons: Vec<(usize, u64)>,
+    pub late_keys: Vec<(&'static str, u64)>,
     /// Presses the game's open chat gave the GUI (the left and right
     /// buttons), whose releases are the GUI's too.
     pub chat_held: [bool; 2],
@@ -2357,8 +2368,15 @@ impl Rbx {
         }
         self.conn_count -= removed;
         // Destroyed instances nothing can reach any more are let go, and so
-        // is what require kept for those that were ModuleScripts.
-        self.insts.retain(|_, i| !(i.destroyed && i.owner == Some(owner)));
+        // is what require kept for those that were ModuleScripts. One a
+        // script still holds (another mod, getgenv: Hydroxide keeps its UI
+        // there and destroys it when run again) stays a destroyed Instance,
+        // as in Roblox, until the periodic sweep finds it unreachable.
+        self.insts.retain(|_, i| {
+            !(i.destroyed
+                && i.owner == Some(owner)
+                && matches!(&i.value, Value::Userdata(u) if std::rc::Rc::strong_count(u) == 1))
+        });
         let insts = &self.insts;
         self.loaded_modules.retain(|(id, _)| insts.contains_key(id));
         self.tweens.retain(|t| t.owner != owner);
